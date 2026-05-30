@@ -4,6 +4,11 @@ target_link_libraries(test_decomposition PRIVATE tpx_core)
 target_include_directories(test_decomposition PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME decomposition COMMAND test_decomposition)
 
+add_executable(test_sdf test_sdf.cpp)
+target_link_libraries(test_sdf PRIVATE tpx_core)
+target_include_directories(test_sdf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME sdf COMMAND test_sdf)
+
 # MPI tests: run across several rank counts.
 if(MPI_FOUND)
   add_executable(test_grid_halo test_grid_halo.cpp)
