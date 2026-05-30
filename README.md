@@ -22,6 +22,13 @@ device boundary stays C++17-compatible).
   - `exchangePersistent()` — `MPI_Neighbor_alltoallv` on a cached distributed-graph communicator;
     fastest for the static neighbour pattern of a fixed grid.
 - `tpx::halo::GridFieldView<T>` — wraps a contiguous local array as an exchangeable field.
+- `tpx::halo::ParticleMigrator<Dim>` — Lagrangian particle migration to owning ranks (NBX), the
+  dynamic counterpart to the Eulerian grid halo.
+- `tpx::halo::DeviceGridExchange<T>` (`grid_halo_cuda.cuh`) — GPU-resident ghost-layer exchange:
+  pack/unpack/self-copy as CUDA kernels, host-staged MPI; the field never leaves the GPU.
+
+Validated end-to-end by a distributed explicit heat-diffusion solver that matches a serial reference
+cell-for-cell across ranks. 16/16 ctest pass (`np` 1–8 CPU, 1–4 GPU).
 
 ## Build / test / benchmark
 

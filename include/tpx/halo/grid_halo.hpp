@@ -207,6 +207,33 @@ class GridHalo {
     }
   }
 
+  // --- Flattened topology (contiguous, device-friendly; consumed by the CUDA exchange) ---
+  struct FlatTopology {
+    MPI_Comm comm = MPI_COMM_NULL;
+    std::vector<int> sendRanks, recvRanks;     // neighbour ranks
+    std::vector<int> sendCounts, recvCounts;   // elements per neighbour (same order)
+    std::vector<Index> sendIdx, recvIdx;       // flattened local indices, grouped by neighbour
+    std::vector<Index> selfSrc, selfDst;       // local periodic self-copy (inner -> ghost)
+  };
+
+  FlatTopology flatten() const {
+    FlatTopology t;
+    t.comm = comm_;
+    t.sendRanks = std::vector<int>(sendRanks_.begin(), sendRanks_.end());
+    t.recvRanks = std::vector<int>(recvRanks_.begin(), recvRanks_.end());
+    for (const auto& v : sendIdx_) {
+      t.sendCounts.push_back(static_cast<int>(v.size()));
+      t.sendIdx.insert(t.sendIdx.end(), v.begin(), v.end());
+    }
+    for (const auto& v : recvIdx_) {
+      t.recvCounts.push_back(static_cast<int>(v.size()));
+      t.recvIdx.insert(t.recvIdx.end(), v.begin(), v.end());
+    }
+    t.selfSrc = selfSrc_;
+    t.selfDst = selfDst_;
+    return t;
+  }
+
   // --- Introspection (used by tests/benchmarks) ---
   const decomp::BlockIndexer<Dim>& indexer() const { return indexer_; }
   std::size_t numNeighbors() const { return recvRanks_.size(); }

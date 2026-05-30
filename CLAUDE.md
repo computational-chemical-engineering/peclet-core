@@ -14,10 +14,17 @@ C++17-compatible.
 ## Build / test / benchmark
 
 ```bash
+# CUDA tests need nvcc on PATH (this box: /usr/local/cuda-13.2/bin); without it the GPU path is
+# skipped and the CPU library still builds/tests fine.
+export PATH=/usr/local/cuda-13.2/bin:$PATH
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
-ctest --test-dir build --output-on-failure        # serial decomposition + MPI halo (np=1,2,4,8)
+ctest --test-dir build --output-on-failure   # serial + MPI halo + particle migration + diffusion
+                                             # + GPU halo (np=1..8), 16 tests
 mpirun -np 4 ./build/benchmarks/bench_halo 48 1 300
 ```
+
+CUDA arch is forced to `native` (the RTX 5080 is sm_120; CMake's `enable_language(CUDA)` otherwise
+defaults to an old arch and kernels silently fail to launch). Override with `-DTPX_CUDA_ARCH=120`.
 
 ## Architecture
 
@@ -38,7 +45,13 @@ Header-only under `include/tpx/`:
   `buildTopology()`; **exchange** runs every step. Field-agnostic: any type with
   `bytesPerElem()`/`pack(localIdx,dst)`/`unpack(localIdx,src)` works. Two engines give identical
   results — `exchangeNbx`/`start`+`wait` (overlap-capable) and `exchangePersistent`
-  (`MPI_Neighbor_alltoallv`, faster for static grids).
+  (`MPI_Neighbor_alltoallv`, faster for static grids). `flatten()` exposes a device-friendly topology.
+- `halo/particle_migrator.hpp` — `ParticleMigrator<Dim>`: Lagrangian counterpart. Reassigns particles
+  (positions + opaque fixed-stride payload) to their owning rank via the NBX engine, with periodic wrap.
+- `halo/grid_halo_cuda.cuh` — `DeviceGridExchange<T>`: GPU-resident halo. pack/unpack/self-copy run as
+  CUDA kernels; only the compact halo buffers are host-staged for MPI (the field stays on the GPU).
+  Built from a host `GridHalo`'s `flatten()`. Direct device-pointer MPI is *not* used (CUDA-aware MPI
+  segfaults on this box); host-staging is the portable path. Bit-for-bit matches the CPU exchange.
 
 ## Gotchas
 

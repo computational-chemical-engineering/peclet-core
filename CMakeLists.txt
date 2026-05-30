@@ -40,6 +40,34 @@ else()
   message(WARNING "transport-core: MPI not found — halo layer and its tests are disabled")
 endif()
 
+# --- Optional CUDA: GPU-resident (host-staged) halo exchange ---
+if(NOT CMAKE_CUDA_COMPILER)
+  find_program(_tpx_nvcc nvcc
+    PATHS /usr/local/cuda/bin /usr/local/cuda-13.2/bin /usr/local/cuda-13/bin NO_DEFAULT_PATH)
+  if(_tpx_nvcc)
+    set(CMAKE_CUDA_COMPILER ${_tpx_nvcc} CACHE FILEPATH "Path to nvcc" FORCE)
+  endif()
+endif()
+include(CheckLanguage)
+check_language(CUDA)
+set(TPX_HAVE_CUDA OFF)
+if(CMAKE_CUDA_COMPILER AND MPI_FOUND)
+  enable_language(CUDA)
+  set(CMAKE_CUDA_STANDARD 17)
+  set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+  # enable_language(CUDA) defaults this to an old arch (e.g. 75); force the real device arch so
+  # kernels actually launch (the RTX 5080 is sm_120). Override on the command line if needed.
+  if(NOT DEFINED TPX_CUDA_ARCH)
+    set(TPX_CUDA_ARCH native)
+  endif()
+  set(CMAKE_CUDA_ARCHITECTURES ${TPX_CUDA_ARCH} CACHE STRING "" FORCE)
+  set(TPX_HAVE_CUDA ON)
+  message(STATUS "transport-core: CUDA enabled (${CMAKE_CUDA_COMPILER}, arch "
+                 "${CMAKE_CUDA_ARCHITECTURES}) — GPU halo tests on")
+else()
+  message(STATUS "transport-core: CUDA not enabled — GPU halo path skipped")
+endif()
+
 if(TPX_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
