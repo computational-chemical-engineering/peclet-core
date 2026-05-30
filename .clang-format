@@ -1,0 +1,25 @@
+# Adopted suite-wide from voronoi_dynamics (Google C++ Style).
+BasedOnStyle: Google
+Language: Cpp
+ColumnLimit: 100
+IndentWidth: 2
+TabWidth: 2
+UseTab: Never
+ContinuationIndentWidth: 4
+BreakBeforeBraces: Attach
+AlignAfterOpenBracket: Align
+AlignTrailingComments: true
+IncludeBlocks: Regroup
+SortIncludes: CaseInsensitive
+PointerAlignment: Left
+ReferenceAlignment: Left
+SpaceBeforeParens: ControlStatements
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+SpaceAfterTemplateKeyword: true
+BreakConstructorInitializers: BeforeComma
+AccessModifierOffset: -1
+NamespaceIndentation: None
+CompactNamespaces: false
+ReflowComments: true
