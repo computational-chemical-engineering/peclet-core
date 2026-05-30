@@ -9,6 +9,11 @@ target_link_libraries(test_sdf PRIVATE tpx_core)
 target_include_directories(test_sdf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME sdf COMMAND test_sdf)
 
+add_executable(test_vti test_vti.cpp)
+target_link_libraries(test_vti PRIVATE tpx_core)
+target_include_directories(test_vti PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME vti COMMAND test_vti)
+
 # MPI tests: run across several rank counts.
 if(MPI_FOUND)
   add_executable(test_grid_halo test_grid_halo.cpp)

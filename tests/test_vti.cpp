@@ -1,0 +1,45 @@
+// Round-trip a sampled SDF through VTI (.vti) I/O: sample an analytic sphere onto a grid, write,
+// read back, and require identical dims/origin/spacing and bit-exact (float) values.
+#include <cmath>
+#include <cstdio>
+#include <string>
+
+#include "test_util.hpp"
+#include "tpx/common/types.hpp"
+#include "tpx/geom/grid_sdf.hpp"
+#include "tpx/geom/sdf.hpp"
+#include "tpx/geom/vti_io.hpp"
+
+using namespace tpx;
+using namespace tpx::geom;
+
+int main() {
+  Sphere s{{0.1, -0.2, 0.3}, 1.5};
+  IVec<3> dims{13, 11, 9};
+  GridSdf g = sample(s, dims, {-2.0, -2.0, -2.0}, {0.3, 0.35, 0.4});
+
+  std::string path = "test_vti_roundtrip.vti";
+  writeVti(path, g, "sdf");
+  GridSdf r = readVti(path);
+  std::remove(path.c_str());
+
+  TPX_CHECK_EQ(r.dims[0], g.dims[0]);
+  TPX_CHECK_EQ(r.dims[1], g.dims[1]);
+  TPX_CHECK_EQ(r.dims[2], g.dims[2]);
+  for (int i = 0; i < 3; ++i) {
+    TPX_CHECK(std::fabs(r.origin[i] - g.origin[i]) < 1e-6);
+    TPX_CHECK(std::fabs(r.spacing[i] - g.spacing[i]) < 1e-6);
+  }
+  TPX_CHECK_EQ(static_cast<Index>(r.values.size()), static_cast<Index>(g.values.size()));
+  int mism = 0;
+  for (std::size_t i = 0; i < g.values.size(); ++i) {
+    if (r.values[i] != g.values[i]) ++mism;  // 9-digit ASCII round-trips float32 exactly
+  }
+  TPX_CHECK_EQ(mism, 0);
+
+  // Read-back field still evaluates as a sane SDF (sign agreement with analytic, away from surface).
+  TPX_CHECK(r.eval({0.1, -0.2, 0.3}) < 0);  // center -> inside
+  TPX_CHECK(r.eval({1.9, -0.2, 0.3}) > 0);  // well outside
+
+  TPX_RETURN_TEST_RESULT();
+}
