@@ -51,7 +51,9 @@ Header-only under `include/tpx/`:
 - `halo/grid_halo_cuda.cuh` — `DeviceGridExchange<T>`: GPU-resident halo. pack/unpack/self-copy run as
   CUDA kernels; only the compact halo buffers are host-staged for MPI (the field stays on the GPU).
   Built from a host `GridHalo`'s `flatten()`. Direct device-pointer MPI is *not* used (CUDA-aware MPI
-  segfaults on this box); host-staging is the portable path. Bit-for-bit matches the CPU exchange.
+  segfaults on this box — stock OpenMPI built without CUDA; see `docs/cuda-aware-mpi.md` for the
+  diagnosis, the sysadmin ask, and the localized swap-in); host-staging is the portable path.
+  Bit-for-bit matches the CPU exchange.
 
 ## Gotchas
 
