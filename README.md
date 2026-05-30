@@ -27,8 +27,12 @@ device boundary stays C++17-compatible).
 - `tpx::halo::DeviceGridExchange<T>` (`grid_halo_cuda.cuh`) — GPU-resident ghost-layer exchange:
   pack/unpack/self-copy as CUDA kernels, host-staged MPI; the field never leaves the GPU.
 
-Validated end-to-end by a distributed explicit heat-diffusion solver that matches a serial reference
-cell-for-cell across ranks. 16/16 ctest pass (`np` 1–8 CPU, 1–4 GPU).
+- `tpx::geom` (`sdf.hpp`, `grid_sdf.hpp`, `vti_io.hpp`) — shared SDF solids: analytic primitives +
+  trilinear `GridSdf` behind one `Sdf` concept, with VTI (.vti) read/write.
+
+Validated end-to-end by distributed explicit heat-diffusion solvers (plain, and **around an SDF solid
+obstacle**) matching a serial reference cell-for-cell across ranks. 22/22 ctest pass (`np` 1–8 CPU,
+1–4 GPU).
 
 ## Build / test / benchmark
 

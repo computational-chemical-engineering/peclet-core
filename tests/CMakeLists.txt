@@ -28,6 +28,10 @@ if(MPI_FOUND)
   target_link_libraries(test_diffusion PRIVATE tpx_halo)
   target_include_directories(test_diffusion PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+  add_executable(test_diffusion_sdf test_diffusion_sdf.cpp)
+  target_link_libraries(test_diffusion_sdf PRIVATE tpx_halo)
+  target_include_directories(test_diffusion_sdf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
   foreach(np IN ITEMS 1 2 4 8)
     add_test(NAME grid_halo_np${np}
              COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
@@ -38,6 +42,9 @@ if(MPI_FOUND)
     add_test(NAME diffusion_np${np}
              COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
                      ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_diffusion> ${MPIEXEC_POSTFLAGS})
+    add_test(NAME diffusion_sdf_np${np}
+             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
+                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_diffusion_sdf> ${MPIEXEC_POSTFLAGS})
   endforeach()
 
   # GPU-resident halo (host-staged): device result must match the CPU path.
