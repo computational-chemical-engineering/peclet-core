@@ -16,7 +16,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <map>
+#include <utility>
 #include <vector>
 
 #include "tpx/common/types.hpp"
@@ -140,6 +142,100 @@ class ParticleMigrator {
 
   std::size_t lastSent() const { return sent_; }
   std::size_t lastReceived() const { return received_; }
+
+  /// True if `x` (via its closest periodic image) comes within `rcut` of block `r`'s physical AABB.
+  /// On success `img` is that closest image — the position to ship so rank `r` has correct coords.
+  bool withinRcutOfBlock(const Vec<Dim>& x, int r, double rcut, Vec<Dim>& img) const {
+    const auto& o = dec_->origins()[r];
+    const auto& s = dec_->sizes()[r];
+    const IVec<Dim>& gsize = dec_->globalSize();
+    double d2 = 0.0;
+    for (int i = 0; i < Dim; ++i) {
+      double lo = map_.origin[i] + o[i] * map_.cellSize[i];
+      double hi = map_.origin[i] + (o[i] + s[i]) * map_.cellSize[i];
+      double L = map_.cellSize[i] * static_cast<double>(gsize[i]);
+      double cands[3];
+      int nc = 0;
+      cands[nc++] = x[i];
+      if (map_.periodic[i]) {
+        cands[nc++] = x[i] - L;
+        cands[nc++] = x[i] + L;
+      }
+      double bestGap = std::numeric_limits<double>::infinity();
+      double bestImg = x[i];
+      for (int c = 0; c < nc; ++c) {
+        double p = cands[c];
+        double gap = (p < lo) ? (lo - p) : (p > hi) ? (p - hi) : 0.0;
+        if (gap < bestGap) {
+          bestGap = gap;
+          bestImg = p;
+        }
+      }
+      img[i] = bestImg;
+      d2 += bestGap * bestGap;
+    }
+    return d2 < rcut * rcut;
+  }
+
+  /// Gather ghost copies of particles within `rcut` of this rank's block boundary. For each particle
+  /// this rank owns, a copy (the periodic image closest to the target block) is sent to every OTHER
+  /// rank whose block comes within `rcut`. Received ghosts are written to ghostPos/ghostPayload
+  /// (cleared first). Returns the number of ghosts received. This is the Lagrangian halo: after it,
+  /// each rank's neighbour search runs locally over its owned + ghost particles.
+  std::size_t gatherGhosts(const std::vector<Vec<Dim>>& pos, const std::vector<char>& payload,
+                           std::size_t stride, double rcut, std::vector<Vec<Dim>>& ghostPos,
+                           std::vector<char>& ghostPayload) {
+    ghostPos.clear();
+    ghostPayload.clear();
+    const std::size_t posBytes = Dim * sizeof(double);
+    const std::size_t recBytes = posBytes + stride;
+    int nranks = 0;
+    MPI_Comm_size(comm_, &nranks);
+
+    std::map<int, std::vector<char>> outbox;
+    Vec<Dim> img;
+    for (std::size_t i = 0; i < pos.size(); ++i) {
+      for (int r = 0; r < nranks; ++r) {
+        if (r == rank_) continue;
+        if (!withinRcutOfBlock(pos[i], r, rcut, img)) continue;
+        auto& buf = outbox[r];
+        std::size_t off = buf.size();
+        buf.resize(off + recBytes);
+        std::memcpy(buf.data() + off, img.data(), posBytes);
+        if (stride) std::memcpy(buf.data() + off + posBytes, &payload[i * stride], stride);
+      }
+    }
+
+    std::vector<std::pair<int, const std::vector<char>*>> queue;
+    queue.reserve(outbox.size());
+    for (auto& kv : outbox) queue.emplace_back(kv.first, &kv.second);
+    std::size_t q = 0, recv = 0;
+    NbxEngine nbx(comm_);
+    auto packNext = [&](std::vector<char>& out) -> int {
+      if (q >= queue.size()) return -1;
+      int dest = queue[q].first;
+      out = *queue[q].second;
+      ++q;
+      return dest;
+    };
+    auto onRecv = [&](int /*src*/, std::vector<char>& msg) {
+      std::size_t cnt = msg.size() / recBytes;
+      for (std::size_t i = 0; i < cnt; ++i) {
+        const char* rec = msg.data() + i * recBytes;
+        Vec<Dim> x{};
+        std::memcpy(x.data(), rec, posBytes);
+        ghostPos.push_back(x);
+        if (stride) {
+          std::size_t off = ghostPayload.size();
+          ghostPayload.resize(off + stride);
+          std::memcpy(&ghostPayload[off], rec + posBytes, stride);
+        }
+        ++recv;
+      }
+    };
+    nbx.exchange(packNext, onRecv, /*tag=*/7402);
+    return recv;
+  }
 
  private:
   const decomp::BlockDecomposer<Dim>* dec_ = nullptr;
