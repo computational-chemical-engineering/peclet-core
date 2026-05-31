@@ -41,5 +41,29 @@ int main() {
   TPX_CHECK(r.eval({0.1, -0.2, 0.3}) < 0);  // center -> inside
   TPX_CHECK(r.eval({1.9, -0.2, 0.3}) > 0);  // well outside
 
+  // --- Vector VTI round-trip ---
+  VtiVector vec;
+  vec.dims = {5, 4, 3};
+  vec.origin = {0, 0, 0};
+  vec.spacing = {1, 1, 1};
+  std::size_t np = 5 * 4 * 3;
+  vec.values.resize(3 * np);
+  for (std::size_t p = 0; p < np; ++p) {
+    vec.values[3 * p] = 0.1f * p;
+    vec.values[3 * p + 1] = -0.2f * p;
+    vec.values[3 * p + 2] = 0.3f * p;
+  }
+  std::string vpath = "test_vti_vec.vti";
+  writeVtiVector(vpath, vec, "vel");
+  VtiVector vr = readVtiVector(vpath);
+  std::remove(vpath.c_str());
+  TPX_CHECK_EQ(vr.dims[0], vec.dims[0]);
+  TPX_CHECK_EQ(vr.dims[1], vec.dims[1]);
+  TPX_CHECK_EQ(vr.dims[2], vec.dims[2]);
+  int vmism = 0;
+  for (std::size_t i = 0; i < vec.values.size(); ++i)
+    if (vr.values[i] != vec.values[i]) ++vmism;
+  TPX_CHECK_EQ(vmism, 0);
+
   TPX_RETURN_TEST_RESULT();
 }
