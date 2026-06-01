@@ -108,80 +108,81 @@ class ParticleHalo {
   const std::vector<Vec<Dim>>& ghostPositions() const { return ghostPos_; }
 
   /// owned[N] -> ghost[G], with the periodic image shift added (use for positions).
+  /// Direct point-to-point over the topology fixed by build() (no NBX consensus) -- this is the
+  /// per-iteration hot path, so it must not pay the dynamic-discovery cost every call.
   void forwardPositions(const Vec<Dim>* owned, Vec<Dim>* ghost) {
-    NbxEngine nbx(mig_->comm());
-    std::size_t k = 0;
-    auto packNext = [&](std::vector<char>& out) -> int {
-      if (k >= sendRanks_.size()) return -1;
-      auto& idx = sendIdx_[k];
-      int dst = sendRanks_[k];
-      ++k;
-      out.resize(idx.size() * sizeof(Vec<Dim>));
-      Vec<Dim>* o = reinterpret_cast<Vec<Dim>*>(out.data());
-      for (std::size_t i = 0; i < idx.size(); ++i) o[i] = owned[idx[i]];
-      return dst;
-    };
-    auto onRecv = [&](int src, std::vector<char>& msg) {
-      std::size_t p = recvRankPos_.at(src);
+    forwardDirect<Vec<Dim>>(owned, /*tag=*/7502, [&](std::size_t p, const Vec<Dim>* in) {
       Index off = recvOffset_[p];
-      const Vec<Dim>* in = reinterpret_cast<const Vec<Dim>*>(msg.data());
-      for (int i = 0; i < recvCount_[p]; ++i) {
+      for (int i = 0; i < recvCount_[p]; ++i)
         for (int d = 0; d < Dim; ++d) ghost[off + i][d] = in[i][d] + shift_[off + i][d];
-      }
-    };
-    nbx.exchange(packNext, onRecv, /*tag=*/7502);
+    });
   }
 
   /// owned[N] -> ghost[G], verbatim (translation-invariant fields: velocity, id, radius, ...).
   template <typename T>
   void forward(const T* owned, T* ghost) {
-    NbxEngine nbx(mig_->comm());
-    std::size_t k = 0;
-    auto packNext = [&](std::vector<char>& out) -> int {
-      if (k >= sendRanks_.size()) return -1;
-      auto& idx = sendIdx_[k];
-      int dst = sendRanks_[k];
-      ++k;
-      out.resize(idx.size() * sizeof(T));
-      T* o = reinterpret_cast<T*>(out.data());
-      for (std::size_t i = 0; i < idx.size(); ++i) o[i] = owned[idx[i]];
-      return dst;
-    };
-    auto onRecv = [&](int src, std::vector<char>& msg) {
-      std::size_t p = recvRankPos_.at(src);
+    forwardDirect<T>(owned, /*tag=*/7503, [&](std::size_t p, const T* in) {
       Index off = recvOffset_[p];
-      const T* in = reinterpret_cast<const T*>(msg.data());
       for (int i = 0; i < recvCount_[p]; ++i) ghost[off + i] = in[i];
-    };
-    nbx.exchange(packNext, onRecv, /*tag=*/7503);
+    });
   }
 
   /// ghost[G] -> owned[N], accumulated (T must have operator+=). Use for forces/torques/fluxes:
   /// each ghost's partial contribution is summed onto its owner. Owner array is added to in place.
   template <typename T>
   void reverse(const T* ghost, T* owned) {
-    NbxEngine nbx(mig_->comm());
-    std::size_t k = 0;
-    auto packNext = [&](std::vector<char>& out) -> int {
-      if (k >= recvRanks_.size()) return -1;
-      Index off = recvOffset_[k];
-      int cnt = recvCount_[k];
-      int dst = recvRanks_[k];
-      ++k;
-      out.resize(cnt * sizeof(T));
-      T* o = reinterpret_cast<T*>(out.data());
-      for (int i = 0; i < cnt; ++i) o[i] = ghost[off + i];
-      return dst;
-    };
-    auto onRecv = [&](int src, std::vector<char>& msg) {
-      auto& idx = sendIdx_[sendRankPos_.at(src)];
-      const T* in = reinterpret_cast<const T*>(msg.data());
-      for (std::size_t i = 0; i < idx.size(); ++i) owned[idx[i]] += in[i];
-    };
-    nbx.exchange(packNext, onRecv, /*tag=*/7504);
+    // Mirror of forwardDirect: the receivers (owners) post recvs sized by sendIdx_, the ghost-holders
+    // send their contiguous ghost slices back; accumulate on arrival.
+    const int ns = static_cast<int>(sendRanks_.size());
+    const int nr = static_cast<int>(recvRanks_.size());
+    std::vector<std::vector<T>> rbuf(ns), sbuf(nr);
+    std::vector<MPI_Request> rreq(ns, MPI_REQUEST_NULL), sreq(nr, MPI_REQUEST_NULL);
+    for (int k = 0; k < ns; ++k) {
+      rbuf[k].resize(sendIdx_[k].size());
+      MPI_Irecv(rbuf[k].data(), static_cast<int>(rbuf[k].size() * sizeof(T)), MPI_BYTE,
+                sendRanks_[k], 7504, mig_->comm(), &rreq[k]);
+    }
+    for (int p = 0; p < nr; ++p) {
+      Index off = recvOffset_[p];
+      sbuf[p].assign(ghost + off, ghost + off + recvCount_[p]);
+      MPI_Isend(sbuf[p].data(), static_cast<int>(sbuf[p].size() * sizeof(T)), MPI_BYTE,
+                recvRanks_[p], 7504, mig_->comm(), &sreq[p]);
+    }
+    MPI_Waitall(ns, rreq.data(), MPI_STATUSES_IGNORE);
+    for (int k = 0; k < ns; ++k) {
+      auto& idx = sendIdx_[k];
+      for (std::size_t i = 0; i < idx.size(); ++i) owned[idx[i]] += rbuf[k][i];
+    }
+    MPI_Waitall(nr, sreq.data(), MPI_STATUSES_IGNORE);
   }
 
  private:
+  // Direct (persistent-topology) forward: owners send their gathered sendIdx_ slices, ghost-holders
+  // receive into contiguous slots and apply `store(recvRankPos, buf)`. No NBX consensus -- the
+  // neighbour set + message sizes are fixed by build(), so plain Irecv/Isend/Waitall is correct.
+  template <typename T, typename Store>
+  void forwardDirect(const T* owned, int tag, Store&& store) {
+    const int ns = static_cast<int>(sendRanks_.size());
+    const int nr = static_cast<int>(recvRanks_.size());
+    std::vector<std::vector<T>> sbuf(ns), rbuf(nr);
+    std::vector<MPI_Request> sreq(ns, MPI_REQUEST_NULL), rreq(nr, MPI_REQUEST_NULL);
+    for (int p = 0; p < nr; ++p) {
+      rbuf[p].resize(recvCount_[p]);
+      MPI_Irecv(rbuf[p].data(), static_cast<int>(rbuf[p].size() * sizeof(T)), MPI_BYTE,
+                recvRanks_[p], tag, mig_->comm(), &rreq[p]);
+    }
+    for (int k = 0; k < ns; ++k) {
+      auto& idx = sendIdx_[k];
+      sbuf[k].resize(idx.size());
+      for (std::size_t i = 0; i < idx.size(); ++i) sbuf[k][i] = owned[idx[i]];
+      MPI_Isend(sbuf[k].data(), static_cast<int>(sbuf[k].size() * sizeof(T)), MPI_BYTE,
+                sendRanks_[k], tag, mig_->comm(), &sreq[k]);
+    }
+    MPI_Waitall(nr, rreq.data(), MPI_STATUSES_IGNORE);
+    for (int p = 0; p < nr; ++p) store(static_cast<std::size_t>(p), rbuf[p].data());
+    MPI_Waitall(ns, sreq.data(), MPI_STATUSES_IGNORE);
+  }
+
   const ParticleMigrator<Dim>* mig_ = nullptr;
   std::size_t numOwned_ = 0, numGhost_ = 0;
 
