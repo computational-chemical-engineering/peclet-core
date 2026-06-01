@@ -36,6 +36,10 @@ if(MPI_FOUND)
   target_link_libraries(test_ghost_particles_mpi PRIVATE tpx_halo)
   target_include_directories(test_ghost_particles_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+  add_executable(test_particle_halo_mpi test_particle_halo_mpi.cpp)
+  target_link_libraries(test_particle_halo_mpi PRIVATE tpx_halo)
+  target_include_directories(test_particle_halo_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
   foreach(np IN ITEMS 1 2 4 8)
     add_test(NAME grid_halo_np${np}
              COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
@@ -52,6 +56,9 @@ if(MPI_FOUND)
     add_test(NAME ghost_particles_np${np}
              COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
                      ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_ghost_particles_mpi> ${MPIEXEC_POSTFLAGS})
+    add_test(NAME particle_halo_np${np}
+             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
+                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_particle_halo_mpi> ${MPIEXEC_POSTFLAGS})
   endforeach()
 
   # GPU-resident halo (host-staged): device result must match the CPU path.

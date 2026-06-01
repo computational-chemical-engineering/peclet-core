@@ -143,6 +143,10 @@ class ParticleMigrator {
   std::size_t lastSent() const { return sent_; }
   std::size_t lastReceived() const { return received_; }
 
+  int rank() const { return rank_; }
+  MPI_Comm comm() const { return comm_; }
+  const decomp::BlockDecomposer<Dim>& decomposer() const { return *dec_; }
+
   /// True if `x` (via its closest periodic image) comes within `rcut` of block `r`'s physical AABB.
   /// On success `img` is that closest image — the position to ship so rank `r` has correct coords.
   bool withinRcutOfBlock(const Vec<Dim>& x, int r, double rcut, Vec<Dim>& img) const {
