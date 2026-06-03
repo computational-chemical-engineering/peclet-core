@@ -15,10 +15,25 @@
 #include <mpi.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 #include "tpx/common/types.hpp"
 #include "tpx/halo/grid_halo.hpp"
+
+namespace tpx::halo::detail {
+// Whether to hand DEVICE pointers straight to MPI (CUDA-aware MPI) instead of host-staging. Gated on
+// the env var TPX_CUDA_AWARE_MPI (read once) rather than MPIX_Query_cuda_support(), which wrongly
+// reports 0 with OpenMPI+UCX on this box even though device-pointer transfers work (see
+// docs/cuda-aware-mpi.md). Set TPX_CUDA_AWARE_MPI=1 when running against a CUDA-aware MPI.
+inline bool cudaAwareMpi() {
+  static const bool v = [] {
+    const char* e = std::getenv("TPX_CUDA_AWARE_MPI");
+    return e && std::atoi(e) != 0;
+  }();
+  return v;
+}
+}  // namespace tpx::halo::detail
 
 namespace tpx::halo {
 
@@ -90,6 +105,7 @@ class DeviceGridExchange {
   /// Exchange ghost layers of the device field `d_field` (host-staged). Blocking.
   void exchange(T* d_field, int tag = 0) {
     const int blk = 256;
+    const bool aware = detail::cudaAwareMpi();  // pass device pointers straight to MPI?
     if (nSelf_) {
       detail::selfCopyKernel<T><<<detail::gridFor(nSelf_, blk), blk>>>(d_field, d_selfSrc_,
                                                                        d_selfDst_, nSelf_);
@@ -97,25 +113,32 @@ class DeviceGridExchange {
     if (nSend_) {
       detail::packKernel<T><<<detail::gridFor(nSend_, blk), blk>>>(d_field, d_sendIdx_, d_sendBuf_,
                                                                    nSend_);
-      cudaMemcpy(h_sendBuf_.data(), d_sendBuf_, nSend_ * sizeof(T), cudaMemcpyDeviceToHost);
+      if (!aware)
+        cudaMemcpy(h_sendBuf_.data(), d_sendBuf_, nSend_ * sizeof(T), cudaMemcpyDeviceToHost);
     }
+    // CUDA-aware path hands MPI the device buffers, so the pack kernel must finish first (the
+    // host-staged path's cudaMemcpy already synchronises).
+    if (aware) cudaDeviceSynchronize();
 
+    T* sendBase = aware ? d_sendBuf_ : h_sendBuf_.data();
+    T* recvBase = aware ? d_recvBuf_ : h_recvBuf_.data();
     std::vector<MPI_Request> reqs;
     reqs.reserve(recvRanks_.size() + sendRanks_.size());
     for (std::size_t k = 0; k < recvRanks_.size(); ++k) {
       reqs.emplace_back();
-      MPI_Irecv(h_recvBuf_.data() + recvOff_[k], recvCounts_[k] * static_cast<int>(sizeof(T)),
-                MPI_BYTE, recvRanks_[k], tag, comm_, &reqs.back());
+      MPI_Irecv(recvBase + recvOff_[k], recvCounts_[k] * static_cast<int>(sizeof(T)), MPI_BYTE,
+                recvRanks_[k], tag, comm_, &reqs.back());
     }
     for (std::size_t k = 0; k < sendRanks_.size(); ++k) {
       reqs.emplace_back();
-      MPI_Isend(h_sendBuf_.data() + sendOff_[k], sendCounts_[k] * static_cast<int>(sizeof(T)),
-                MPI_BYTE, sendRanks_[k], tag, comm_, &reqs.back());
+      MPI_Isend(sendBase + sendOff_[k], sendCounts_[k] * static_cast<int>(sizeof(T)), MPI_BYTE,
+                sendRanks_[k], tag, comm_, &reqs.back());
     }
     if (!reqs.empty()) MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
 
     if (nRecv_) {
-      cudaMemcpy(d_recvBuf_, h_recvBuf_.data(), nRecv_ * sizeof(T), cudaMemcpyHostToDevice);
+      if (!aware)
+        cudaMemcpy(d_recvBuf_, h_recvBuf_.data(), nRecv_ * sizeof(T), cudaMemcpyHostToDevice);
       detail::unpackKernel<T><<<detail::gridFor(nRecv_, blk), blk>>>(d_field, d_recvIdx_, d_recvBuf_,
                                                                      nRecv_);
     }
