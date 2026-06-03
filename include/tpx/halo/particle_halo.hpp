@@ -183,6 +183,41 @@ class ParticleHalo {
     MPI_Waitall(ns, sreq.data(), MPI_STATUSES_IGNORE);
   }
 
+ public:
+  MPI_Comm comm() const { return mig_->comm(); }
+
+  // The send/recv topology in a flat, device-friendly form, so a CUDA consumer can drive the
+  // exchange with on-device gather kernels + device-pointer MPI (see packing-gpu's device-resident
+  // pack). recvOffsets index the contiguous [0,numGhost) ghost array (in recvRanks order); shift is
+  // per-ghost (for position forwards). Rebuild after each build().
+  struct FlatTopo {
+    std::vector<int> sendRanks;         // neighbour ranks I send owned copies to
+    std::vector<Index> sendIdx;         // concatenated owned indices to send (all ranks)
+    std::vector<int> sendCounts;        // per send rank
+    std::vector<int> sendOffsets;       // prefix sum into sendIdx (size sendRanks+1)
+    std::vector<int> recvRanks;         // neighbour ranks I receive ghosts from
+    std::vector<int> recvCounts;        // per recv rank
+    std::vector<Index> recvOffsets;     // per recv rank: start in the [0,numGhost) ghost array
+    std::vector<Vec<Dim>> shift;        // per ghost: periodic image offset (add to forwarded position)
+  };
+  FlatTopo flatten() const {
+    FlatTopo t;
+    t.sendRanks = sendRanks_;
+    t.sendOffsets.push_back(0);
+    for (const auto& idx : sendIdx_) {
+      t.sendCounts.push_back(static_cast<int>(idx.size()));
+      for (Index id : idx) t.sendIdx.push_back(id);
+      t.sendOffsets.push_back(static_cast<int>(t.sendIdx.size()));
+    }
+    t.recvRanks = recvRanks_;
+    t.recvCounts = recvCount_;
+    t.recvOffsets.assign(recvOffset_.begin(),
+                         recvOffset_.begin() + static_cast<std::ptrdiff_t>(recvRanks_.size()));
+    t.shift = shift_;
+    return t;
+  }
+
+ private:
   const ParticleMigrator<Dim>* mig_ = nullptr;
   std::size_t numOwned_ = 0, numGhost_ = 0;
 
