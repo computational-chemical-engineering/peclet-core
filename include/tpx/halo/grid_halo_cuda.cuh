@@ -149,6 +149,57 @@ class DeviceGridExchange {
     }
   }
 
+  /// Stream-scoped exchange: all kernels and copies run on `stream`, and there is NO final device-wide
+  /// sync -- the field updates are ordered on `stream`, so the caller sequences dependent work on the
+  /// same stream (or joins via an event). This lets independent fields exchange+compute concurrently on
+  /// separate streams (e.g. the 3 MAC velocity components). The host-staged send/recv buffers are shared
+  /// per instance, so concurrent calls on ONE instance are safe only when there is no host staging
+  /// (single rank / pure self-copy); use one instance per concurrent stream otherwise. A distinct `tag`
+  /// per instance keeps messages from being mismatched between concurrent instances.
+  void exchangeOnStream(T* d_field, cudaStream_t stream, int tag = 0) {
+    const int blk = 256;
+    const bool aware = detail::cudaAwareMpi();
+    if (nSelf_)
+      detail::selfCopyKernel<T><<<detail::gridFor(nSelf_, blk), blk, 0, stream>>>(
+          d_field, d_selfSrc_, d_selfDst_, nSelf_);
+    if (nSend_) {
+      detail::packKernel<T><<<detail::gridFor(nSend_, blk), blk, 0, stream>>>(d_field, d_sendIdx_,
+                                                                              d_sendBuf_, nSend_);
+      if (!aware)
+        cudaMemcpyAsync(h_sendBuf_.data(), d_sendBuf_, nSend_ * sizeof(T), cudaMemcpyDeviceToHost,
+                        stream);
+    }
+    // the send buffer (host-staged, or device for CUDA-aware) must be ready before MPI reads it
+    if (nSend_ || aware) cudaStreamSynchronize(stream);
+
+    if (!recvRanks_.empty() || !sendRanks_.empty()) {
+      T* sendBase = aware ? d_sendBuf_ : h_sendBuf_.data();
+      T* recvBase = aware ? d_recvBuf_ : h_recvBuf_.data();
+      std::vector<MPI_Request> reqs;
+      reqs.reserve(recvRanks_.size() + sendRanks_.size());
+      for (std::size_t k = 0; k < recvRanks_.size(); ++k) {
+        reqs.emplace_back();
+        MPI_Irecv(recvBase + recvOff_[k], recvCounts_[k] * static_cast<int>(sizeof(T)), MPI_BYTE,
+                  recvRanks_[k], tag, comm_, &reqs.back());
+      }
+      for (std::size_t k = 0; k < sendRanks_.size(); ++k) {
+        reqs.emplace_back();
+        MPI_Isend(sendBase + sendOff_[k], sendCounts_[k] * static_cast<int>(sizeof(T)), MPI_BYTE,
+                  sendRanks_[k], tag, comm_, &reqs.back());
+      }
+      if (!reqs.empty()) MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
+    }
+
+    if (nRecv_) {
+      if (!aware)
+        cudaMemcpyAsync(d_recvBuf_, h_recvBuf_.data(), nRecv_ * sizeof(T), cudaMemcpyHostToDevice,
+                        stream);
+      detail::unpackKernel<T><<<detail::gridFor(nRecv_, blk), blk, 0, stream>>>(d_field, d_recvIdx_,
+                                                                                d_recvBuf_, nRecv_);
+    }
+    // no device-wide sync: the field is updated in `stream` order; the caller sequences dependent work.
+  }
+
   ~DeviceGridExchange() {
     cudaFree(d_sendIdx_);
     cudaFree(d_recvIdx_);
