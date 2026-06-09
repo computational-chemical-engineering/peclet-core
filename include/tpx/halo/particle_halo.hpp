@@ -18,7 +18,7 @@
 #ifndef TPX_HALO_PARTICLE_HALO_HPP
 #define TPX_HALO_PARTICLE_HALO_HPP
 
-#include <mpi.h>
+#include "tpx/common/mpi.hpp"
 
 #include <cstring>
 #include <map>

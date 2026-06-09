@@ -17,7 +17,7 @@
 #ifndef TPX_HALO_GRID_HALO_HPP
 #define TPX_HALO_GRID_HALO_HPP
 
-#include <mpi.h>
+#include "tpx/common/mpi.hpp"
 
 #include <cstring>
 #include <map>

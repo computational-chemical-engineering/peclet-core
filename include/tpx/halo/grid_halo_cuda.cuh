@@ -12,7 +12,7 @@
 #define TPX_HALO_GRID_HALO_CUDA_CUH
 
 #include <cuda_runtime.h>
-#include <mpi.h>
+#include "tpx/common/mpi.hpp"
 
 #include <cstdio>
 #include <cstdlib>

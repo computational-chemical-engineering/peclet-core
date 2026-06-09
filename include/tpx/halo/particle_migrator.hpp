@@ -11,7 +11,7 @@
 #ifndef TPX_HALO_PARTICLE_MIGRATOR_HPP
 #define TPX_HALO_PARTICLE_MIGRATOR_HPP
 
-#include <mpi.h>
+#include "tpx/common/mpi.hpp"
 
 #include <algorithm>
 #include <cmath>

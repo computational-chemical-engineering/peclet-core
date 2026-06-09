@@ -16,7 +16,7 @@
 #ifndef TPX_HALO_NBX_HPP
 #define TPX_HALO_NBX_HPP
 
-#include <mpi.h>
+#include "tpx/common/mpi.hpp"
 
 #include <memory>
 #include <vector>
