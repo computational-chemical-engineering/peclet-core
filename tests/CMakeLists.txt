@@ -77,4 +77,19 @@ if(MPI_FOUND)
                        ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_grid_halo_cuda> ${MPIEXEC_POSTFLAGS})
     endforeach()
   endif()
+
+  # Portable GPU-resident halo (Kokkos): device result must match the CPU path, on whatever backend
+  # Kokkos was built for (CUDA / HIP / OpenMP). Compiled as CXX — Kokkos routes it to the device
+  # compiler via its launch compiler (so this is a .cpp, not a .cu).
+  if(TPX_HAVE_KOKKOS)
+    add_executable(test_grid_halo_kokkos test_grid_halo_kokkos.cpp)
+    target_include_directories(test_grid_halo_kokkos PRIVATE
+      ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(test_grid_halo_kokkos PRIVATE Kokkos::kokkos MPI::MPI_CXX)
+    foreach(np IN ITEMS 1 2 4)
+      add_test(NAME grid_halo_kokkos_np${np}
+               COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
+                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_grid_halo_kokkos> ${MPIEXEC_POSTFLAGS})
+    endforeach()
+  endif()
 endif()

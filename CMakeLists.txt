@@ -82,6 +82,19 @@ else()
   message(STATUS "transport-core: CUDA not enabled — GPU halo path skipped")
 endif()
 
+# --- Optional Kokkos: portable (CUDA/HIP/OpenMP) GPU-resident halo exchange ---
+# Consumed via find_package(Kokkos CONFIG); provide it with a cluster module or the suite's local
+# install prefix (suite/tools/bootstrap_deps.sh) on CMAKE_PREFIX_PATH. Independent of the legacy
+# native-CUDA path above — both can be built at once.
+option(TPX_ENABLE_KOKKOS "Build the portable Kokkos halo path (find_package(Kokkos))" OFF)
+set(TPX_HAVE_KOKKOS OFF)
+if(TPX_ENABLE_KOKKOS AND TPX_HALO_OK)
+  find_package(Kokkos CONFIG REQUIRED)
+  set(TPX_HAVE_KOKKOS ON)
+  message(STATUS "transport-core: Kokkos ${Kokkos_VERSION} found (${Kokkos_DEVICES}) — "
+                 "portable halo path enabled")
+endif()
+
 if(TPX_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
