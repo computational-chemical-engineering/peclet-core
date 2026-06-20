@@ -4,7 +4,7 @@ Shared infrastructure for the transport-phenomena simulation suite (see `../docs
 [architecture](../docs/ARCHITECTURE.md), [conventions](../docs/CONVENTIONS.md),
 [style](../docs/STYLE.md), [interfaces](../docs/INTERFACES.md) and [roadmap](../docs/ROADMAP.md)).
 
-It provides the pieces every method code (`sdflow`, `dem`, `voronoi_dynamics`, …) should
+It provides the pieces every method code (`sdflow`, `dem`, `vorflow`, …) should
 share: a common MPI **block domain decomposition** and an efficient **asynchronous ghost-layer
 exchange**, plus (planned) unified SDF geometry, IBM, and Python bindings. Header-only C++20 (the
 device boundary stays C++17-compatible).
