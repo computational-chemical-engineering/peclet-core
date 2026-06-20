@@ -1,0 +1,49 @@
+name: CI
+
+# Build the header-only library and run the full ctest suite (serial + MPI, np = 1,2,4).
+# transport-core is CPU-testable end-to-end: header-only C++20 + MPI, no GPU required. The optional
+# Kokkos GPU-resident halo path is NOT exercised here (no GPU on the runners) — it is covered by the
+# consumer codes' own CI.
+
+on:
+  push:
+    branches: [main, "**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  cpp:
+    name: ubuntu / ${{ matrix.cc }} / MPI / ${{ matrix.build_type }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+        include:
+          - cc: gcc
+            cxx: g++
+          - cc: clang
+            cxx: clang++
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+      OMPI_ALLOW_RUN_AS_ROOT: 1
+      OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MPI + Morton sibling (enables TPX_HAVE_MORTON)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenmpi-dev openmpi-bin
+          # Optional sibling: morton spatial-index primitive. Best-effort; the build is fine without it.
+          git clone --depth 1 https://github.com/computational-chemical-engineering/morton.git ../morton || true
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test (serial + MPI np=1,2,4)
+        run: ctest --test-dir build --output-on-failure

@@ -1,0 +1,66 @@
+# Doxygen configuration for transport-core.
+# Generate docs with:   doxygen docs/Doxyfile
+# Output:               docs/html/index.html
+# The Documentation CI workflow (.github/workflows/docs.yml) publishes docs/html to GitHub Pages.
+
+DOXYFILE_ENCODING      = UTF-8
+PROJECT_NAME           = "transport-core"
+PROJECT_BRIEF          = "Shared MPI block decomposition + asynchronous ghost-layer exchange (header-only C++20)"
+OUTPUT_DIRECTORY       = docs
+HTML_OUTPUT            = html
+CREATE_SUBDIRS         = NO
+FULL_PATH_NAMES        = NO
+
+#---- inputs --------------------------------------------------------------------------------------
+INPUT                  = README.md include docs/cuda-aware-mpi.md
+USE_MDFILE_AS_MAINPAGE = README.md
+FILE_PATTERNS          = *.hpp *.md
+RECURSIVE              = YES
+EXCLUDE_PATTERNS       = */build*/* */.git/*
+
+#---- extraction ----------------------------------------------------------------------------------
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = YES
+EXTRACT_PRIVATE        = NO
+EXTRACT_LOCAL_CLASSES  = YES
+JAVADOC_AUTOBRIEF      = YES
+QT_AUTOBRIEF           = YES
+MARKDOWN_SUPPORT       = YES
+TAB_SIZE               = 2
+DISTRIBUTE_GROUP_DOC   = YES
+
+#---- preprocessing -------------------------------------------------------------------------------
+# Document the declarations a typical MPI + Kokkos build sees, so the conditionally-compiled
+# device/MPI paths are not dropped from the docs.
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = YES
+PREDEFINED             = TPX_HAVE_MORTON=1 \
+                         TPX_HAVE_KOKKOS=1 \
+                         KOKKOS_INLINE_FUNCTION= \
+                         KOKKOS_FUNCTION=
+
+#---- presentation --------------------------------------------------------------------------------
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+GENERATE_TREEVIEW      = YES
+DISABLE_INDEX          = NO
+FULL_SIDEBAR           = NO
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO
+REFERENCED_BY_RELATION = YES
+REFERENCES_RELATION    = YES
+HTML_COLORSTYLE        = LIGHT
+SORT_MEMBER_DOCS       = NO
+
+#---- diagrams (no external dot dependency required) ----------------------------------------------
+HAVE_DOT               = NO
+CLASS_GRAPH            = YES
+COLLABORATION_GRAPH    = NO
+
+#---- warnings ------------------------------------------------------------------------------------
+QUIET                  = YES
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_NO_PARAMDOC       = NO
+WARN_AS_ERROR          = NO

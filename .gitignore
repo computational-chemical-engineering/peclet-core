@@ -5,3 +5,6 @@ build-*/
 *.so
 .cache/
 compile_commands.json
+
+# Generated Doxygen output (built in CI, published to Pages)
+docs/html/

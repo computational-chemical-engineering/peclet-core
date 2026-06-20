@@ -1,10 +1,11 @@
-// transport-core — VTK ImageData (.vti) I/O for sampled SDF / scalar grid fields.
-//
-// Writes/reads a GridSdf as an ImageData PointData scalar in ASCII format — human-readable, exact
-// float round-trip, and openable in ParaView. This is the interchange format cfd-gpu and packing-gpu
-// already use for SDF/field grids; consolidating their readers onto this is a follow-up. The reader
-// is tolerant (attribute scan, not a full XML parse) but expects the ASCII inline layout this writer
-// emits; binary/base64 "appended" VTI (what some existing files use) is a noted TODO.
+/// @file vti_io.hpp
+/// @brief VTK ImageData (.vti) I/O for sampled SDF / scalar / vector grid fields.
+///
+/// Writes/reads a GridSdf as an ImageData PointData scalar in ASCII format — human-readable, exact
+/// float round-trip, and openable in ParaView. This is the interchange format `sdflow` and `dem`
+/// already use for SDF/field grids; consolidating their readers onto this is a follow-up. The reader
+/// is tolerant (attribute scan, not a full XML parse) but expects the ASCII inline layout this writer
+/// emits; binary/base64 "appended" VTI (what some existing files use) is a noted TODO.
 #ifndef TPX_GEOM_VTI_IO_HPP
 #define TPX_GEOM_VTI_IO_HPP
 

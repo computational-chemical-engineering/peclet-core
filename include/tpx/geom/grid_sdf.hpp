@@ -1,10 +1,11 @@
-// transport-core — sampled (grid) signed-distance field with trilinear interpolation.
-//
-// This is how real geometry enters the Eulerian/Lagrangian solvers: an SDF sampled on a regular grid
-// (x-fastest, matching the suite indexing and cfd-gpu/packing-gpu's VTI fields). Values keep the suite
-// sign convention (negative inside solid). Out-of-domain queries clamp to the nearest in-domain
-// sample. Satisfies the same `tpx::geom::Sdf` concept as the analytic primitives, so solvers consume
-// analytic and sampled geometry through one interface.
+/// @file grid_sdf.hpp
+/// @brief Sampled (grid) signed-distance field with trilinear interpolation.
+///
+/// This is how real geometry enters the Eulerian/Lagrangian solvers: an SDF sampled on a regular grid
+/// (x-fastest, matching the suite indexing and `sdflow`/`dem`'s VTI fields). Values keep the suite
+/// sign convention (negative inside solid). Out-of-domain queries clamp to the nearest in-domain
+/// sample. Satisfies the same `tpx::geom::Sdf` concept as the analytic primitives, so solvers consume
+/// analytic and sampled geometry through one interface.
 #ifndef TPX_GEOM_GRID_SDF_HPP
 #define TPX_GEOM_GRID_SDF_HPP
 
@@ -15,16 +16,23 @@
 
 namespace tpx::geom {
 
+/// A signed-distance field sampled on a regular axis-aligned grid (negative inside solid).
+///
+/// Models the `tpx::geom::Sdf` concept via `eval()`. Storage is x-fastest, matching the suite
+/// indexing convention and the VTI fields produced by `sdflow`/`dem`.
 struct GridSdf {
-  std::vector<float> values;  ///< x-fastest: idx = i + j*nx + k*nx*ny
-  IVec<3> dims{};             ///< (nx, ny, nz)
-  Vec<3> origin{};           ///< world position of sample (0,0,0)
-  Vec<3> spacing{1, 1, 1};
+  std::vector<float> values;  ///< Sample values, x-fastest: idx = i + j*nx + k*nx*ny.
+  IVec<3> dims{};             ///< Sample count per axis (nx, ny, nz).
+  Vec<3> origin{};           ///< World position of sample (0,0,0).
+  Vec<3> spacing{1, 1, 1};   ///< World-space distance between samples per axis.
 
+  /// Raw sample lookup at integer grid index (i,j,k); no bounds checking.
   double at(Index i, Index j, Index k) const {
     return static_cast<double>(values[i + dims[0] * (j + dims[1] * k)]);
   }
 
+  /// Trilinearly-interpolated signed distance at world point @p p. Queries outside the sampled box
+  /// clamp to the nearest in-domain sample.
   double eval(const Vec<3>& p) const {
     double g[3];
     Index i0[3], i1[3];
