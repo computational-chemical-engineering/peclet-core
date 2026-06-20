@@ -1,6 +1,6 @@
 // transport-core — portable (Kokkos) GPU-resident ghost-layer exchange.
 //
-// Kokkos analog of DeviceGridExchange (grid_halo_cuda.cuh): the field lives on the device as a
+// Portable (Kokkos) GPU-resident grid halo: the field lives on the device as a
 // tpx::View<T>; pack (gather send cells), unpack (scatter into ghost cells) and the periodic
 // self-copy run as Kokkos::parallel_for on the default execution space (CUDA / HIP / OpenMP), so the
 // full field never crosses the bus — only the compact halo buffers are staged to the host for MPI.
