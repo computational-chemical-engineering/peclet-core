@@ -27,7 +27,7 @@ set(_morton_inc "${CMAKE_CURRENT_SOURCE_DIR}/../morton/include")
 if(EXISTS "${_morton_inc}/morton/morton.hpp")
   target_include_directories(tpx_core INTERFACE $<BUILD_INTERFACE:${_morton_inc}>)
   target_compile_definitions(tpx_core INTERFACE TPX_HAVE_MORTON=1)
-  message(STATUS "transport-core: morton_arithmetic found at ${_morton_inc}")
+  message(STATUS "transport-core: morton found at ${_morton_inc}")
 endif()
 
 # --- Halo layer: against MPI (default), or a single-rank no-MPI stub (TPX_ENABLE_MPI=OFF). One code
