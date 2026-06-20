@@ -38,7 +38,15 @@ class ParticleHalo {
 
   /// (Re)establish the owner<->ghost correspondence: every owned particle within `rcut` of another
   /// rank's block becomes a ghost there. Call after migration / on neighbour-list rebuild.
-  void build(const std::vector<Vec<Dim>>& pos, double rcut) {
+  ///
+  /// `includePeriodicSelf` additionally emits LOCAL periodic self-ghosts: copies of an owned particle
+  /// at its own periodic image(s) that fall within `rcut` of THIS rank's own block. They are needed
+  /// when a rank borders itself across a periodic face — i.e. an undecomposed periodic axis (a "×1"
+  /// ORB axis, e.g. the z of a 2×2×1 layout) or np=1 — where the periodic neighbour is owned by the
+  /// same rank and so is never produced by the cross-rank exchange. Off by default => byte-identical
+  /// to the cross-rank-only behaviour (no self-ghosts, no MPI self-messages). Self-ghosts occupy the
+  /// ghost slots AFTER the received ones ([numReceived, numGhost)) and are filled locally (no MPI).
+  void build(const std::vector<Vec<Dim>>& pos, double rcut, bool includePeriodicSelf = false) {
     numOwned_ = pos.size();
     int nranks = 0;
     MPI_Comm_size(mig_->comm(), &nranks);
@@ -96,9 +104,28 @@ class ParticleHalo {
     recvOffset_.assign(recvRanks_.size() + 1, 0);
     for (std::size_t i = 0; i < recvCount_.size(); ++i)
       recvOffset_[i + 1] = recvOffset_[i] + recvCount_[i];
+    numReceived_ = shift_.size();
+
+    // Local periodic self-ghosts (no MPI): each owned particle's non-identity periodic image(s) that
+    // land within rcut of this rank's own block. Appended after the received ghosts; their shift goes
+    // in the shift_ tail so the per-ghost position forward applies the wrap uniformly.
+    selfIdx_.clear();
+    selfShift_.clear();
+    if (includePeriodicSelf) {
+      std::vector<Vec<Dim>> imgs;
+      for (std::size_t i = 0; i < pos.size(); ++i) {
+        imgs.clear();
+        mig_->imagesWithinRcutOfBlock(pos[i], me, rcut, /*allowIdentity=*/false, imgs);
+        for (const auto& sh : imgs) {
+          selfIdx_.push_back(static_cast<Index>(i));
+          selfShift_.push_back(sh);
+        }
+      }
+    }
+    for (const auto& sh : selfShift_) shift_.push_back(sh);
     numGhost_ = shift_.size();
 
-    // Populate the initial ghost positions (= owner position + shift).
+    // Populate the initial ghost positions (= owner position + shift), received + self.
     ghostPos_.assign(numGhost_, Vec<Dim>{});
     forwardPositions(pos.data(), ghostPos_.data());
   }
@@ -116,6 +143,10 @@ class ParticleHalo {
       for (int i = 0; i < recvCount_[p]; ++i)
         for (int d = 0; d < Dim; ++d) ghost[off + i][d] = in[i][d] + shift_[off + i][d];
     });
+    // Local periodic self-ghosts: owner position + wrap shift (no MPI).
+    for (std::size_t j = 0; j < selfIdx_.size(); ++j)
+      for (int d = 0; d < Dim; ++d)
+        ghost[numReceived_ + j][d] = owned[selfIdx_[j]][d] + shift_[numReceived_ + j][d];
   }
 
   /// owned[N] -> ghost[G], verbatim (translation-invariant fields: velocity, id, radius, ...).
@@ -125,6 +156,8 @@ class ParticleHalo {
       Index off = recvOffset_[p];
       for (int i = 0; i < recvCount_[p]; ++i) ghost[off + i] = in[i];
     });
+    // Local periodic self-ghosts: owner value, verbatim (no MPI).
+    for (std::size_t j = 0; j < selfIdx_.size(); ++j) ghost[numReceived_ + j] = owned[selfIdx_[j]];
   }
 
   /// ghost[G] -> owned[N], accumulated (T must have operator+=). Use for forces/torques/fluxes:
@@ -153,6 +186,8 @@ class ParticleHalo {
       auto& idx = sendIdx_[k];
       for (std::size_t i = 0; i < idx.size(); ++i) owned[idx[i]] += rbuf[k][i];
     }
+    // Local periodic self-ghosts accumulate straight onto their (same-rank) owner.
+    for (std::size_t j = 0; j < selfIdx_.size(); ++j) owned[selfIdx_[j]] += ghost[numReceived_ + j];
     MPI_Waitall(nr, sreq.data(), MPI_STATUSES_IGNORE);
   }
 
@@ -197,8 +232,11 @@ class ParticleHalo {
     std::vector<int> sendOffsets;       // prefix sum into sendIdx (size sendRanks+1)
     std::vector<int> recvRanks;         // neighbour ranks I receive ghosts from
     std::vector<int> recvCounts;        // per recv rank
-    std::vector<Index> recvOffsets;     // per recv rank: start in the [0,numGhost) ghost array
+    std::vector<Index> recvOffsets;     // per recv rank: start in the [0,numReceived) ghost array
     std::vector<Vec<Dim>> shift;        // per ghost: periodic image offset (add to forwarded position)
+    std::vector<Index> selfIdx;         // owned index of each LOCAL periodic self-ghost (size numSelf)
+    Index numReceived = 0;              // ghost slots [0,numReceived) are cross-rank (MPI), the rest
+                                        // [numReceived, numGhost) are local self-ghosts gathered from selfIdx
   };
   FlatTopo flatten() const {
     FlatTopo t;
@@ -214,6 +252,8 @@ class ParticleHalo {
     t.recvOffsets.assign(recvOffset_.begin(),
                          recvOffset_.begin() + static_cast<std::ptrdiff_t>(recvRanks_.size()));
     t.shift = shift_;
+    t.selfIdx = selfIdx_;
+    t.numReceived = static_cast<Index>(numReceived_);
     return t;
   }
 
@@ -232,7 +272,12 @@ class ParticleHalo {
   std::vector<Index> recvOffset_;
   std::map<int, std::size_t> recvRankPos_;
 
-  std::vector<Vec<Dim>> shift_;     // per ghost: periodic image offset (img - owner pos)
+  // Local periodic self-ghosts (undecomposed periodic axis / np=1): appended after the received ones.
+  std::vector<Index> selfIdx_;       // owned index for each self-ghost (ghost slot numReceived_ + j)
+  std::vector<Vec<Dim>> selfShift_;  // matching periodic wrap shift
+  std::size_t numReceived_ = 0;      // count of cross-rank received ghosts (= start of the self tail)
+
+  std::vector<Vec<Dim>> shift_;     // per ghost: periodic image offset (img - owner pos); received then self
   std::vector<Vec<Dim>> ghostPos_;  // per ghost: current image position
 };
 

@@ -154,6 +154,53 @@ int main(int argc, char** argv) {
     if ((int)std::llround(ownCount[i]) != expect) ++fail;
   }
 
+  // (4) periodic self-ghosts (includePeriodicSelf): the cross-rank ghosts above + LOCAL copies of an
+  // owned particle at its own periodic image(s) within rcut of this rank's block (needed for an
+  // undecomposed periodic axis / np=1). Brute-force oracle: a self-ghost exists for each non-identity
+  // periodic image (±L per axis) of an owned particle that comes within rcut of this rank's own block;
+  // forwardPositions must place it at owner+shift, and forward(id) must carry the owner's id.
+  ParticleHalo<3> halo2;
+  halo2.init(mig);
+  halo2.build(pos, rcut, /*includePeriodicSelf=*/true);
+  const std::size_t G2 = halo2.numGhost();
+  std::vector<double> ghId2(G2);
+  halo2.forward(ownIdD.data(), ghId2.data());
+  const auto& gp2 = halo2.ghostPositions();
+  const auto& bo = dec.origins()[rank];
+  const auto& bs = dec.sizes()[rank];
+  int selfExpect = 0, selfMatched = 0;
+  for (std::size_t i = 0; i < Nown; ++i) {
+    for (int sx = -1; sx <= 1; ++sx)
+      for (int sy = -1; sy <= 1; ++sy)
+        for (int sz = -1; sz <= 1; ++sz) {
+          if (sx == 0 && sy == 0 && sz == 0) continue;
+          const int sc[3] = {sx, sy, sz};
+          double d2 = 0;
+          Vec<3> imgpos;
+          for (int d = 0; d < 3; ++d) {
+            if (sc[d] != 0 && !map.periodic[d]) { d2 = 1e30; break; }
+            const double L = map.cellSize[d] * gsize[d];
+            const double lo = map.origin[d] + bo[d] * map.cellSize[d];
+            const double hi = map.origin[d] + (bo[d] + bs[d]) * map.cellSize[d];
+            const double p = pos[i][d] + sc[d] * L;
+            imgpos[d] = p;
+            const double gap = (p < lo) ? (lo - p) : (p > hi) ? (p - hi) : 0.0;
+            d2 += gap * gap;
+          }
+          if (d2 >= rcut * rcut) continue;
+          ++selfExpect;
+          // find a self-ghost (id == owner id, position == imgpos) in the tail of halo2's ghost list.
+          for (std::size_t s = 0; s < G2; ++s) {
+            if ((std::int64_t)std::llround(ghId2[s]) != myid[i]) continue;
+            if (std::fabs(gp2[s][0] - imgpos[0]) < 1e-9 && std::fabs(gp2[s][1] - imgpos[1]) < 1e-9 &&
+                std::fabs(gp2[s][2] - imgpos[2]) < 1e-9) { ++selfMatched; break; }
+          }
+        }
+  }
+  if (selfMatched != selfExpect) ++fail;
+  // total ghosts must be the cross-rank set (G) plus exactly the self set.
+  if (G2 != G + (std::size_t)selfExpect) ++fail;
+
   int total = 0;
   MPI_Allreduce(&fail, &total, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   long long gG = 0, lG = (long long)G;

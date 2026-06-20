@@ -181,6 +181,48 @@ class ParticleMigrator {
     return d2 < rcut * rcut;
   }
 
+  /// Append the shift (= image − x) of EVERY periodic image of `x` that comes within `rcut` of block
+  /// `r`'s AABB (enumerating the up-to-3^Dim images: 0 and ±L per periodic axis). Unlike
+  /// `withinRcutOfBlock` (which keeps only the single nearest image), this yields all qualifying
+  /// images — the owner-based view a ghost layer needs when one rank borders ITSELF across a periodic
+  /// face (an undecomposed periodic axis, or np=1). `allowIdentity=false` drops the un-shifted image,
+  /// so r==self yields only the periodic self-wrap copies (a particle is never its own ghost).
+  void imagesWithinRcutOfBlock(const Vec<Dim>& x, int r, double rcut, bool allowIdentity,
+                               std::vector<Vec<Dim>>& outShifts) const {
+    const auto& o = dec_->origins()[r];
+    const auto& s = dec_->sizes()[r];
+    const IVec<Dim>& gsize = dec_->globalSize();
+    double lo[Dim], hi[Dim], cand[Dim][3];
+    int nc[Dim];
+    for (int d = 0; d < Dim; ++d) {
+      lo[d] = map_.origin[d] + o[d] * map_.cellSize[d];
+      hi[d] = map_.origin[d] + (o[d] + s[d]) * map_.cellSize[d];
+      const double L = map_.cellSize[d] * static_cast<double>(gsize[d]);
+      cand[d][0] = 0.0;
+      nc[d] = 1;
+      if (map_.periodic[d]) { cand[d][1] = -L; cand[d][2] = L; nc[d] = 3; }
+    }
+    int total = 1;
+    for (int d = 0; d < Dim; ++d) total *= nc[d];
+    const double rc2 = rcut * rcut;
+    for (int idx = 0; idx < total; ++idx) {
+      Vec<Dim> shift{};
+      int t = idx;
+      bool identity = true;
+      double d2 = 0.0;
+      for (int d = 0; d < Dim; ++d) {
+        const int k = t % nc[d];
+        t /= nc[d];
+        shift[d] = cand[d][k];
+        if (k != 0) identity = false;
+        const double p = x[d] + shift[d];
+        const double gap = (p < lo[d]) ? (lo[d] - p) : (p > hi[d]) ? (p - hi[d]) : 0.0;
+        d2 += gap * gap;
+      }
+      if (d2 < rc2 && (allowIdentity || !identity)) outShifts.push_back(shift);
+    }
+  }
+
   /// Gather ghost copies of particles within `rcut` of this rank's block boundary. For each particle
   /// this rank owns, a copy (the periodic image closest to the target block) is sent to every OTHER
   /// rank whose block comes within `rcut`. Received ghosts are written to ghostPos/ghostPayload

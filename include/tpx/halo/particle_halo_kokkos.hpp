@@ -41,10 +41,13 @@ class DeviceParticleHaloKokkos {
     sendOff_ = t.sendOffsets;  // prefix sum into sendIdx, size sendRanks+1
     recvRanks_ = t.recvRanks;
     recvCounts_ = t.recvCounts;
-    recvOff_.assign(t.recvOffsets.begin(), t.recvOffsets.end());  // per recv rank start in [0,numGhost)
+    recvOff_.assign(t.recvOffsets.begin(), t.recvOffsets.end());  // per recv rank start in [0,numReceived)
     nSend_ = static_cast<Index>(t.sendIdx.size());
     numGhost_ = static_cast<Index>(halo.numGhost());
+    numReceived_ = t.numReceived;             // cross-rank ghosts [0,numReceived); self-ghosts after
+    numSelf_ = numGhost_ - numReceived_;
     d_sendIdx_ = toDevice(t.sendIdx, "tpx::halo::p_sendIdx");
+    d_selfIdx_ = toDevice(t.selfIdx, "tpx::halo::p_selfIdx");
   }
 
   /// owned[N] -> ghost[G], verbatim. Both live on the device.
@@ -62,27 +65,45 @@ class DeviceParticleHaloKokkos {
           KOKKOS_LAMBDA(const Index i) { buf(i) = o(idx(i)); });
     }
 
-    std::vector<T> hSend, hGhost;
+    // MPI fills only the cross-rank received slots [0,numReceived); the self tail is gathered locally.
+    std::vector<T> hSend, hRecv;
     T* sendBase;
-    T* ghostBase;
+    T* recvBase;
     if (aware) {
       Kokkos::fence();
       sendBase = sendBuf.data();
-      ghostBase = ghost.data();
+      recvBase = ghost.data();
     } else {
       hSend.resize(static_cast<std::size_t>(nSend_));
-      hGhost.resize(static_cast<std::size_t>(numGhost_));
+      hRecv.resize(static_cast<std::size_t>(numReceived_));
       copyToHost(sendBuf, hSend);
       sendBase = hSend.data();
-      ghostBase = hGhost.data();
+      recvBase = hRecv.data();
     }
 
     std::vector<MPI_Request> reqs;
-    postRecv(ghostBase, recvRanks_, recvOff_, recvCounts_, tag, reqs);
+    postRecv(recvBase, recvRanks_, recvOff_, recvCounts_, tag, reqs);
     postSend(sendBase, sendRanks_, sendOff_, sendCounts_, tag, reqs);
     if (!reqs.empty()) MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
 
-    if (!aware) copyToDevice(hGhost, ghost);
+    if (!aware && numReceived_) {
+      auto sub = Kokkos::subview(
+          ghost, std::pair<std::size_t, std::size_t>(0, static_cast<std::size_t>(numReceived_)));
+      Kokkos::View<const T*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>> hv(
+          hRecv.data(), hRecv.size());
+      Kokkos::deep_copy(sub, hv);
+    }
+    // Local periodic self-ghosts: gather owner -> ghost tail on device (no MPI). Needed when a rank
+    // borders itself across a periodic face (undecomposed axis / np=1).
+    if (numSelf_) {
+      View<T> o = owned;
+      IndexView sidx = d_selfIdx_;
+      View<T> g = ghost;
+      const Index base = numReceived_;
+      Kokkos::parallel_for(
+          "tpx::halo::p_selfGather", Kokkos::RangePolicy<ExecSpace>(0, numSelf_),
+          KOKKOS_LAMBDA(const Index j) { g(base + j) = o(sidx(j)); });
+    }
     Kokkos::fence();
   }
 
@@ -123,6 +144,16 @@ class DeviceParticleHaloKokkos {
       Kokkos::parallel_for(
           "tpx::halo::p_scatter", Kokkos::RangePolicy<ExecSpace>(0, nSend_),
           KOKKOS_LAMBDA(const Index i) { Kokkos::atomic_add(&o(idx(i)), buf(i)); });
+    }
+    // Local periodic self-ghosts accumulate straight onto their (same-rank) owner.
+    if (numSelf_) {
+      View<T> o = owned;
+      IndexView sidx = d_selfIdx_;
+      View<T> g = ghost;
+      const Index base = numReceived_;
+      Kokkos::parallel_for(
+          "tpx::halo::p_selfScatter", Kokkos::RangePolicy<ExecSpace>(0, numSelf_),
+          KOKKOS_LAMBDA(const Index j) { Kokkos::atomic_add(&o(sidx(j)), g(base + j)); });
     }
     Kokkos::fence();
   }
@@ -168,8 +199,8 @@ class DeviceParticleHaloKokkos {
   MPI_Comm comm_ = MPI_COMM_NULL;
   std::vector<int> sendRanks_, sendCounts_, sendOff_;
   std::vector<int> recvRanks_, recvCounts_, recvOff_;
-  Index nSend_ = 0, numGhost_ = 0;
-  IndexView d_sendIdx_;
+  Index nSend_ = 0, numGhost_ = 0, numReceived_ = 0, numSelf_ = 0;
+  IndexView d_sendIdx_, d_selfIdx_;
 };
 
 }  // namespace tpx::halo
