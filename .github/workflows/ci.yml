@@ -29,15 +29,19 @@ jobs:
       CXX: ${{ matrix.cxx }}
       OMPI_ALLOW_RUN_AS_ROOT: 1
       OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
+      # GitHub runners have only 2 physical cores; allow OpenMPI to oversubscribe so the
+      # np=4 and np=8 correctness tests run (slower, but the logic is what we check).
+      OMPI_MCA_rmaps_base_oversubscribe: 1
+      PRTE_MCA_rmaps_default_mapping_policy: ":oversubscribe"
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install MPI + Morton sibling (enables TPX_HAVE_MORTON)
+      - name: Install MPI
         run: |
           sudo apt-get update
           sudo apt-get install -y libopenmpi-dev openmpi-bin
-          # Optional sibling: morton spatial-index primitive. Best-effort; the build is fine without it.
-          git clone --depth 1 https://github.com/computational-chemical-engineering/morton.git ../morton || true
+          # morton is an optional sibling (enables TPX_HAVE_MORTON); it is a private repo, so CI
+          # builds without it — the halo/decomp tests do not depend on it.
 
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
