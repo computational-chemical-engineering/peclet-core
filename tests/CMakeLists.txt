@@ -61,20 +61,27 @@ if(MPI_FOUND)
                      ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_particle_halo_mpi> ${MPIEXEC_POSTFLAGS})
   endforeach()
 
-  # GPU-resident halo (host-staged): device result must match the CPU path.
-  if(TPX_HAVE_CUDA)
-    add_executable(test_grid_halo_cuda test_grid_halo_cuda.cu)
-    target_include_directories(test_grid_halo_cuda PRIVATE
+  # Portable GPU-resident halo (Kokkos): device result must match the CPU path, on whatever backend
+  # Kokkos was built for (CUDA / HIP / OpenMP). Compiled as CXX — Kokkos routes it to the device
+  # compiler via its launch compiler (so this is a .cpp, not a .cu).
+  if(TPX_HAVE_KOKKOS)
+    add_executable(test_grid_halo_kokkos test_grid_halo_kokkos.cpp)
+    target_include_directories(test_grid_halo_kokkos PRIVATE
       ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
-    # Link the imported MPI target for correct RPATH / PMIx discovery under mpirun (raw libmpi.so
-    # makes the launched ranks fall back to MPI singletons).
-    target_link_libraries(test_grid_halo_cuda PRIVATE MPI::MPI_CXX)
-    set_target_properties(test_grid_halo_cuda PROPERTIES
-      CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+    target_link_libraries(test_grid_halo_kokkos PRIVATE Kokkos::kokkos MPI::MPI_CXX)
+
+    add_executable(test_particle_halo_kokkos test_particle_halo_kokkos.cpp)
+    target_include_directories(test_particle_halo_kokkos PRIVATE
+      ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(test_particle_halo_kokkos PRIVATE Kokkos::kokkos MPI::MPI_CXX)
+
     foreach(np IN ITEMS 1 2 4)
-      add_test(NAME grid_halo_cuda_np${np}
+      add_test(NAME grid_halo_kokkos_np${np}
                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_grid_halo_cuda> ${MPIEXEC_POSTFLAGS})
+                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_grid_halo_kokkos> ${MPIEXEC_POSTFLAGS})
+      add_test(NAME particle_halo_kokkos_np${np}
+               COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
+                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_particle_halo_kokkos> ${MPIEXEC_POSTFLAGS})
     endforeach()
   endif()
 endif()

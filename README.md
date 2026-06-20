@@ -24,8 +24,10 @@ device boundary stays C++17-compatible).
 - `tpx::halo::GridFieldView<T>` — wraps a contiguous local array as an exchangeable field.
 - `tpx::halo::ParticleMigrator<Dim>` — Lagrangian particle migration to owning ranks (NBX), the
   dynamic counterpart to the Eulerian grid halo.
-- `tpx::halo::DeviceGridExchange<T>` (`grid_halo_cuda.cuh`) — GPU-resident ghost-layer exchange:
-  pack/unpack/self-copy as CUDA kernels, host-staged MPI; the field never leaves the GPU.
+- `tpx::halo::DeviceGridExchangeKokkos<T>` (`grid_halo_kokkos.hpp`) — portable GPU-resident ghost-layer
+  exchange (Kokkos: CUDA / HIP / OpenMP): pack/unpack/self-copy as `parallel_for`, host-staged MPI (opt-in
+  GPU-aware); the field stays on the device. `tpx::halo::DeviceParticleHaloKokkos<Dim>` is the Lagrangian
+  counterpart. (The legacy native-CUDA `grid_halo_cuda.cuh` was retired.)
 
 - `tpx::geom` (`sdf.hpp`, `grid_sdf.hpp`, `vti_io.hpp`) — shared SDF solids: analytic primitives +
   trilinear `GridSdf` behind one `Sdf` concept, with VTI (.vti) read/write.
