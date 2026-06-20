@@ -22,8 +22,8 @@ target_include_directories(tpx_core INTERFACE
   $<INSTALL_INTERFACE:include>)
 target_compile_features(tpx_core INTERFACE cxx_std_20)
 
-# Optional: morton_arithmetic (spatial-index primitive) if present as a sibling checkout.
-set(_morton_inc "${CMAKE_CURRENT_SOURCE_DIR}/../morton_arithmetic/include")
+# Optional: the morton spatial-index primitive if present as a sibling checkout.
+set(_morton_inc "${CMAKE_CURRENT_SOURCE_DIR}/../morton/include")
 if(EXISTS "${_morton_inc}/morton/morton.hpp")
   target_include_directories(tpx_core INTERFACE $<BUILD_INTERFACE:${_morton_inc}>)
   target_compile_definitions(tpx_core INTERFACE TPX_HAVE_MORTON=1)
