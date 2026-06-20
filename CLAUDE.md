@@ -5,8 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 `transport-core` is the shared infrastructure library for the transport-phenomena simulation suite
-(sibling repos under `../`: `cfd-gpu`, `packing-gpu`, `voronoi_dynamics`, `morton_arithmetic`,
-`block_decomposer`). The suite-wide design contract lives in `../docs/` — read
+(sibling repos under `../`: `sdflow`, `dem`, `voronoi_dynamics`, `morton`). The suite-wide design contract lives in `../docs/` — read
 `../docs/ARCHITECTURE.md`, `CONVENTIONS.md`, `STYLE.md`, `INTERFACES.md`, `ROADMAP.md` before
 cross-cutting changes. Header-only C++20; anything that must compile as CUDA device code stays
 C++17-compatible.
@@ -35,7 +34,7 @@ Header-only under `include/tpx/`:
 
 - `common/types.hpp` — `Index` (int64), `Real` (double), `IVec<Dim>`/`Vec<Dim>`, `wrap()`,
   compile-time `forEachInBox`. **Convention: x-fastest linear index** `I = x + y*nx + z*nx*ny`
-  (matches cfd-gpu and `../docs/CONVENTIONS.md`). Keep this header C++17-clean (pulled into `.cu`).
+  (matches sdflow and `../docs/CONVENTIONS.md`). Keep this header C++17-clean (pulled into `.cu`).
 - `decomp/block_decomposer.hpp` — ORB decomposition (ported & modernized from
   `../block_decomposer/src/BlockDecomposer.hpp`). `ownerOf()` walks the implicit binary tree
   (children at `2i+1`/`2i+2`, leaves carry the block index) and is the key primitive for halo
@@ -59,7 +58,7 @@ Header-only under `include/tpx/`:
   retired when Kokkos became the canonical device path; see `docs/cuda-aware-mpi.md` for the historical
   host-staging-vs-GPU-aware analysis.)
 - `halo/particle_halo_kokkos.hpp` — `DeviceParticleHaloKokkos<Dim>`: the Lagrangian device counterpart
-  (forward gather + reverse atomic-accumulate), consumed by packing-gpu's distributed step.
+  (forward gather + reverse atomic-accumulate), consumed by dem's distributed step.
 
 ## Gotchas
 

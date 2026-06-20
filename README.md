@@ -4,7 +4,7 @@ Shared infrastructure for the transport-phenomena simulation suite (see `../docs
 [architecture](../docs/ARCHITECTURE.md), [conventions](../docs/CONVENTIONS.md),
 [style](../docs/STYLE.md), [interfaces](../docs/INTERFACES.md) and [roadmap](../docs/ROADMAP.md)).
 
-It provides the pieces every method code (`cfd-gpu`, `packing-gpu`, `voronoi_dynamics`, …) should
+It provides the pieces every method code (`sdflow`, `dem`, `voronoi_dynamics`, …) should
 share: a common MPI **block domain decomposition** and an efficient **asynchronous ghost-layer
 exchange**, plus (planned) unified SDF geometry, IBM, and Python bindings. Header-only C++20 (the
 device boundary stays C++17-compatible).
@@ -47,11 +47,11 @@ ctest --test-dir build --output-on-failure          # serial + MPI (np=1,2,4,8)
 mpirun -np 4 ./build/benchmarks/bench_halo 48 1 300  # cells/rank/axis, ghost, iters
 ```
 
-Requires MPI (OpenMPI/MPICH) and a C++20 compiler. `morton_arithmetic` is picked up automatically if
+Requires MPI (OpenMPI/MPICH) and a C++20 compiler. `morton` is picked up automatically if
 checked out as a sibling directory (enables `TPX_HAVE_MORTON`).
 
 ## Status
 
 Phase 0–1 of the roadmap: decomposition + CPU async halo, validated and benchmarked. Next:
-GPU-aware exchange (CUDA-aware MPI + device pack/unpack), particle migration, then wiring `cfd-gpu`
+GPU-aware exchange (CUDA-aware MPI + device pack/unpack), particle migration, then wiring `sdflow`
 in as the first Eulerian consumer.
