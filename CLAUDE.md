@@ -40,6 +40,12 @@ Header-only under `include/tpx/`:
   (children at `2i+1`/`2i+2`, leaves carry the block index) and is the key primitive for halo
   topology. `linearGlobal`/`multiGlobal` are x-fastest and mutually inverse.
 - `decomp/block_indexer.hpp` — local↔global indexing for an extended (inner+ghost) block.
+- `decomp/morton_indexer.hpp` — `MortonIndexer<Dim>`: Z-order (Morton) cell indexing via the `morton`
+  primitive (`morton::Morton<Dim,Bits>`), guarded by `TPX_HAVE_MORTON`. The cache-friendly alternative
+  to the x-fastest order (which stays the convention): `codeOf`/`multiIndex` map global multi-index ↔
+  Z-order code, `neighborCode` steps one cell along an axis directly in Morton space. Methods carry
+  morton's `MORTON_HD`, so they are device-callable under a Kokkos build (the Kokkos build defines
+  `MORTON_ENABLE_KOKKOS` ⇒ `MORTON_HD` is `KOKKOS_FUNCTION`).
 - `halo/nbx.hpp` — `NbxEngine`: canonical NBX (Issend + Ibarrier consensus). Reimplements the engine
   from `../block_decomposer/src/MPISync.hpp`. Use for dynamic/sparse exchange.
 - `halo/grid_halo.hpp` — `GridHalo<Dim>`: the ghost-layer exchange. **Topology** (who owns each ghost

@@ -4,6 +4,13 @@ target_link_libraries(test_decomposition PRIVATE tpx_core)
 target_include_directories(test_decomposition PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME decomposition COMMAND test_decomposition)
 
+# Morton/Z-order cell indexer (inert unless TPX_HAVE_MORTON — set on tpx_core when
+# the morton sibling checkout is present).
+add_executable(test_morton_indexer test_morton_indexer.cpp)
+target_link_libraries(test_morton_indexer PRIVATE tpx_core)
+target_include_directories(test_morton_indexer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME morton_indexer COMMAND test_morton_indexer)
+
 add_executable(test_sdf test_sdf.cpp)
 target_link_libraries(test_sdf PRIVATE tpx_core)
 target_include_directories(test_sdf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

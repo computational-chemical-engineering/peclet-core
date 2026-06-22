@@ -66,6 +66,13 @@ if(TPX_ENABLE_KOKKOS AND TPX_HALO_OK)
   set(TPX_HAVE_KOKKOS ON)
   message(STATUS "transport-core: Kokkos ${Kokkos_VERSION} found (${Kokkos_DEVICES}) — "
                  "portable halo path enabled")
+  # When morton is present, build it in Kokkos mode so MORTON_HD resolves to
+  # KOKKOS_FUNCTION — the MortonIndexer (tpx/decomp/morton_indexer.hpp) is then
+  # callable from device kernels on any backend.
+  if(TARGET Kokkos::kokkos AND EXISTS "${_morton_inc}/morton/morton.hpp")
+    target_link_libraries(tpx_core INTERFACE Kokkos::kokkos)
+    target_compile_definitions(tpx_core INTERFACE MORTON_ENABLE_KOKKOS=1)
+  endif()
 endif()
 
 if(TPX_BUILD_TESTS)
