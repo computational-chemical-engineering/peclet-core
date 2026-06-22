@@ -23,6 +23,18 @@ if(EXISTS "${_morton_octree_inc}/morton_octree/octree.hpp")
 endif()
 add_test(NAME block_octree COMMAND test_block_octree)
 
+# AMR leaf fields + VTU (UnstructuredGrid) visualization output.
+add_executable(test_amr_vtu test_amr_vtu.cpp)
+target_link_libraries(test_amr_vtu PRIVATE tpx_core)
+target_include_directories(test_amr_vtu PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME amr_vtu COMMAND test_amr_vtu)
+
+# SDF-driven refinement (refineToSdf) over the shared tpx::geom SDF.
+add_executable(test_amr_sdf test_amr_sdf.cpp)
+target_link_libraries(test_amr_sdf PRIVATE tpx_core)
+target_include_directories(test_amr_sdf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME amr_sdf COMMAND test_amr_sdf)
+
 # Device-resident block-octree queries (Kokkos): device locate / face-neighbour
 # must match the host BlockOctree. No MPI needed; linking tpx_core pulls in Kokkos
 # + the morton include (+ MORTON_ENABLE_KOKKOS) under a Kokkos build.
