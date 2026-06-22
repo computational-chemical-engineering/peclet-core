@@ -11,6 +11,28 @@ target_link_libraries(test_morton_indexer PRIVATE tpx_core)
 target_include_directories(test_morton_indexer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME morton_indexer COMMAND test_morton_indexer)
 
+# Per-block adaptive octree (tpx::amr::BlockOctree). Inert unless TPX_HAVE_MORTON;
+# cross-checks against the morton_octree::Octree reference oracle when the sibling
+# octree project is present (its header is not on tpx_core's include path).
+add_executable(test_block_octree test_block_octree.cpp)
+target_link_libraries(test_block_octree PRIVATE tpx_core)
+target_include_directories(test_block_octree PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+set(_morton_octree_inc "${CMAKE_CURRENT_SOURCE_DIR}/../../morton/octree/include")
+if(EXISTS "${_morton_octree_inc}/morton_octree/octree.hpp")
+  target_include_directories(test_block_octree PRIVATE ${_morton_octree_inc})
+endif()
+add_test(NAME block_octree COMMAND test_block_octree)
+
+# Device-resident block-octree queries (Kokkos): device locate / face-neighbour
+# must match the host BlockOctree. No MPI needed; linking tpx_core pulls in Kokkos
+# + the morton include (+ MORTON_ENABLE_KOKKOS) under a Kokkos build.
+if(TPX_HAVE_KOKKOS)
+  add_executable(test_block_octree_kokkos test_block_octree_kokkos.cpp)
+  target_link_libraries(test_block_octree_kokkos PRIVATE tpx_core)
+  target_include_directories(test_block_octree_kokkos PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME block_octree_kokkos COMMAND test_block_octree_kokkos)
+endif()
+
 add_executable(test_sdf test_sdf.cpp)
 target_link_libraries(test_sdf PRIVATE tpx_core)
 target_include_directories(test_sdf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
