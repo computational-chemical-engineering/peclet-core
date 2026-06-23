@@ -158,6 +158,49 @@ class AmrPoisson {
       }
   }
 
+  /// Like forEachFaceNeighbor but exposes geometry for a consistent FV
+  /// divergence/gradient: fn(neighbour, axis, dir, areaPhys, distPhys, alpha).
+  /// Same face enumeration (2:1 sub-faces) and openness as the operator, so a
+  /// collocated projection built on it stays consistent with the pressure Poisson.
+  template <class Fn>
+  void forEachFaceFull(Index i, Fn&& fn) const {
+    auto b = t_->bounds(i);
+    const auto& lo = b[0];
+    const unsigned Li = t_->level(i);
+    const Coord si = Coord(Coord(1) << Li);
+    for (int axis = 0; axis < Dim; ++axis)
+      for (int dir = -1; dir <= 1; dir += 2) {
+        const long pc = (dir > 0) ? static_cast<long>(lo[axis]) + static_cast<long>(si)
+                                  : static_cast<long>(lo[axis]) - 1;
+        std::array<Coord, Dim> p = lo;
+        p[axis] = wrap(pc, axis);
+        Index j = t_->find(M::encode(p).code());
+        const unsigned Lj = t_->level(j);
+        if (Lj >= Li) {
+          const Coord sj = Coord(Coord(1) << Lj);
+          fn(j, axis, dir, areaOf(si), 0.5 * (static_cast<Real>(si) + static_cast<Real>(sj)) * h0_,
+             faceOpenness(i, axis, dir));
+        } else {
+          const Coord sj = Coord(si >> 1);
+          const int nsub = 1 << (Dim - 1);
+          for (int k = 0; k < nsub; ++k) {
+            std::array<Coord, Dim> q = lo;
+            q[axis] = wrap(pc, axis);
+            int bit = 0;
+            for (int t = 0; t < Dim; ++t) {
+              if (t == axis) continue;
+              const Coord off = ((k >> bit) & 1) ? sj : Coord(0);
+              q[t] = wrap(static_cast<long>(lo[t]) + static_cast<long>(off), t);
+              ++bit;
+            }
+            Index jj = t_->find(M::encode(q).code());
+            fn(jj, axis, dir, areaOf(sj), 0.5 * (static_cast<Real>(si) + static_cast<Real>(sj)) * h0_,
+               faceOpenness(jj, axis, -dir));
+          }
+        }
+      }
+  }
+
   /// Periodic face neighbour leaf (covering the cell just across the face).
   Index periodicNeighbor(Index i, int axis, int dir) const {
     auto b = t_->bounds(i);
@@ -314,11 +357,14 @@ class AmrPoisson {
   }
   // A_f / d_f (physical) for a cell of width-units `si` next to one of `sj`.
   Real coeff(Coord si, Coord sj) const {
-    Coord mn = si < sj ? si : sj;
-    Real area = 1;
-    for (int d = 0; d < Dim - 1; ++d) area *= static_cast<Real>(mn) * h0_;
     Real dist = 0.5 * (static_cast<Real>(si) + static_cast<Real>(sj)) * h0_;
-    return area / dist;
+    return areaOf(si < sj ? si : sj) / dist;
+  }
+  // Physical area of a face of a cell of width-units `s`: (s*h0)^(Dim-1).
+  Real areaOf(Coord s) const {
+    Real area = 1;
+    for (int d = 0; d < Dim - 1; ++d) area *= static_cast<Real>(s) * h0_;
+    return area;
   }
 
   const Octree* t_ = nullptr;

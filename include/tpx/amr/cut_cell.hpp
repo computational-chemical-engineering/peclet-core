@@ -26,6 +26,7 @@
 
 #include "tpx/amr/block_octree.hpp"
 #include "tpx/amr/leaf_field.hpp"
+#include "tpx/amr/poisson.hpp"
 #include "tpx/common/types.hpp"
 
 namespace tpx::amr {
@@ -75,9 +76,16 @@ class AmrCutCell {
   template <class SdfFn>
   void build(SdfFn&& sdfFn, double idiag = 0.0, double beta = 1.0, int nsub = 4) {
     const Index n = numLeaves();
+    // C/F-aware Laplacian provider for regular (non-cut) fluid cells: an AmrPoisson
+    // with NO openness (α=1) -> the plain ∇² with 2:1-interface coeff(si,sj). The
+    // cut cells (finest, same-level) keep the ξ overlay below.
+    lap_.init(*t_, h0_);
+    idiag_ = idiag;
+    mu_ = beta * h0_ * h0_;  // physical μ (operator A = idiag·I − μ∇²)
     sdfC_.assign(static_cast<std::size_t>(n), 0.0);
     kappa_.assign(static_cast<std::size_t>(n), 0.0);
     fluid_.assign(static_cast<std::size_t>(n), false);
+    cut_.assign(static_cast<std::size_t>(n), 0);
     AC_.assign(static_cast<std::size_t>(n), 1.0);
     rscale_.assign(static_cast<std::size_t>(n), 1.0);
     inhom_.assign(static_cast<std::size_t>(n), 0.0);
@@ -109,6 +117,7 @@ class AmrCutCell {
         sdf_n[k] = (j >= 0) ? sdfC_[static_cast<std::size_t>(j)] : -1.0;  // missing => solid
         if (sdf_n[k] < 0.0) anyGhost = true;
       }
+      cut_[static_cast<std::size_t>(i)] = anyGhost ? 1 : 0;
       double AC = AC0, off[6];
       for (int k = 0; k < 6; ++k) off[k] = -beta;
       double rscale = 1.0, inhomCoef = 0.0;
@@ -121,23 +130,29 @@ class AmrCutCell {
     }
   }
 
-  /// out = A u (solid cells return u_i; their value is held at u_bc by the solve).
+  /// out = A u. A = idiag·I − μ∇² (C/F-aware) on regular fluid cells; the ξ-overlay
+  /// stencil on cut cells (finest, same-level); identity on solid cells (held at u_bc).
   void applyOp(const std::vector<double>& u, std::vector<double>& out) const {
     const Index n = numLeaves();
     out.assign(static_cast<std::size_t>(n), 0.0);
+    std::vector<double> Lu;
+    lap_.applyLaplacian(u, Lu);  // C/F-aware ∇² (α=1); used only for regular fluid cells
     for (Index i = 0; i < n; ++i) {
-      if (!fluid_[static_cast<std::size_t>(i)]) {
-        out[static_cast<std::size_t>(i)] = u[static_cast<std::size_t>(i)];
-        continue;
+      const std::size_t s = static_cast<std::size_t>(i);
+      if (!fluid_[s]) {
+        out[s] = u[s];
+      } else if (cut_[s]) {
+        double acc = AC_[s] * u[s];
+        for (int k = 0; k < 6; ++k) {
+          double a = off_[s * 6 + k];
+          if (a == 0.0) continue;
+          Index j = nb_[s * 6 + k];
+          if (j >= 0) acc += a * u[static_cast<std::size_t>(j)];
+        }
+        out[s] = acc;
+      } else {
+        out[s] = idiag_ * u[s] - mu_ * Lu[s];  // regular fluid (C/F-consistent)
       }
-      double acc = AC_[static_cast<std::size_t>(i)] * u[static_cast<std::size_t>(i)];
-      for (int k = 0; k < 6; ++k) {
-        double a = off_[static_cast<std::size_t>(i) * 6 + k];
-        if (a == 0.0) continue;
-        Index j = nb_[static_cast<std::size_t>(i) * 6 + k];
-        if (j >= 0) acc += a * u[static_cast<std::size_t>(j)];
-      }
-      out[static_cast<std::size_t>(i)] = acc;
     }
   }
 
@@ -174,19 +189,29 @@ class AmrCutCell {
     const Index n = numLeaves();
     for (int s = 0; s < sweeps; ++s)
       for (Index i = 0; i < n; ++i) {
-        if (!fluid_[static_cast<std::size_t>(i)]) {
-          u[static_cast<std::size_t>(i)] = b[static_cast<std::size_t>(i)];
-          continue;
+        const std::size_t si = static_cast<std::size_t>(i);
+        if (!fluid_[si]) {
+          u[si] = b[si];
+        } else if (cut_[si]) {  // ξ-overlay stencil (same-level neighbours)
+          double sum = b[si];
+          for (int k = 0; k < 6; ++k) {
+            double a = off_[si * 6 + k];
+            if (a == 0.0) continue;
+            Index j = nb_[si * 6 + k];
+            if (j >= 0) sum -= a * u[static_cast<std::size_t>(j)];
+          }
+          double d = AC_[si];
+          if (d != 0.0) u[si] = sum / d;
+        } else {  // regular fluid: idiag·u − μ∇² with C/F-aware face coupling
+          double offsum = 0.0, dsum = 0.0;
+          lap_.forEachFaceNeighbor(i, [&](Index j, Real c, int, double) {
+            offsum += c * u[static_cast<std::size_t>(j)];
+            dsum += c;
+          });
+          double Vi = lap_.cellVolume(i);
+          double diagA = idiag_ + mu_ * dsum / Vi;
+          u[si] = (b[si] + mu_ * offsum / Vi) / diagA;
         }
-        double sum = b[static_cast<std::size_t>(i)];
-        for (int k = 0; k < 6; ++k) {
-          double a = off_[static_cast<std::size_t>(i) * 6 + k];
-          if (a == 0.0) continue;
-          Index j = nb_[static_cast<std::size_t>(i) * 6 + k];
-          if (j >= 0) sum -= a * u[static_cast<std::size_t>(j)];
-        }
-        double d = AC_[static_cast<std::size_t>(i)];
-        if (d != 0.0) u[static_cast<std::size_t>(i)] = sum / d;
       }
   }
 
@@ -308,7 +333,9 @@ class AmrCutCell {
   std::array<Coord, 3> fineExt_{};
   std::vector<double> sdfC_, kappa_, AC_, rscale_, inhom_, off_;
   std::vector<Index> nb_;
-  std::vector<char> fluid_;
+  std::vector<char> fluid_, cut_;
+  AmrPoisson<3, Bits> lap_;   // C/F-aware ∇² provider for regular fluid cells (α=1)
+  double idiag_ = 0.0, mu_ = 1.0;
 };
 
 }  // namespace tpx::amr

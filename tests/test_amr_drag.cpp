@@ -20,7 +20,10 @@
 
 #include "tpx/amr/block_octree.hpp"
 #include "tpx/amr/flow.hpp"
+#include "tpx/amr/leaf_field.hpp"
+#include "tpx/amr/refine.hpp"
 #include "tpx/common/types.hpp"
+#include "tpx/geom/sdf.hpp"
 
 using namespace tpx;
 using namespace tpx::amr;
@@ -64,6 +67,47 @@ void run() {
   double err = std::fabs(k - kZH) / kZH;
   TPX_CHECK(k > 0);
   TPX_CHECK(err < 0.03);  // tight match to Z&H (== sdflow); N=8 is ~ -0.8%
+
+  // --- GRADED mesh: sphere band refined to the finest level, far field coarse ---
+  // With the C/F-consistent momentum diffusion + FV divergence/ABC gradient, the
+  // graded flow is STABLE (it diverged before the C/F fix) and matches Z&H within a
+  // few percent at a fraction of the uniform cell count, converging as the band
+  // widens. (finest 16, band 2.5 -> ~82% cells, ~ +2%.)
+  const long brick = 8;
+  const unsigned lmax = 1;
+  const long Nf = brick * (1L << lmax);  // finest = 16
+  const double R = std::pow(phi * 3.0 / (4.0 * M_PI), 1.0 / 3.0) * static_cast<double>(Nf);
+  const double mu = 0.1, f = 1e-3, c = Nf / 2.0;
+  BO t(IVec<3>{brick, brick, brick}, lmax);
+  AmrGeometry<3> geo;
+  geo.h0 = 1.0;
+  tpx::geom::Sphere sph{{c, c, c}, R};
+  refineToSdf(t, geo, [&](const Vec<3>& p) { return -sph.eval(p); }, /*target*/ 0, /*band*/ 2.5, true);
+  TPX_CHECK(t.numLeaves() < Nf * Nf * Nf);  // genuinely coarsened (graded)
+
+  AmrFlow<21> fl;
+  fl.init(t, 1.0, Vec<3>{0, 0, 0});
+  fl.setDensity(1.0);
+  fl.setViscosity(mu);
+  fl.setDt(60.0);
+  fl.setBodyForce(f, 0, 0);
+  fl.setAdvection(false);
+  fl.setSolid([&](const Vec<3>& p) {
+    double dx = p[0] - c, dy = p[1] - c, dz = p[2] - c;
+    return std::sqrt(dx * dx + dy * dy + dz * dz) - R;
+  });
+  const long nuni = Nf * Nf * Nf;
+  for (int it = 0; it < 45; ++it) fl.step(70, 5, 2);  // -> near steady (finest 16)
+  double usup = 0;
+  const auto& u = fl.velocity(0);
+  for (Index i = 0; i < t.numLeaves(); ++i) {
+    double w = static_cast<double>(1L << t.level(i));
+    usup += u[static_cast<std::size_t>(i)] * w * w * w;  // volume-weighted over the cell
+  }
+  usup /= nuni;
+  TPX_CHECK(std::isfinite(usup) && std::fabs(usup) < 1.0);  // STABLE (no blow-up)
+  double kg = f * nuni / (6.0 * M_PI * mu * R * usup);
+  TPX_CHECK(std::fabs(kg - kZH) / kZH < 0.10);  // graded drag within ~10% of Z&H
 }
 
 }  // namespace

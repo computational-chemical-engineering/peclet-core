@@ -129,7 +129,11 @@ class AmrFlow {
 
     std::fill(phi_.begin(), phi_.end(), 0.0);
     (void)presSweeps;
-    presMG_.solveQuad(phi_, div, /*outer=*/presIters, /*cyclesPerOuter=*/1);  // openness + C/F V-cycles
+    // Standard (not quadratic) openness V-cycles: the operator L = div(α grad) is
+    // consistent with the FV divergence / ABC gradient above (D, G, L share the
+    // same face enumeration), so the collocated projection is stable across 2:1
+    // interfaces. (The quadratic C/F flux is for pure-Poisson accuracy, not here.)
+    for (int it = 0; it < presIters; ++it) presMG_.vcycle(0, phi_, div);
 
     for (int c = 0; c < 3; ++c)
       for (Index i = 0; i < n; ++i)
@@ -144,20 +148,17 @@ class AmrFlow {
             (rho_ / dt_) * phi_[static_cast<std::size_t>(i)] - mu_ * div[static_cast<std::size_t>(i)];
   }
 
-  /// Openness-weighted (FV) divergence of velocity at leaf i (diagnostic / test).
+  /// Openness-weighted FV divergence at leaf i, C/F-consistent: sum over (sub)faces
+  /// of α·area·(outward face velocity), face velocity = ½(u_i+u_j); /V_i. Uses the
+  /// same face enumeration as the pressure operator (forEachFaceFull).
   double divergence(const std::array<std::vector<double>, 3>& vel, Index i) const {
     double d = 0.0;
-    for (int axis = 0; axis < 3; ++axis) {
-      Index jp = mom_.neighborOf(i, 2 * axis);      // +axis
-      Index jm = mom_.neighborOf(i, 2 * axis + 1);  // -axis
+    pres_.forEachFaceFull(i, [&](Index j, int axis, int dir, double area, double, double alpha) {
       double ui = vel[axis][static_cast<std::size_t>(i)];
-      double up = (jp >= 0 && mom_.isFluid(jp)) ? vel[axis][static_cast<std::size_t>(jp)] : 0.0;
-      double um = (jm >= 0 && mom_.isFluid(jm)) ? vel[axis][static_cast<std::size_t>(jm)] : 0.0;
-      double ap = pres_.faceOpenness(i, axis, +1);
-      double am = pres_.faceOpenness(i, axis, -1);
-      d += (ap * 0.5 * (ui + up) - am * 0.5 * (ui + um)) / h0_;
-    }
-    return d;
+      double uj = vel[axis][static_cast<std::size_t>(j)];  // solid cells hold 0
+      d += alpha * area * dir * 0.5 * (ui + uj);
+    });
+    return d / pres_.cellVolume(i);
   }
 
   double divNormL2(const std::array<std::vector<double>, 3>& vel) const {
@@ -240,13 +241,19 @@ class AmrFlow {
   // is the chosen collocated coupling; do NOT substitute a Rhie–Chow face-velocity
   // interpolation (see docs/AMR.md and the amr-octree memory).
   double gradOf(const std::vector<double>& fld, Index i, int c) const {
-    Index jp = mom_.neighborOf(i, 2 * c);
-    Index jm = mom_.neighborOf(i, 2 * c + 1);
-    double pi = fld[static_cast<std::size_t>(i)];
-    double ap = pres_.faceOpenness(i, c, +1), am = pres_.faceOpenness(i, c, -1);
-    double gp = (ap > 1e-12 && jp >= 0) ? fld[static_cast<std::size_t>(jp)] - pi : 0.0;  // g⁺
-    double gm = (am > 1e-12 && jm >= 0) ? pi - fld[static_cast<std::size_t>(jm)] : 0.0;  // g⁻
-    return 0.5 * (gm + gp) / h0_;
+    const double pi = fld[static_cast<std::size_t>(i)];
+    double gp = 0, gm = 0;
+    int np = 0, nm = 0;
+    // Average the +axis-oriented face gradient (φ_j−φ_i)/dist over each side's
+    // (sub)faces along axis c; a closed face contributes 0 (ABC). C/F-consistent.
+    pres_.forEachFaceFull(i, [&](Index j, int axis, int dir, double, double dist, double alpha) {
+      if (axis != c || alpha <= 1e-12) return;
+      double g = (dir > 0) ? (fld[static_cast<std::size_t>(j)] - pi) / dist
+                           : (pi - fld[static_cast<std::size_t>(j)]) / dist;
+      if (dir > 0) { gp += g; ++np; } else { gm += g; ++nm; }
+    });
+    double gpa = np ? gp / np : 0.0, gma = nm ? gm / nm : 0.0;
+    return 0.5 * (gpa + gma);
   }
 
   // Fluid area fraction of a face, the gradient-normalised aperture (a faithful
