@@ -65,6 +65,12 @@ target_link_libraries(test_amr_flow PRIVATE tpx_core)
 target_include_directories(test_amr_flow PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME amr_flow COMMAND test_amr_flow)
 
+# Stokes sphere-array drag vs Zick & Homsy (sdflow's ground truth): convergence trend.
+add_executable(test_amr_drag test_amr_drag.cpp)
+target_link_libraries(test_amr_drag PRIVATE tpx_core)
+target_include_directories(test_amr_drag PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME amr_drag COMMAND test_amr_drag)
+
 # Barnes-Hut particle-tree mode over the octree.
 add_executable(test_amr_barnes_hut test_amr_barnes_hut.cpp)
 target_link_libraries(test_amr_barnes_hut PRIVATE tpx_core)

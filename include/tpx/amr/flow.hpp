@@ -71,6 +71,8 @@ class AmrFlow {
     pres_.init(*t_, h0_);
     pres_.setOrigin(origin_);
     pres_.buildOpenness([&](const Vec<3>& fc, int axis) { return faceFrac(sdfFn, fc, axis); });
+    presMG_.build(*t_, h0_);
+    presMG_.setOpenness([&](const Vec<3>& fc, int axis) { return faceFrac(sdfFn, fc, axis); });
     const Index n = t_->numLeaves();
     for (int c = 0; c < 3; ++c) u_[c].assign(static_cast<std::size_t>(n), 0.0);
     phi_.assign(static_cast<std::size_t>(n), 0.0);
@@ -118,10 +120,8 @@ class AmrFlow {
       if (mom_.isFluid(i)) div[static_cast<std::size_t>(i)] = divergence(u_, i);
 
     std::fill(phi_.begin(), phi_.end(), 0.0);
-    for (int it = 0; it < presIters; ++it) {
-      pres_.gaussSeidel(phi_, div, presSweeps);
-      pres_.removeMean(phi_);
-    }
+    (void)presSweeps;
+    presMG_.solveQuad(phi_, div, /*outer=*/presIters, /*cyclesPerOuter=*/1);  // openness + C/F V-cycles
 
     for (int c = 0; c < 3; ++c)
       for (Index i = 0; i < n; ++i)
@@ -248,7 +248,8 @@ class AmrFlow {
   bool advect_ = false;
   Vec<3> f_{};
   AmrCutCell<Bits> mom_;
-  AmrPoisson<3, Bits> pres_;
+  AmrPoisson<3, Bits> pres_;       // openness + divergence/gradient access
+  AmrMultigrid<3, Bits> presMG_;   // fast (graded-capable) pressure solve
   std::array<std::vector<double>, 3> u_;
   std::vector<double> phi_;
 };
