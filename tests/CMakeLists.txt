@@ -35,6 +35,12 @@ target_link_libraries(test_amr_sdf PRIVATE tpx_core)
 target_include_directories(test_amr_sdf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME amr_sdf COMMAND test_amr_sdf)
 
+# Cell-centered FV Poisson on the octree + geometric multigrid.
+add_executable(test_amr_poisson test_amr_poisson.cpp)
+target_link_libraries(test_amr_poisson PRIVATE tpx_core)
+target_include_directories(test_amr_poisson PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME amr_poisson COMMAND test_amr_poisson)
+
 # Device-resident block-octree queries (Kokkos): device locate / face-neighbour
 # must match the host BlockOctree. No MPI needed; linking tpx_core pulls in Kokkos
 # + the morton include (+ MORTON_ENABLE_KOKKOS) under a Kokkos build.

@@ -1,0 +1,276 @@
+// transport-core — cell-centered finite-volume Poisson on a BlockOctree, with a
+// geometric multigrid built from the octree's own levels.
+//
+// This is the "grid + multigrid" use of the AMR octree (serial, host; the device
+// and distributed paths build on the same operator later). The operator is a
+// conservative two-point finite-volume Laplacian: for a leaf i,
+//
+//     (L u)_i = (1/V_i) * sum_faces  A_f / d_f * (u_j - u_i),
+//
+// with V_i the cell volume, A_f the shared face area, d_f the centre-to-centre
+// normal distance. At a 2:1 interface the coarse side sums the flux over all
+// 2^(Dim-1) fine neighbours (each with the fine face area), so the discretisation
+// is conservative (the global integral of L u is zero on a periodic domain). The
+// two-point gradient ignores the tangential centre offset, so the interface flux
+// is first-order there — a documented limitation; a tangential-gradient
+// correction (full 2nd-order AMR flux) is a follow-up.
+//
+// Multigrid: the hierarchy is the octree coarsened uniformly one level at a time
+// (coarsenIf over all sibling groups). Restriction averages children -> parent;
+// prolongation is piecewise-constant (correction scheme). Smoother is
+// lexicographic Gauss-Seidel over the Z-order leaf slots. Periodic BCs only (the
+// natural first target); the singular null space is fixed by mean removal.
+//
+// Header-only, guarded by TPX_HAVE_MORTON.
+#ifndef TPX_AMR_POISSON_HPP
+#define TPX_AMR_POISSON_HPP
+
+#ifdef TPX_HAVE_MORTON
+
+#include <array>
+#include <cmath>
+#include <vector>
+
+#include "tpx/amr/block_octree.hpp"
+#include "tpx/amr/leaf_field.hpp"
+#include "tpx/common/types.hpp"
+
+namespace tpx::amr {
+
+/// Cell-centered FV Poisson operator on one (periodic) block octree.
+template <int Dim, unsigned Bits = (Dim == 2 ? 32u : (Dim == 3 ? 21u : 16u))>
+class AmrPoisson {
+ public:
+  using Octree = BlockOctree<Dim, Bits>;
+  using M = typename Octree::M;
+  using Code = typename Octree::Code;
+  using Coord = typename Octree::Coord;
+
+  AmrPoisson() = default;
+  AmrPoisson(const Octree& t, Real h0) { init(t, h0); }
+
+  void init(const Octree& t, Real h0) {
+    t_ = &t;
+    h0_ = h0;
+    for (int d = 0; d < Dim; ++d) fineExt_[d] = static_cast<Coord>(t.brick()[d] * (Index(1) << t.lmax()));
+  }
+
+  Index numLeaves() const { return t_->numLeaves(); }
+  Real cellWidth(Index i) const { return h0_ * static_cast<Real>(Index(1) << t_->level(i)); }
+  Real cellVolume(Index i) const {
+    Real w = cellWidth(i);
+    Real v = 1;
+    for (int d = 0; d < Dim; ++d) v *= w;
+    return v;
+  }
+
+  /// Visit each face neighbour of leaf `i`: fn(neighbourSlot, coeff) where
+  /// coeff = A_f / d_f (physical). Periodic wrap; 2:1 interfaces enumerated.
+  template <class Fn>
+  void forEachFaceNeighbor(Index i, Fn&& fn) const {
+    auto b = t_->bounds(i);
+    const auto& lo = b[0];
+    const unsigned Li = t_->level(i);
+    const Coord si = Coord(Coord(1) << Li);
+    for (int axis = 0; axis < Dim; ++axis)
+      for (int dir = -1; dir <= 1; dir += 2) {
+        const long pc = (dir > 0) ? static_cast<long>(lo[axis]) + static_cast<long>(si)
+                                  : static_cast<long>(lo[axis]) - 1;
+        std::array<Coord, Dim> p = lo;
+        p[axis] = wrap(pc, axis);
+        Index j = t_->find(M::encode(p).code());
+        const unsigned Lj = t_->level(j);
+        if (Lj >= Li) {
+          // same level or coarser: one neighbour, shared face = this cell's face.
+          fn(j, coeff(si, Coord(Coord(1) << Lj)));
+        } else {
+          // finer neighbour: 2^(Dim-1) sub-faces, each the fine face area.
+          const Coord sj = Coord(si >> 1);
+          const int nsub = 1 << (Dim - 1);
+          for (int k = 0; k < nsub; ++k) {
+            std::array<Coord, Dim> q = lo;
+            q[axis] = wrap(pc, axis);
+            int bit = 0;
+            for (int t = 0; t < Dim; ++t) {
+              if (t == axis) continue;
+              const Coord off = ((k >> bit) & 1) ? sj : Coord(0);
+              q[t] = wrap(static_cast<long>(lo[t]) + static_cast<long>(off), t);
+              ++bit;
+            }
+            Index jj = t_->find(M::encode(q).code());
+            // Fine face area (min = sj) but the true centre-to-centre distance
+            // (si+sj)/2 — same value the fine side computes, so the operator is
+            // symmetric / conservative across the 2:1 interface.
+            fn(jj, coeff(si, sj));
+          }
+        }
+      }
+  }
+
+  /// out = L u (periodic FV Laplacian).
+  void applyLaplacian(const std::vector<double>& u, std::vector<double>& out) const {
+    const Index n = numLeaves();
+    out.assign(static_cast<std::size_t>(n), 0.0);
+    for (Index i = 0; i < n; ++i) {
+      const double ui = u[static_cast<std::size_t>(i)];
+      double acc = 0.0;
+      forEachFaceNeighbor(i, [&](Index j, Real c) { acc += c * (u[static_cast<std::size_t>(j)] - ui); });
+      out[static_cast<std::size_t>(i)] = acc / cellVolume(i);
+    }
+  }
+
+  /// res = rhs - L u, returns its L2 norm (sqrt(sum V_i res_i^2)).
+  double residual(const std::vector<double>& u, const std::vector<double>& rhs,
+                  std::vector<double>& res) const {
+    const Index n = numLeaves();
+    res.assign(static_cast<std::size_t>(n), 0.0);
+    double s = 0.0;
+    for (Index i = 0; i < n; ++i) {
+      const double ui = u[static_cast<std::size_t>(i)];
+      double acc = 0.0;
+      forEachFaceNeighbor(i, [&](Index j, Real c) { acc += c * (u[static_cast<std::size_t>(j)] - ui); });
+      double r = rhs[static_cast<std::size_t>(i)] - acc / cellVolume(i);
+      res[static_cast<std::size_t>(i)] = r;
+      s += cellVolume(i) * r * r;
+    }
+    return std::sqrt(s);
+  }
+
+  /// `sweeps` lexicographic Gauss-Seidel relaxations of L u = rhs (in place).
+  void gaussSeidel(std::vector<double>& u, const std::vector<double>& rhs, int sweeps) const {
+    const Index n = numLeaves();
+    for (int s = 0; s < sweeps; ++s)
+      for (Index i = 0; i < n; ++i) {
+        double sumOff = 0.0, diag = 0.0;
+        forEachFaceNeighbor(i, [&](Index j, Real c) {
+          sumOff += c * u[static_cast<std::size_t>(j)];
+          diag += c;
+        });
+        if (diag != 0.0)
+          u[static_cast<std::size_t>(i)] = (sumOff - cellVolume(i) * rhs[static_cast<std::size_t>(i)]) / diag;
+      }
+  }
+
+  /// Subtract the volume-weighted mean (fixes the periodic null space).
+  void removeMean(std::vector<double>& u) const {
+    const Index n = numLeaves();
+    double sum = 0.0, vol = 0.0;
+    for (Index i = 0; i < n; ++i) {
+      sum += cellVolume(i) * u[static_cast<std::size_t>(i)];
+      vol += cellVolume(i);
+    }
+    double m = sum / vol;
+    for (Index i = 0; i < n; ++i) u[static_cast<std::size_t>(i)] -= m;
+  }
+
+  const Octree& octree() const { return *t_; }
+  Real h0() const { return h0_; }
+
+ private:
+  Coord wrap(long c, int axis) const {
+    long e = static_cast<long>(fineExt_[axis]);
+    return static_cast<Coord>(((c % e) + e) % e);
+  }
+  // A_f / d_f (physical) for a cell of width-units `si` next to one of `sj`.
+  Real coeff(Coord si, Coord sj) const {
+    Coord mn = si < sj ? si : sj;
+    Real area = 1;
+    for (int d = 0; d < Dim - 1; ++d) area *= static_cast<Real>(mn) * h0_;
+    Real dist = 0.5 * (static_cast<Real>(si) + static_cast<Real>(sj)) * h0_;
+    return area / dist;
+  }
+
+  const Octree* t_ = nullptr;
+  Real h0_ = 1.0;
+  std::array<Coord, Dim> fineExt_{};
+};
+
+/// Geometric multigrid for AmrPoisson over a uniformly-coarsened octree hierarchy.
+template <int Dim, unsigned Bits = (Dim == 2 ? 32u : (Dim == 3 ? 21u : 16u))>
+class AmrMultigrid {
+ public:
+  using Octree = BlockOctree<Dim, Bits>;
+  using M = typename Octree::M;
+  using Code = typename Octree::Code;
+
+  /// Build the hierarchy from a finest octree by uniform coarsening until a single
+  /// leaf remains (or no full sibling group can be merged).
+  void build(const Octree& finest, Real h0) {
+    levels_.clear();
+    levels_.push_back(finest);
+    for (;;) {
+      Octree c = levels_.back();
+      Index merged = c.coarsenIf([](Code, unsigned) { return true; });
+      if (merged == 0 || c.numLeaves() == levels_.back().numLeaves()) break;
+      levels_.push_back(c);
+      if (c.numLeaves() == 1) break;
+    }
+    ops_.resize(levels_.size());
+    // All levels share the finest h0: a coarse octree's leaves carry a higher
+    // `level`, and cellWidth = h0 * 2^level already encodes the doubled width.
+    for (std::size_t L = 0; L < levels_.size(); ++L) ops_[L].init(levels_[L], h0);
+    // child(fine slot) -> parent(coarse slot) for each fine/coarse pair.
+    c2p_.assign(levels_.size() ? levels_.size() - 1 : 0, {});
+    for (std::size_t L = 0; L + 1 < levels_.size(); ++L) {
+      const Octree& f = levels_[L];
+      const Octree& c = levels_[L + 1];
+      c2p_[L].resize(static_cast<std::size_t>(f.numLeaves()));
+      for (Index i = 0; i < f.numLeaves(); ++i) {
+        Code parent = M::from_code(f.code(i)).ancestor(f.level(i) + 1).code();
+        c2p_[L][static_cast<std::size_t>(i)] = c.find(parent);
+      }
+    }
+  }
+
+  std::size_t numLevels() const { return levels_.size(); }
+  const AmrPoisson<Dim, Bits>& op(std::size_t L = 0) const { return ops_[L]; }
+
+  /// One V-cycle on level L solving L u = rhs (correction scheme).
+  void vcycle(std::size_t L, std::vector<double>& u, const std::vector<double>& rhs, int pre = 2,
+              int post = 2) {
+    if (L + 1 == levels_.size()) {
+      ops_[L].gaussSeidel(u, rhs, 40);  // coarsest: solve hard
+      ops_[L].removeMean(u);
+      return;
+    }
+    ops_[L].gaussSeidel(u, rhs, pre);
+    std::vector<double> res;
+    ops_[L].residual(u, rhs, res);
+
+    // Restrict residual: volume-weighted average of children -> parent.
+    const Octree& f = levels_[L];
+    const Octree& c = levels_[L + 1];
+    std::vector<double> crhs(static_cast<std::size_t>(c.numLeaves()), 0.0);
+    std::vector<double> cvol(static_cast<std::size_t>(c.numLeaves()), 0.0);
+    for (Index i = 0; i < f.numLeaves(); ++i) {
+      Index p = c2p_[L][static_cast<std::size_t>(i)];
+      if (p < 0) continue;
+      Real v = ops_[L].cellVolume(i);
+      crhs[static_cast<std::size_t>(p)] += v * res[static_cast<std::size_t>(i)];
+      cvol[static_cast<std::size_t>(p)] += v;
+    }
+    for (Index p = 0; p < c.numLeaves(); ++p)
+      if (cvol[static_cast<std::size_t>(p)] > 0) crhs[static_cast<std::size_t>(p)] /= cvol[static_cast<std::size_t>(p)];
+
+    std::vector<double> ccorr(static_cast<std::size_t>(c.numLeaves()), 0.0);
+    vcycle(L + 1, ccorr, crhs, pre, post);
+
+    // Prolong correction (piecewise constant) and add.
+    for (Index i = 0; i < f.numLeaves(); ++i) {
+      Index p = c2p_[L][static_cast<std::size_t>(i)];
+      if (p >= 0) u[static_cast<std::size_t>(i)] += ccorr[static_cast<std::size_t>(p)];
+    }
+    ops_[L].gaussSeidel(u, rhs, post);
+    ops_[L].removeMean(u);
+  }
+
+ private:
+  std::vector<Octree> levels_;
+  std::vector<AmrPoisson<Dim, Bits>> ops_;
+  std::vector<std::vector<Index>> c2p_;
+};
+
+}  // namespace tpx::amr
+
+#endif  // TPX_HAVE_MORTON
+#endif  // TPX_AMR_POISSON_HPP
