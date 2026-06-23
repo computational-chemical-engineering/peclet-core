@@ -47,6 +47,12 @@ target_link_libraries(test_amr_barnes_hut PRIVATE tpx_core)
 target_include_directories(test_amr_barnes_hut PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME amr_barnes_hut COMMAND test_amr_barnes_hut)
 
+# Explicit FV scalar transport (advection-diffusion) on the octree.
+add_executable(test_amr_transport test_amr_transport.cpp)
+target_link_libraries(test_amr_transport PRIVATE tpx_core)
+target_include_directories(test_amr_transport PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME amr_transport COMMAND test_amr_transport)
+
 # Device-resident block-octree queries (Kokkos): device locate / face-neighbour
 # must match the host BlockOctree. No MPI needed; linking tpx_core pulls in Kokkos
 # + the morton include (+ MORTON_ENABLE_KOKKOS) under a Kokkos build.
