@@ -4,26 +4,29 @@
 //   * momentum  — implicit (backward-Euler) viscous solve per component with the
 //                 Dirichlet ξ-polynomial cut-cell operator (AmrCutCell): no-slip
 //                 u = 0 on the immersed boundary. Operator (ρ/dt)I − μ∇².
-//   * pressure  — the **Almgren–Bell–Colella (ABC) approximate projection**, the
-//                 collocated coupling sdflow uses (src/mac_approx_projection.hpp):
-//                 average the cell velocities onto a face (MAC) divergence, solve
-//                 the openness-weighted (Neumann) pressure Poisson (AmrPoisson)
-//                 ∇²φ = ∇·u*, then correct the cell velocities by ½(g⁻+g⁺) of the
-//                 two adjacent FACE φ-gradients (a closed/solid face contributes a
-//                 zero gradient). The *face* field is exactly divergence-free; the
-//                 cell field is approximately so — hence "approximate projection".
+//   * pressure  — the **Almgren–Bell–Colella (ABC) approximate projection** in an
+//                 **incremental rotational** form (sdflow's collocated coupling,
+//                 src/mac_approx_projection.hpp). The predictor carries the old
+//                 pressure gradient −∇p^n; the openness-weighted (Neumann) Poisson
+//                 (AmrPoisson) solves ∇²φ = ∇·u*; the cell velocities are corrected
+//                 by ½(g⁻+g⁺) of the two adjacent FACE φ-gradients (closed/solid
+//                 face ⇒ zero gradient); and the pressure is updated **rotationally**
+//                 p += (ρ/dt)φ − μ∇·u*. The −μ∇·u* term removes the projection's
+//                 boundary-layer splitting error, so the steady drag is dt-INDEPENDENT
+//                 (plain non-incremental Chorin gives an O(dt) drag error — the
+//                 reason an earlier version missed Zick & Homsy; see docs/AMR.md).
+//                 The openness/aperture is sdflow's gradient-normalised ccFractionCore.
 //
 // This collocated coupling is a deliberate choice. Do NOT replace it with a
-// Rhie–Chow face-velocity interpolation: the small residual cell divergence is
-// intrinsic to cell-centered velocity placement (see the amr-octree memory note),
-// not a bug to be engineered away.
+// Rhie–Chow face-velocity interpolation: the small residual *cell* divergence is
+// intrinsic to cell-centered velocity placement (the face field is exactly
+// divergence-free), not a bug to be engineered away (see the amr-octree memory).
 //
 // Navier–Stokes (semi-implicit): implicit viscous diffusion + explicit Koren-TVD
 // advection ∇·(u u) (setAdvection(true); the collocated cadv::advect port), with
 // the projection each step. setAdvection(false) ⇒ Stokes. 3D. Cut cells and the
-// ±2-cell advection stencil assume same-level neighbours (resolve the boundary and
-// any feature in a uniformly-finest band; see docs/AMR.md).
-// band, so the cut-cell stencils never sit on a 2:1 interface — see docs/AMR.md).
+// ±2-cell advection stencil assume same-level neighbours (resolve the boundary in a
+// uniformly-finest band, so the stencils never sit on a 2:1 interface — docs/AMR.md).
 // Header-only, guarded by TPX_HAVE_MORTON. Serial/host first.
 #ifndef TPX_AMR_FLOW_HPP
 #define TPX_AMR_FLOW_HPP
@@ -76,6 +79,7 @@ class AmrFlow {
     const Index n = t_->numLeaves();
     for (int c = 0; c < 3; ++c) u_[c].assign(static_cast<std::size_t>(n), 0.0);
     phi_.assign(static_cast<std::size_t>(n), 0.0);
+    p_.assign(static_cast<std::size_t>(n), 0.0);
   }
 
   const std::vector<double>& velocity(int c) const { return u_[c]; }
@@ -101,7 +105,8 @@ class AmrFlow {
       std::vector<double> src(static_cast<std::size_t>(n), 0.0);
       for (Index i = 0; i < n; ++i)
         if (mom_.isFluid(i)) {
-          double s = (rho_ / dt_) * u_[c][static_cast<std::size_t>(i)] + f_[c];
+          // incremental predictor: include the old pressure gradient −∇p^n.
+          double s = (rho_ / dt_) * u_[c][static_cast<std::size_t>(i)] + f_[c] - gradOf(p_, i, c);
           if (advect_) s -= rho_ * adv[c][static_cast<std::size_t>(i)];
           src[static_cast<std::size_t>(i)] = s;
         }
@@ -125,7 +130,15 @@ class AmrFlow {
 
     for (int c = 0; c < 3; ++c)
       for (Index i = 0; i < n; ++i)
-        if (mom_.isFluid(i)) u_[c][static_cast<std::size_t>(i)] -= gradPhi(i, c);
+        if (mom_.isFluid(i)) u_[c][static_cast<std::size_t>(i)] -= gradOf(phi_, i, c);
+
+    // Rotational incremental pressure update: p += (ρ/dt)φ − μ ∇·u*  (div is ∇·u*).
+    // The −μ∇·u* rotational term removes the projection's boundary-layer splitting
+    // error, making the steady solution dt-independent (vs plain Chorin).
+    for (Index i = 0; i < n; ++i)
+      if (mom_.isFluid(i))
+        p_[static_cast<std::size_t>(i)] +=
+            (rho_ / dt_) * phi_[static_cast<std::size_t>(i)] - mu_ * div[static_cast<std::size_t>(i)];
   }
 
   /// Openness-weighted (FV) divergence of velocity at leaf i (diagnostic / test).
@@ -214,31 +227,40 @@ class AmrFlow {
   // (src/mac_approx_projection.hpp) — the collocated approximate projection. This
   // is the chosen collocated coupling; do NOT substitute a Rhie–Chow face-velocity
   // interpolation (see docs/AMR.md and the amr-octree memory).
-  double gradPhi(Index i, int c) const {
+  double gradOf(const std::vector<double>& fld, Index i, int c) const {
     Index jp = mom_.neighborOf(i, 2 * c);
     Index jm = mom_.neighborOf(i, 2 * c + 1);
-    double pi = phi_[static_cast<std::size_t>(i)];
+    double pi = fld[static_cast<std::size_t>(i)];
     double ap = pres_.faceOpenness(i, c, +1), am = pres_.faceOpenness(i, c, -1);
-    double gp = (ap > 1e-12 && jp >= 0) ? phi_[static_cast<std::size_t>(jp)] - pi : 0.0;  // g⁺
-    double gm = (am > 1e-12 && jm >= 0) ? pi - phi_[static_cast<std::size_t>(jm)] : 0.0;  // g⁻
+    double gp = (ap > 1e-12 && jp >= 0) ? fld[static_cast<std::size_t>(jp)] - pi : 0.0;  // g⁺
+    double gm = (am > 1e-12 && jm >= 0) ? pi - fld[static_cast<std::size_t>(jm)] : 0.0;  // g⁻
     return 0.5 * (gm + gp) / h0_;
   }
 
-  // Fluid area fraction of a face (subsampled), for the pressure openness.
+  // Fluid area fraction of a face, the gradient-normalised aperture (a faithful
+  // port of sdflow's ccFractionCore, src/mac_cutcell.hpp): frac = 0.5 + sd/denom,
+  // sd = SDF at the face centre, denom = (|n_t1| + |n_t2|)·h0 over the two
+  // tangential axes (n = unit SDF gradient). This is a linear interface
+  // reconstruction within the face — 2nd-order accurate, unlike indicator
+  // subsampling (which is only O(1/nsub) on cut faces and made the drag 1st-order).
   template <class SdfFn>
   double faceFrac(SdfFn&& sdfFn, const Vec<3>& fc, int axis) const {
-    const int ns = 4;
-    int in = 0, tot = 0;
-    for (int a = 0; a < ns; ++a)
-      for (int b = 0; b < ns; ++b) {
-        Vec<3> p = fc;
-        int t1 = (axis + 1) % 3, t2 = (axis + 2) % 3;
-        p[t1] += ((a + 0.5) / ns - 0.5) * h0_;
-        p[t2] += ((b + 0.5) / ns - 0.5) * h0_;
-        if (sdfFn(p) > 0.0) ++in;
-        ++tot;
-      }
-    return static_cast<double>(in) / tot;
+    double sd = sdfFn(fc);
+    if (sd <= 0.0) return 0.0;
+    Vec<3> g{};
+    for (int d = 0; d < 3; ++d) {
+      Vec<3> pp = fc, pm = fc;
+      pp[d] += h0_;
+      pm[d] -= h0_;
+      g[d] = (sdfFn(pp) - sdfFn(pm)) / (2.0 * h0_);
+    }
+    double gmag = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+    if (gmag < 1e-6) gmag = 1e-6;
+    int t1 = (axis + 1) % 3, t2 = (axis + 2) % 3;
+    double denom = (std::fabs(g[t1]) + std::fabs(g[t2])) / gmag * h0_;
+    if (denom < 1e-9) denom = 1e-9;
+    double frac = 0.5 + sd / denom;
+    return frac < 0.0 ? 0.0 : (frac > 1.0 ? 1.0 : frac);
   }
 
   const Octree* t_ = nullptr;
@@ -251,7 +273,8 @@ class AmrFlow {
   AmrPoisson<3, Bits> pres_;       // openness + divergence/gradient access
   AmrMultigrid<3, Bits> presMG_;   // fast (graded-capable) pressure solve
   std::array<std::vector<double>, 3> u_;
-  std::vector<double> phi_;
+  std::vector<double> phi_;  // pressure-increment potential (per projection)
+  std::vector<double> p_;    // accumulated pressure (rotational incremental scheme)
 };
 
 }  // namespace tpx::amr
