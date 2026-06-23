@@ -20,6 +20,7 @@
 
 #ifdef TPX_HAVE_MORTON
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <vector>
@@ -86,6 +87,7 @@ class AmrCutCell {
     kappa_.assign(static_cast<std::size_t>(n), 0.0);
     fluid_.assign(static_cast<std::size_t>(n), false);
     cut_.assign(static_cast<std::size_t>(n), 0);
+    hasAdv_ = false;  // advection FOU is rebuilt per step via buildAdvectionFou
     AC_.assign(static_cast<std::size_t>(n), 1.0);
     rscale_.assign(static_cast<std::size_t>(n), 1.0);
     inhom_.assign(static_cast<std::size_t>(n), 0.0);
@@ -153,6 +155,36 @@ class AmrCutCell {
       } else {
         out[s] = idiag_ * u[s] - mu_ * Lu[s];  // regular fluid (C/F-consistent)
       }
+      if (hasAdv_ && fluid_[s]) out[s] += advApply(i, u);  // implicit FOU advection
+    }
+  }
+
+  /// Build the implicit first-order-upwind advection operator from a (lagged)
+  /// advecting velocity field `uadv` (3 components, cell-centred), scaled by `rho`.
+  /// Couples each fluid cell to its 6 same-level neighbours; the advecting velocity
+  /// at a wall (solid neighbour) face is zero (no flow through the immersed boundary).
+  /// Rebuilt per step (velocity-dependent). Used as the stable base of the
+  /// deferred-correction advection (the high-order − FOU part is explicit in the RHS).
+  void buildAdvectionFou(const std::array<std::vector<double>, 3>& uadv, double rho) {
+    const Index n = numLeaves();
+    advDiag_.assign(static_cast<std::size_t>(n), 0.0);
+    advOff_.assign(static_cast<std::size_t>(n) * 6, 0.0);
+    hasAdv_ = true;
+    const double s = rho / h0_;  // (1/V)·A = 1/h0 on same-level faces
+    for (Index i = 0; i < n; ++i) {
+      if (!fluid_[static_cast<std::size_t>(i)]) continue;
+      const std::size_t si = static_cast<std::size_t>(i);
+      for (int axis = 0; axis < 3; ++axis) {
+        Index pj = nb_[si * 6 + 2 * axis], mj = nb_[si * 6 + 2 * axis + 1];
+        bool pf = pj >= 0 && fluid_[static_cast<std::size_t>(pj)];
+        bool mf = mj >= 0 && fluid_[static_cast<std::size_t>(mj)];
+        double ui = uadv[axis][si];
+        double velp = pf ? 0.5 * (ui + uadv[axis][static_cast<std::size_t>(pj)]) : 0.0;
+        double velm = mf ? 0.5 * (uadv[axis][static_cast<std::size_t>(mj)] + ui) : 0.0;
+        advDiag_[si] += s * (std::max(velp, 0.0) - std::min(velm, 0.0));
+        advOff_[si * 6 + 2 * axis] += s * std::min(velp, 0.0);            // +neighbour
+        advOff_[si * 6 + 2 * axis + 1] += s * (-std::max(velm, 0.0));     // -neighbour
+      }
     }
   }
 
@@ -201,6 +233,7 @@ class AmrCutCell {
             if (j >= 0) sum -= a * u[static_cast<std::size_t>(j)];
           }
           double d = AC_[si];
+          if (hasAdv_) { sum -= advOffSum(i, u); d += advDiag_[si]; }
           if (d != 0.0) u[si] = sum / d;
         } else {  // regular fluid: idiag·u − μ∇² with C/F-aware face coupling
           double offsum = 0.0, dsum = 0.0;
@@ -210,12 +243,31 @@ class AmrCutCell {
           });
           double Vi = lap_.cellVolume(i);
           double diagA = idiag_ + mu_ * dsum / Vi;
-          u[si] = (b[si] + mu_ * offsum / Vi) / diagA;
+          double sum = b[si] + mu_ * offsum / Vi;
+          if (hasAdv_) { sum -= advOffSum(i, u); diagA += advDiag_[si]; }
+          u[si] = sum / diagA;
         }
       }
   }
 
  private:
+  // Σ_k advOff[i,k]·u[nb(i,k)] — the implicit-FOU advection off-diagonal coupling.
+  double advOffSum(Index i, const std::vector<double>& u) const {
+    const std::size_t si = static_cast<std::size_t>(i);
+    double s = 0.0;
+    for (int k = 0; k < 6; ++k) {
+      double a = advOff_[si * 6 + k];
+      if (a == 0.0) continue;
+      Index j = nb_[si * 6 + k];
+      if (j >= 0) s += a * u[static_cast<std::size_t>(j)];
+    }
+    return s;
+  }
+  // advDiag·u_i + Σ advOff·u_nb (the FOU row contribution to A u).
+  double advApply(Index i, const std::vector<double>& u) const {
+    return advDiag_[static_cast<std::size_t>(i)] * u[static_cast<std::size_t>(i)] + advOffSum(i, u);
+  }
+
   // Port of ibmFillEntry<0> + ibmModifyStencil for one cut cell (Dirichlet).
   static void buildCutStencil(double sdf_c, const double sdf_n[6], double beta, double AC0,
                               double& ACout, double off[6], double& rscaleOut, double& inhomOut) {
@@ -336,6 +388,8 @@ class AmrCutCell {
   std::vector<char> fluid_, cut_;
   AmrPoisson<3, Bits> lap_;   // C/F-aware ∇² provider for regular fluid cells (α=1)
   double idiag_ = 0.0, mu_ = 1.0;
+  std::vector<double> advDiag_, advOff_;  // implicit-FOU advection (rebuilt per step)
+  bool hasAdv_ = false;
 };
 
 }  // namespace tpx::amr

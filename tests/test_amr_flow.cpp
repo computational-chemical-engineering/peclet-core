@@ -13,6 +13,7 @@
 
 #ifdef TPX_HAVE_MORTON
 #include <cmath>
+#include <limits>
 #include <vector>
 
 #include "tpx/amr/block_octree.hpp"
@@ -190,10 +191,65 @@ void test_advection() {
   TPX_CHECK(std::sqrt(err / nf) < 1e-6);
 }
 
+// Implicit-FOU deferred correction is unconditionally stable for advection: at a
+// high advective CFL, explicit high-order advection blows up while the implicit-FOU
+// path stays bounded.
+void test_implicit_advection() {
+  const unsigned L = 4;
+  BO t = uniformFine(L);
+  const long N = 1L << L;
+  const double h0 = 1.0 / static_cast<double>(N), k = 2.0 * M_PI, A = 4.0;
+  auto initVortex = [&](AmrFlow<21>& fl) {
+    fl.init(t, h0);
+    fl.setDensity(1.0);
+    fl.setViscosity(0.005);
+    fl.setDt(0.1);  // CFL = A*dt/h ≈ 6.4 -> explicit advection blows up (NaN)
+    fl.setAdvection(true);
+    fl.setSolid([](const Vec<3>&) { return 1.0; });  // all fluid, periodic
+    auto ctr = [&](Index i, int d) {
+      auto b = t.bounds(i);
+      double s = static_cast<double>(1 << t.level(i));
+      return (static_cast<double>(b[0][d]) + 0.5 * s) * h0;
+    };
+    auto& U = fl.velocityRef();
+    for (Index i = 0; i < t.numLeaves(); ++i) {
+      double x = ctr(i, 0), y = ctr(i, 1);
+      U[0][static_cast<std::size_t>(i)] = A * std::sin(k * x) * std::cos(k * y);
+      U[1][static_cast<std::size_t>(i)] = -A * std::cos(k * x) * std::sin(k * y);
+    }
+  };
+  auto maxU = [&](AmrFlow<21>& fl) {
+    double m = 0;
+    bool finite = true;
+    for (int c = 0; c < 3; ++c)
+      for (Index i = 0; i < t.numLeaves(); ++i) {
+        double v = fl.velocity(c)[static_cast<std::size_t>(i)];
+        if (!std::isfinite(v)) finite = false;  // NaN/Inf would otherwise hide under std::max
+        m = std::max(m, std::fabs(v));
+      }
+    return finite ? m : std::numeric_limits<double>::infinity();
+  };
+
+  AmrFlow<21> imp;
+  initVortex(imp);  // implicit-FOU (default on)
+  for (int it = 0; it < 25; ++it) imp.step(40, 5, 2);
+  double mi = maxU(imp);
+
+  AmrFlow<21> exp_;
+  initVortex(exp_);
+  exp_.setImplicitAdvection(false);  // fully explicit high-order advection
+  for (int it = 0; it < 25; ++it) exp_.step(40, 5, 2);
+  double me = maxU(exp_);
+
+  TPX_CHECK(std::isfinite(mi) && mi < 5.0 * A);   // implicit stays bounded (stable)
+  TPX_CHECK(!(std::isfinite(me) && me < 5.0 * A)); // explicit blows up at this CFL
+}
+
 void run() {
   test_poiseuille();
   test_projection();
   test_advection();
+  test_implicit_advection();
 }
 
 }  // namespace

@@ -64,6 +64,11 @@ class AmrFlow {
   void setAdvection(bool on) { advect_ = on; }
   /// High-order advection scheme: 0 = second-order upwind (SOU, default), 1 = Koren TVD.
   void setAdvectionScheme(int s) { advScheme_ = s; }
+  /// Implicit-FOU deferred-correction advection (default ON): the first-order-upwind
+  /// part is solved implicitly (in the momentum operator) and the high-order − FOU
+  /// difference is explicit — unconditionally stable for advection. OFF ⇒ fully
+  /// explicit high-order advection.
+  void setImplicitAdvection(bool on) { implicitFou_ = on; }
 
   /// Conservative Koren-TVD advection term ∇·(u u_comp) at leaf i (physical units;
   /// the explicit momentum advection). Exposed for testing.
@@ -93,24 +98,31 @@ class AmrFlow {
   /// component; `presIters`×`presSweeps` for the pressure solve.
   void step(int momSweeps = 200, int presIters = 60, int presSweeps = 4) {
     const Index n = t_->numLeaves();
-    // Explicit Koren-TVD advection ∇·(u^n u^n_c), evaluated from u^n BEFORE the
-    // predictor mutates the velocity in place.
+    // Advection ∇·(u^n u^n_c), evaluated from u^n BEFORE the predictor mutates u_.
+    // High-order (SOU/TVD) always; first-order-upwind too for the implicit-FOU
+    // deferred correction (the explicit term is ρ·(HO − FOU); FOU is implicit in
+    // the momentum operator, rebuilt here from the lagged u^n).
     std::array<std::vector<double>, 3> adv;
-    if (advect_)
+    if (advect_) {
+      if (implicitFou_) mom_.buildAdvectionFou(u_, rho_);  // implicit FOU operator (lagged u^n)
       for (int c = 0; c < 3; ++c) {
         adv[c].assign(static_cast<std::size_t>(n), 0.0);
         for (Index i = 0; i < n; ++i)
-          if (mom_.isFluid(i)) adv[c][static_cast<std::size_t>(i)] = advect(c, i) / h0_;
+          if (mom_.isFluid(i)) {
+            double ho = advect(c, i) / h0_;
+            adv[c][static_cast<std::size_t>(i)] = implicitFou_ ? (ho - advectFou(c, i) / h0_) : ho;
+          }
       }
+    }
 
-    // --- momentum predictor: implicit viscous + body force − explicit advection ---
+    // --- momentum predictor: implicit viscous (+ implicit FOU) + body force − advection ---
     for (int c = 0; c < 3; ++c) {
       std::vector<double> src(static_cast<std::size_t>(n), 0.0);
       for (Index i = 0; i < n; ++i)
         if (mom_.isFluid(i)) {
           // incremental predictor: include the old pressure gradient −∇p^n.
           double s = (rho_ / dt_) * u_[c][static_cast<std::size_t>(i)] + f_[c] - gradOf(p_, i, c);
-          if (advect_) s -= rho_ * adv[c][static_cast<std::size_t>(i)];
+          if (advect_) s -= rho_ * adv[c][static_cast<std::size_t>(i)];  // HO (explicit) or HO−FOU (deferred)
           src[static_cast<std::size_t>(i)] = s;
         }
       std::vector<double> b = mom_.makeRhs(src, /*u_bc=*/0.0);
@@ -233,6 +245,28 @@ class AmrFlow {
     return out;
   }
 
+  // First-order-upwind advection ∇·(u u_comp) (grid units), consistent with the
+  // implicit FOU operator AmrCutCell::buildAdvectionFou: advecting velocity is zero
+  // at a wall face (solid neighbour). The explicit deferred correction is
+  // ρ·(advect − advectFou)/h0; the FOU half is what's solved implicitly.
+  double advectFou(int comp, Index i) const {
+    double out = 0.0;
+    for (int fd = 0; fd < 3; ++fd) {
+      Index pj = step1(i, fd, +1), mj = step1(i, fd, -1);
+      bool pf = pj >= 0 && mom_.isFluid(pj), mf = mj >= 0 && mom_.isFluid(mj);
+      double ui = u_[fd][static_cast<std::size_t>(i)];
+      double velp = pf ? 0.5 * (ui + u_[fd][static_cast<std::size_t>(pj)]) : 0.0;
+      double velm = mf ? 0.5 * (u_[fd][static_cast<std::size_t>(mj)] + ui) : 0.0;
+      double L0 = u_[comp][static_cast<std::size_t>(i)];
+      double up = pf ? u_[comp][static_cast<std::size_t>(pj)] : 0.0;
+      double um = mf ? u_[comp][static_cast<std::size_t>(mj)] : 0.0;
+      double Fp = (velp > 0.0) ? velp * L0 : velp * up;
+      double Fm = (velm > 0.0) ? velm * um : velm * L0;
+      out += Fp - Fm;
+    }
+    return out;
+  }
+
   // ABC (Almgren-Bell-Colella) cell-velocity correction gradient in direction `c`:
   // ½·(g⁻ + g⁺) of the two adjacent FACE pressure-gradients, where a CLOSED face
   // (openness 0 — solid neighbour) contributes a ZERO gradient (it does NOT read
@@ -287,7 +321,8 @@ class AmrFlow {
   Vec<3> origin_{};
   double rho_ = 1.0, mu_ = 1.0, dt_ = 1e6;
   bool advect_ = false;
-  int advScheme_ = 0;  // 0 = SOU (default), 1 = Koren TVD
+  bool implicitFou_ = true;  // implicit-FOU deferred-correction advection (stable)
+  int advScheme_ = 0;        // 0 = SOU (default), 1 = Koren TVD
   Vec<3> f_{};
   AmrCutCell<Bits> mom_;
   AmrPoisson<3, Bits> pres_;       // openness + divergence/gradient access
