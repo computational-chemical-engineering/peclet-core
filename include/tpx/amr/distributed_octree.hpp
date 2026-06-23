@@ -90,6 +90,7 @@ class DistributedOctree {
   const Octree& local() const { return local_; }
   int rank() const { return rank_; }
   int size() const { return size_; }
+  MPI_Comm comm() const { return comm_; }
   unsigned lmax() const { return lmax_; }
   const IVec<Dim>& blockOriginRoot() const { return blockOriginRoot_; }
   const IVec<Dim>& blockBrick() const { return blockBrick_; }
@@ -222,7 +223,8 @@ class DistributedOctree {
               double v = (leaf >= 0) ? field[static_cast<std::size_t>(leaf)] : sentinel;
               appendReply(replyBufs[src], reqId, v);
             });
-          });
+          },
+          /*tag=*/11);  // distinct tag: keep request/reply rounds from aliasing in NBX
     }
     {
       halo::NbxEngine eng(comm_);
@@ -239,7 +241,8 @@ class DistributedOctree {
             parseReplies(msg, [&](std::int64_t reqId, double v) {
               out[static_cast<std::size_t>(reqId)] = v;
             });
-          });
+          },
+          /*tag=*/12);  // reply round: distinct tag from the request round (11)
     }
     return out;
   }
