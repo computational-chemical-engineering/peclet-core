@@ -41,6 +41,12 @@ target_link_libraries(test_amr_poisson PRIVATE tpx_core)
 target_include_directories(test_amr_poisson PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME amr_poisson COMMAND test_amr_poisson)
 
+# Quadratic coarse-fine flux + refluxing (2nd-order C/F interface).
+add_executable(test_amr_cf_quadratic test_amr_cf_quadratic.cpp)
+target_link_libraries(test_amr_cf_quadratic PRIVATE tpx_core)
+target_include_directories(test_amr_cf_quadratic PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME amr_cf_quadratic COMMAND test_amr_cf_quadratic)
+
 # Barnes-Hut particle-tree mode over the octree.
 add_executable(test_amr_barnes_hut test_amr_barnes_hut.cpp)
 target_link_libraries(test_amr_barnes_hut PRIVATE tpx_core)

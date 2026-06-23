@@ -64,7 +64,7 @@ class AmrPoisson {
     return v;
   }
 
-  /// Visit each face neighbour of leaf `i`: fn(neighbourSlot, coeff) where
+  /// Visit each face neighbour of leaf `i`: fn(neighbourSlot, coeff, axis) where
   /// coeff = A_f / d_f (physical). Periodic wrap; 2:1 interfaces enumerated.
   template <class Fn>
   void forEachFaceNeighbor(Index i, Fn&& fn) const {
@@ -82,7 +82,7 @@ class AmrPoisson {
         const unsigned Lj = t_->level(j);
         if (Lj >= Li) {
           // same level or coarser: one neighbour, shared face = this cell's face.
-          fn(j, coeff(si, Coord(Coord(1) << Lj)));
+          fn(j, coeff(si, Coord(Coord(1) << Lj)), axis);
         } else {
           // finer neighbour: 2^(Dim-1) sub-faces, each the fine face area.
           const Coord sj = Coord(si >> 1);
@@ -101,10 +101,92 @@ class AmrPoisson {
             // Fine face area (min = sj) but the true centre-to-centre distance
             // (si+sj)/2 — same value the fine side computes, so the operator is
             // symmetric / conservative across the 2:1 interface.
-            fn(jj, coeff(si, sj));
+            fn(jj, coeff(si, sj), axis);
           }
         }
       }
+  }
+
+  /// Periodic face neighbour leaf (covering the cell just across the face).
+  Index periodicNeighbor(Index i, int axis, int dir) const {
+    auto b = t_->bounds(i);
+    const auto& lo = b[0];
+    const Coord si = Coord(Coord(1) << t_->level(i));
+    const long pc = (dir > 0) ? static_cast<long>(lo[axis]) + static_cast<long>(si)
+                              : static_cast<long>(lo[axis]) - 1;
+    std::array<Coord, Dim> p = lo;
+    p[axis] = wrap(pc, axis);
+    return t_->find(M::encode(p).code());
+  }
+
+  /// Quadratic coarse-fine value: the coarse leaf `coarse`'s field, evaluated by
+  /// tangential quadratic interpolation at the tangential position of fine leaf
+  /// `fine` (Martin–Cartwright). Replacing the raw coarse value with this in the
+  /// two-point flux makes the C/F flux 2nd-order; both sides of the face use the
+  /// identical value, so the operator stays symmetric/conservative (refluxing is
+  /// automatic). Falls back to the raw value on any tangential axis whose coarse
+  /// neighbours aren't both same-level.
+  double coarseStar(const std::vector<double>& u, Index coarse, Index fine, int axis) const {
+    const double uc = u[static_cast<std::size_t>(coarse)];
+    auto bc = t_->bounds(coarse);
+    auto bf = t_->bounds(fine);
+    const double H = cellWidth(coarse);
+    const double sc = static_cast<double>(Index(1) << t_->level(coarse));
+    const double sf = static_cast<double>(Index(1) << t_->level(fine));
+    double val = uc;
+    for (int t = 0; t < Dim; ++t) {
+      if (t == axis) continue;
+      const double dt = ((static_cast<double>(bf[0][t]) + 0.5 * sf) -
+                         (static_cast<double>(bc[0][t]) + 0.5 * sc)) * h0_;
+      Index cp = periodicNeighbor(coarse, t, +1);
+      Index cm = periodicNeighbor(coarse, t, -1);
+      if (cp < 0 || cm < 0) continue;
+      if (t_->level(cp) != t_->level(coarse) || t_->level(cm) != t_->level(coarse)) continue;
+      const double up = u[static_cast<std::size_t>(cp)];
+      const double um = u[static_cast<std::size_t>(cm)];
+      const double Dt = (up - um) / (2.0 * H);
+      const double Dtt = (up - 2.0 * uc + um) / (H * H);
+      val += dt * Dt + 0.5 * dt * dt * Dtt;
+    }
+    return val;
+  }
+
+  /// out = L u with the quadratic coarse-fine flux (2nd-order at 2:1 interfaces).
+  void applyLaplacianQuad(const std::vector<double>& u, std::vector<double>& out) const {
+    const Index n = numLeaves();
+    out.assign(static_cast<std::size_t>(n), 0.0);
+    for (Index i = 0; i < n; ++i) {
+      const double ui = u[static_cast<std::size_t>(i)];
+      const unsigned Li = t_->level(i);
+      double acc = 0.0;
+      forEachFaceNeighbor(i, [&](Index j, Real c, int axis) {
+        const unsigned Lj = t_->level(j);
+        double uj = u[static_cast<std::size_t>(j)];
+        double uii = ui;
+        if (Lj > Li)
+          uj = coarseStar(u, j, i, axis);   // j coarser: correct its value
+        else if (Lj < Li)
+          uii = coarseStar(u, i, j, axis);  // i coarser: correct our value for this sub-face
+        acc += c * (uj - uii);
+      });
+      out[static_cast<std::size_t>(i)] = acc / cellVolume(i);
+    }
+  }
+
+  /// L2 norm of rhs - L_quad u.
+  double residualQuad(const std::vector<double>& u, const std::vector<double>& rhs,
+                      std::vector<double>& res) const {
+    std::vector<double> lu;
+    applyLaplacianQuad(u, lu);
+    const Index n = numLeaves();
+    res.assign(static_cast<std::size_t>(n), 0.0);
+    double s = 0.0;
+    for (Index i = 0; i < n; ++i) {
+      double r = rhs[static_cast<std::size_t>(i)] - lu[static_cast<std::size_t>(i)];
+      res[static_cast<std::size_t>(i)] = r;
+      s += cellVolume(i) * r * r;
+    }
+    return std::sqrt(s);
   }
 
   /// out = L u (periodic FV Laplacian).
@@ -114,7 +196,7 @@ class AmrPoisson {
     for (Index i = 0; i < n; ++i) {
       const double ui = u[static_cast<std::size_t>(i)];
       double acc = 0.0;
-      forEachFaceNeighbor(i, [&](Index j, Real c) { acc += c * (u[static_cast<std::size_t>(j)] - ui); });
+      forEachFaceNeighbor(i, [&](Index j, Real c, int) { acc += c * (u[static_cast<std::size_t>(j)] - ui); });
       out[static_cast<std::size_t>(i)] = acc / cellVolume(i);
     }
   }
@@ -128,7 +210,7 @@ class AmrPoisson {
     for (Index i = 0; i < n; ++i) {
       const double ui = u[static_cast<std::size_t>(i)];
       double acc = 0.0;
-      forEachFaceNeighbor(i, [&](Index j, Real c) { acc += c * (u[static_cast<std::size_t>(j)] - ui); });
+      forEachFaceNeighbor(i, [&](Index j, Real c, int) { acc += c * (u[static_cast<std::size_t>(j)] - ui); });
       double r = rhs[static_cast<std::size_t>(i)] - acc / cellVolume(i);
       res[static_cast<std::size_t>(i)] = r;
       s += cellVolume(i) * r * r;
@@ -142,7 +224,7 @@ class AmrPoisson {
     for (int s = 0; s < sweeps; ++s)
       for (Index i = 0; i < n; ++i) {
         double sumOff = 0.0, diag = 0.0;
-        forEachFaceNeighbor(i, [&](Index j, Real c) {
+        forEachFaceNeighbor(i, [&](Index j, Real c, int) {
           sumOff += c * u[static_cast<std::size_t>(j)];
           diag += c;
         });
@@ -262,6 +344,26 @@ class AmrMultigrid {
     }
     ops_[L].gaussSeidel(u, rhs, post);
     ops_[L].removeMean(u);
+  }
+
+  /// Solve the *quadratic* C/F operator L_quad u = rhs by deferred correction: the
+  /// standard-operator V-cycle solves L_std u = rhs - (L_quad - L_std) u, with the
+  /// cheap-to-evaluate quadratic correction lagged. Returns the final L_quad
+  /// residual norm. `cyclesPerOuter` V-cycles per correction update.
+  double solveQuad(std::vector<double>& u, const std::vector<double>& rhs, int outer = 30,
+                   int cyclesPerOuter = 1) {
+    AmrPoisson<Dim, Bits>& P = ops_[0];
+    const std::size_t n = u.size();
+    std::vector<double> lq, ls, rhsp(n), res;
+    double r = 0.0;
+    for (int o = 0; o < outer; ++o) {
+      P.applyLaplacianQuad(u, lq);
+      P.applyLaplacian(u, ls);
+      for (std::size_t i = 0; i < n; ++i) rhsp[i] = rhs[i] - (lq[i] - ls[i]);
+      for (int c = 0; c < cyclesPerOuter; ++c) vcycle(0, u, rhsp);
+      r = P.residualQuad(u, rhs, res);
+    }
+    return r;
   }
 
  private:
