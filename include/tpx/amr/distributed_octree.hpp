@@ -94,6 +94,27 @@ class DistributedOctree {
   unsigned lmax() const { return lmax_; }
   const IVec<Dim>& blockOriginRoot() const { return blockOriginRoot_; }
   const IVec<Dim>& blockBrick() const { return blockBrick_; }
+  const IVec<Dim>& globalRootSize() const { return globalRootSize_; }
+
+  /// Global root-cell coordinate of local leaf `i` (lmax==0: the leaf is one root cell).
+  IVec<Dim> globalRootOf(Index i) const {
+    auto o = M::from_code(local_.code(i)).decode();
+    IVec<Dim> g{};
+    for (int d = 0; d < Dim; ++d) g[d] = static_cast<Index>(o[d]) / rootSpan_ + blockOriginRoot_[d];
+    return g;
+  }
+
+  /// Local leaf covering global root-cell `g`, or -1 if not owned by this rank
+  /// (lmax==0). Used to build the nested fine↔coarse multigrid transfer maps.
+  Index findGlobalRoot(const IVec<Dim>& g) const {
+    std::array<Coord, Dim> lc{};
+    for (int d = 0; d < Dim; ++d) {
+      long v = g[d] - blockOriginRoot_[d];
+      if (v < 0 || v >= blockBrick_[d]) return -1;
+      lc[d] = static_cast<Coord>(v * rootSpan_);
+    }
+    return local_.find(M::encode(lc).code());
+  }
 
   /// World geometry of this rank's block (the global geometry shifted to its origin).
   AmrGeometry<Dim> localGeometry() const {

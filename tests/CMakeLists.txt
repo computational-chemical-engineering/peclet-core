@@ -96,6 +96,11 @@ if(TPX_HAVE_KOKKOS)
   target_link_libraries(test_amr_device_poisson_kokkos PRIVATE tpx_core)
   target_include_directories(test_amr_device_poisson_kokkos PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   add_test(NAME amr_device_poisson_kokkos COMMAND test_amr_device_poisson_kokkos)
+
+  add_executable(test_amr_device_multigrid_kokkos test_amr_device_multigrid_kokkos.cpp)
+  target_link_libraries(test_amr_device_multigrid_kokkos PRIVATE tpx_core)
+  target_include_directories(test_amr_device_multigrid_kokkos PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME amr_device_multigrid_kokkos COMMAND test_amr_device_multigrid_kokkos)
 endif()
 
 add_executable(test_sdf test_sdf.cpp)
@@ -142,6 +147,10 @@ if(MPI_FOUND)
   target_link_libraries(test_amr_distributed_poisson_mpi PRIVATE tpx_halo)
   target_include_directories(test_amr_distributed_poisson_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+  add_executable(test_amr_distributed_mg_mpi test_amr_distributed_mg_mpi.cpp)
+  target_link_libraries(test_amr_distributed_mg_mpi PRIVATE tpx_halo)
+  target_include_directories(test_amr_distributed_mg_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
   foreach(np IN ITEMS 1 2 4 8)
     add_test(NAME grid_halo_np${np}
              COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
@@ -167,6 +176,9 @@ if(MPI_FOUND)
     add_test(NAME amr_distributed_poisson_np${np}
              COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
                      ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_poisson_mpi> ${MPIEXEC_POSTFLAGS})
+    add_test(NAME amr_distributed_mg_np${np}
+             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
+                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_mg_mpi> ${MPIEXEC_POSTFLAGS})
   endforeach()
 
   # Portable GPU-resident halo (Kokkos): device result must match the CPU path, on whatever backend
