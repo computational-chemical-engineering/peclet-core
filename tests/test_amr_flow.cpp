@@ -18,7 +18,10 @@
 
 #include "tpx/amr/block_octree.hpp"
 #include "tpx/amr/flow.hpp"
+#include "tpx/amr/leaf_field.hpp"
+#include "tpx/amr/refine.hpp"
 #include "tpx/common/types.hpp"
+#include "tpx/geom/sdf.hpp"
 
 using namespace tpx;
 using namespace tpx::amr;
@@ -245,11 +248,54 @@ void test_implicit_advection() {
   TPX_CHECK(!(std::isfinite(me) && me < 5.0 * A)); // explicit blows up at this CFL
 }
 
+// Graded-interface advection: on a graded mesh (sphere band finest, far field
+// coarse), advection ON must be STABLE across the 2:1 interfaces — the FOU operator
+// is C/F-conservative (sums fine sub-faces) and the high-order flux is C/F-aware.
+void test_graded_advection() {
+  const long brick = 8;
+  const unsigned lmax = 1;  // finest 16
+  const long N = brick * (1L << lmax);
+  const double k = 2.0 * M_PI, c = N / 2.0;
+  BO t(IVec<3>{brick, brick, brick}, lmax);
+  AmrGeometry<3> geo;
+  geo.h0 = 1.0;
+  tpx::geom::Sphere sph{{c, c, c}, 0.30 * N};
+  refineToSdf(t, geo, [&](const Vec<3>& p) { return -sph.eval(p); }, 0, 1.5, true);
+  TPX_CHECK(t.numLeaves() < N * N * N);  // genuinely graded
+
+  AmrFlow<21> fl;
+  fl.init(t, 1.0, Vec<3>{0, 0, 0});
+  fl.setDensity(1.0);
+  fl.setViscosity(0.02);
+  fl.setDt(0.1);
+  fl.setAdvection(true);                           // implicit-FOU (default on)
+  fl.setSolid([](const Vec<3>&) { return 1.0; });  // all fluid, periodic
+  auto& U = fl.velocityRef();
+  for (Index i = 0; i < t.numLeaves(); ++i) {
+    auto b = t.bounds(i);
+    double s = static_cast<double>(1 << t.level(i));
+    double x = (static_cast<double>(b[0][0]) + 0.5 * s) / N, y = (static_cast<double>(b[0][1]) + 0.5 * s) / N;
+    U[0][static_cast<std::size_t>(i)] = 2.0 * std::sin(k * x) * std::cos(k * y);
+    U[1][static_cast<std::size_t>(i)] = -2.0 * std::cos(k * x) * std::sin(k * y);
+  }
+  for (int it = 0; it < 30; ++it) fl.step(40, 6, 2);
+  double m = 0;
+  bool finite = true;
+  for (int comp = 0; comp < 3; ++comp)
+    for (Index i = 0; i < t.numLeaves(); ++i) {
+      double v = fl.velocity(comp)[static_cast<std::size_t>(i)];
+      if (!std::isfinite(v)) finite = false;
+      m = std::max(m, std::fabs(v));
+    }
+  TPX_CHECK(finite && m < 4.0);  // stable across 2:1 interfaces (bounded, no blow-up)
+}
+
 void run() {
   test_poiseuille();
   test_projection();
   test_advection();
   test_implicit_advection();
+  test_graded_advection();
 }
 
 }  // namespace

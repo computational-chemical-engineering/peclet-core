@@ -161,30 +161,48 @@ class AmrCutCell {
 
   /// Build the implicit first-order-upwind advection operator from a (lagged)
   /// advecting velocity field `uadv` (3 components, cell-centred), scaled by `rho`.
-  /// Couples each fluid cell to its 6 same-level neighbours; the advecting velocity
-  /// at a wall (solid neighbour) face is zero (no flow through the immersed boundary).
-  /// Rebuilt per step (velocity-dependent). Used as the stable base of the
-  /// deferred-correction advection (the high-order − FOU part is explicit in the RHS).
+  /// **C/F-conservative**: each face (incl. the 2^(Dim-1) fine sub-faces of a coarse
+  /// cell, via forEachFaceFull) contributes `(1/V)·A·velOut·ρ` to the diagonal
+  /// (outflow) or to a CSR off-diagonal toward the upstream neighbour (inflow); the
+  /// advecting velocity at a wall (solid neighbour) face is zero (no flow through the
+  /// immersed boundary). Rebuilt per step. Stable base of the deferred correction.
   void buildAdvectionFou(const std::array<std::vector<double>, 3>& uadv, double rho) {
     const Index n = numLeaves();
     advDiag_.assign(static_cast<std::size_t>(n), 0.0);
-    advOff_.assign(static_cast<std::size_t>(n) * 6, 0.0);
+    advStart_.assign(static_cast<std::size_t>(n) + 1, 0);
     hasAdv_ = true;
-    const double s = rho / h0_;  // (1/V)·A = 1/h0 on same-level faces
+    auto velOutOf = [&](Index i, Index j, int axis, int dir) {
+      return dir * 0.5 * (uadv[axis][static_cast<std::size_t>(i)] + uadv[axis][static_cast<std::size_t>(j)]);
+    };
+    // pass 1: count inflow (off-diagonal) fluid faces per cell.
     for (Index i = 0; i < n; ++i) {
       if (!fluid_[static_cast<std::size_t>(i)]) continue;
-      const std::size_t si = static_cast<std::size_t>(i);
-      for (int axis = 0; axis < 3; ++axis) {
-        Index pj = nb_[si * 6 + 2 * axis], mj = nb_[si * 6 + 2 * axis + 1];
-        bool pf = pj >= 0 && fluid_[static_cast<std::size_t>(pj)];
-        bool mf = mj >= 0 && fluid_[static_cast<std::size_t>(mj)];
-        double ui = uadv[axis][si];
-        double velp = pf ? 0.5 * (ui + uadv[axis][static_cast<std::size_t>(pj)]) : 0.0;
-        double velm = mf ? 0.5 * (uadv[axis][static_cast<std::size_t>(mj)] + ui) : 0.0;
-        advDiag_[si] += s * (std::max(velp, 0.0) - std::min(velm, 0.0));
-        advOff_[si * 6 + 2 * axis] += s * std::min(velp, 0.0);            // +neighbour
-        advOff_[si * 6 + 2 * axis + 1] += s * (-std::max(velm, 0.0));     // -neighbour
-      }
+      int cnt = 0;
+      lap_.forEachFaceFull(i, [&](Index j, int axis, int dir, double, double, double) {
+        if (fluid_[static_cast<std::size_t>(j)] && velOutOf(i, j, axis, dir) < 0.0) ++cnt;
+      });
+      advStart_[static_cast<std::size_t>(i) + 1] = cnt;
+    }
+    for (Index i = 0; i < n; ++i) advStart_[static_cast<std::size_t>(i) + 1] += advStart_[static_cast<std::size_t>(i)];
+    advNbr_.assign(advStart_[static_cast<std::size_t>(n)], -1);
+    advCoef_.assign(advStart_[static_cast<std::size_t>(n)], 0.0);
+    // pass 2: fill diagonal (outflow) + CSR off-diagonals (inflow).
+    for (Index i = 0; i < n; ++i) {
+      if (!fluid_[static_cast<std::size_t>(i)]) continue;
+      const double Vi = lap_.cellVolume(i);
+      std::size_t pos = static_cast<std::size_t>(advStart_[static_cast<std::size_t>(i)]);
+      lap_.forEachFaceFull(i, [&](Index j, int axis, int dir, double area, double, double) {
+        if (!fluid_[static_cast<std::size_t>(j)]) return;
+        double velOut = velOutOf(i, j, axis, dir);
+        double w = rho * area * velOut / Vi;
+        if (velOut < 0.0) {       // inflow → couple to upstream neighbour j (matches pass 1)
+          advNbr_[pos] = j;
+          advCoef_[pos] = w;
+          ++pos;
+        } else {
+          advDiag_[static_cast<std::size_t>(i)] += w;  // outflow → diagonal
+        }
+      });
     }
   }
 
@@ -250,23 +268,26 @@ class AmrCutCell {
       }
   }
 
+ public:
+  /// The implicit-FOU advection operator applied to `field` at leaf i:
+  /// advDiag·field_i + Σ_csr coef·field_nbr (= ρ·∇·(u_adv field) FOU). Used by the
+  /// flow solver for the explicit deferred-correction term (high-order − this).
+  double fouApply(Index i, const std::vector<double>& field) const {
+    return advDiag_[static_cast<std::size_t>(i)] * field[static_cast<std::size_t>(i)] +
+           advOffSum(i, field);
+  }
+  bool hasAdvection() const { return hasAdv_; }
+
  private:
-  // Σ_k advOff[i,k]·u[nb(i,k)] — the implicit-FOU advection off-diagonal coupling.
-  double advOffSum(Index i, const std::vector<double>& u) const {
-    const std::size_t si = static_cast<std::size_t>(i);
+  // Σ_csr coef·field[nbr] — the implicit-FOU advection off-diagonal coupling.
+  double advOffSum(Index i, const std::vector<double>& field) const {
     double s = 0.0;
-    for (int k = 0; k < 6; ++k) {
-      double a = advOff_[si * 6 + k];
-      if (a == 0.0) continue;
-      Index j = nb_[si * 6 + k];
-      if (j >= 0) s += a * u[static_cast<std::size_t>(j)];
-    }
+    for (std::size_t p = static_cast<std::size_t>(advStart_[static_cast<std::size_t>(i)]);
+         p < static_cast<std::size_t>(advStart_[static_cast<std::size_t>(i) + 1]); ++p)
+      s += advCoef_[p] * field[static_cast<std::size_t>(advNbr_[p])];
     return s;
   }
-  // advDiag·u_i + Σ advOff·u_nb (the FOU row contribution to A u).
-  double advApply(Index i, const std::vector<double>& u) const {
-    return advDiag_[static_cast<std::size_t>(i)] * u[static_cast<std::size_t>(i)] + advOffSum(i, u);
-  }
+  double advApply(Index i, const std::vector<double>& u) const { return fouApply(i, u); }
 
   // Port of ibmFillEntry<0> + ibmModifyStencil for one cut cell (Dirichlet).
   static void buildCutStencil(double sdf_c, const double sdf_n[6], double beta, double AC0,
@@ -388,7 +409,8 @@ class AmrCutCell {
   std::vector<char> fluid_, cut_;
   AmrPoisson<3, Bits> lap_;   // C/F-aware ∇² provider for regular fluid cells (α=1)
   double idiag_ = 0.0, mu_ = 1.0;
-  std::vector<double> advDiag_, advOff_;  // implicit-FOU advection (rebuilt per step)
+  std::vector<double> advDiag_, advCoef_;     // implicit-FOU advection (rebuilt per step)
+  std::vector<Index> advStart_, advNbr_;      // CSR off-diagonals (C/F-conservative)
   bool hasAdv_ = false;
 };
 
