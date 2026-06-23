@@ -4,12 +4,19 @@
 //   * momentum  — implicit (backward-Euler) viscous solve per component with the
 //                 Dirichlet ξ-polynomial cut-cell operator (AmrCutCell): no-slip
 //                 u = 0 on the immersed boundary. Operator (ρ/dt)I − μ∇².
-//   * pressure  — cut-cell projection: solve the openness-weighted (Neumann)
-//                 pressure Poisson (AmrPoisson) for φ with ∇²φ = ∇·u*, then
-//                 correct u = u* − ∇φ (collocated central gradient). This is an
-//                 *approximate* projection (collocated div/grad are not adjoint),
-//                 matching sdflow's collocated path; viscous-dominated (Stokes)
-//                 flow is the intended regime.
+//   * pressure  — the **Almgren–Bell–Colella (ABC) approximate projection**, the
+//                 collocated coupling sdflow uses (src/mac_approx_projection.hpp):
+//                 average the cell velocities onto a face (MAC) divergence, solve
+//                 the openness-weighted (Neumann) pressure Poisson (AmrPoisson)
+//                 ∇²φ = ∇·u*, then correct the cell velocities by ½(g⁻+g⁺) of the
+//                 two adjacent FACE φ-gradients (a closed/solid face contributes a
+//                 zero gradient). The *face* field is exactly divergence-free; the
+//                 cell field is approximately so — hence "approximate projection".
+//
+// This collocated coupling is a deliberate choice. Do NOT replace it with a
+// Rhie–Chow face-velocity interpolation: the small residual cell divergence is
+// intrinsic to cell-centered velocity placement (see the amr-octree memory note),
+// not a bug to be engineered away.
 //
 // Stokes only (advection — staggered/collocated Koren TVD — is a follow-up). 3D.
 // Cut cells are assumed same-level (resolve the boundary in a uniformly-finest
@@ -130,18 +137,21 @@ class AmrFlow {
   std::array<std::vector<double>, 3>& velocityRef() { return u_; }
 
  private:
-  // Collocated central gradient of φ in direction `c` at leaf i, masking solids.
+  // ABC (Almgren-Bell-Colella) cell-velocity correction gradient in direction `c`:
+  // ½·(g⁻ + g⁺) of the two adjacent FACE pressure-gradients, where a CLOSED face
+  // (openness 0 — solid neighbour) contributes a ZERO gradient (it does NOT read
+  // the solid neighbour's φ). Verbatim form of sdflow's projectCorrectCenter
+  // (src/mac_approx_projection.hpp) — the collocated approximate projection. This
+  // is the chosen collocated coupling; do NOT substitute a Rhie–Chow face-velocity
+  // interpolation (see docs/AMR.md and the amr-octree memory).
   double gradPhi(Index i, int c) const {
     Index jp = mom_.neighborOf(i, 2 * c);
     Index jm = mom_.neighborOf(i, 2 * c + 1);
     double pi = phi_[static_cast<std::size_t>(i)];
-    bool fp = jp >= 0 && mom_.isFluid(jp), fm = jm >= 0 && mom_.isFluid(jm);
-    double pp = fp ? phi_[static_cast<std::size_t>(jp)] : pi;
-    double pm = fm ? phi_[static_cast<std::size_t>(jm)] : pi;
-    if (fp && fm) return (pp - pm) / (2.0 * h0_);
-    if (fp) return (pp - pi) / h0_;
-    if (fm) return (pi - pm) / h0_;
-    return 0.0;
+    double ap = pres_.faceOpenness(i, c, +1), am = pres_.faceOpenness(i, c, -1);
+    double gp = (ap > 1e-12 && jp >= 0) ? phi_[static_cast<std::size_t>(jp)] - pi : 0.0;  // g⁺
+    double gm = (am > 1e-12 && jm >= 0) ? pi - phi_[static_cast<std::size_t>(jm)] : 0.0;  // g⁻
+    return 0.5 * (gm + gp) / h0_;
   }
 
   // Fluid area fraction of a face (subsampled), for the pressure openness.
