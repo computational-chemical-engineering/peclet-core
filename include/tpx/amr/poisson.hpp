@@ -52,7 +52,55 @@ class AmrPoisson {
   void init(const Octree& t, Real h0) {
     t_ = &t;
     h0_ = h0;
+    alpha_.clear();
+    hasOpen_ = false;
     for (int d = 0; d < Dim; ++d) fineExt_[d] = static_cast<Coord>(t.brick()[d] * (Index(1) << t.lmax()));
+  }
+
+  void setOrigin(const Vec<Dim>& o) { origin_ = o; }
+
+  // ---- cut-cell openness (per-leaf per-face fluid fraction in [0,1]) -------
+  static constexpr int kFaces = 2 * Dim;
+  static int faceIndex(int axis, int dir) { return 2 * axis + (dir > 0 ? 0 : 1); }
+
+  /// Openness of leaf `i`'s face on (axis,dir); 1 if no openness has been set.
+  double faceOpenness(Index i, int axis, int dir) const {
+    if (!hasOpen_) return 1.0;
+    return alpha_[static_cast<std::size_t>(i) * kFaces + faceIndex(axis, dir)];
+  }
+
+  bool hasOpenness() const { return hasOpen_; }
+  const std::vector<double>& opennessRaw() const { return alpha_; }
+  void setOpennessRaw(std::vector<double> a) {
+    alpha_ = std::move(a);
+    hasOpen_ = true;
+  }
+
+  /// Build face openness from a geometry callable openFn(faceCentreWorld, axis) ->
+  /// [0,1] (1 = fully fluid, 0 = fully solid). Evaluated at each face centroid, so
+  /// same-level neighbours see an identical value (consistent shared faces).
+  template <class OpenFn>
+  void buildOpenness(OpenFn&& openFn) {
+    const Index n = numLeaves();
+    alpha_.assign(static_cast<std::size_t>(n) * kFaces, 1.0);
+    hasOpen_ = true;
+    for (Index i = 0; i < n; ++i) {
+      auto b = t_->bounds(i);
+      const auto& lo = b[0];
+      const Coord s = Coord(Coord(1) << t_->level(i));
+      for (int axis = 0; axis < Dim; ++axis)
+        for (int dir = -1; dir <= 1; dir += 2) {
+          const long plane = (dir > 0) ? static_cast<long>(lo[axis]) + static_cast<long>(s)
+                                       : static_cast<long>(lo[axis]);
+          Vec<Dim> fc{};
+          for (int d = 0; d < Dim; ++d)
+            fc[d] = (d == axis) ? origin_[d] + static_cast<Real>(plane) * h0_
+                                : origin_[d] + (static_cast<Real>(lo[d]) + 0.5 * static_cast<Real>(s)) * h0_;
+          double a = static_cast<double>(openFn(fc, axis));
+          a = a < 0.0 ? 0.0 : (a > 1.0 ? 1.0 : a);
+          alpha_[static_cast<std::size_t>(i) * kFaces + faceIndex(axis, dir)] = a;
+        }
+    }
   }
 
   Index numLeaves() const { return t_->numLeaves(); }
@@ -64,8 +112,9 @@ class AmrPoisson {
     return v;
   }
 
-  /// Visit each face neighbour of leaf `i`: fn(neighbourSlot, coeff, axis) where
-  /// coeff = A_f / d_f (physical). Periodic wrap; 2:1 interfaces enumerated.
+  /// Visit each face neighbour of leaf `i`: fn(neighbourSlot, coeff, axis, alpha)
+  /// where coeff = A_f / d_f (physical) and alpha is the face openness (fluid
+  /// fraction, from the finer side). Periodic wrap; 2:1 interfaces enumerated.
   template <class Fn>
   void forEachFaceNeighbor(Index i, Fn&& fn) const {
     auto b = t_->bounds(i);
@@ -82,7 +131,8 @@ class AmrPoisson {
         const unsigned Lj = t_->level(j);
         if (Lj >= Li) {
           // same level or coarser: one neighbour, shared face = this cell's face.
-          fn(j, coeff(si, Coord(Coord(1) << Lj)), axis);
+          // Openness lives on the finer side (here, this cell i).
+          fn(j, coeff(si, Coord(Coord(1) << Lj)), axis, faceOpenness(i, axis, dir));
         } else {
           // finer neighbour: 2^(Dim-1) sub-faces, each the fine face area.
           const Coord sj = Coord(si >> 1);
@@ -100,8 +150,9 @@ class AmrPoisson {
             Index jj = t_->find(M::encode(q).code());
             // Fine face area (min = sj) but the true centre-to-centre distance
             // (si+sj)/2 — same value the fine side computes, so the operator is
-            // symmetric / conservative across the 2:1 interface.
-            fn(jj, coeff(si, sj), axis);
+            // symmetric / conservative across the 2:1 interface. Openness lives on
+            // the finer side (the neighbour jj), its face toward i is -dir.
+            fn(jj, coeff(si, sj), axis, faceOpenness(jj, axis, -dir));
           }
         }
       }
@@ -142,6 +193,10 @@ class AmrPoisson {
       Index cm = periodicNeighbor(coarse, t, -1);
       if (cp < 0 || cm < 0) continue;
       if (t_->level(cp) != t_->level(coarse) || t_->level(cm) != t_->level(coarse)) continue;
+      // Skip the correction near a solid: a nearly-closed tangential face means
+      // the quadratic stencil would lean on a solid-side value. Drop to the raw
+      // coarse value on this axis (locally lower order, but robust).
+      if (faceOpenness(coarse, t, +1) < 0.5 || faceOpenness(coarse, t, -1) < 0.5) continue;
       const double up = u[static_cast<std::size_t>(cp)];
       const double um = u[static_cast<std::size_t>(cm)];
       const double Dt = (up - um) / (2.0 * H);
@@ -159,7 +214,7 @@ class AmrPoisson {
       const double ui = u[static_cast<std::size_t>(i)];
       const unsigned Li = t_->level(i);
       double acc = 0.0;
-      forEachFaceNeighbor(i, [&](Index j, Real c, int axis) {
+      forEachFaceNeighbor(i, [&](Index j, Real c, int axis, double a) {
         const unsigned Lj = t_->level(j);
         double uj = u[static_cast<std::size_t>(j)];
         double uii = ui;
@@ -167,7 +222,7 @@ class AmrPoisson {
           uj = coarseStar(u, j, i, axis);   // j coarser: correct its value
         else if (Lj < Li)
           uii = coarseStar(u, i, j, axis);  // i coarser: correct our value for this sub-face
-        acc += c * (uj - uii);
+        acc += a * c * (uj - uii);
       });
       out[static_cast<std::size_t>(i)] = acc / cellVolume(i);
     }
@@ -196,7 +251,9 @@ class AmrPoisson {
     for (Index i = 0; i < n; ++i) {
       const double ui = u[static_cast<std::size_t>(i)];
       double acc = 0.0;
-      forEachFaceNeighbor(i, [&](Index j, Real c, int) { acc += c * (u[static_cast<std::size_t>(j)] - ui); });
+      forEachFaceNeighbor(i, [&](Index j, Real c, int, double a) {
+        acc += a * c * (u[static_cast<std::size_t>(j)] - ui);
+      });
       out[static_cast<std::size_t>(i)] = acc / cellVolume(i);
     }
   }
@@ -210,7 +267,9 @@ class AmrPoisson {
     for (Index i = 0; i < n; ++i) {
       const double ui = u[static_cast<std::size_t>(i)];
       double acc = 0.0;
-      forEachFaceNeighbor(i, [&](Index j, Real c, int) { acc += c * (u[static_cast<std::size_t>(j)] - ui); });
+      forEachFaceNeighbor(i, [&](Index j, Real c, int, double a) {
+        acc += a * c * (u[static_cast<std::size_t>(j)] - ui);
+      });
       double r = rhs[static_cast<std::size_t>(i)] - acc / cellVolume(i);
       res[static_cast<std::size_t>(i)] = r;
       s += cellVolume(i) * r * r;
@@ -224,9 +283,9 @@ class AmrPoisson {
     for (int s = 0; s < sweeps; ++s)
       for (Index i = 0; i < n; ++i) {
         double sumOff = 0.0, diag = 0.0;
-        forEachFaceNeighbor(i, [&](Index j, Real c, int) {
-          sumOff += c * u[static_cast<std::size_t>(j)];
-          diag += c;
+        forEachFaceNeighbor(i, [&](Index j, Real c, int, double a) {
+          sumOff += a * c * u[static_cast<std::size_t>(j)];
+          diag += a * c;
         });
         if (diag != 0.0)
           u[static_cast<std::size_t>(i)] = (sumOff - cellVolume(i) * rhs[static_cast<std::size_t>(i)]) / diag;
@@ -265,6 +324,9 @@ class AmrPoisson {
   const Octree* t_ = nullptr;
   Real h0_ = 1.0;
   std::array<Coord, Dim> fineExt_{};
+  Vec<Dim> origin_{};
+  std::vector<double> alpha_;  // per-leaf per-face openness (kFaces per leaf), or empty
+  bool hasOpen_ = false;
 };
 
 /// Geometric multigrid for AmrPoisson over a uniformly-coarsened octree hierarchy.
@@ -366,7 +428,57 @@ class AmrMultigrid {
     return r;
   }
 
+  /// Set cut-cell face openness on the finest level from a geometry callable
+  /// openFn(faceCentreWorld, axis) -> [0,1], then coarsen it to every coarser
+  /// level by **area-averaging** the fine sub-faces (sdflow's coarsenOpenAvg). The
+  /// per-level operators are thereby rediscretized with consistent openness, and
+  /// the openness-weighted quadratic C/F flux applies on every level. Call after
+  /// build().
+  template <class OpenFn>
+  void setOpenness(OpenFn&& openFn) {
+    if (levels_.empty()) return;
+    ops_[0].buildOpenness(openFn);
+    for (std::size_t L = 0; L + 1 < levels_.size(); ++L) coarsenOpenness(L);
+  }
+
  private:
+  static int faceIdx(int axis, int dir) { return 2 * axis + (dir > 0 ? 0 : 1); }
+
+  // Area-average the level-L face openness onto level L+1 (each coarse face is the
+  // mean of the 2^(Dim-1) fine sub-faces covering it; equal areas => plain mean).
+  void coarsenOpenness(std::size_t L) {
+    const Octree& f = levels_[L];
+    const Octree& c = levels_[L + 1];
+    const int F = 2 * Dim;
+    std::vector<double> ca(static_cast<std::size_t>(c.numLeaves()) * F, 0.0);
+    std::vector<int> cnt(static_cast<std::size_t>(c.numLeaves()) * F, 0);
+    for (Index i = 0; i < f.numLeaves(); ++i) {
+      Index p = c2p_[L][static_cast<std::size_t>(i)];
+      if (p < 0) continue;
+      const std::size_t base = static_cast<std::size_t>(p) * F;
+      if (c.level(p) == f.level(i)) {
+        // identity (cell not coarsened this round): copy every face.
+        for (int axis = 0; axis < Dim; ++axis)
+          for (int dir = -1; dir <= 1; dir += 2) {
+            int fi = faceIdx(axis, dir);
+            ca[base + fi] += ops_[L].faceOpenness(i, axis, dir);
+            cnt[base + fi] += 1;
+          }
+      } else {
+        // merged child: each axis contributes its outward face to the parent face.
+        unsigned oct = M::from_code(f.code(i)).child_index(f.level(i));
+        for (int axis = 0; axis < Dim; ++axis) {
+          int dir = ((oct >> axis) & 1) ? +1 : -1;
+          int fi = faceIdx(axis, dir);
+          ca[base + fi] += ops_[L].faceOpenness(i, axis, dir);
+          cnt[base + fi] += 1;
+        }
+      }
+    }
+    for (std::size_t k = 0; k < ca.size(); ++k) ca[k] = cnt[k] ? ca[k] / cnt[k] : 1.0;
+    ops_[L + 1].setOpennessRaw(std::move(ca));
+  }
+
   std::vector<Octree> levels_;
   std::vector<AmrPoisson<Dim, Bits>> ops_;
   std::vector<std::vector<Index>> c2p_;

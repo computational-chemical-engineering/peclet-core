@@ -47,6 +47,12 @@ target_link_libraries(test_amr_cf_quadratic PRIVATE tpx_core)
 target_include_directories(test_amr_cf_quadratic PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME amr_cf_quadratic COMMAND test_amr_cf_quadratic)
 
+# Cut-cell openness folded into operator + MG coarsening (with quadratic C/F flux).
+add_executable(test_amr_openness test_amr_openness.cpp)
+target_link_libraries(test_amr_openness PRIVATE tpx_core)
+target_include_directories(test_amr_openness PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME amr_openness COMMAND test_amr_openness)
+
 # Barnes-Hut particle-tree mode over the octree.
 add_executable(test_amr_barnes_hut test_amr_barnes_hut.cpp)
 target_link_libraries(test_amr_barnes_hut PRIVATE tpx_core)
