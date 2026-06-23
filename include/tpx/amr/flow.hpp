@@ -18,8 +18,11 @@
 // intrinsic to cell-centered velocity placement (see the amr-octree memory note),
 // not a bug to be engineered away.
 //
-// Stokes only (advection — staggered/collocated Koren TVD — is a follow-up). 3D.
-// Cut cells are assumed same-level (resolve the boundary in a uniformly-finest
+// Navier–Stokes (semi-implicit): implicit viscous diffusion + explicit Koren-TVD
+// advection ∇·(u u) (setAdvection(true); the collocated cadv::advect port), with
+// the projection each step. setAdvection(false) ⇒ Stokes. 3D. Cut cells and the
+// ±2-cell advection stencil assume same-level neighbours (resolve the boundary and
+// any feature in a uniformly-finest band; see docs/AMR.md).
 // band, so the cut-cell stencils never sit on a 2:1 interface — see docs/AMR.md).
 // Header-only, guarded by TPX_HAVE_MORTON. Serial/host first.
 #ifndef TPX_AMR_FLOW_HPP
@@ -54,6 +57,11 @@ class AmrFlow {
   void setViscosity(double mu) { mu_ = mu; }
   void setDt(double dt) { dt_ = dt; }
   void setBodyForce(double fx, double fy, double fz) { f_ = {fx, fy, fz}; }
+  void setAdvection(bool on) { advect_ = on; }
+
+  /// Conservative Koren-TVD advection term ∇·(u u_comp) at leaf i (physical units;
+  /// the explicit momentum advection). Exposed for testing.
+  double advectTerm(int comp, Index i) const { return advect(comp, i) / h0_; }
 
   /// Build the cut-cell operators from an SDF callable sdfFn(worldPoint) (>0 fluid).
   template <class SdfFn>
@@ -76,12 +84,25 @@ class AmrFlow {
   /// component; `presIters`×`presSweeps` for the pressure solve.
   void step(int momSweeps = 200, int presIters = 60, int presSweeps = 4) {
     const Index n = t_->numLeaves();
-    // --- momentum predictor (per component, implicit viscous + body force) ---
+    // Explicit Koren-TVD advection ∇·(u^n u^n_c), evaluated from u^n BEFORE the
+    // predictor mutates the velocity in place.
+    std::array<std::vector<double>, 3> adv;
+    if (advect_)
+      for (int c = 0; c < 3; ++c) {
+        adv[c].assign(static_cast<std::size_t>(n), 0.0);
+        for (Index i = 0; i < n; ++i)
+          if (mom_.isFluid(i)) adv[c][static_cast<std::size_t>(i)] = advect(c, i) / h0_;
+      }
+
+    // --- momentum predictor: implicit viscous + body force − explicit advection ---
     for (int c = 0; c < 3; ++c) {
       std::vector<double> src(static_cast<std::size_t>(n), 0.0);
       for (Index i = 0; i < n; ++i)
-        if (mom_.isFluid(i))
-          src[static_cast<std::size_t>(i)] = (rho_ / dt_) * u_[c][static_cast<std::size_t>(i)] + f_[c];
+        if (mom_.isFluid(i)) {
+          double s = (rho_ / dt_) * u_[c][static_cast<std::size_t>(i)] + f_[c];
+          if (advect_) s -= rho_ * adv[c][static_cast<std::size_t>(i)];
+          src[static_cast<std::size_t>(i)] = s;
+        }
       std::vector<double> b = mom_.makeRhs(src, /*u_bc=*/0.0);
       mom_.gaussSeidel(u_[c], b, momSweeps);  // u_ now holds u*
     }
@@ -137,6 +158,55 @@ class AmrFlow {
   std::array<std::vector<double>, 3>& velocityRef() { return u_; }
 
  private:
+  // ---- Koren TVD advection (faithful port of sdflow sadv::koren/tvd + cadv::advect) ----
+  static double koren(double up_m1, double up, double down, double vel) {
+    const double num = up - up_m1, den = down - up;
+    double r = (std::fabs(den) < 1e-10) ? 0.0 : num / den;
+    double psi = std::fmax(0.0, std::fmin(2.0 * r, std::fmin((1.0 + 2.0 * r) / 3.0, 2.0)));
+    return vel * (up + 0.5 * psi * (down - up));
+  }
+  static double tvd(double LL, double L, double R, double RR, double vel) {
+    return (vel > 0.0) ? koren(LL, L, R, vel) : koren(RR, R, L, vel);
+  }
+
+  // The leaf one step along (axis,dir) — same-level periodic neighbour.
+  Index step1(Index i, int axis, int dir) const {
+    return mom_.neighborOf(i, dir > 0 ? 2 * axis : 2 * axis + 1);
+  }
+  // Field value `s` cells from leaf i along `axis` (s in [-2,2]); a solid neighbour
+  // reads 0 (no-slip wall momentum); clamps if a same-level step is unavailable.
+  double val(const std::vector<double>& f, Index i, int axis, int s) const {
+    if (s == 0) return f[static_cast<std::size_t>(i)];
+    int dir = s > 0 ? +1 : -1, cnt = s > 0 ? s : -s;
+    Index j = i;
+    for (int t = 0; t < cnt; ++t) {
+      Index jn = step1(j, axis, dir);
+      if (jn < 0) return f[static_cast<std::size_t>(j)];  // clamp at edge
+      j = jn;
+      if (!mom_.isFluid(j)) return 0.0;  // wall: momentum is zero behind the solid
+    }
+    return f[static_cast<std::size_t>(j)];
+  }
+
+  // Conservative Koren-TVD advection sum_dir (F+ − F−) of component `comp` (grid
+  // units; advectTerm divides by h0). Advecting face velocity is the cell->face
+  // average of that face's normal component (collocated, cadv::adv_vel).
+  double advect(int comp, Index i) const {
+    double out = 0.0;
+    for (int fd = 0; fd < 3; ++fd) {
+      double ui = u_[fd][static_cast<std::size_t>(i)];
+      double velp = 0.5 * (ui + val(u_[fd], i, fd, +1));
+      double velm = 0.5 * (val(u_[fd], i, fd, -1) + ui);
+      double Lm2 = val(u_[comp], i, fd, -2), Lm1 = val(u_[comp], i, fd, -1);
+      double L0 = u_[comp][static_cast<std::size_t>(i)];
+      double P1 = val(u_[comp], i, fd, +1), P2 = val(u_[comp], i, fd, +2);
+      double Fp = tvd(Lm1, L0, P1, P2, velp);
+      double Fm = tvd(Lm2, Lm1, L0, P1, velm);
+      out += Fp - Fm;
+    }
+    return out;
+  }
+
   // ABC (Almgren-Bell-Colella) cell-velocity correction gradient in direction `c`:
   // ½·(g⁻ + g⁺) of the two adjacent FACE pressure-gradients, where a CLOSED face
   // (openness 0 — solid neighbour) contributes a ZERO gradient (it does NOT read
@@ -175,6 +245,7 @@ class AmrFlow {
   Real h0_ = 1.0;
   Vec<3> origin_{};
   double rho_ = 1.0, mu_ = 1.0, dt_ = 1e6;
+  bool advect_ = false;
   Vec<3> f_{};
   AmrCutCell<Bits> mom_;
   AmrPoisson<3, Bits> pres_;
