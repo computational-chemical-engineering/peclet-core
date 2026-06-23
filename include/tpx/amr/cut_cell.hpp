@@ -1,0 +1,315 @@
+// transport-core — Robust-Scaled cut-cell Dirichlet operator on a BlockOctree.
+//
+// A faithful port of sdflow's ξ-polynomial sub-cell boundary scheme
+// (sdflow/src/cut_cell_ibm.hpp: poly_*, ibmFillEntry, ibmModifyStencil) onto the
+// cell-centered octree. Where the openness/aperture scheme (poisson.hpp) imposes a
+// *Neumann* wall (no flux through solid faces), this imposes a *Dirichlet* value
+// u = u_bc on the immersed boundary located at the true sub-cell distance ξ·h
+// (Shortley–Weller): for a cut cell whose neighbour in some direction is solid,
+// the 7-point stencil is modified by the boundary-distance polynomials, with
+// D_rescale row-scaling for the small-cell problem. This is the velocity-diffusion
+// / scalar-Dirichlet half of the cut-cell IBM (the user's "ξ-polynomial sub-cell
+// BC"); the cell fluid-volume fraction κ classifies solid/fluid/cut cells.
+//
+// Cut cells are assumed to have same-level face neighbours (the suite contract:
+// resolve the immersed boundary in a uniformly-finest band, so cut cells never sit
+// on a 2:1 interface — see docs/AMR.md). 3D (sdflow's 6-direction scheme).
+// Header-only, guarded by TPX_HAVE_MORTON. Serial/host first.
+#ifndef TPX_AMR_CUT_CELL_HPP
+#define TPX_AMR_CUT_CELL_HPP
+
+#ifdef TPX_HAVE_MORTON
+
+#include <array>
+#include <cmath>
+#include <vector>
+
+#include "tpx/amr/block_octree.hpp"
+#include "tpx/amr/leaf_field.hpp"
+#include "tpx/common/types.hpp"
+
+namespace tpx::amr {
+
+// ---- boundary-distance polynomials (port of sdflow cut_cell_ibm.hpp, SCHEME 0,
+//      double precision) ----
+namespace cc {
+inline double poly_D(double xi) { return xi * (1.0 + xi); }
+inline double poly_N_nb(double xi) { return xi * (1.0 - xi); }
+inline double poly_Nc(double xi) { return 2.0 * (xi * xi - 1.0); }
+inline double poly_Nbc(double) { return 2.0; }
+inline double poly_D_sandwich(double xm, double xp) { return xm * xp; }
+inline double poly_N_c_sandwich(double xm, double xp) { return (xm + 1.0) * (xp - 1.0); }
+inline double poly_Nbc_pp_sw(double xm, double xp) { return (xm / (xm + xp)) * (1.0 + xm); }
+inline double poly_Nbc_mp_sw(double xm, double xp) { return (xp / (xm + xp)) * (1.0 - xp); }
+}  // namespace cc
+
+template <unsigned Bits = 21u>
+class AmrCutCell {
+ public:
+  static constexpr int Dim = 3;
+  using Octree = BlockOctree<3, Bits>;
+  using M = typename Octree::M;
+  using Code = typename Octree::Code;
+  using Coord = typename Octree::Coord;
+
+  // direction k: 0=+x,1=-x,2=+y,3=-y,4=+z,5=-z (sdflow order); OPP swaps sides.
+  static constexpr int OPP[6] = {1, 0, 3, 2, 5, 4};
+
+  void init(const Octree& t, Real h0, Vec<3> origin = Vec<3>{}) {
+    t_ = &t;
+    h0_ = h0;
+    origin_ = origin;
+    for (int d = 0; d < 3; ++d) fineExt_[d] = static_cast<Coord>(t.brick()[d] * (Index(1) << t.lmax()));
+  }
+
+  Index numLeaves() const { return t_->numLeaves(); }
+  bool isFluid(Index i) const { return fluid_[static_cast<std::size_t>(i)]; }
+  double kappa(Index i) const { return kappa_[static_cast<std::size_t>(i)]; }
+  double rhsScale(Index i) const { return rscale_[static_cast<std::size_t>(i)]; }
+
+  /// Build the cut-cell stencils from an SDF callable sdfFn(worldPoint) (>0 fluid,
+  /// <0 solid). Operator A = idiag*I - beta*Laplacian (grid units, dx=1). `nsub`
+  /// is the per-axis subsampling for the volume fraction κ.
+  template <class SdfFn>
+  void build(SdfFn&& sdfFn, double idiag = 0.0, double beta = 1.0, int nsub = 4) {
+    const Index n = numLeaves();
+    sdfC_.assign(static_cast<std::size_t>(n), 0.0);
+    kappa_.assign(static_cast<std::size_t>(n), 0.0);
+    fluid_.assign(static_cast<std::size_t>(n), false);
+    AC_.assign(static_cast<std::size_t>(n), 1.0);
+    rscale_.assign(static_cast<std::size_t>(n), 1.0);
+    inhom_.assign(static_cast<std::size_t>(n), 0.0);
+    off_.assign(static_cast<std::size_t>(n) * 6, 0.0);
+    nb_.assign(static_cast<std::size_t>(n) * 6, -1);
+
+    // Pass 1: cell-centre SDF, κ (subsampled), fluid flag, neighbour indices.
+    for (Index i = 0; i < n; ++i) {
+      Vec<3> c = cellCenter(i);
+      double sc = sdfFn(c);
+      sdfC_[static_cast<std::size_t>(i)] = sc;
+      fluid_[static_cast<std::size_t>(i)] = sc > 0.0;
+      kappa_[static_cast<std::size_t>(i)] = volumeFraction(i, sdfFn, nsub);
+      for (int k = 0; k < 6; ++k) nb_[static_cast<std::size_t>(i) * 6 + k] = neighbor(i, k);
+    }
+
+    // Pass 2: build per-leaf stencil.
+    const double AC0 = idiag + 6.0 * beta;
+    for (Index i = 0; i < n; ++i) {
+      if (!fluid_[static_cast<std::size_t>(i)]) {  // solid: identity row u=0
+        AC_[static_cast<std::size_t>(i)] = 1.0;
+        for (int k = 0; k < 6; ++k) off_[static_cast<std::size_t>(i) * 6 + k] = 0.0;
+        continue;
+      }
+      double sdf_n[6];
+      bool anyGhost = false;
+      for (int k = 0; k < 6; ++k) {
+        Index j = nb_[static_cast<std::size_t>(i) * 6 + k];
+        sdf_n[k] = (j >= 0) ? sdfC_[static_cast<std::size_t>(j)] : -1.0;  // missing => solid
+        if (sdf_n[k] < 0.0) anyGhost = true;
+      }
+      double AC = AC0, off[6];
+      for (int k = 0; k < 6; ++k) off[k] = -beta;
+      double rscale = 1.0, inhomCoef = 0.0;
+      if (anyGhost)
+        buildCutStencil(sdfC_[static_cast<std::size_t>(i)], sdf_n, beta, AC0, AC, off, rscale, inhomCoef);
+      AC_[static_cast<std::size_t>(i)] = AC;
+      for (int k = 0; k < 6; ++k) off_[static_cast<std::size_t>(i) * 6 + k] = off[k];
+      rscale_[static_cast<std::size_t>(i)] = rscale;
+      inhom_[static_cast<std::size_t>(i)] = inhomCoef;
+    }
+  }
+
+  /// out = A u (solid cells return u_i; their value is held at u_bc by the solve).
+  void applyOp(const std::vector<double>& u, std::vector<double>& out) const {
+    const Index n = numLeaves();
+    out.assign(static_cast<std::size_t>(n), 0.0);
+    for (Index i = 0; i < n; ++i) {
+      if (!fluid_[static_cast<std::size_t>(i)]) {
+        out[static_cast<std::size_t>(i)] = u[static_cast<std::size_t>(i)];
+        continue;
+      }
+      double acc = AC_[static_cast<std::size_t>(i)] * u[static_cast<std::size_t>(i)];
+      for (int k = 0; k < 6; ++k) {
+        double a = off_[static_cast<std::size_t>(i) * 6 + k];
+        if (a == 0.0) continue;
+        Index j = nb_[static_cast<std::size_t>(i) * 6 + k];
+        if (j >= 0) acc += a * u[static_cast<std::size_t>(j)];
+      }
+      out[static_cast<std::size_t>(i)] = acc;
+    }
+  }
+
+  /// Effective RHS for source `src` (≈ -h^2 f at cell centres) and wall value u_bc:
+  /// row-scaled by D_rescale and shifted by the inhomogeneous boundary term.
+  std::vector<double> makeRhs(const std::vector<double>& src, double u_bc) const {
+    const Index n = numLeaves();
+    std::vector<double> b(static_cast<std::size_t>(n), 0.0);
+    for (Index i = 0; i < n; ++i) {
+      if (!fluid_[static_cast<std::size_t>(i)]) {
+        b[static_cast<std::size_t>(i)] = u_bc;  // solid held at u_bc
+        continue;
+      }
+      b[static_cast<std::size_t>(i)] = src[static_cast<std::size_t>(i)] * rscale_[static_cast<std::size_t>(i)] +
+                                       inhom_[static_cast<std::size_t>(i)] * u_bc;
+    }
+    return b;
+  }
+
+  double residual(const std::vector<double>& u, const std::vector<double>& b,
+                  std::vector<double>& res) const {
+    applyOp(u, res);
+    double s = 0.0;
+    const Index n = numLeaves();
+    for (Index i = 0; i < n; ++i) {
+      double r = b[static_cast<std::size_t>(i)] - res[static_cast<std::size_t>(i)];
+      res[static_cast<std::size_t>(i)] = r;
+      if (fluid_[static_cast<std::size_t>(i)]) s += r * r;
+    }
+    return std::sqrt(s);
+  }
+
+  void gaussSeidel(std::vector<double>& u, const std::vector<double>& b, int sweeps) const {
+    const Index n = numLeaves();
+    for (int s = 0; s < sweeps; ++s)
+      for (Index i = 0; i < n; ++i) {
+        if (!fluid_[static_cast<std::size_t>(i)]) {
+          u[static_cast<std::size_t>(i)] = b[static_cast<std::size_t>(i)];
+          continue;
+        }
+        double sum = b[static_cast<std::size_t>(i)];
+        for (int k = 0; k < 6; ++k) {
+          double a = off_[static_cast<std::size_t>(i) * 6 + k];
+          if (a == 0.0) continue;
+          Index j = nb_[static_cast<std::size_t>(i) * 6 + k];
+          if (j >= 0) sum -= a * u[static_cast<std::size_t>(j)];
+        }
+        double d = AC_[static_cast<std::size_t>(i)];
+        if (d != 0.0) u[static_cast<std::size_t>(i)] = sum / d;
+      }
+  }
+
+ private:
+  // Port of ibmFillEntry<0> + ibmModifyStencil for one cut cell (Dirichlet).
+  static void buildCutStencil(double sdf_c, const double sdf_n[6], double beta, double AC0,
+                              double& ACout, double off[6], double& rscaleOut, double& inhomOut) {
+    bool ghost[6];
+    double xi[6], D[6];
+    for (int k = 0; k < 6; ++k) {
+      if (sdf_n[k] < 0.0) {
+        ghost[k] = true;
+        double th = sdf_c / (sdf_c - sdf_n[k]);
+        th = th < 1e-4 ? 1e-4 : (th > 1.0 ? 1.0 : th);
+        xi[k] = th;
+        D[k] = cc::poly_D(th);
+      } else {
+        ghost[k] = false;
+        xi[k] = 1.0;
+        D[k] = 1e9;
+      }
+    }
+    bool sand[3] = {ghost[0] && ghost[1], ghost[2] && ghost[3], ghost[4] && ghost[5]};
+    double Dsand[3] = {0, 0, 0};
+    for (int a = 0; a < 3; ++a)
+      if (sand[a]) Dsand[a] = cc::poly_D_sandwich(xi[2 * a + 1], xi[2 * a]);
+    double minAbs = 1e30, descale = 1.0;
+    auto upd = [&](double v) { if (std::fabs(v) < minAbs) { minAbs = std::fabs(v); descale = v; } };
+    for (int a = 0; a < 3; ++a) {
+      if (sand[a])
+        upd(Dsand[a]);
+      else {
+        if (ghost[2 * a]) upd(D[2 * a]);
+        if (ghost[2 * a + 1]) upd(D[2 * a + 1]);
+      }
+    }
+    double K[6] = {0}, Mf[6] = {1, 1, 1, 1, 1, 1}, X[6] = {0}, Nbc[6] = {0}, R[6] = {1, 1, 1, 1, 1, 1};
+    for (int a = 0; a < 3; ++a) {
+      int km = 2 * a + 1, kp = 2 * a;
+      double Daxis = sand[a] ? Dsand[a] : (ghost[kp] ? D[kp] : (ghost[km] ? D[km] : descale));
+      double r = descale / Daxis;
+      if (std::fabs(Daxis) < 1e-9) r = 1.0;
+      R[kp] = R[km] = r;
+      if (sand[a]) {
+        K[kp] = cc::poly_N_c_sandwich(xi[km], xi[kp]) * r;
+        K[km] = cc::poly_N_c_sandwich(xi[kp], xi[km]) * r;
+        Nbc[kp] = (cc::poly_Nbc_pp_sw(xi[km], xi[kp]) + cc::poly_Nbc_mp_sw(xi[km], xi[kp])) * r;
+        Nbc[km] = (cc::poly_Nbc_pp_sw(xi[kp], xi[km]) + cc::poly_Nbc_mp_sw(xi[kp], xi[km])) * r;
+        Mf[kp] = Mf[km] = 0.0;
+      } else {
+        for (int side = 0; side < 2; ++side) {
+          int kk = side == 0 ? kp : km;
+          if (ghost[kk]) {
+            K[kk] = cc::poly_Nc(xi[kk]) * r;
+            X[kk] = cc::poly_N_nb(xi[kk]) * r;
+            Nbc[kk] = cc::poly_Nbc(xi[kk]) * r;
+            Mf[kk] = 0.0;
+          } else {
+            K[kk] = 0.0; Mf[kk] = 1.0; X[kk] = 0.0; Nbc[kk] = 0.0;
+          }
+        }
+      }
+    }
+    // ibmModifyStencil (orig off-diagonal = -beta for every direction).
+    double aC = AC0 * descale, mod[6] = {0, 0, 0, 0, 0, 0}, inhom = 0.0;
+    for (int k = 0; k < 6; ++k) {
+      double vnb = -beta;
+      aC += vnb * K[k];
+      inhom += Nbc[k] * vnb;
+      mod[k] += vnb * (descale * Mf[k] - 1.0);
+      mod[OPP[k]] += vnb * X[k];
+    }
+    ACout = aC;
+    for (int k = 0; k < 6; ++k) off[k] = -beta + mod[k];
+    rscaleOut = descale;
+    inhomOut = inhom;
+  }
+
+  Vec<3> cellCenter(Index i) const {
+    auto b = t_->bounds(i);
+    double s = static_cast<double>(Index(1) << t_->level(i));
+    Vec<3> c{};
+    for (int d = 0; d < 3; ++d) c[d] = origin_[d] + (static_cast<double>(b[0][d]) + 0.5 * s) * h0_;
+    return c;
+  }
+
+  template <class SdfFn>
+  double volumeFraction(Index i, SdfFn&& sdfFn, int nsub) const {
+    auto b = t_->bounds(i);
+    double s = static_cast<double>(Index(1) << t_->level(i));
+    double w = s * h0_;
+    int inside = 0, total = nsub * nsub * nsub;
+    for (int a = 0; a < nsub; ++a)
+      for (int bb = 0; bb < nsub; ++bb)
+        for (int cc2 = 0; cc2 < nsub; ++cc2) {
+          Vec<3> p{origin_[0] + static_cast<double>(b[0][0]) * h0_ + (a + 0.5) / nsub * w,
+                   origin_[1] + static_cast<double>(b[0][1]) * h0_ + (bb + 0.5) / nsub * w,
+                   origin_[2] + static_cast<double>(b[0][2]) * h0_ + (cc2 + 0.5) / nsub * w};
+          if (sdfFn(p) > 0.0) ++inside;
+        }
+    return static_cast<double>(inside) / total;
+  }
+
+  Index neighbor(Index i, int k) const {
+    int axis = k / 2, dir = (k % 2 == 0) ? +1 : -1;
+    auto b = t_->bounds(i);
+    const auto& lo = b[0];
+    Coord si = Coord(Coord(1) << t_->level(i));
+    long pc = (dir > 0) ? static_cast<long>(lo[axis]) + static_cast<long>(si) : static_cast<long>(lo[axis]) - 1;
+    long e = static_cast<long>(fineExt_[axis]);
+    std::array<Coord, 3> p = lo;
+    p[axis] = static_cast<Coord>(((pc % e) + e) % e);
+    return t_->find(M::encode(p).code());
+  }
+
+  const Octree* t_ = nullptr;
+  Real h0_ = 1.0;
+  Vec<3> origin_{};
+  std::array<Coord, 3> fineExt_{};
+  std::vector<double> sdfC_, kappa_, AC_, rscale_, inhom_, off_;
+  std::vector<Index> nb_;
+  std::vector<char> fluid_;
+};
+
+}  // namespace tpx::amr
+
+#endif  // TPX_HAVE_MORTON
+#endif  // TPX_AMR_CUT_CELL_HPP

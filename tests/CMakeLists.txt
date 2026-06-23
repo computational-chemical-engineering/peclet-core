@@ -53,6 +53,12 @@ target_link_libraries(test_amr_openness PRIVATE tpx_core)
 target_include_directories(test_amr_openness PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME amr_openness COMMAND test_amr_openness)
 
+# Cut-cell Dirichlet sub-cell BC (port of sdflow's xi-polynomial scheme) + kappa.
+add_executable(test_amr_cut_cell test_amr_cut_cell.cpp)
+target_link_libraries(test_amr_cut_cell PRIVATE tpx_core)
+target_include_directories(test_amr_cut_cell PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME amr_cut_cell COMMAND test_amr_cut_cell)
+
 # Barnes-Hut particle-tree mode over the octree.
 add_executable(test_amr_barnes_hut test_amr_barnes_hut.cpp)
 target_link_libraries(test_amr_barnes_hut PRIVATE tpx_core)
