@@ -22,9 +22,10 @@
 // intrinsic to cell-centered velocity placement (the face field is exactly
 // divergence-free), not a bug to be engineered away (see the amr-octree memory).
 //
-// Navier–Stokes (semi-implicit): implicit viscous diffusion + explicit Koren-TVD
-// advection ∇·(u u) (setAdvection(true); the collocated cadv::advect port), with
-// the projection each step. setAdvection(false) ⇒ Stokes. 3D. Cut cells and the
+// Navier–Stokes (semi-implicit): implicit viscous diffusion + explicit high-order
+// advection ∇·(u u) (setAdvection(true)); the high-order flux is second-order
+// upwind (SOU) by default, or Koren TVD via setAdvectionScheme(1). setAdvection(false)
+// ⇒ Stokes. 3D. Cut cells and the
 // ±2-cell advection stencil assume same-level neighbours (resolve the boundary in a
 // uniformly-finest band, so the stencils never sit on a 2:1 interface — docs/AMR.md).
 // Header-only, guarded by TPX_HAVE_MORTON. Serial/host first.
@@ -61,6 +62,8 @@ class AmrFlow {
   void setDt(double dt) { dt_ = dt; }
   void setBodyForce(double fx, double fy, double fz) { f_ = {fx, fy, fz}; }
   void setAdvection(bool on) { advect_ = on; }
+  /// High-order advection scheme: 0 = second-order upwind (SOU, default), 1 = Koren TVD.
+  void setAdvectionScheme(int s) { advScheme_ = s; }
 
   /// Conservative Koren-TVD advection term ∇·(u u_comp) at leaf i (physical units;
   /// the explicit momentum advection). Exposed for testing.
@@ -181,6 +184,14 @@ class AmrFlow {
   static double tvd(double LL, double L, double R, double RR, double vel) {
     return (vel > 0.0) ? koren(LL, L, R, vel) : koren(RR, R, L, vel);
   }
+  // Second-order upwind (SOU): unlimited linear upwind extrapolation (2nd-order at
+  // smooth extrema too, where TVD clips to 1st). The default high-order scheme.
+  static double sou(double LL, double L, double R, double RR, double vel) {
+    return (vel > 0.0) ? vel * (1.5 * L - 0.5 * LL) : vel * (1.5 * R - 0.5 * RR);
+  }
+  double hoFlux(double LL, double L, double R, double RR, double vel) const {
+    return advScheme_ == 0 ? sou(LL, L, R, RR, vel) : tvd(LL, L, R, RR, vel);
+  }
 
   // The leaf one step along (axis,dir) — same-level periodic neighbour.
   Index step1(Index i, int axis, int dir) const {
@@ -201,9 +212,10 @@ class AmrFlow {
     return f[static_cast<std::size_t>(j)];
   }
 
-  // Conservative Koren-TVD advection sum_dir (F+ − F−) of component `comp` (grid
-  // units; advectTerm divides by h0). Advecting face velocity is the cell->face
-  // average of that face's normal component (collocated, cadv::adv_vel).
+  // Conservative high-order advection sum_dir (F+ − F−) of component `comp` (grid
+  // units; advectTerm divides by h0). High-order flux = SOU (default) or Koren TVD
+  // (advScheme_). Advecting face velocity = cell->face average of the normal
+  // component (collocated, cadv::adv_vel).
   double advect(int comp, Index i) const {
     double out = 0.0;
     for (int fd = 0; fd < 3; ++fd) {
@@ -213,8 +225,8 @@ class AmrFlow {
       double Lm2 = val(u_[comp], i, fd, -2), Lm1 = val(u_[comp], i, fd, -1);
       double L0 = u_[comp][static_cast<std::size_t>(i)];
       double P1 = val(u_[comp], i, fd, +1), P2 = val(u_[comp], i, fd, +2);
-      double Fp = tvd(Lm1, L0, P1, P2, velp);
-      double Fm = tvd(Lm2, Lm1, L0, P1, velm);
+      double Fp = hoFlux(Lm1, L0, P1, P2, velp);
+      double Fm = hoFlux(Lm2, Lm1, L0, P1, velm);
       out += Fp - Fm;
     }
     return out;
@@ -268,6 +280,7 @@ class AmrFlow {
   Vec<3> origin_{};
   double rho_ = 1.0, mu_ = 1.0, dt_ = 1e6;
   bool advect_ = false;
+  int advScheme_ = 0;  // 0 = SOU (default), 1 = Koren TVD
   Vec<3> f_{};
   AmrCutCell<Bits> mom_;
   AmrPoisson<3, Bits> pres_;       // openness + divergence/gradient access

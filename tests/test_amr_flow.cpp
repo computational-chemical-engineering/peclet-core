@@ -111,15 +111,15 @@ void test_projection() {
   TPX_CHECK(u0 / u1 > 10.0);
 }
 
-// Koren-TVD advection operator: ∇·(u u_x) on a divergence-free field has the exact
-// value (k/2) sin(2k x); check it converges (above 1st order — TVD limits to 1st
-// only at smooth extrema) and that a constant field advects to exactly zero.
-double advectErr(unsigned L, double& constMax) {
+// Advection operator: ∇·(u u_x) on a divergence-free field has the exact value
+// (k/2) sin(2k x); measure the error for scheme `sch` (0=SOU default, 1=TVD).
+double advectErr(unsigned L, double& constMax, int sch = 0) {
   BO t = uniformFine(L);
   const long N = 1L << L;
   const double h0 = 1.0 / static_cast<double>(N), k = 2.0 * M_PI;
   AmrFlow<21> fl;
   fl.init(t, h0);
+  fl.setAdvectionScheme(sch);
   fl.setSolid([](const Vec<3>&) { return 1.0; });
   const Index n = t.numLeaves();
   auto ctr = [&](Index i, int d) {
@@ -147,11 +147,18 @@ double advectErr(unsigned L, double& constMax) {
 }
 
 void test_advection() {
+  // SOU (default): unlimited 2nd-order upwind -> ~2nd-order convergence (ratio ~4).
   double c5 = 0, c6 = 0;
-  double e5 = advectErr(5, c5);
-  double e6 = advectErr(6, c6);
-  TPX_CHECK(e5 / e6 > 2.3);            // above 1st order (ratio 2.0 == 1st)
+  double e5 = advectErr(5, c5, /*SOU*/ 0);
+  double e6 = advectErr(6, c6, /*SOU*/ 0);
+  TPX_CHECK(e5 / e6 > 3.3);              // ~2nd order (vs TVD ~2.8 — limiter clips extrema)
   TPX_CHECK(c5 < 1e-12 && c6 < 1e-12);  // Galilean: constant advects to 0
+  // TVD (option): also converges, above 1st order (limiter -> ~1.5 order at extrema).
+  double t5 = 0, t6 = 0;
+  double et5 = advectErr(5, t5, /*TVD*/ 1);
+  double et6 = advectErr(6, t6, /*TVD*/ 1);
+  TPX_CHECK(et5 / et6 > 2.3);
+  TPX_CHECK(e6 < et6);  // SOU is more accurate than TVD on this smooth field
 
   // Poiseuille with advection ON: for unidirectional flow ∇·(u u)=0, so the
   // advection term must vanish and the parabola is recovered unchanged.
