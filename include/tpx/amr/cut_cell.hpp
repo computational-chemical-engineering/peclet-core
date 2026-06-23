@@ -64,6 +64,8 @@ class AmrCutCell {
 
   Index numLeaves() const { return t_->numLeaves(); }
   bool isFluid(Index i) const { return fluid_[static_cast<std::size_t>(i)]; }
+  /// Periodic face neighbour of leaf i in direction k (0=+x,1=-x,2=+y,3=-y,4=+z,5=-z).
+  Index neighborOf(Index i, int k) const { return nb_[static_cast<std::size_t>(i) * 6 + k]; }
   double kappa(Index i) const { return kappa_[static_cast<std::size_t>(i)]; }
   double rhsScale(Index i) const { return rscale_[static_cast<std::size_t>(i)]; }
 

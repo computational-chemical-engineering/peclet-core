@@ -59,6 +59,12 @@ target_link_libraries(test_amr_cut_cell PRIVATE tpx_core)
 target_include_directories(test_amr_cut_cell PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME amr_cut_cell COMMAND test_amr_cut_cell)
 
+# Collocated Stokes momentum+pressure step (cut-cell IBM momentum + openness projection).
+add_executable(test_amr_flow test_amr_flow.cpp)
+target_link_libraries(test_amr_flow PRIVATE tpx_core)
+target_include_directories(test_amr_flow PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME amr_flow COMMAND test_amr_flow)
+
 # Barnes-Hut particle-tree mode over the octree.
 add_executable(test_amr_barnes_hut test_amr_barnes_hut.cpp)
 target_link_libraries(test_amr_barnes_hut PRIVATE tpx_core)
