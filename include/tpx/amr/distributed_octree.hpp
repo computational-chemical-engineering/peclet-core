@@ -95,6 +95,11 @@ class DistributedOctree {
   const IVec<Dim>& blockOriginRoot() const { return blockOriginRoot_; }
   const IVec<Dim>& blockBrick() const { return blockBrick_; }
   const IVec<Dim>& globalRootSize() const { return globalRootSize_; }
+  const IVec<Dim>& blockFineOrigin() const { return blockFineOrigin_; }
+  const IVec<Dim>& globalFineSize() const { return globalFineSize_; }
+  const std::array<bool, Dim>& periodic() const { return periodic_; }
+  Index rootSpan() const { return rootSpan_; }
+  double h0() const { return globalGeo_.h0; }
 
   /// Global root-cell coordinate of local leaf `i` (lmax==0: the leaf is one root cell).
   IVec<Dim> globalRootOf(Index i) const {
@@ -268,8 +273,124 @@ class DistributedOctree {
     return out;
   }
 
+  // ---- by-coordinate owner gathers (graded consistent-operator halo) ----
+
+  /// Classification of leaf `i`'s face on (axis,dir): {state, global fine probe
+  /// `gc`, `owner`, in-block neighbour `localNb`}. state 0=InBlock,1=Remote,2=None.
+  struct FaceInfo {
+    int state = 2;
+    std::array<Coord, Dim> gc{};
+    int owner = -1;
+    Index localNb = -1;
+  };
+  FaceInfo faceAcross(Index i, int axis, int dir) const {
+    FaceInfo f;
+    f.state = static_cast<int>(neighborInfo(i, axis, dir, f.gc, f.owner, f.localNb));
+    return f;
+  }
+
+  /// For each global fine coord (already wrapped into the domain), the *level* of
+  /// the covering leaf on its owner, or -1 if none. Owner-based request/reply.
+  std::vector<int> coverLevels(const std::vector<std::array<Coord, Dim>>& coords) const {
+    std::vector<double> out(coords.size(), -1.0);
+    std::map<int, std::vector<char>> req;
+    for (std::size_t idx = 0; idx < coords.size(); ++idx) {
+      int owner = ownerOfFine(coords[idx]);
+      if (owner == rank_) {
+        Index leaf = locateGlobal(coords[idx]);
+        out[idx] = (leaf >= 0) ? static_cast<double>(local_.level(leaf)) : -1.0;
+      } else {
+        appendRequest(req[owner], coords[idx], static_cast<std::int64_t>(idx));
+      }
+    }
+    requestReply(
+        req, [&](const std::array<Coord, Dim>& gc) -> double {
+          Index leaf = locateGlobal(gc);
+          return (leaf >= 0) ? static_cast<double>(local_.level(leaf)) : -1.0;
+        },
+        out, /*tagA=*/21, /*tagB=*/22);
+    std::vector<int> lv(coords.size());
+    for (std::size_t i = 0; i < out.size(); ++i) lv[i] = static_cast<int>(out[i]);
+    return lv;
+  }
+
+  /// For each global fine coord, the covering leaf's `field` value on its owner
+  /// (sentinel if none). Owner-based request/reply — the per-matvec ghost gather.
+  std::vector<double> coverValues(const std::vector<std::array<Coord, Dim>>& coords,
+                                  const std::vector<double>& field,
+                                  double sentinel = kNoNeighbor) const {
+    std::vector<double> out(coords.size(), sentinel);
+    std::map<int, std::vector<char>> req;
+    for (std::size_t idx = 0; idx < coords.size(); ++idx) {
+      int owner = ownerOfFine(coords[idx]);
+      if (owner == rank_) {
+        Index leaf = locateGlobal(coords[idx]);
+        if (leaf >= 0) out[idx] = field[static_cast<std::size_t>(leaf)];
+      } else {
+        appendRequest(req[owner], coords[idx], static_cast<std::int64_t>(idx));
+      }
+    }
+    requestReply(
+        req, [&](const std::array<Coord, Dim>& gc) -> double {
+          Index leaf = locateGlobal(gc);
+          return (leaf >= 0) ? field[static_cast<std::size_t>(leaf)] : sentinel;
+        },
+        out, /*tagA=*/23, /*tagB=*/24);
+    return out;
+  }
+
  private:
   enum NbState { InBlock, Remote, DomainNone };
+
+  int ownerOfFine(const std::array<Coord, Dim>& gc) const {
+    IVec<Dim> rootCell{};
+    for (int d = 0; d < Dim; ++d) rootCell[d] = static_cast<Index>(gc[d]) / rootSpan_;
+    return dec_.ownerOf(rootCell);
+  }
+
+  /// Generic owner request/reply: owners answer each requested coord via `respond`,
+  /// requesters write replies into out[reqId]. Distinct (tagA,tagB) per use so the
+  /// two consecutive NBX rounds never alias.
+  template <class Responder>
+  void requestReply(std::map<int, std::vector<char>>& req, Responder&& respond,
+                    std::vector<double>& out, int tagA, int tagB) const {
+    std::map<int, std::vector<char>> rep;
+    {
+      halo::NbxEngine eng(comm_);
+      auto it = req.begin();
+      eng.exchange(
+          [&](std::vector<char>& o) -> int {
+            if (it == req.end()) return -1;
+            o = it->second;
+            int d = it->first;
+            ++it;
+            return d;
+          },
+          [&](int src, std::vector<char>& msg) {
+            parseRequests(msg, [&](const std::array<Coord, Dim>& gc, std::int64_t reqId) {
+              appendReply(rep[src], reqId, respond(gc));
+            });
+          },
+          tagA);
+    }
+    {
+      halo::NbxEngine eng(comm_);
+      auto it = rep.begin();
+      eng.exchange(
+          [&](std::vector<char>& o) -> int {
+            if (it == rep.end()) return -1;
+            o = it->second;
+            int d = it->first;
+            ++it;
+            return d;
+          },
+          [&](int, std::vector<char>& msg) {
+            parseReplies(msg,
+                         [&](std::int64_t reqId, double v) { out[static_cast<std::size_t>(reqId)] = v; });
+          },
+          tagB);
+    }
+  }
 
   static int faceSlot(Index i, int axis, int dir, int F) {
     return static_cast<int>(i) * F + 2 * axis + (dir > 0 ? 0 : 1);
