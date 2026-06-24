@@ -49,15 +49,64 @@ class DistributedFvOperator {
   using Code = typename DO::Code;
   using Coord = typename DO::Coord;
 
-  /// Build the consistent face stencil (one owner round to learn cross-block
-  /// covering levels). The octree must already be graded/2:1-balanced.
+  /// Build the consistent face stencil, openness-free (w_f = A_f/d_f).
   void init(DO& d) {
+    init(d, [](const Vec<Dim>&, int) { return 1.0; });
+  }
+
+  /// Build with cut-cell openness: w_f = α_f · A_f/d_f, where α_f = openFn(face
+  /// centroid, axis) ∈ [0,1] (1 fluid, 0 solid) evaluated at the *finer* side's
+  /// (sub-)face centroid in world coords. Both sides of a face — even across a block
+  /// boundary — evaluate openFn at the same point, so α is symmetric (no exchange
+  /// needed) and the operator stays conservative. Matches AmrPoisson::buildOpenness.
+  /// (One owner round to learn cross-block covering levels; octree must be 2:1.)
+  template <class OpenFn>
+  void init(DO& d, OpenFn&& openFn) {
     d_ = &d;
     h0_ = d.h0();
     const auto& t = d.local();
     const Index n = t.numLeaves();
+    const IVec<Dim> bfo = d.blockFineOrigin();
+    const Vec<Dim> org = d.globalGeometry().origin;
     invVol_.assign(static_cast<std::size_t>(n), 0.0);
     diag_.assign(static_cast<std::size_t>(n), 0.0);
+
+    // α at the finer side's (sub-)face: flo = finer cell global fine lower corner,
+    // s its size (fine units), faceDir its outward normal toward the neighbour.
+    auto alphaOf = [&](const std::array<long, Dim>& flo, Coord s, int axis, int faceDir) -> double {
+      Vec<Dim> fc{};
+      long plane = flo[axis] + (faceDir > 0 ? static_cast<long>(s) : 0L);
+      for (int d2 = 0; d2 < Dim; ++d2)
+        fc[d2] = (d2 == axis) ? org[d2] + static_cast<double>(plane) * h0_
+                              : org[d2] + (static_cast<double>(flo[d2]) + 0.5 * static_cast<double>(s)) * h0_;
+      double a = openFn(fc, axis);
+      return a < 0.0 ? 0.0 : (a > 1.0 ? 1.0 : a);
+    };
+    auto gLo = [&](const std::array<Coord, Dim>& lc) {
+      std::array<long, Dim> g{};
+      for (int d2 = 0; d2 < Dim; ++d2) g[d2] = static_cast<long>(lc[d2]) + static_cast<long>(bfo[d2]);
+      return g;
+    };
+    // Global fine lower corner of the k-th fine sub-neighbour across a coarse cell's
+    // (axis,dir) face: clo is the coarse cell's global lo, si its size, sj=si/2. Used
+    // for the sub-face α centroid — the *finer* cell's lo, not the probe point.
+    auto fineLoGlobal = [&](const std::array<long, Dim>& clo, Coord si, Coord sj, int axis, int dir,
+                            int k) {
+      std::array<long, Dim> flo{};
+      flo[axis] = (dir > 0) ? clo[axis] + static_cast<long>(si) : clo[axis] - static_cast<long>(sj);
+      int bit = 0;
+      for (int t = 0; t < Dim; ++t) {
+        if (t == axis) continue;
+        flo[t] = clo[t] + (((k >> bit) & 1) ? static_cast<long>(sj) : 0L);
+        ++bit;
+      }
+      for (int d2 = 0; d2 < Dim; ++d2) {
+        long gf = static_cast<long>(d.globalFineSize()[d2]);
+        if (flo[d2] < 0) flo[d2] += gf;
+        else if (flo[d2] >= gf) flo[d2] -= gf;
+      }
+      return flo;
+    };
 
     // Pass 1: per-leaf entries in face order; remote faces become markers.
     struct E {
@@ -71,6 +120,8 @@ class DistributedFvOperator {
       int Li = 0;
       Coord si = 1;
       int axis = 0;
+      int dir = 1;
+      std::array<long, Dim> iLo{};  // requesting leaf's global fine lower corner
     };
     std::vector<RFace> rfaces;
 
@@ -88,9 +139,10 @@ class DistributedFvOperator {
             Index j = fi.localNb;
             if (j < 0) continue;
             const int Lj = static_cast<int>(t.level(j));
-            if (Lj >= Li) {
-              ent[static_cast<std::size_t>(i)].push_back(E{coeff(si, Coord(Coord(1) << Lj)), j, -1});
-            } else {
+            if (Lj >= Li) {  // finer side is i: α at i's face
+              const double a = alphaOf(gLo(lo), si, axis, dir);
+              ent[static_cast<std::size_t>(i)].push_back(E{a * coeff(si, Coord(Coord(1) << Lj)), j, -1});
+            } else {  // finer side is the sub-neighbour jj: α at jj's face (−dir)
               const Coord sj = Coord(si >> 1);
               const long pc = (dir > 0) ? static_cast<long>(lo[axis]) + static_cast<long>(si)
                                         : static_cast<long>(lo[axis]) - 1;
@@ -106,14 +158,17 @@ class DistributedFvOperator {
                   ++bit;
                 }
                 Index jj = t.find(M::encode(q).code());
-                ent[static_cast<std::size_t>(i)].push_back(E{coeff(si, sj), jj, -1});
+                const double a = alphaOf(fineLoGlobal(gLo(lo), si, sj, axis, dir, k), sj, axis, -dir);
+                ent[static_cast<std::size_t>(i)].push_back(E{a * coeff(si, sj), jj, -1});
               }
             }
           } else {  // Remote: defer (need covering level)
             E e;
             e.rfId = static_cast<int>(rfaces.size());
             ent[static_cast<std::size_t>(i)].push_back(e);
-            rfaces.push_back(RFace{fi.gc, Li, si, axis});
+            RFace rf{fi.gc, Li, si, axis, dir, {}};
+            rf.iLo = gLo(lo);
+            rfaces.push_back(rf);
           }
         }
     }
@@ -146,17 +201,20 @@ class DistributedFvOperator {
           const RFace& rf = rfaces[static_cast<std::size_t>(e.rfId)];
           const int Lj = coverLv[static_cast<std::size_t>(e.rfId)];
           if (Lj < 0) continue;  // no neighbour
-          if (Lj >= rf.Li) {
-            const double ww = coeff(rf.si, Coord(Coord(1) << Lj));
+          if (Lj >= rf.Li) {  // finer side is i: α at i's face
+            const double a = alphaOf(rf.iLo, rf.si, rf.axis, rf.dir);
+            const double ww = a * coeff(rf.si, Coord(Coord(1) << Lj));
             ref_.push_back(d_->local().numLeaves() + ghostRef(rf.gc));
             w_.push_back(ww);
             diag_[static_cast<std::size_t>(i)] += ww;
-          } else {
+          } else {  // finer side is each remote sub-neighbour: α at its face (−dir)
             const Coord sj = Coord(rf.si >> 1);
-            const double ww = coeff(rf.si, sj);
             const int nsub = 1 << (Dim - 1);
             for (int k = 0; k < nsub; ++k) {
               std::array<Coord, Dim> sc = subCoord(rf.gc, rf.axis, k, sj);
+              const double a =
+                  alphaOf(fineLoGlobal(rf.iLo, rf.si, sj, rf.axis, rf.dir, k), sj, rf.axis, -rf.dir);
+              const double ww = a * coeff(rf.si, sj);
               ref_.push_back(d_->local().numLeaves() + ghostRef(sc));
               w_.push_back(ww);
               diag_[static_cast<std::size_t>(i)] += ww;
@@ -297,8 +355,25 @@ class GradedDistributedMultigrid {
   using BO = typename DO::Octree;
   using M = typename DO::M;
 
-  /// Build the hierarchy from an already-graded, 2:1-balanced finest octree.
+  /// Build the hierarchy from an already-graded, 2:1-balanced finest octree
+  /// (openness-free; the coarsest is chained to the uniform DistributedMultigrid).
   void build(const DO& finest) {
+    buildImpl(finest, [](const Vec<Dim>&, int) { return 1.0; }, false);
+  }
+
+  /// Build with cut-cell openness `openFn` on every level (each level re-samples the
+  /// geometry at its own face centroids — a rediscretized coarse operator). The
+  /// chained uniform bottom solve is openness-free, so for openness the coarsest is
+  /// bottom-solved with Jacobi on the (correct, openness-carrying) coarsest operator.
+  template <class OpenFn>
+  void build(const DO& finest, OpenFn&& openFn) {
+    buildImpl(finest, std::forward<OpenFn>(openFn), true);
+  }
+
+ private:
+  template <class OpenFn>
+  void buildImpl(const DO& finest, OpenFn&& openFn, bool hasOpen) {
+    hasOpen_ = hasOpen;
     levels_.clear();
     const IVec<Dim> g = finest.globalRootSize();
     const unsigned lmax = finest.lmax();
@@ -320,7 +395,7 @@ class GradedDistributedMultigrid {
       levels_.push_back(std::move(lv));
     }
     for (auto& lv : levels_) {
-      lv->op.init(lv->d);
+      lv->op.init(lv->d, openFn);
       const Index n = lv->d.local().numLeaves();
       lv->x.assign(static_cast<std::size_t>(n), 0.0);
       lv->b.assign(static_cast<std::size_t>(n), 0.0);
@@ -336,23 +411,27 @@ class GradedDistributedMultigrid {
       for (Index i = 0; i < nf; ++i) c2p[static_cast<std::size_t>(i)] = c.find(f.code(i));
     }
 
-    // Bottom solver: a uniform DistributedMultigrid on the root grid, below the root
-    // brick. The coarsest graded level IS the uniform root brick (root cells at level
-    // lmax); its operator is L=∇² at spacing h0·2^lmax, the same operator the uniform
-    // MG's finest applies (DistributedPoisson is also L=∇²) on the same root grid — so
-    // the bottom solve of L e = res is inner.vcycle(e, res). Built once; mapped per
-    // global root cell.
-    AmrGeometry<Dim> ig = geo;
-    ig.h0 = geo.h0 * static_cast<double>(Index(1) << lmax);  // root-cell width
-    inner_ = std::make_unique<DistributedMultigrid<Dim, Bits>>();
-    inner_->build(g, ig, per, comm);
-    DO& coarsest = levels_.back()->d;
-    nCoarse_ = coarsest.local().numLeaves();
-    innerMap_.assign(static_cast<std::size_t>(nCoarse_), -1);
-    for (Index i = 0; i < nCoarse_; ++i)
-      innerMap_[static_cast<std::size_t>(i)] = inner_->octree(0).findGlobalRoot(coarsest.globalRootOf(i));
+    // Bottom solver (openness-free only): a uniform DistributedMultigrid on the root
+    // grid, below the root brick. The coarsest graded level IS the uniform root brick
+    // (root cells at level lmax); its operator is L=∇² at spacing h0·2^lmax, the same
+    // operator the uniform MG's finest applies (DistributedPoisson is also L=∇²) on
+    // the same root grid — so the bottom solve of L e = res is inner.vcycle(e, res).
+    // With openness the uniform inner is inconsistent, so the coarsest is bottom-solved
+    // with Jacobi on its own (openness-carrying) operator instead.
+    if (!hasOpen_) {
+      AmrGeometry<Dim> ig = geo;
+      ig.h0 = geo.h0 * static_cast<double>(Index(1) << lmax);  // root-cell width
+      inner_ = std::make_unique<DistributedMultigrid<Dim, Bits>>();
+      inner_->build(g, ig, per, comm);
+      DO& coarsest = levels_.back()->d;
+      nCoarse_ = coarsest.local().numLeaves();
+      innerMap_.assign(static_cast<std::size_t>(nCoarse_), -1);
+      for (Index i = 0; i < nCoarse_; ++i)
+        innerMap_[static_cast<std::size_t>(i)] = inner_->octree(0).findGlobalRoot(coarsest.globalRootOf(i));
+    }
   }
 
+ public:
   std::size_t numLevels() const { return levels_.size(); }
   DistributedFvOperator<Dim, Bits>& op(std::size_t L = 0) { return levels_[L]->op; }
   Index numLeaves(std::size_t L = 0) const { return levels_[L]->d.local().numLeaves(); }
@@ -364,7 +443,10 @@ class GradedDistributedMultigrid {
               int innerCycles = 6, double omega = 0.8, std::size_t L = 0) {
     auto& lv = *levels_[L];
     if (L + 1 == levels_.size()) {
-      bottomSolve(lv.op, x, b, innerCycles);
+      if (inner_)
+        bottomSolve(lv.op, x, b, innerCycles);  // openness-free: chained uniform MG
+      else
+        lv.op.jacobi(x, b, bottomSweeps_, omega);  // openness: Jacobi on the correct op
       return;
     }
     lv.op.jacobi(x, b, pre, omega);
@@ -422,9 +504,11 @@ class GradedDistributedMultigrid {
     std::vector<double> x, b, res;  // scratch
   };
   std::vector<std::unique_ptr<Level>> levels_;
-  std::unique_ptr<DistributedMultigrid<Dim, Bits>> inner_;  // uniform bottom solver
+  std::unique_ptr<DistributedMultigrid<Dim, Bits>> inner_;  // uniform bottom solver (openness-free)
   std::vector<Index> innerMap_;                             // coarsest leaf → inner finest leaf
   Index nCoarse_ = 0;
+  bool hasOpen_ = false;
+  int bottomSweeps_ = 400;  // Jacobi sweeps on the coarsest op when openness present
 };
 
 }  // namespace tpx::amr

@@ -159,6 +159,10 @@ if(MPI_FOUND)
   target_link_libraries(test_amr_distributed_graded_mg_mpi PRIVATE tpx_halo)
   target_include_directories(test_amr_distributed_graded_mg_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+  add_executable(test_amr_distributed_openness_mpi test_amr_distributed_openness_mpi.cpp)
+  target_link_libraries(test_amr_distributed_openness_mpi PRIVATE tpx_halo)
+  target_include_directories(test_amr_distributed_openness_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
   foreach(np IN ITEMS 1 2 4 8)
     add_test(NAME grid_halo_np${np}
              COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
@@ -193,6 +197,9 @@ if(MPI_FOUND)
     add_test(NAME amr_distributed_graded_mg_np${np}
              COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
                      ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_graded_mg_mpi> ${MPIEXEC_POSTFLAGS})
+    add_test(NAME amr_distributed_openness_np${np}
+             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
+                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_openness_mpi> ${MPIEXEC_POSTFLAGS})
   endforeach()
 
   # Portable GPU-resident halo (Kokkos): device result must match the CPU path, on whatever backend
