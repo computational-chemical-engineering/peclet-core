@@ -79,21 +79,24 @@ struct DeviceFvOp {
   View<Index> faceStart;   ///< CSR row offsets, size n+1
   View<Index> faceNbr;     ///< neighbour leaf per face, size nFaces
   View<double> faceW;      ///< w_f = openness·A_f/d_f per face, size nFaces
+  View<double> bcDiag;     ///< Dirichlet boundary diagonal per cell (0 if periodic), size n
   Index n = 0;
 };
 
-/// Lu = L u (consistent conservative FV Laplacian, negative-definite).
+/// Lu = L u (consistent conservative FV Laplacian, negative-definite). A non-zero
+/// bcDiag adds the homogeneous-Dirichlet boundary term −bcDiag·u_i.
 inline void deviceApplyFv(const DeviceFvOp& op, View<const double> u, View<double> Lu) {
   auto invVol = op.invVol;
   auto fs = op.faceStart;
   auto fn = op.faceNbr;
   auto fw = op.faceW;
+  auto bc = op.bcDiag;
   Kokkos::parallel_for(
       "amr::fv_apply", op.n, KOKKOS_LAMBDA(const Index i) {
         const double ui = u(i);
         double acc = 0.0;
         for (Index k = fs(i); k < fs(i + 1); ++k) acc += fw(k) * (u(fn(k)) - ui);
-        Lu(i) = invVol(i) * acc;
+        Lu(i) = invVol(i) * (acc - bc(i) * ui);
       });
 }
 
@@ -104,12 +107,13 @@ inline void deviceResidualFv(const DeviceFvOp& op, View<const double> u, View<co
   auto fs = op.faceStart;
   auto fn = op.faceNbr;
   auto fw = op.faceW;
+  auto bc = op.bcDiag;
   Kokkos::parallel_for(
       "amr::fv_residual", op.n, KOKKOS_LAMBDA(const Index i) {
         const double ui = u(i);
         double acc = 0.0;
         for (Index k = fs(i); k < fs(i + 1); ++k) acc += fw(k) * (u(fn(k)) - ui);
-        res(i) = rhs(i) - invVol(i) * acc;
+        res(i) = rhs(i) - invVol(i) * (acc - bc(i) * ui);
       });
 }
 
@@ -123,6 +127,7 @@ inline void deviceJacobiFv(const DeviceFvOp& op, View<double> u, View<const doub
   auto fs = op.faceStart;
   auto fn = op.faceNbr;
   auto fw = op.faceW;
+  auto bc = op.bcDiag;
   Kokkos::parallel_for(
       "amr::fv_jacobi_compute", op.n, KOKKOS_LAMBDA(const Index i) {
         double sumOff = 0.0, diag = 0.0;
@@ -130,6 +135,7 @@ inline void deviceJacobiFv(const DeviceFvOp& op, View<double> u, View<const doub
           sumOff += fw(k) * u(fn(k));
           diag += fw(k);
         }
+        diag += bc(i);  // Dirichlet boundary adds to the diagonal (no off-diagonal)
         // V_i rhs_i = rhs_i / invVol_i ; point solve of L u = rhs for u_i.
         tmp(i) = (diag != 0.0) ? (sumOff - rhs(i) / invVol(i)) / diag : u(i);
       });

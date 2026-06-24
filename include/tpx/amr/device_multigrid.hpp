@@ -107,10 +107,11 @@ class DeviceMultigrid {
   /// coarsenOpenAvg the host uses): each level's face weight is α·A/d with α the
   /// coarsened aperture, so the coarse operators stay consistent cut-cell operators.
   template <class OpenFn>
-  void build(const Octree& finest, double h0, OpenFn&& openFn) {
+  void build(const Octree& finest, double h0, OpenFn&& openFn, bool periodic = true) {
     hmg_ = std::make_unique<AmrMultigrid<Dim, Bits>>();
     hmg_->build(finest, h0);
     hmg_->setOpenness(std::forward<OpenFn>(openFn));
+    hmg_->setPeriodic(periodic);  // non-periodic ⇒ homogeneous Dirichlet domain walls
     buildFromHostMg();
   }
 
@@ -120,6 +121,7 @@ class DeviceMultigrid {
 
   std::size_t numLevels() const { return levels_.size(); }
   Index numLeaves(std::size_t L = 0) const { return levels_[L].n; }
+  Code octreeCode(std::size_t L, Index i) const { return hmg_->op(L).octree().code(i); }
   View<double> x(std::size_t L = 0) { return levels_[L].x; }
   View<double> b(std::size_t L = 0) { return levels_[L].b; }
   const DeviceFvOp& op(std::size_t L = 0) const { return levels_[L].op; }
@@ -273,8 +275,10 @@ class DeviceMultigrid {
     std::vector<Index> nbr(static_cast<std::size_t>(nf));
     std::vector<double> w(static_cast<std::size_t>(nf));
     std::vector<double> invVol(static_cast<std::size_t>(n));
+    std::vector<double> bcDiag(static_cast<std::size_t>(n));
     for (Index i = 0; i < n; ++i) {
       invVol[static_cast<std::size_t>(i)] = 1.0 / ap.cellVolume(i);
+      bcDiag[static_cast<std::size_t>(i)] = ap.boundaryDiag(i);  // 0 unless non-periodic boundary
       Index k = start[static_cast<std::size_t>(i)];
       ap.forEachFaceNeighbor(i, [&](Index j, Real c, int, double a) {
         nbr[static_cast<std::size_t>(k)] = j;
@@ -287,6 +291,7 @@ class DeviceMultigrid {
     lv.op.faceStart = toDevice(start, "mg_fstart");
     lv.op.faceNbr = toDevice(nbr, "mg_fnbr");
     lv.op.faceW = toDevice(w, "mg_fw");
+    lv.op.bcDiag = toDevice(bcDiag, "mg_bcdiag");
   }
 
   // Build the quadratic coarse-fine correction CSR: dq_i = Σ coef·u[slot] equals

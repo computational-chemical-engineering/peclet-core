@@ -111,6 +111,11 @@ if(TPX_HAVE_KOKKOS)
   target_link_libraries(test_amr_kappa_restrict_kokkos PRIVATE tpx_core)
   target_include_directories(test_amr_kappa_restrict_kokkos PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   add_test(NAME amr_kappa_restrict_kokkos COMMAND test_amr_kappa_restrict_kokkos)
+
+  add_executable(test_amr_kappa_dirichlet_kokkos test_amr_kappa_dirichlet_kokkos.cpp)
+  target_link_libraries(test_amr_kappa_dirichlet_kokkos PRIVATE tpx_core)
+  target_include_directories(test_amr_kappa_dirichlet_kokkos PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME amr_kappa_dirichlet_kokkos COMMAND test_amr_kappa_dirichlet_kokkos)
 endif()
 
 add_executable(test_sdf test_sdf.cpp)

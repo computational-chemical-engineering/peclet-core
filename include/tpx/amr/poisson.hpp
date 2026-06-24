@@ -104,6 +104,32 @@ class AmrPoisson {
   }
 
   Index numLeaves() const { return t_->numLeaves(); }
+
+  /// Boundary condition: periodic (default) wraps every face; non-periodic treats a
+  /// domain-boundary face as a homogeneous Dirichlet wall at half a cell (see
+  /// `boundaryDiag`), which `forEachFaceNeighbor` then skips (no neighbour cell).
+  void setPeriodic(bool p) { periodic_ = p; }
+  bool periodic() const { return periodic_; }
+
+  /// Σ over leaf `i`'s domain-boundary faces of the Dirichlet wall weight
+  /// α · A_f/(½·cellWidth) (0 if periodic). Folded into the operator diagonal so a
+  /// boundary cell sees a u=0 wall at half a cell — making the operator non-singular.
+  double boundaryDiag(Index i) const {
+    if (periodic_) return 0.0;
+    auto b = t_->bounds(i);
+    const auto& lo = b[0];
+    const Coord si = Coord(Coord(1) << t_->level(i));
+    double s = 0.0;
+    for (int axis = 0; axis < Dim; ++axis)
+      for (int dir = -1; dir <= 1; dir += 2) {
+        const long pc = (dir > 0) ? static_cast<long>(lo[axis]) + static_cast<long>(si)
+                                  : static_cast<long>(lo[axis]) - 1;
+        if (pc < 0 || pc >= static_cast<long>(fineExt_[axis]))
+          s += faceOpenness(i, axis, dir) * areaOf(si) / (0.5 * static_cast<Real>(si) * h0_);
+      }
+    return s;
+  }
+
   Real cellWidth(Index i) const { return h0_ * static_cast<Real>(Index(1) << t_->level(i)); }
   Real cellVolume(Index i) const {
     Real w = cellWidth(i);
@@ -125,6 +151,9 @@ class AmrPoisson {
       for (int dir = -1; dir <= 1; dir += 2) {
         const long pc = (dir > 0) ? static_cast<long>(lo[axis]) + static_cast<long>(si)
                                   : static_cast<long>(lo[axis]) - 1;
+        // Non-periodic: a domain-boundary face has no neighbour cell (it is a Dirichlet
+        // wall handled by boundaryDiag) — skip it.
+        if (!periodic_ && (pc < 0 || pc >= static_cast<long>(fineExt_[axis]))) continue;
         std::array<Coord, Dim> p = lo;
         p[axis] = wrap(pc, axis);
         Index j = t_->find(M::encode(p).code());
@@ -373,6 +402,7 @@ class AmrPoisson {
   Vec<Dim> origin_{};
   std::vector<double> alpha_;  // per-leaf per-face openness (kFaces per leaf), or empty
   bool hasOpen_ = false;
+  bool periodic_ = true;  // false ⇒ homogeneous Dirichlet domain walls (boundaryDiag)
 };
 
 /// Geometric multigrid for AmrPoisson over a uniformly-coarsened octree hierarchy.
@@ -414,6 +444,12 @@ class AmrMultigrid {
 
   std::size_t numLevels() const { return levels_.size(); }
   const AmrPoisson<Dim, Bits>& op(std::size_t L = 0) const { return ops_[L]; }
+
+  /// Apply a boundary condition to every level (periodic default, or non-periodic
+  /// homogeneous Dirichlet). Call after build().
+  void setPeriodic(bool p) {
+    for (auto& o : ops_) o.setPeriodic(p);
+  }
 
   /// One V-cycle on level L solving L u = rhs (correction scheme).
   void vcycle(std::size_t L, std::vector<double>& u, const std::vector<double>& rhs, int pre = 2,
