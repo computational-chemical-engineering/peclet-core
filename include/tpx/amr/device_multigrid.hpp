@@ -52,6 +52,29 @@ inline void deviceRestrict(View<const Index> childStart, View<const Index> child
       });
 }
 
+/// Restrict, κ-weighted: coarse(p) = Σ_child κ_c·fine_c / Σ_child κ_c, with κ the fine
+/// cell's fluid-fraction weight (mean face aperture). Downweights nearly-solid children
+/// at thin cut features. Reduces to deviceRestrict when all κ are equal (openness-free).
+/// (Experimental — opt-in via DeviceMultigrid::setKappaRestrict; see the comparison test.
+/// NOTE: unlike the plain volume-average, this is *not* exactly conservative, so the
+/// restricted residual of a mean-zero RHS need not stay mean-zero.)
+inline void deviceRestrictKappa(View<const Index> childStart, View<const Index> childIdx,
+                                View<const double> fine, View<const double> kappa,
+                                View<double> coarse, Index nCoarse) {
+  Kokkos::parallel_for(
+      "amr::device_restrict_kappa", nCoarse, KOKKOS_LAMBDA(const Index p) {
+        const Index a = childStart(p), z = childStart(p + 1);
+        double sw = 0.0, swv = 0.0;
+        for (Index k = a; k < z; ++k) {
+          const Index ch = childIdx(k);
+          const double w = kappa(ch);
+          sw += w;
+          swv += w * fine(ch);
+        }
+        coarse(p) = (sw > 0.0) ? swv / sw : 0.0;
+      });
+}
+
 /// Prolong (piecewise-constant) + correct: fine(i) += coarse(c2p(i)).
 inline void deviceProlongAdd(View<const Index> c2p, View<const double> coarse, View<double> fine,
                              Index nFine) {
@@ -91,6 +114,10 @@ class DeviceMultigrid {
     buildFromHostMg();
   }
 
+  /// Opt-in: use κ-weighted (fluid-fraction) restriction instead of the default plain
+  /// volume-average. Experimental — validate with the comparison test before relying on it.
+  void setKappaRestrict(bool on) { kappaRestrict_ = on; }
+
   std::size_t numLevels() const { return levels_.size(); }
   Index numLeaves(std::size_t L = 0) const { return levels_[L].n; }
   View<double> x(std::size_t L = 0) { return levels_[L].x; }
@@ -112,7 +139,11 @@ class DeviceMultigrid {
     for (int s = 0; s < pre; ++s) deviceJacobiFv(lv.op, lv.x, bc, lv.tmp, omega);
     deviceResidualFv(lv.op, View<const double>(lv.x), bc, lv.res);
     Level& cl = levels_[L + 1];
-    deviceRestrict(lv.childStart, lv.childIdx, View<const double>(lv.res), cl.b, cl.n);
+    if (kappaRestrict_)
+      deviceRestrictKappa(lv.childStart, lv.childIdx, View<const double>(lv.res),
+                          View<const double>(lv.kappa), cl.b, cl.n);
+    else
+      deviceRestrict(lv.childStart, lv.childIdx, View<const double>(lv.res), cl.b, cl.n);
     Kokkos::deep_copy(cl.x, 0.0);
     vcycle(pre, post, bottom, omega, L + 1);
     deviceProlongAdd(lv.c2p, View<const double>(cl.x), lv.x, lv.n);
@@ -162,6 +193,7 @@ class DeviceMultigrid {
     DeviceFvOp op;
     Index n = 0;
     View<double> x, b, res, tmp;
+    View<double> kappa;                     // per-cell fluid-fraction weight (κ restriction)
     View<Index> c2p, childStart, childIdx;  // describe L → L+1 (unused on coarsest)
   };
 
@@ -179,6 +211,16 @@ class DeviceMultigrid {
       Level& lv = levels_[L];
       lv.n = oct.numLeaves();
       buildFaceCsr(ap, oct, lv);
+      // Per-cell κ weight for the optional κ-weighted restriction = mean face aperture
+      // (1 fully open ⇒ reduces to plain average; <1 near cuts).
+      std::vector<double> kap(static_cast<std::size_t>(lv.n));
+      for (Index i = 0; i < lv.n; ++i) {
+        double s = 0.0;
+        for (int axis = 0; axis < Dim; ++axis)
+          for (int dir = -1; dir <= 1; dir += 2) s += ap.faceOpenness(i, axis, dir);
+        kap[static_cast<std::size_t>(i)] = s / static_cast<double>(2 * Dim);
+      }
+      lv.kappa = toDevice(kap, "mg_kappa");
       lv.x = View<double>("mg_x", static_cast<std::size_t>(lv.n));
       lv.b = View<double>("mg_b", static_cast<std::size_t>(lv.n));
       lv.res = View<double>("mg_res", static_cast<std::size_t>(lv.n));
@@ -317,6 +359,7 @@ class DeviceMultigrid {
   // lifetime of this object.
   std::unique_ptr<AmrMultigrid<Dim, Bits>> hmg_;
   std::vector<Level> levels_;
+  bool kappaRestrict_ = false;  // default: plain volume-average restriction
   View<Index> qStart_, qSlot_;  // finest-level quadratic correction CSR
   View<double> qCoef_;
   View<double> dq_, b0true_;  // finest-level deferred-correction scratch
