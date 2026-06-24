@@ -338,9 +338,10 @@ class GradedDistributedMultigrid {
 
     // Bottom solver: a uniform DistributedMultigrid on the root grid, below the root
     // brick. The coarsest graded level IS the uniform root brick (root cells at level
-    // lmax); its operator is L=∇² at spacing h0·2^lmax, exactly −A of the uniform MG's
-    // finest (DistributedPoisson, A=−∇²) on the same root grid — so the bottom solve
-    // of L e = res is inner.vcycle(e, −res). Built once; mapped per global root cell.
+    // lmax); its operator is L=∇² at spacing h0·2^lmax, the same operator the uniform
+    // MG's finest applies (DistributedPoisson is also L=∇²) on the same root grid — so
+    // the bottom solve of L e = res is inner.vcycle(e, res). Built once; mapped per
+    // global root cell.
     AmrGeometry<Dim> ig = geo;
     ig.h0 = geo.h0 * static_cast<double>(Index(1) << lmax);  // root-cell width
     inner_ = std::make_unique<DistributedMultigrid<Dim, Bits>>();
@@ -394,8 +395,9 @@ class GradedDistributedMultigrid {
 
  private:
   // Solve L x = b on the uniform root brick via the inner uniform MG (correction
-  // scheme): res = b − Lx; solve A e = −res (A = −L) with `cycles` inner V-cycles;
-  // x += e. Index map coarsest→inner is by global root cell (identity in practice).
+  // scheme): res = b − Lx; solve L e = res with `cycles` inner V-cycles; x += e.
+  // Both operators are L = ∇² (same suite-wide sign), so no sign flip is needed.
+  // Index map coarsest→inner is by global root cell (identity in practice).
   void bottomSolve(DistributedFvOperator<Dim, Bits>& op, std::vector<double>& x,
                    const std::vector<double>& b, int cycles) {
     std::vector<double> res;
@@ -404,7 +406,7 @@ class GradedDistributedMultigrid {
     std::vector<double> bi(static_cast<std::size_t>(ni), 0.0), ei(static_cast<std::size_t>(ni), 0.0);
     for (Index i = 0; i < nCoarse_; ++i) {
       Index m = innerMap_[static_cast<std::size_t>(i)];
-      if (m >= 0) bi[static_cast<std::size_t>(m)] = -res[static_cast<std::size_t>(i)];
+      if (m >= 0) bi[static_cast<std::size_t>(m)] = res[static_cast<std::size_t>(i)];
     }
     for (int c = 0; c < cycles; ++c) inner_->vcycle(ei, bi);
     for (Index i = 0; i < nCoarse_; ++i) {

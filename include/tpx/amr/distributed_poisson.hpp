@@ -9,9 +9,13 @@
 // single-block solve would read). This is the analog of sdflow's MPI-folded
 // CutcellMG, at the operator/smoother level.
 //
-// Scope: the plain (uniform, openness-free) Laplacian -A = ∇² in grid spacing h0,
+// Scope: the plain (uniform, openness-free) Laplacian L = ∇² in grid spacing h0,
 // on a periodic global domain — the clean first distributed milestone. Graded /
 // openness / a full distributed V-cycle build on this + the per-level halos.
+//
+// Sign convention (suite-wide): the operator IS the Laplacian L = ∇² (negative-
+// definite; diagonal −2*Dim/h², off +1/h²), matching AmrPoisson::applyLaplacian,
+// DistributedFvOperator and the device operators. Solvers solve L u = rhs.
 //
 // Header-only, guarded by TPX_HAVE_MORTON; uses the MPI shim.
 #ifndef TPX_AMR_DISTRIBUTED_POISSON_HPP
@@ -42,9 +46,9 @@ class DistributedPoisson {
 
   Index numLeaves() const { return d_->local().numLeaves(); }
 
-  /// y = A x with A = −∇² (positive: diagonal 2*Dim/h², off −1/h²). Cross-block
-  /// neighbours come from the owner-based halo; periodic global domain ⇒ every face
-  /// has a neighbour.
+  /// y = L x with L = ∇² (negative-definite: diagonal −2*Dim/h², off +1/h²).
+  /// Cross-block neighbours come from the owner-based halo; periodic global domain ⇒
+  /// every face has a neighbour.
   void apply(const std::vector<double>& x, std::vector<double>& y) const {
     auto g = d_->faceNeighborGather(x);
     const Index n = numLeaves();
@@ -54,27 +58,28 @@ class DistributedPoisson {
     for (Index i = 0; i < n; ++i) {
       double s = 0.0;
       for (int f = 0; f < F; ++f) s += g[static_cast<std::size_t>(i) * F + f] - x[static_cast<std::size_t>(i)];
-      y[static_cast<std::size_t>(i)] = -inv * s;  // A = -∇²
+      y[static_cast<std::size_t>(i)] = inv * s;  // L = ∇²
     }
   }
 
-  /// `sweeps` damped-Jacobi relaxations of A x = b (in place). Jacobi reads only the
-  /// previous iterate (one halo gather per sweep), so the result is bit-identical to
-  /// a serial single-block Jacobi.
+  /// `sweeps` damped-Jacobi relaxations of L u = b (in place), L = ∇². The point
+  /// update is u_i += ω (L u_i − b_i)/diag with diag = 2*Dim/h² (= −L_ii, so the
+  /// damping has the right sign for the negative-definite L). Reads only the previous
+  /// iterate (one halo gather per sweep) ⇒ bit-identical to a serial single-block sweep.
   void jacobi(std::vector<double>& x, const std::vector<double>& b, int sweeps, double omega = 0.8) const {
     const Index n = numLeaves();
     const int F = 2 * Dim;
     const double inv = 1.0 / (h0_ * h0_), diag = F * inv;
-    std::vector<double> ax;
+    std::vector<double> lx;
     for (int s = 0; s < sweeps; ++s) {
-      apply(x, ax);  // gathers ghosts
+      apply(x, lx);  // lx = L x; gathers ghosts
       for (Index i = 0; i < n; ++i)
         x[static_cast<std::size_t>(i)] +=
-            omega * (b[static_cast<std::size_t>(i)] - ax[static_cast<std::size_t>(i)]) / diag;
+            omega * (lx[static_cast<std::size_t>(i)] - b[static_cast<std::size_t>(i)]) / diag;
     }
   }
 
-  /// res = b − A x (local vector); also returns its global L2 norm.
+  /// res = b − L x (local vector); also returns its global L2 norm.
   double residual(const std::vector<double>& x, const std::vector<double>& b,
                   std::vector<double>& res) const {
     std::vector<double> ax;
@@ -92,7 +97,7 @@ class DistributedPoisson {
     return std::sqrt(g);
   }
 
-  /// Global L2 norm of b − A x (across ranks).
+  /// Global L2 norm of b − L x (across ranks).
   double residualNorm(const std::vector<double>& x, const std::vector<double>& b) const {
     std::vector<double> ax;
     apply(x, ax);

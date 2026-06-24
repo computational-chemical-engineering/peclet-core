@@ -87,13 +87,13 @@ void run() {
   auto hu = Kokkos::create_mirror_view(du);
   Kokkos::deep_copy(hu, du);
 
-  // host reference (same sweep)
+  // host reference (same sweep): L = ∇², update u += ω(Lu − b)/diag
   std::vector<double> u(static_cast<std::size_t>(n), 0.0);
   for (int it = 0; it < 5; ++it) {
-    std::vector<double> ax(static_cast<std::size_t>(n));
-    for (Index i = 0; i < n; ++i) ax[static_cast<std::size_t>(i)] = -hostLap(t, u, i, inv);
+    std::vector<double> lx(static_cast<std::size_t>(n));
+    for (Index i = 0; i < n; ++i) lx[static_cast<std::size_t>(i)] = hostLap(t, u, i, inv);
     for (Index i = 0; i < n; ++i)
-      u[static_cast<std::size_t>(i)] += omega * (b[static_cast<std::size_t>(i)] - ax[static_cast<std::size_t>(i)]) / diag;
+      u[static_cast<std::size_t>(i)] += omega * (lx[static_cast<std::size_t>(i)] - b[static_cast<std::size_t>(i)]) / diag;
   }
   int jmis = 0;
   for (Index i = 0; i < n; ++i)

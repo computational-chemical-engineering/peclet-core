@@ -38,14 +38,15 @@ void deviceLaplacian(DeviceBlockOctree<Dim, Bits> dev, View<double> x, View<doub
       });
 }
 
-/// One weighted-Jacobi sweep of A x = b with A = −∇² (diagonal 2·Dim·inv), on device.
-/// `ax` is scratch (Ax). x updated in place.
+/// One weighted-Jacobi sweep of L u = b with L = ∇² (negative-definite, diagonal
+/// −2·Dim·inv), on device. The update u_i += ω (L u_i − b_i)/diag, diag = 2·Dim·inv
+/// (= −L_ii), has the right sign for the negative-definite L. `lx` is scratch (L x).
 template <int Dim, unsigned Bits>
 void deviceJacobiSweep(DeviceBlockOctree<Dim, Bits> dev, View<double> x, View<const double> b,
-                       View<double> ax, double inv, double omega) {
+                       View<double> lx, double inv, double omega) {
   const Index n = dev.numLeaves();
   const double diag = 2.0 * Dim * inv;
-  // ax = A x = −∇² x
+  // lx = L x = ∇² x
   Kokkos::parallel_for(
       "amr::device_jacobi_apply", n, KOKKOS_LAMBDA(const Index i) {
         double s = 0.0;
@@ -54,11 +55,11 @@ void deviceJacobiSweep(DeviceBlockOctree<Dim, Bits> dev, View<double> x, View<co
             Index j = dev.faceNeighbor(i, axis, dir);
             if (j >= 0) s += x(j) - x(i);
           }
-        ax(i) = -inv * s;
+        lx(i) = inv * s;
       });
   Kokkos::parallel_for(
       "amr::device_jacobi_update", n,
-      KOKKOS_LAMBDA(const Index i) { x(i) += omega * (b(i) - ax(i)) / diag; });
+      KOKKOS_LAMBDA(const Index i) { x(i) += omega * (lx(i) - b(i)) / diag; });
 }
 
 // ===========================================================================
