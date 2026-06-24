@@ -29,6 +29,7 @@
 #ifdef TPX_HAVE_MORTON
 
 #include <cmath>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -69,70 +70,25 @@ class DeviceMultigrid {
   using Code = typename Octree::Code;
   using Poisson = AmrPoisson<Dim, Bits>;
 
-  /// Build + upload the hierarchy from a finest octree (uniform coarsening). `h0` is
-  /// the finest spacing (every level shares it; a coarse leaf's higher `level`
-  /// encodes its width). If `proto` is given its finest-level openness (cut-cell)
-  /// is applied on level 0 (coarse levels stay openness-free for now).
-  void build(const Octree& finest, double h0, const Poisson* proto = nullptr) {
-    levels_.clear();
-    std::vector<Octree> host;
-    host.push_back(finest);
-    for (;;) {
-      Octree c = host.back();
-      Index merged = c.coarsenIf([](Code, unsigned) { return true; });
-      if (merged == 0 || c.numLeaves() == host.back().numLeaves()) break;
-      host.push_back(c);
-      if (c.numLeaves() == 1) break;
-    }
-    levels_.resize(host.size());
-    for (std::size_t L = 0; L < host.size(); ++L) {
-      Level& lv = levels_[L];
-      lv.n = host[L].numLeaves();
-      Poisson ap;
-      ap.init(host[L], h0);
-      if (proto && L == 0 && proto->hasOpenness()) ap.setOpennessRaw(proto->opennessRaw());
-      buildFaceCsr(ap, host[L], lv);
-      lv.x = View<double>("mg_x", static_cast<std::size_t>(lv.n));
-      lv.b = View<double>("mg_b", static_cast<std::size_t>(lv.n));
-      lv.res = View<double>("mg_res", static_cast<std::size_t>(lv.n));
-      lv.tmp = View<double>("mg_tmp", static_cast<std::size_t>(lv.n));
-    }
-    // fine→coarse map + CSR coarse→children.
-    for (std::size_t L = 0; L + 1 < host.size(); ++L) {
-      const Octree& f = host[L];
-      const Octree& c = host[L + 1];
-      const Index nf = f.numLeaves(), nc = c.numLeaves();
-      std::vector<Index> c2p(static_cast<std::size_t>(nf));
-      std::vector<Index> cnt(static_cast<std::size_t>(nc), 0);
-      for (Index i = 0; i < nf; ++i) {
-        Code parent = M::from_code(f.code(i)).ancestor(f.level(i) + 1).code();
-        Index p = c.find(parent);
-        c2p[static_cast<std::size_t>(i)] = p;
-        if (p >= 0) ++cnt[static_cast<std::size_t>(p)];
-      }
-      std::vector<Index> start(static_cast<std::size_t>(nc) + 1, 0);
-      for (Index p = 0; p < nc; ++p)
-        start[static_cast<std::size_t>(p) + 1] = start[static_cast<std::size_t>(p)] + cnt[static_cast<std::size_t>(p)];
-      std::vector<Index> idx(static_cast<std::size_t>(nf));
-      std::vector<Index> cur(start.begin(), start.end() - 1);
-      for (Index i = 0; i < nf; ++i) {
-        Index p = c2p[static_cast<std::size_t>(i)];
-        if (p >= 0) idx[static_cast<std::size_t>(cur[static_cast<std::size_t>(p)]++)] = i;
-      }
-      levels_[L].c2p = toDevice(c2p, "mg_c2p");
-      levels_[L].childStart = toDevice(start, "mg_cstart");
-      levels_[L].childIdx = toDevice(idx, "mg_cidx");
-    }
-    // Quadratic coarse-fine correction CSR on the finest level (for solveQuad).
-    {
-      Poisson ap;
-      ap.init(host[0], h0);
-      if (proto && proto->hasOpenness()) ap.setOpennessRaw(proto->opennessRaw());
-      buildQuadCsr(ap, host[0]);
-      const Index n0 = levels_[0].n;
-      dq_ = View<double>("mg_dq", static_cast<std::size_t>(n0));
-      b0true_ = View<double>("mg_b0", static_cast<std::size_t>(n0));
-    }
+  /// Build + upload the hierarchy from a finest octree (uniform coarsening), openness-
+  /// free. `h0` is the finest spacing (every level shares it; a coarse leaf's higher
+  /// `level` encodes its width).
+  void build(const Octree& finest, double h0) {
+    hmg_ = std::make_unique<AmrMultigrid<Dim, Bits>>();
+    hmg_->build(finest, h0);
+    buildFromHostMg();
+  }
+
+  /// Build with cut-cell openness `openFn(faceCentreWorld, axis) → [0,1]`, coarsened
+  /// to **every** level by area-averaging (AmrMultigrid::setOpenness — the same
+  /// coarsenOpenAvg the host uses): each level's face weight is α·A/d with α the
+  /// coarsened aperture, so the coarse operators stay consistent cut-cell operators.
+  template <class OpenFn>
+  void build(const Octree& finest, double h0, OpenFn&& openFn) {
+    hmg_ = std::make_unique<AmrMultigrid<Dim, Bits>>();
+    hmg_->build(finest, h0);
+    hmg_->setOpenness(std::forward<OpenFn>(openFn));
+    buildFromHostMg();
   }
 
   std::size_t numLevels() const { return levels_.size(); }
@@ -208,6 +164,58 @@ class DeviceMultigrid {
     View<double> x, b, res, tmp;
     View<Index> c2p, childStart, childIdx;  // describe L → L+1 (unused on coarsest)
   };
+
+  // Upload the device hierarchy from the host AmrMultigrid hmg_ (which already holds
+  // the uniform-coarsened octrees + per-level operators with coarsened openness). Each
+  // level's face CSR is built from hmg_->op(L), so the device operator == that host
+  // operator bit-for-bit on every level.
+  void buildFromHostMg() {
+    const std::size_t nl = hmg_->numLevels();
+    levels_.clear();
+    levels_.resize(nl);
+    for (std::size_t L = 0; L < nl; ++L) {
+      const Poisson& ap = hmg_->op(L);
+      const Octree& oct = ap.octree();
+      Level& lv = levels_[L];
+      lv.n = oct.numLeaves();
+      buildFaceCsr(ap, oct, lv);
+      lv.x = View<double>("mg_x", static_cast<std::size_t>(lv.n));
+      lv.b = View<double>("mg_b", static_cast<std::size_t>(lv.n));
+      lv.res = View<double>("mg_res", static_cast<std::size_t>(lv.n));
+      lv.tmp = View<double>("mg_tmp", static_cast<std::size_t>(lv.n));
+    }
+    for (std::size_t L = 0; L + 1 < nl; ++L) {
+      const Octree& f = hmg_->op(L).octree();
+      const Octree& c = hmg_->op(L + 1).octree();
+      const Index nf = f.numLeaves(), nc = c.numLeaves();
+      std::vector<Index> c2p(static_cast<std::size_t>(nf));
+      std::vector<Index> cnt(static_cast<std::size_t>(nc), 0);
+      for (Index i = 0; i < nf; ++i) {
+        Code parent = M::from_code(f.code(i)).ancestor(f.level(i) + 1).code();
+        Index p = c.find(parent);
+        c2p[static_cast<std::size_t>(i)] = p;
+        if (p >= 0) ++cnt[static_cast<std::size_t>(p)];
+      }
+      std::vector<Index> start(static_cast<std::size_t>(nc) + 1, 0);
+      for (Index p = 0; p < nc; ++p)
+        start[static_cast<std::size_t>(p) + 1] = start[static_cast<std::size_t>(p)] + cnt[static_cast<std::size_t>(p)];
+      std::vector<Index> idx(static_cast<std::size_t>(nf));
+      std::vector<Index> cur(start.begin(), start.end() - 1);
+      for (Index i = 0; i < nf; ++i) {
+        Index p = c2p[static_cast<std::size_t>(i)];
+        if (p >= 0) idx[static_cast<std::size_t>(cur[static_cast<std::size_t>(p)]++)] = i;
+      }
+      levels_[L].c2p = toDevice(c2p, "mg_c2p");
+      levels_[L].childStart = toDevice(start, "mg_cstart");
+      levels_[L].childIdx = toDevice(idx, "mg_cidx");
+    }
+    // Quadratic coarse-fine correction CSR on the finest level (for solveQuad);
+    // openness (if any) flows in through hmg_->op(0)'s aperture + coarseStar gating.
+    buildQuadCsr(hmg_->op(0), hmg_->op(0).octree());
+    const Index n0 = levels_[0].n;
+    dq_ = View<double>("mg_dq", static_cast<std::size_t>(n0));
+    b0true_ = View<double>("mg_b0", static_cast<std::size_t>(n0));
+  }
 
   // Build the consistent face CSR (+ invVol) for one level from its AmrPoisson, in
   // the exact face order AmrPoisson::forEachFaceNeighbor emits ⇒ bit-exact to host.
@@ -304,6 +312,10 @@ class DeviceMultigrid {
     }
   }
 
+  // Owns the host hierarchy + per-level operators (with coarsened openness). The
+  // operators hold pointers into its octrees, so keep it stable (unique_ptr) for the
+  // lifetime of this object.
+  std::unique_ptr<AmrMultigrid<Dim, Bits>> hmg_;
   std::vector<Level> levels_;
   View<Index> qStart_, qSlot_;  // finest-level quadratic correction CSR
   View<double> qCoef_;
