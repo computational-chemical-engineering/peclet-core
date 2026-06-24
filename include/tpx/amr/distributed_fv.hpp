@@ -31,6 +31,7 @@
 #include <array>
 #include <cmath>
 #include <map>
+#include <memory>
 #include <vector>
 
 #include "tpx/amr/distributed_octree.hpp"
@@ -273,6 +274,114 @@ class DistributedFvOperator {
   std::vector<double> invVol_, diag_, w_;
   std::vector<Index> start_, ref_;                 // face CSR (ref<n local, else ghost)
   std::vector<std::array<Coord, Dim>> ghostCoords_;  // dedup ghost cells (slot = ref−n)
+};
+
+/// Geometric-multigrid V-cycle on a *graded* distributed octree, built on
+/// DistributedFvOperator. The hierarchy keeps the same ORB blocks and coarsens
+/// each rank's local octree (coarsenIf, which never merges the root brick — it is
+/// guarded by `level < lmax` — so every rank stops at the uniform root brick and no
+/// cross-block re-decomposition is needed). 2:1 grading is preserved by uniform
+/// coarsening; the consistent per-level operator handles whatever grading remains.
+///
+/// Transfers are local: a fine leaf's covering coarse leaf is in the same block
+/// (parents never cross root cells), so restriction (average children) and
+/// prolongation (piecewise-constant) need no communication — only the per-level
+/// Jacobi smoother uses the operator's ghost halo. Jacobi + local transfers are all
+/// order-independent / per-cell ⇒ the V-cycle is bit-identical COMM_WORLD vs
+/// COMM_SELF. The coarsest level (uniform root brick) is solved with extra Jacobi.
+template <int Dim, unsigned Bits = (Dim == 2 ? 32u : (Dim == 3 ? 21u : 16u))>
+class GradedDistributedMultigrid {
+ public:
+  using DO = DistributedOctree<Dim, Bits>;
+  using BO = typename DO::Octree;
+  using M = typename DO::M;
+
+  /// Build the hierarchy from an already-graded, 2:1-balanced finest octree.
+  void build(const DO& finest) {
+    levels_.clear();
+    const IVec<Dim> g = finest.globalRootSize();
+    const unsigned lmax = finest.lmax();
+    const AmrGeometry<Dim> geo = finest.globalGeometry();
+    const auto per = finest.periodic();
+    MPI_Comm comm = finest.comm();
+
+    auto l0 = std::make_unique<Level>();
+    l0->d = finest;  // copy (level 0 owned by the hierarchy)
+    levels_.push_back(std::move(l0));
+    for (;;) {
+      BO coarse = levels_.back()->d.local();  // copy
+      const Index before = coarse.numLeaves();
+      coarse.coarsenIf([](typename DO::Code, unsigned) { return true; });
+      if (coarse.numLeaves() == before) break;  // uniform root brick reached
+      auto lv = std::make_unique<Level>();
+      lv->d.init(g, lmax, geo, per, comm);
+      lv->d.local() = coarse;  // same ORB block, coarsened local octree
+      levels_.push_back(std::move(lv));
+    }
+    for (auto& lv : levels_) {
+      lv->op.init(lv->d);
+      const Index n = lv->d.local().numLeaves();
+      lv->x.assign(static_cast<std::size_t>(n), 0.0);
+      lv->b.assign(static_cast<std::size_t>(n), 0.0);
+      lv->res.assign(static_cast<std::size_t>(n), 0.0);
+    }
+    // local fine→coarse maps (covering coarse leaf, same block).
+    for (std::size_t L = 0; L + 1 < levels_.size(); ++L) {
+      const BO& f = levels_[L]->d.local();
+      const BO& c = levels_[L + 1]->d.local();
+      const Index nf = f.numLeaves();
+      auto& c2p = levels_[L]->c2p;
+      c2p.assign(static_cast<std::size_t>(nf), -1);
+      for (Index i = 0; i < nf; ++i) c2p[static_cast<std::size_t>(i)] = c.find(f.code(i));
+    }
+  }
+
+  std::size_t numLevels() const { return levels_.size(); }
+  DistributedFvOperator<Dim, Bits>& op(std::size_t L = 0) { return levels_[L]->op; }
+  Index numLeaves(std::size_t L = 0) const { return levels_[L]->d.local().numLeaves(); }
+
+  /// One V-cycle of L u = rhs on level `L` (default finest), correction scheme.
+  void vcycle(std::vector<double>& x, const std::vector<double>& b, int pre = 2, int post = 2,
+              int bottom = 50, double omega = 0.8, std::size_t L = 0) {
+    auto& lv = *levels_[L];
+    if (L + 1 == levels_.size()) {
+      lv.op.jacobi(x, b, bottom, omega);
+      return;
+    }
+    lv.op.jacobi(x, b, pre, omega);
+    std::vector<double> res;
+    lv.op.residual(x, b, res);
+    // restrict residual → coarse rhs (local average over children).
+    auto& cl = *levels_[L + 1];
+    const Index nc = cl.d.local().numLeaves();
+    std::vector<double> cb(static_cast<std::size_t>(nc), 0.0), cn(static_cast<std::size_t>(nc), 0.0);
+    const auto& c2p = lv.c2p;
+    const Index nf = lv.d.local().numLeaves();
+    for (Index i = 0; i < nf; ++i) {
+      Index p = c2p[static_cast<std::size_t>(i)];
+      if (p < 0) continue;
+      cb[static_cast<std::size_t>(p)] += res[static_cast<std::size_t>(i)];
+      cn[static_cast<std::size_t>(p)] += 1.0;
+    }
+    for (Index p = 0; p < nc; ++p)
+      if (cn[static_cast<std::size_t>(p)] > 0.0) cb[static_cast<std::size_t>(p)] /= cn[static_cast<std::size_t>(p)];
+    std::vector<double> cx(static_cast<std::size_t>(nc), 0.0);
+    vcycle(cx, cb, pre, post, bottom, omega, L + 1);
+    for (Index i = 0; i < nf; ++i) {
+      Index p = c2p[static_cast<std::size_t>(i)];
+      if (p >= 0) x[static_cast<std::size_t>(i)] += cx[static_cast<std::size_t>(p)];
+    }
+    lv.op.jacobi(x, b, post, omega);
+  }
+
+ private:
+  struct Level {
+    DO d;
+    DistributedFvOperator<Dim, Bits> op;
+    std::vector<Index> c2p;        // fine leaf → covering coarse leaf (local)
+    std::vector<double> x, b, res;  // scratch
+  };
+  std::vector<std::unique_ptr<Level>> levels_;
 };
 
 }  // namespace tpx::amr

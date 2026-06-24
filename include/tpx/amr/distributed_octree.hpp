@@ -100,6 +100,7 @@ class DistributedOctree {
   const std::array<bool, Dim>& periodic() const { return periodic_; }
   Index rootSpan() const { return rootSpan_; }
   double h0() const { return globalGeo_.h0; }
+  const AmrGeometry<Dim>& globalGeometry() const { return globalGeo_; }
 
   /// Global root-cell coordinate of local leaf `i` (lmax==0: the leaf is one root cell).
   IVec<Dim> globalRootOf(Index i) const {
