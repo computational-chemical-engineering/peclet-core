@@ -57,8 +57,7 @@ void run() {
   AmrGeometry<3> geo;
   geo.h0 = h0;
   const std::array<bool, 3> per{true, true, true};
-  const int cycles = 25;
-  const int bottom = 200;  // bottom = uniform 4^3 root brick; Jacobi-solve it well
+  const int cycles = 15;  // chained bottom solve (uniform DistributedMultigrid on the root grid)
 
   // Manufactured RHS b = L·u_exact: exactly volume-weighted-mean-zero (conservation
   // cancels the face contributions bit-wise), so the singular operator has no
@@ -76,7 +75,7 @@ void run() {
   for (Index i = 0; i < nw; ++i) uw[(std::size_t)i] = fAt(world.globalCode(i), h0);
   mgw.op().apply(uw, bw);
   const double r0 = mgw.op().residualNorm(xw, bw);
-  for (int c = 0; c < cycles; ++c) mgw.vcycle(xw, bw, 2, 2, bottom);
+  for (int c = 0; c < cycles; ++c) mgw.vcycle(xw, bw);
   const double r1 = mgw.op().residualNorm(xw, bw);
 
   // ---- serial reference (whole domain, COMM_SELF) ----
@@ -89,7 +88,7 @@ void run() {
   std::vector<double> us((std::size_t)ns), bs, xs((std::size_t)ns, 0.0);
   for (Index i = 0; i < ns; ++i) us[(std::size_t)i] = fAt(self.globalCode(i), h0);
   mgs.op().apply(us, bs);
-  for (int c = 0; c < cycles; ++c) mgs.vcycle(xs, bs, 2, 2, bottom);
+  for (int c = 0; c < cycles; ++c) mgs.vcycle(xs, bs);
 
   // (1) bit-for-bit WORLD == SELF
   int mism = 0;

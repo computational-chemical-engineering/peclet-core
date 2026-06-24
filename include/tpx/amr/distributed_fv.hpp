@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "tpx/amr/distributed_octree.hpp"
+#include "tpx/amr/distributed_poisson.hpp"
 #include "tpx/common/mpi.hpp"
 #include "tpx/common/types.hpp"
 
@@ -334,18 +335,35 @@ class GradedDistributedMultigrid {
       c2p.assign(static_cast<std::size_t>(nf), -1);
       for (Index i = 0; i < nf; ++i) c2p[static_cast<std::size_t>(i)] = c.find(f.code(i));
     }
+
+    // Bottom solver: a uniform DistributedMultigrid on the root grid, below the root
+    // brick. The coarsest graded level IS the uniform root brick (root cells at level
+    // lmax); its operator is L=∇² at spacing h0·2^lmax, exactly −A of the uniform MG's
+    // finest (DistributedPoisson, A=−∇²) on the same root grid — so the bottom solve
+    // of L e = res is inner.vcycle(e, −res). Built once; mapped per global root cell.
+    AmrGeometry<Dim> ig = geo;
+    ig.h0 = geo.h0 * static_cast<double>(Index(1) << lmax);  // root-cell width
+    inner_ = std::make_unique<DistributedMultigrid<Dim, Bits>>();
+    inner_->build(g, ig, per, comm);
+    DO& coarsest = levels_.back()->d;
+    nCoarse_ = coarsest.local().numLeaves();
+    innerMap_.assign(static_cast<std::size_t>(nCoarse_), -1);
+    for (Index i = 0; i < nCoarse_; ++i)
+      innerMap_[static_cast<std::size_t>(i)] = inner_->octree(0).findGlobalRoot(coarsest.globalRootOf(i));
   }
 
   std::size_t numLevels() const { return levels_.size(); }
   DistributedFvOperator<Dim, Bits>& op(std::size_t L = 0) { return levels_[L]->op; }
   Index numLeaves(std::size_t L = 0) const { return levels_[L]->d.local().numLeaves(); }
 
-  /// One V-cycle of L u = rhs on level `L` (default finest), correction scheme.
+  /// One V-cycle of L u = rhs on level `L` (default finest), correction scheme. The
+  /// coarsest (uniform root brick) is solved by `innerCycles` V-cycles of the uniform
+  /// DistributedMultigrid on the root grid.
   void vcycle(std::vector<double>& x, const std::vector<double>& b, int pre = 2, int post = 2,
-              int bottom = 50, double omega = 0.8, std::size_t L = 0) {
+              int innerCycles = 6, double omega = 0.8, std::size_t L = 0) {
     auto& lv = *levels_[L];
     if (L + 1 == levels_.size()) {
-      lv.op.jacobi(x, b, bottom, omega);
+      bottomSolve(lv.op, x, b, innerCycles);
       return;
     }
     lv.op.jacobi(x, b, pre, omega);
@@ -366,7 +384,7 @@ class GradedDistributedMultigrid {
     for (Index p = 0; p < nc; ++p)
       if (cn[static_cast<std::size_t>(p)] > 0.0) cb[static_cast<std::size_t>(p)] /= cn[static_cast<std::size_t>(p)];
     std::vector<double> cx(static_cast<std::size_t>(nc), 0.0);
-    vcycle(cx, cb, pre, post, bottom, omega, L + 1);
+    vcycle(cx, cb, pre, post, innerCycles, omega, L + 1);
     for (Index i = 0; i < nf; ++i) {
       Index p = c2p[static_cast<std::size_t>(i)];
       if (p >= 0) x[static_cast<std::size_t>(i)] += cx[static_cast<std::size_t>(p)];
@@ -375,6 +393,26 @@ class GradedDistributedMultigrid {
   }
 
  private:
+  // Solve L x = b on the uniform root brick via the inner uniform MG (correction
+  // scheme): res = b − Lx; solve A e = −res (A = −L) with `cycles` inner V-cycles;
+  // x += e. Index map coarsest→inner is by global root cell (identity in practice).
+  void bottomSolve(DistributedFvOperator<Dim, Bits>& op, std::vector<double>& x,
+                   const std::vector<double>& b, int cycles) {
+    std::vector<double> res;
+    op.residual(x, b, res);
+    const Index ni = inner_->numLeaves(0);
+    std::vector<double> bi(static_cast<std::size_t>(ni), 0.0), ei(static_cast<std::size_t>(ni), 0.0);
+    for (Index i = 0; i < nCoarse_; ++i) {
+      Index m = innerMap_[static_cast<std::size_t>(i)];
+      if (m >= 0) bi[static_cast<std::size_t>(m)] = -res[static_cast<std::size_t>(i)];
+    }
+    for (int c = 0; c < cycles; ++c) inner_->vcycle(ei, bi);
+    for (Index i = 0; i < nCoarse_; ++i) {
+      Index m = innerMap_[static_cast<std::size_t>(i)];
+      if (m >= 0) x[static_cast<std::size_t>(i)] += ei[static_cast<std::size_t>(m)];
+    }
+  }
+
   struct Level {
     DO d;
     DistributedFvOperator<Dim, Bits> op;
@@ -382,6 +420,9 @@ class GradedDistributedMultigrid {
     std::vector<double> x, b, res;  // scratch
   };
   std::vector<std::unique_ptr<Level>> levels_;
+  std::unique_ptr<DistributedMultigrid<Dim, Bits>> inner_;  // uniform bottom solver
+  std::vector<Index> innerMap_;                             // coarsest leaf → inner finest leaf
+  Index nCoarse_ = 0;
 };
 
 }  // namespace tpx::amr
