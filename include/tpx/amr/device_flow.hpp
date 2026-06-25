@@ -273,13 +273,14 @@ class DeviceAmrFlow {
   void step(int momIters = 100, int presIters = 60) {
     const Index n = n_;
     const double idiag = rho_ / dt_;
+    lastMomIters_ = 0;
     // --- predictor: incremental BE viscous solve per component, RHS carries −∇p^n ---
     deviceGrad3(geom_, View<const double>(p_), gx_[0], gx_[1], gx_[2]);
     for (int c = 0; c < 3; ++c) {
       deviceMomRhs(View<const double>(u_[c]), View<const double>(gx_[c]),
                    View<const double>(rscale_), View<const char>(fluid_), idiag, f_[c], bmom_, n);
       // warm start from u^n (good initial guess for the time step).
-      momSolver_.solveBiCGStab(momOp_, u_[c], View<const double>(bmom_), momIters, 1e-10);
+      lastMomIters_ += momSolver_.solveBiCGStab(momOp_, u_[c], View<const double>(bmom_), momIters, 1e-10).iters;
     }
     project(presIters);
   }
@@ -291,7 +292,7 @@ class DeviceAmrFlow {
                      View<const double>(u_[2]), div_);
     Kokkos::deep_copy(phi_, 0.0);
     if (presPCG_) {
-      pcg_.solve(presMG_, phi_, View<const double>(div_), presIters, 1e-10);
+      lastPresIters_ = pcg_.solve(presMG_, phi_, View<const double>(div_), presIters, 1e-10).iters;
     } else {
       Kokkos::deep_copy(presMG_.b(0), div_);
       Kokkos::deep_copy(presMG_.x(0), 0.0);
@@ -319,6 +320,10 @@ class DeviceAmrFlow {
     return std::sqrt(dotPlain(View<const double>(div_), View<const double>(div_), n_));
   }
   Index numLeaves() const { return n_; }
+  /// Total momentum BiCGStab iterations (summed over the 3 components) of the last step.
+  int lastMomIters() const { return lastMomIters_; }
+  /// Pressure PCG iterations of the last step.
+  int lastPresIters() const { return lastPresIters_; }
 
  private:
   // sdflow ccFractionCore aperture (verbatim from AmrFlow::faceFrac).
@@ -349,6 +354,7 @@ class DeviceAmrFlow {
   Vec<3> f_{};
   bool presPCG_ = true;
   Index n_ = 0;
+  int lastMomIters_ = 0, lastPresIters_ = 0;
 
   AmrCutCell<Bits> mom_;
   AmrPoisson<3, Bits> pres_;

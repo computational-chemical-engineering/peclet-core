@@ -82,6 +82,46 @@ void benchFlowCompare(unsigned L, int steps) {
               L, N, (long)n, hostMs, devMs, hostMs / devMs);
 }
 
+// Profile: split a device step into momentum-predictor vs pressure-projection time and
+// report the solver iteration counts (where the scalability bottleneck lives).
+void profileFlow(unsigned L, int steps) {
+  BO t = uniformFine(L);
+  const long N = 1L << L;
+  const double h0 = 1.0 / (double)N;
+  const Index n = t.numLeaves();
+  auto sdf = sphereSdf(Vec<3>{0.5, 0.5, 0.5}, 0.25);
+  DeviceAmrFlow<21> dfl;
+  dfl.init(t, h0);
+  dfl.setViscosity(1.0);
+  dfl.setDt(1e6);
+  dfl.setBodyForce(1.0, 0, 0);
+  dfl.setSolid(sdf);
+  dfl.step(200, 40);
+  Kokkos::fence();
+  // momentum-only timing: run project() with 0 useful work excluded by timing predictor.
+  double momMs = 0, presMs = 0;
+  int momIt = 0, presIt = 0;
+  for (int s = 0; s < steps; ++s) {
+    Kokkos::fence();
+    auto a = Clock::now();
+    dfl.step(200, 40);  // full step
+    Kokkos::fence();
+    auto b = Clock::now();
+    // project-only: re-run projection on the converged field (cheap upper bound on pres share)
+    auto c = Clock::now();
+    dfl.project(40);
+    Kokkos::fence();
+    auto d = Clock::now();
+    presMs += ms(c, d);
+    momMs += ms(a, b) - ms(c, d);
+    momIt = dfl.lastMomIters();
+    presIt = dfl.lastPresIters();
+  }
+  std::printf("prof  L=%u  cells=%8ld :  momentum ~%7.2f ms (%4d it/step)  pressure ~%7.2f ms "
+              "(%3d it/step)\n",
+              L, (long)n, momMs / steps, momIt, presMs / steps, presIt);
+}
+
 // Device-only flow-step throughput scaling (host too slow at these sizes).
 void benchFlowDevice(unsigned L, int steps) {
   BO t = uniformFine(L);
@@ -185,6 +225,8 @@ int main(int argc, char** argv) {
     for (unsigned L = 4; L <= Lhost; ++L) benchFlowCompare(L, steps);
     std::printf("# --- Flow: device-only throughput scaling ---\n");
     for (unsigned L = 4; L <= Ldev; ++L) benchFlowDevice(L, steps);
+    std::printf("# --- Flow: momentum-vs-pressure profile ---\n");
+    for (unsigned L = 5; L <= Ldev; ++L) profileFlow(L, steps);
   }
   Kokkos::finalize();
   return 0;
