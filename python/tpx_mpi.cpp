@@ -20,6 +20,7 @@
 #include "tpx/decomp/block_decomposer.hpp"
 #include "tpx/halo/particle_halo.hpp"
 #include "tpx/halo/particle_migrator.hpp"
+#include "tpx/halo/particle_rebalance.hpp"
 
 namespace py = pybind11;
 using namespace tpx;
@@ -50,6 +51,18 @@ class Migrator {
     std::vector<char> payload;
     std::size_t K = unpack(pos, pay, pv, payload);
     mig_.migrate(pv, payload, K * sizeof(double));
+    return pack(pv, payload, K);
+  }
+
+  // Dynamic load re-balancing: re-decompose by per-block particle COUNT (weighted ORB) so each rank
+  // holds a near-equal share, then migrate. (pos (N,3), pay (N,K)) -> (pos2 (M,3), pay2 (M,K)). A pure
+  // redistribution — the global particle set is unchanged; only ownership moves. The decomposition is
+  // updated in place, so subsequent owner_of()/migrate() calls use the new (balanced) partition.
+  py::tuple rebalance(py::array_t<double> pos, py::array_t<double> pay) {
+    std::vector<Vec<3>> pv;
+    std::vector<char> payload;
+    std::size_t K = unpack(pos, pay, pv, payload);
+    tpx::halo::rebalanceByParticleCount(dec_, mig_, pv, payload, K * sizeof(double), MPI_COMM_WORLD);
     return pack(pv, payload, K);
   }
 
@@ -201,11 +214,20 @@ PYBIND11_MODULE(tpx_mpi, m) {
       .def(py::init<std::array<double, 3>, std::array<double, 3>, std::array<long, 3>,
                     std::array<bool, 3>>(),
            py::arg("origin"), py::arg("size"), py::arg("gsize"), py::arg("periodic"))
-      .def("migrate", &Migrator::migrate, py::arg("positions"), py::arg("payload"))
+      .def("migrate", &Migrator::migrate, py::arg("positions"), py::arg("payload"),
+           "Reassign every particle to the rank owning its (wrapped) position; returns this rank's "
+           "(positions (M,3), payload (M,K)) after the exchange.")
+      .def("rebalance", &Migrator::rebalance, py::arg("positions"), py::arg("payload"),
+           "Re-decompose by particle count (weighted ORB) so each rank holds a near-equal share, then "
+           "migrate. Pure redistribution (count/payload preserved); the partition is updated in place. "
+           "Returns this rank's (positions (M,3), payload (M,K)).")
       .def("gather_ghosts", &Migrator::gather_ghosts, py::arg("positions"), py::arg("payload"),
-           py::arg("rcut"))
-      .def("owner_of", &Migrator::owner_of, py::arg("x"))
-      .def_property_readonly("rank", &Migrator::rank);
+           py::arg("rcut"),
+           "Copies of particles within rcut of this rank's block (periodic images handled); returns the "
+           "(ghost positions (G,3), ghost payload (G,K)).")
+      .def("owner_of", &Migrator::owner_of, py::arg("x"),
+           "Rank that owns the block containing position x (after periodic wrap / boundary clamp).")
+      .def_property_readonly("rank", &Migrator::rank, "This process's MPI rank.");
 
   py::class_<Halo>(m, "Halo")
       .def(py::init<std::array<double, 3>, std::array<double, 3>, std::array<long, 3>,

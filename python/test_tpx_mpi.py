@@ -1,8 +1,9 @@
 """MPI test of the tpx_mpi Python shim (transport-core particle migration + ghosts via mpi4py).
 
 Run: PYTHONPATH=python/build mpirun -np 4 python3 python/test_tpx_mpi.py
-Validates, from Python: migration conserves particles and places each on its owning rank, and ghost
-gathering returns a nonzero set for np>1 — mirroring the C++ tests, through the binding.
+Validates, from Python: migration conserves particles and places each on its owning rank, ghost
+gathering returns a nonzero set for np>1, and a weighted-ORB rebalance redistributes particles while
+conserving them — mirroring the C++ tests, through the binding.
 """
 import sys
 import numpy as np
@@ -59,9 +60,28 @@ gghost = comm.allreduce(gpos.shape[0], MPI.SUM)
 if size > 1 and gghost == 0:
     fail += 1
 
+# --- rebalance (weighted ORB by particle count) ---
+def imbalance(local_count):
+    mx = comm.allreduce(local_count, MPI.MAX)
+    sm = comm.allreduce(local_count, MPI.SUM)
+    return mx / (sm / size) if sm else 1.0
+
+imb_before = imbalance(pos2.shape[0])
+pos3, pay3 = mig.rebalance(pos2, pay2)
+imb_after = imbalance(pos3.shape[0])
+# count + id multiset conserved, and every particle placed on its NEW owner
+rcount = comm.allreduce(pos3.shape[0], MPI.SUM)
+rsum = comm.allreduce(int(pay3[:, 3].astype(np.int64).sum()), MPI.SUM)
+for k in range(pos3.shape[0]):
+    if mig.owner_of(pos3[k].tolist()) != rank:
+        fail += 1
+if rcount != N or rsum != expect_sum or imb_after > imb_before + 1e-9:
+    fail += 1
+
 total = comm.allreduce(fail, MPI.SUM)
 if rank == 0:
-    print(f"# tpx_mpi: count={gcount} idsum_ok={gsum == expect_sum} ghosts={gghost}")
+    print(f"# tpx_mpi: count={gcount} idsum_ok={gsum == expect_sum} ghosts={gghost} "
+          f"imbalance {imb_before:.3f}->{imb_after:.3f}")
     if total == 0:
         print(f"OK (np={size}): tpx_mpi migrate + gather_ghosts work from Python/mpi4py")
     else:

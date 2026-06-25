@@ -1,8 +1,9 @@
 // transport-core — distributed dynamic (solution-adaptive) AMR on a DistributedOctree.
 //
-// The distributed counterpart of adapt.hpp, keeping the existing ORB block ownership
-// (no load re-balancing — that is a further follow-up). It composes pieces that are
-// already validated:
+// The distributed counterpart of adapt.hpp, keeping the existing ORB block ownership.
+// (Adaptation can leave the per-rank leaf counts uneven; DistributedOctree::rebalance()
+// re-decomposes on leaf-count weights and migrates leaves+fields to restore balance.)
+// It composes pieces that are already validated:
 //   * the Löhner indicator is evaluated from the owner-based face-neighbour halo
 //     (DistributedOctree::faceNeighborGather), so each rank sees the same neighbour
 //     values a whole-domain solve would — the flags are identical to the serial ones;

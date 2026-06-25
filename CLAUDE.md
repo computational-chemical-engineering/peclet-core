@@ -38,7 +38,10 @@ Header-only under `include/tpx/`:
 - `decomp/block_decomposer.hpp` — ORB decomposition (ported & modernized from
   `../block_decomposer/src/BlockDecomposer.hpp`). `ownerOf()` walks the implicit binary tree
   (children at `2i+1`/`2i+2`, leaves carry the block index) and is the key primitive for halo
-  topology. `linearGlobal`/`multiGlobal` are x-fastest and mutually inverse.
+  topology. `linearGlobal`/`multiGlobal` are x-fastest and mutually inverse. `init(numBlocks,
+  globalSize, weights)` is the **weighted ORB** for dynamic load balancing: it bisects at the cell
+  boundary whose cumulative weight reaches the sub-block target fraction (vs equal cell count);
+  equal weights reduce to the unweighted `init()` bit-for-bit.
 - `decomp/block_indexer.hpp` — local↔global indexing for an extended (inner+ghost) block.
 - `decomp/morton_indexer.hpp` — `MortonIndexer<Dim>`: Z-order (Morton) cell indexing via the `morton`
   primitive (`morton::Morton<Dim,Bits>`), guarded by `TPX_HAVE_MORTON`. The cache-friendly alternative
@@ -56,6 +59,11 @@ Header-only under `include/tpx/`:
   (`MPI_Neighbor_alltoallv`, faster for static grids). `flatten()` exposes a device-friendly topology.
 - `halo/particle_migrator.hpp` — `ParticleMigrator<Dim>`: Lagrangian counterpart. Reassigns particles
   (positions + opaque fixed-stride payload) to their owning rank via the NBX engine, with periodic wrap.
+  `cellOf()` exposes the global binning cell (`ownerOf == dec.ownerOf(cellOf(x))`).
+- `halo/particle_rebalance.hpp` — `rebalanceByParticleCount(dec, mig, pos, payload, …)`: Lagrangian load
+  balancing. Bins particles onto the grid, re-inits `dec` in place with the **weighted ORB** (so a
+  migrator/halo holding a pointer to it sees the new partition), and migrates. Pure redistribution
+  (count/payload preserved). The dem distributed step is the consumer; also bound in `python/tpx_mpi.cpp`.
 - `halo/grid_halo_kokkos.hpp` — `DeviceGridExchangeKokkos<T>`: portable GPU-resident halo (Kokkos;
   CUDA / HIP / OpenMP backends). pack/unpack/self-copy run as `parallel_for` over `Kokkos::View`s; only
   the compact halo buffers are host-staged for MPI by default (the field stays on the device), with an
