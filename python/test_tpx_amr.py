@@ -129,6 +129,44 @@ if rank == 0:
     _, rg, _ = pg.solve(bg, cycles=25, tol=0.0)
     check(rg < rg0 * 1e-8, f"graded V-cycle did not converge: {rg0:.2e} -> {rg:.2e}")
 
+    # ------------------------------------------------------------------------------------------
+    # Collocated flow: planar Poiseuille between two immersed (cut-cell) walls -> analytic parabola.
+    # ------------------------------------------------------------------------------------------
+    # Uniform 16^3 grid; solid everywhere except the slab a<x<b (walls perpendicular to x); body
+    # force along y. Steady Stokes gives u_y(x) = (f/2mu)(x-a)(b-x); the cut-cell IBM reproduces it.
+    Nc = 16
+    h0 = 1.0 / Nc
+    a, b = 0.25, 0.75  # wall planes (cell-aligned at 4*h0, 12*h0)
+    tc = tpx_amr.Octree(brick=[Nc, Nc, Nc], lmax=0, origin=[0, 0, 0], h0=h0)
+    flow = tpx_amr.Flow(tc, density=1.0, viscosity=1.0, dt=1e6)
+    flow.set_solid(lambda x, y, z: min(x - a, b - x))  # >0 inside the channel
+    flow.set_body_force(0.0, 1.0, 0.0)
+    for _ in range(5):
+        flow.step(mom_sweeps=300, pres_iters=80, pres_sweeps=4)
+    cc2 = tc.centers()
+    xcoord = cc2[:, 0]
+    uy = flow.velocity(1)
+    fluid = flow.is_fluid()
+    inside = fluid & (xcoord > a) & (xcoord < b)
+    u_par = 0.5 * (xcoord[inside] - a) * (b - xcoord[inside])  # f/(2 mu), f=mu=1
+    rel = np.abs(uy[inside] - u_par).max() / u_par.max()
+    check(rel < 1e-6, f"Poiseuille velocity off analytic parabola (rel err {rel:.2e})")
+    check(np.allclose(flow.velocity(0), 0.0) and np.allclose(flow.velocity(2), 0.0),
+          "Poiseuille cross-flow velocities not ~0")
+    check(flow.divergence_norm() < 1e-6, "Poiseuille residual divergence too large")
+    # Cross-flow components zero in the solid too (no-slip): u_y vanishes inside the wall.
+    solid = ~fluid
+    check(np.abs(uy[solid]).max() < 1e-9, "velocity nonzero inside the solid wall")
+
+    # Navier-Stokes (advection on): fully-developed Poiseuille is advection-free, so still the
+    # exact parabola.
+    flow.set_advection(True)
+    for _ in range(5):
+        flow.step(mom_sweeps=300, pres_iters=80, pres_sweeps=4)
+    uy2 = flow.velocity(1)
+    rel2 = np.abs(uy2[inside] - u_par).max() / u_par.max()
+    check(rel2 < 1e-6, f"Poiseuille with advection off parabola (rel err {rel2:.2e})")
+
 # ----------------------------------------------------------------------------------------------
 # DistributedOctree (collective). Same global geometry on every rank; ORB partitions it.
 # ----------------------------------------------------------------------------------------------

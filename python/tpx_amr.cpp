@@ -32,6 +32,7 @@
 
 #include "tpx/amr/block_octree.hpp"
 #include "tpx/amr/distributed_octree.hpp"
+#include "tpx/amr/flow.hpp"
 #include "tpx/amr/leaf_field.hpp"
 #include "tpx/amr/poisson.hpp"
 #include "tpx/amr/refine.hpp"
@@ -249,6 +250,81 @@ class Poisson {
   Index n_;
 };
 
+// ---- collocated incompressible flow ------------------------------------------------------------
+
+// Collocated (cell-centered) incompressible Stokes / Navier-Stokes step on an Octree with a cut-cell
+// immersed boundary (tpx::amr::AmrFlow). Each step() is: an implicit backward-Euler viscous momentum
+// predictor with no-slip (u=0) Dirichlet cut-cell IBM on the SDF solid, then the Almgren-Bell-Colella
+// approximate projection in incremental-rotational form (openness-weighted pressure Poisson). Stokes
+// by default; set_advection(True) adds explicit high-order (SOU / Koren-TVD) momentum advection.
+// Driven by a body force; iterate step() to steady state. Velocities/pressure are per-leaf (num_leaves,)
+// in Z-order slots. The octree is borrowed by reference (kept alive for the Flow's lifetime).
+//
+// Resolve the immersed boundary in a uniformly-finest band: the cut-cell and ±2 advection stencils
+// assume same-level neighbours, so keep the solid surface off 2:1 interfaces.
+class Flow {
+ public:
+  Flow(const Octree& oct, double rho, double mu, double dt) : n_(oct.octreeRef().numLeaves()) {
+    flow_.init(oct.octreeRef(), oct.geoRef().h0, oct.geoRef().origin);
+    flow_.setDensity(rho);
+    flow_.setViscosity(mu);
+    flow_.setDt(dt);
+  }
+
+  Index num_leaves() const { return n_; }
+  void set_body_force(double fx, double fy, double fz) { flow_.setBodyForce(fx, fy, fz); }
+  void set_advection(bool on) { flow_.setAdvection(on); }
+  void set_advection_scheme(int s) { flow_.setAdvectionScheme(s); }
+  void set_implicit_advection(bool on) { flow_.setImplicitAdvection(on); }
+
+  // Build the cut-cell operators from a signed-distance callable f(x,y,z) (>0 in fluid, <0 in solid),
+  // and zero the velocity / pressure fields. Call before stepping; re-call to change the geometry.
+  void set_solid(std::function<double(double, double, double)> sdf) {
+    flow_.setSolid([&](const Vec<3>& p) { return sdf(p[0], p[1], p[2]); });
+  }
+
+  // Advance one collocated projection step (Stokes, or NS if advection is on).
+  void step(int mom_sweeps, int pres_iters, int pres_sweeps) {
+    flow_.step(mom_sweeps, pres_iters, pres_sweeps);
+  }
+
+  // Per-leaf velocity component c (0=x,1=y,2=z) -> (num_leaves,) float64.
+  py::array_t<double> velocity(int c) const {
+    if (c < 0 || c > 2) throw std::runtime_error("velocity: component must be 0..2");
+    const auto& v = flow_.velocity(c);
+    py::array_t<double> a(static_cast<py::ssize_t>(v.size()));
+    auto r = a.mutable_unchecked<1>();
+    for (std::size_t i = 0; i < v.size(); ++i) r(i) = v[i];
+    return a;
+  }
+
+  // All three velocity components -> (num_leaves, 3) float64.
+  py::array_t<double> velocities() const {
+    py::array_t<double> a({(py::ssize_t)n_, (py::ssize_t)3});
+    auto r = a.mutable_unchecked<2>();
+    for (int c = 0; c < 3; ++c) {
+      const auto& v = flow_.velocity(c);
+      for (Index i = 0; i < n_; ++i) r(i, c) = v[static_cast<std::size_t>(i)];
+    }
+    return a;
+  }
+
+  // Per-leaf fluid mask (False inside the solid) -> (num_leaves,) bool.
+  py::array_t<bool> is_fluid() const {
+    py::array_t<bool> a(static_cast<py::ssize_t>(n_));
+    auto r = a.mutable_unchecked<1>();
+    for (Index i = 0; i < n_; ++i) r(i) = flow_.isFluid(i);
+    return a;
+  }
+
+  // Volume-weighted L2 norm of the residual cell divergence (a projection-quality diagnostic).
+  double divergence_norm() { return flow_.divNormL2(flow_.velocityRef()); }
+
+ private:
+  amr::AmrFlow<> flow_;
+  Index n_;
+};
+
 // ---- distributed (MPI) octree ------------------------------------------------------------------
 
 // The MPI octree: an ORB block decomposition of a global root grid, one BlockOctree per rank.
@@ -428,6 +504,42 @@ PYBIND11_MODULE(tpx_amr, m) {
            "Solve L u = rhs with up to `cycles` V-cycles (pre/post Gauss-Seidel sweeps), from x0 or "
            "0, stopping once residual <= tol (tol<=0 disables). Returns (u (num_leaves,), "
            "final_residual, cycles_done).");
+
+  py::class_<Flow>(
+      m, "Flow",
+      "Collocated incompressible Stokes/Navier-Stokes step on an Octree with a cut-cell immersed "
+      "boundary (no-slip on an SDF solid). step() = implicit viscous momentum predictor + "
+      "Almgren-Bell-Colella rotational projection. Drive with a body force and iterate to steady "
+      "state; velocities are per-leaf (num_leaves,) in Z-order slots.")
+      .def(py::init<const Octree&, double, double, double>(), py::arg("octree"),
+           py::arg("density") = 1.0, py::arg("viscosity") = 1.0, py::arg("dt") = 1e6,
+           py::keep_alive<1, 2>(),  // keep the octree alive for the Flow's lifetime (borrowed by ref)
+           "Create a flow on `octree` with the given density, viscosity and time step. A large dt "
+           "drives straight to the steady (Stokes) solution. The octree is borrowed by reference.")
+      .def_property_readonly("num_leaves", &Flow::num_leaves, "Number of leaves.")
+      .def("set_solid", &Flow::set_solid, py::arg("sdf"),
+           "Build the cut-cell operators from a signed-distance callable f(x,y,z) (>0 fluid, <0 "
+           "solid) and zero the fields. Call before stepping; re-call to change the geometry.")
+      .def("set_body_force", &Flow::set_body_force, py::arg("fx"), py::arg("fy"), py::arg("fz"),
+           "Set the per-volume body force (e.g. a pressure gradient) driving the flow.")
+      .def("set_advection", &Flow::set_advection, py::arg("on"),
+           "Enable explicit momentum advection (Navier-Stokes); off = Stokes.")
+      .def("set_advection_scheme", &Flow::set_advection_scheme, py::arg("scheme"),
+           "High-order advection flux: 0 = second-order upwind (default), 1 = Koren TVD.")
+      .def("set_implicit_advection", &Flow::set_implicit_advection, py::arg("on"),
+           "Implicit first-order-upwind deferred-correction advection (default on): unconditionally "
+           "stable. Off = fully explicit high-order advection.")
+      .def("step", &Flow::step, py::arg("mom_sweeps") = 200, py::arg("pres_iters") = 60,
+           py::arg("pres_sweeps") = 4,
+           "Advance one collocated projection step: `mom_sweeps` Gauss-Seidel sweeps per momentum "
+           "component, `pres_iters` pressure V-cycles.")
+      .def("velocity", &Flow::velocity, py::arg("component"),
+           "Per-leaf velocity component (0=x,1=y,2=z), (num_leaves,) float64.")
+      .def("velocities", &Flow::velocities,
+           "All three velocity components, (num_leaves, 3) float64.")
+      .def("is_fluid", &Flow::is_fluid, "Per-leaf fluid mask (False in the solid), (num_leaves,) bool.")
+      .def("divergence_norm", &Flow::divergence_norm,
+           "Volume-weighted L2 norm of the residual cell divergence (projection-quality diagnostic).");
 
   py::class_<DistributedOctree>(
       m, "DistributedOctree",
