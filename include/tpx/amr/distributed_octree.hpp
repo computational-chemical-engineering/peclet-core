@@ -198,6 +198,119 @@ class DistributedOctree {
     return grandTotal;
   }
 
+  // ---- dynamic load re-balancing ----------------------------------------
+
+  /// Re-decompose by per-root-cell *octree-leaf count* and migrate leaves (with
+  /// their field columns) to the new owners. The global mesh is unchanged — this
+  /// is a pure redistribution of the same leaves, so it is exactly conservative
+  /// and every cell's field value is preserved bit-for-bit; only ownership (and
+  /// hence this rank's local octree + block geometry) changes. Each `fields[c]`
+  /// is a column indexed by leaf slot (length numLeaves()); on return each holds
+  /// the migrated/reordered column matching the new local leaf order.
+  ///
+  /// The caller is responsible for the mesh being 2:1-balanced beforehand (it
+  /// stays balanced, since the leaf set is untouched). Returns the number of
+  /// leaves this rank migrated away. MPI-optional: a single rank keeps everything.
+  Index rebalance(std::vector<std::vector<double>>& fields) {
+    const int K = static_cast<int>(fields.size());
+    const Index n = local_.numLeaves();
+
+    // 1. Weight grid: number of octree leaves under each *global root cell*,
+    //    agreed across ranks (blocks are disjoint, so a SUM-Allreduce of the
+    //    zero-padded local counts yields the full global grid).
+    std::size_t ncells = 1;
+    for (int d = 0; d < Dim; ++d) ncells *= static_cast<std::size_t>(globalRootSize_[d]);
+    std::vector<double> localWeight(ncells, 0.0), weight(ncells, 0.0);
+    for (Index i = 0; i < n; ++i)
+      localWeight[static_cast<std::size_t>(dec_.linearGlobal(globalRootOf(i)))] += 1.0;
+    MPI_Allreduce(localWeight.data(), weight.data(), static_cast<int>(ncells), MPI_DOUBLE, MPI_SUM,
+                  comm_);
+
+    // 2. Weighted re-decomposition over the same global root grid.
+    decomp::BlockDecomposer<Dim> newDec(static_cast<std::size_t>(size_), globalRootSize_, weight);
+    auto nblk = newDec.block(static_cast<std::size_t>(rank_));
+    const IVec<Dim> newOriginRoot = nblk.origin;
+    const IVec<Dim> newBrick = nblk.size;
+    IVec<Dim> newFineOrigin{};
+    for (int d = 0; d < Dim; ++d) newFineOrigin[d] = newOriginRoot[d] * rootSpan_;
+
+    // 3. Classify every local leaf by its new owner; keep mine, pack the rest.
+    //    Leaves are carried by *global* code so the receiver can rebase them.
+    std::vector<Code> codes;
+    std::vector<std::uint8_t> levels;
+    std::vector<std::vector<double>> cols(static_cast<std::size_t>(K));
+    std::map<int, std::vector<char>> sendBufs;
+    Index migratedOut = 0;
+    for (Index i = 0; i < n; ++i) {
+      const Code gc = globalCode(i);
+      const std::uint8_t lv = static_cast<std::uint8_t>(local_.level(i));
+      const int newOwner = newDec.ownerOf(globalRootOf(i));
+      if (newOwner == rank_) {
+        codes.push_back(gc);
+        levels.push_back(lv);
+        for (int c = 0; c < K; ++c) cols[static_cast<std::size_t>(c)].push_back(fields[c][static_cast<std::size_t>(i)]);
+      } else {
+        appendLeaf(sendBufs[newOwner], gc, lv, fields, i, K);
+        ++migratedOut;
+      }
+    }
+
+    // 4. Deliver migrated leaves to their new owners (sparse NBX).
+    {
+      halo::NbxEngine eng(comm_);
+      auto it = sendBufs.begin();
+      eng.exchange(
+          [&](std::vector<char>& out) -> int {
+            if (it == sendBufs.end()) return -1;
+            out = it->second;
+            int dest = it->first;
+            ++it;
+            return dest;
+          },
+          [&](int, std::vector<char>& msg) {
+            parseLeaves(msg, K, [&](Code gc, std::uint8_t lv, const double* comps) {
+              codes.push_back(gc);
+              levels.push_back(lv);
+              for (int c = 0; c < K; ++c) cols[static_cast<std::size_t>(c)].push_back(comps[c]);
+            });
+          });
+    }
+
+    // 5. Rebase global codes to the new block origin and sort into Z-order,
+    //    carrying the field columns along with the permutation.
+    const std::size_t m = codes.size();
+    std::vector<Code> localCodes(m);
+    for (std::size_t j = 0; j < m; ++j) {
+      auto g = M::from_code(codes[j]).decode();
+      std::array<Coord, Dim> lc{};
+      for (int d = 0; d < Dim; ++d) lc[d] = static_cast<Coord>(g[d] - newFineOrigin[d]);
+      localCodes[j] = M::encode(lc).code();
+    }
+    std::vector<std::size_t> ord(m);
+    for (std::size_t j = 0; j < m; ++j) ord[j] = j;
+    std::sort(ord.begin(), ord.end(), [&](std::size_t a, std::size_t b) { return localCodes[a] < localCodes[b]; });
+
+    std::vector<Code> sortedCodes(m);
+    std::vector<std::uint8_t> sortedLevels(m);
+    std::vector<std::vector<double>> sortedCols(static_cast<std::size_t>(K), std::vector<double>(m));
+    for (std::size_t j = 0; j < m; ++j) {
+      sortedCodes[j] = localCodes[ord[j]];
+      sortedLevels[j] = levels[ord[j]];
+      for (int c = 0; c < K; ++c) sortedCols[static_cast<std::size_t>(c)][j] = cols[static_cast<std::size_t>(c)][ord[j]];
+    }
+
+    // 6. Install the new decomposition, block geometry and local octree.
+    local_.assign(newBrick, lmax_, newOriginRoot, std::move(sortedCodes), std::move(sortedLevels));
+    dec_ = newDec;
+    blockOriginRoot_ = newOriginRoot;
+    blockBrick_ = newBrick;
+    blockFineOrigin_ = newFineOrigin;
+    for (int d = 0; d < Dim; ++d) blockFineSize_[d] = newBrick[d] * rootSpan_;
+    // globalFineSize_ is decomposition-independent and unchanged.
+    for (int c = 0; c < K; ++c) fields[c].swap(sortedCols[static_cast<std::size_t>(c)]);
+    return migratedOut;
+  }
+
   // ---- owner-based face-neighbour gather (the halo) ---------------------
 
   /// For each local leaf and each of the 2*Dim faces, the neighbouring leaf's
@@ -497,6 +610,39 @@ class DistributedOctree {
       std::memcpy(&reqId, buf.data() + off, sizeof(reqId));
       off += sizeof(reqId);
       fn(gc, reqId);
+    }
+  }
+  /// Migration record for leaf `i`: global code (int64), level (int32), K field
+  /// components (double). Self-contained so the receiver can rebase and re-sort it.
+  static void appendLeaf(std::vector<char>& buf, Code gc, std::uint8_t level,
+                         const std::vector<std::vector<double>>& fields, Index i, int K) {
+    std::int64_t c = static_cast<std::int64_t>(gc);
+    appendBytes(buf, &c, sizeof(c));
+    std::int32_t l = static_cast<std::int32_t>(level);
+    appendBytes(buf, &l, sizeof(l));
+    for (int k = 0; k < K; ++k) {
+      double v = fields[static_cast<std::size_t>(k)][static_cast<std::size_t>(i)];
+      appendBytes(buf, &v, sizeof(v));
+    }
+  }
+  template <class Fn>
+  static void parseLeaves(const std::vector<char>& buf, int K, Fn&& fn) {
+    std::size_t off = 0;
+    const std::size_t item =
+        sizeof(std::int64_t) + sizeof(std::int32_t) + static_cast<std::size_t>(K) * sizeof(double);
+    std::vector<double> comps(static_cast<std::size_t>(K));
+    while (off + item <= buf.size()) {
+      std::int64_t c;
+      std::memcpy(&c, buf.data() + off, sizeof(c));
+      off += sizeof(c);
+      std::int32_t l;
+      std::memcpy(&l, buf.data() + off, sizeof(l));
+      off += sizeof(l);
+      for (int k = 0; k < K; ++k) {
+        std::memcpy(&comps[static_cast<std::size_t>(k)], buf.data() + off, sizeof(double));
+        off += sizeof(double);
+      }
+      fn(static_cast<Code>(c), static_cast<std::uint8_t>(l), comps.data());
     }
   }
   static void appendReply(std::vector<char>& buf, std::int64_t reqId, double v) {

@@ -108,6 +108,21 @@ class BlockOctree {
     sortByCode();
   }
 
+  /// Replace the entire leaf set directly (used by load-balancing migration, which
+  /// rebuilds a block from leaves received from other ranks). `codes` are
+  /// block-local origin codes and `levels` their parallel levels; they need not be
+  /// sorted — assign() restores the Z-order invariant. `brick`/`lmax`/`globalOrigin`
+  /// describe the (possibly new) block geometry the codes are relative to.
+  void assign(IVec<Dim> brick, unsigned lmax, IVec<Dim> globalOrigin, std::vector<Code> codes,
+              std::vector<std::uint8_t> levels) {
+    brick_ = brick;
+    lmax_ = lmax;
+    globalOrigin_ = globalOrigin;
+    codes_ = std::move(codes);
+    levels_ = std::move(levels);
+    sortByCode();
+  }
+
   // ---- introspection -----------------------------------------------------
   Index numLeaves() const { return static_cast<Index>(codes_.size()); }
   unsigned lmax() const { return lmax_; }
