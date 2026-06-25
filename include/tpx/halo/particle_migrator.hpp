@@ -46,8 +46,10 @@ class ParticleMigrator {
     comm_ = comm;
   }
 
-  /// Rank that owns the block containing position x (after periodic wrap / boundary clamp).
-  int ownerOf(const Vec<Dim>& x) const {
+  /// Global decomposition cell containing position x (after periodic wrap / boundary clamp).
+  /// This is the binning index for weighted load-balancing — `ownerOf(x) ==
+  /// decomposer().ownerOf(cellOf(x))`.
+  IVec<Dim> cellOf(const Vec<Dim>& x) const {
     IVec<Dim> g{};
     const IVec<Dim>& gsize = dec_->globalSize();
     for (int i = 0; i < Dim; ++i) {
@@ -60,8 +62,11 @@ class ParticleMigrator {
       }
       g[i] = c;
     }
-    return dec_->ownerOf(g);
+    return g;
   }
+
+  /// Rank that owns the block containing position x (after periodic wrap / boundary clamp).
+  int ownerOf(const Vec<Dim>& x) const { return dec_->ownerOf(cellOf(x)); }
 
   /// Wrap a position into the periodic box (no-op on non-periodic axes).
   Vec<Dim> wrapPosition(Vec<Dim> x) const {
