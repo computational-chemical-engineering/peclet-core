@@ -152,12 +152,48 @@ void test_sphere() {
   TPX_CHECK(dmax < 5e-3 * hmax);                       // fields agree
 }
 
+// The optional Helmholtz-MG momentum preconditioner (setMomentumMG) must not change the
+// converged answer — a preconditioner only affects the iteration path, not the fixed point.
+void test_momentum_mg_option() {
+  const unsigned L = 4;
+  BO t = uniformFine(L);
+  const double h0 = 1.0 / (double)(1L << L);
+  Vec<3> c{0.5, 0.5, 0.5};
+  double rad = 0.2;
+  auto sdf = [&](const Vec<3>& p) {
+    double dx = p[0] - c[0], dy = p[1] - c[1], dz = p[2] - c[2];
+    return std::sqrt(dx * dx + dy * dy + dz * dz) - rad;
+  };
+  auto run = [&](bool mgPre) {
+    DeviceAmrFlow<21> f;
+    f.init(t, h0);
+    f.setViscosity(1.0);
+    f.setDt(1e6);
+    f.setBodyForce(1.0, 0, 0);
+    f.setMomentumMG(mgPre);
+    f.setSolid(sdf);
+    for (int s = 0; s < 8; ++s) f.step(400, 120);
+    return f.velocity(0);
+  };
+  auto uoff = run(false);
+  auto uon = run(true);
+  const Index n = t.numLeaves();
+  double dmax = 0, mag = 0;
+  for (Index i = 0; i < n; ++i) {
+    dmax = std::max(dmax, std::fabs(uon[(std::size_t)i] - uoff[(std::size_t)i]));
+    mag = std::max(mag, std::fabs(uoff[(std::size_t)i]));
+  }
+  std::printf("[flow] momentum-MG option: max|on-off| = %.3e (mag %.3e)\n", dmax, mag);
+  TPX_CHECK(dmax < 1e-3 * mag);  // same converged step regardless of preconditioner
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   Kokkos::initialize(argc, argv);
   test_poiseuille();
   test_sphere();
+  test_momentum_mg_option();
   Kokkos::finalize();
   TPX_RETURN_TEST_RESULT();
 }

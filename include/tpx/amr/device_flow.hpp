@@ -223,6 +223,16 @@ class DeviceAmrFlow {
   void setBodyForce(double fx, double fy, double fz) { f_ = {fx, fy, fz}; }
   /// Use MG-preconditioned CG for the pressure solve (default) vs plain V-cycles.
   void setPressurePCG(bool on) { presPCG_ = on; }
+  /// Opt-in (default OFF): use the openness-Helmholtz multigrid V-cycle as the momentum
+  /// BiCGStab preconditioner instead of damped-Jacobi. NOTE: experimental and currently NOT
+  /// a win for the cut-cell Dirichlet momentum operator at large dt — the Neumann/openness
+  /// hierarchy mismatches the no-slip (Dirichlet) immersed boundary, and the shift floor that
+  /// keeps solid cells stable (max(idiag, μ/L²)) over-weights the reaction vs the true tiny
+  /// idiag, so it converges slower than Jacobi-BiCGStab there. A proper Dirichlet-aware
+  /// cut-cell velocity-MG (ε-solid-on-coarse, volume-fraction coarsening) is the real fix.
+  /// Either way the converged step is identical (preconditioner-only). Kept for moderate-dt /
+  /// wall-bounded (non-immersed) problems where the Helmholtz match is good.
+  void setMomentumMG(bool on) { momMGon_ = on; }
 
   /// Build the cut-cell operators (host) + upload all device structures. Requires the
   /// density / viscosity / dt to be set first (the momentum operator carries ρ/dt and μ).
@@ -237,6 +247,20 @@ class DeviceAmrFlow {
     auto openFn = [&](const Vec<3>& fc, int axis) { return faceFrac(sdfFn, fc, axis); };
     pres_.buildOpenness(openFn);
     presMG_.build(*t_, h0_, openFn, /*periodic=*/true);
+    // Momentum preconditioner: the openness hierarchy turned into the Helmholtz operator
+    // c0·I − μ∇², c0 = max(idiag, μ/L²). The shift floor μ/L² (L = domain size; the slowest
+    // diffusion mode) is essential: at large dt idiag→0, so a *solid* (fully-closed) cell —
+    // whose only diagonal contribution is c0 — would get preconditioner diagonal ≈idiag and
+    // amplify its residual by 1/idiag (~1e6), diverging the BiCGStab. Flooring c0 to μ/L²
+    // keeps solid cells ~O(1) (matching the operator's identity solid rows) while being
+    // negligible against the fluid diffusion (~μ/h²). The shift only changes the
+    // preconditioner (the BiCGStab matvec is the exact momentum operator) ⇒ same solution.
+    if (momMGon_) {
+      const double Ldom = h0_ * static_cast<double>(t_->brick()[0] * (Index(1) << t_->lmax()));
+      const double c0 = std::max(rho_ / dt_, mu_ / (Ldom * Ldom));
+      momMG_.build(*t_, h0_, openFn, /*periodic=*/true);
+      momMG_.setHelmholtz(c0, -mu_);
+    }
 
     // Device upload: momentum operator CSR, face geometry, rscale, fluid flags.
     auto A = mom_.assembleOperator();
@@ -263,6 +287,7 @@ class DeviceAmrFlow {
     bmom_ = View<double>("df_bmom", static_cast<std::size_t>(n));
     Kokkos::deep_copy(p_, 0.0);
     momSolver_.setJacobi(2, 0.7);
+    if (momMGon_) momSolver_.setMgPreconditioner(&momMG_, 1);
     pcg_.setVcycle(2, 2, 60, 0.8);
     pcg_.setSingular(true);
     n_ = n;
@@ -353,14 +378,16 @@ class DeviceAmrFlow {
   double rho_ = 1.0, mu_ = 1.0, dt_ = 1e6;
   Vec<3> f_{};
   bool presPCG_ = true;
+  bool momMGon_ = false;  // opt-in (see setMomentumMG): Jacobi-BiCGStab is the robust default
   Index n_ = 0;
   int lastMomIters_ = 0, lastPresIters_ = 0;
 
   AmrCutCell<Bits> mom_;
   AmrPoisson<3, Bits> pres_;
   DeviceMultigrid<3, Bits> presMG_;
+  DeviceMultigrid<3, Bits> momMG_;  // Helmholtz (idiag·I − μ∇²) momentum preconditioner
   DeviceMomentumOp momOp_;
-  DeviceMomentumSolver momSolver_;
+  DeviceMomentumSolver<Bits> momSolver_;
   DevicePCG<3, Bits> pcg_;
   DeviceFaceGeom geom_;
   View<double> rscale_;

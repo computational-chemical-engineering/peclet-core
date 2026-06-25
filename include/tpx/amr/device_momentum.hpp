@@ -25,7 +25,8 @@
 
 #include <cmath>
 
-#include "tpx/amr/device_pcg.hpp"  // dotPlain-style primitives: axpy, zpby, negate
+#include "tpx/amr/device_multigrid.hpp"  // optional Helmholtz V-cycle preconditioner
+#include "tpx/amr/device_pcg.hpp"        // dotPlain-style primitives: axpy, zpby, negate
 #include "tpx/common/view.hpp"
 
 namespace tpx::amr {
@@ -111,11 +112,23 @@ inline void bicgPUpdate(View<double> p, View<const double> r, View<const double>
 // of A (diagonal-dominant ⇒ a cheap, effective smoother-preconditioner). Robust where
 // plain Jacobi stalls (large dt / weak reaction term).
 // ---------------------------------------------------------------------------
+template <unsigned Bits = 21u>
 class DeviceMomentumSolver {
  public:
   void setJacobi(int preSweeps, double omega) {
     jacPre_ = preSweeps;
     omega_ = omega;
+  }
+
+  /// Use a Helmholtz DeviceMultigrid (built with setHelmholtz(idiag, −μ) on the same mesh)
+  /// as the BiCGStab preconditioner instead of damped-Jacobi sweeps. The V-cycle gives the
+  /// multigrid smooth-mode coverage Jacobi lacks, so the momentum iteration count stops
+  /// growing with N. `vcycles` V-cycles per preconditioner application. Pass nullptr to
+  /// revert to the Jacobi preconditioner. The preconditioner never changes the converged
+  /// solution (BiCGStab matvec is the exact operator) — only the iteration count.
+  void setMgPreconditioner(DeviceMultigrid<3, Bits>* mg, int vcycles = 1) {
+    mgPre_ = mg;
+    mgVcycles_ = vcycles;
   }
 
   /// Plain weighted-Jacobi solve (the simple parallel mirror of the host GS smoother):
@@ -194,8 +207,16 @@ class DeviceMomentumSolver {
   }
 
  private:
-  // z = M^{-1} v : `jacPre_` damped-Jacobi sweeps of A z = v starting from z = 0.
+  // z = M^{-1} v : a Helmholtz MG V-cycle if set, else `jacPre_` damped-Jacobi sweeps of
+  // A z = v starting from z = 0.
   void applyPrec(const DeviceMomentumOp& op, View<double> v, View<double> z) {
+    if (mgPre_) {  // V-cycle of the Helmholtz operator (≈ the momentum operator)
+      Kokkos::deep_copy(mgPre_->b(0), v);
+      Kokkos::deep_copy(mgPre_->x(0), 0.0);
+      for (int k = 0; k < mgVcycles_; ++k) mgPre_->vcycle(2, 2, 60, 0.8);
+      Kokkos::deep_copy(z, mgPre_->x(0));
+      return;
+    }
     Kokkos::deep_copy(z, 0.0);
     if (jacPre_ <= 0) {  // no preconditioner ⇒ identity
       Kokkos::deep_copy(z, v);
@@ -220,6 +241,8 @@ class DeviceMomentumSolver {
   View<double> r_, rhat_, p_, phat_, v_, s_, shat_, t_, tmp_;
   int jacPre_ = 2;
   double omega_ = 0.7;
+  DeviceMultigrid<3, Bits>* mgPre_ = nullptr;
+  int mgVcycles_ = 1;
 };
 
 }  // namespace tpx::amr

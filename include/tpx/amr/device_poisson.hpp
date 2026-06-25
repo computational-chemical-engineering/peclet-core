@@ -81,26 +81,35 @@ struct DeviceFvOp {
   View<double> faceW;      ///< w_f = openness·A_f/d_f per face, size nFaces
   View<double> bcDiag;     ///< Dirichlet boundary diagonal per cell (0 if periodic), size n
   Index n = 0;
+  // Helmholtz generalisation: the applied operator is H = c0·I + cD·L (c0=0, cD=1 ⇒ the
+  // pure Laplacian L, the default — bit-exact unchanged). Setting c0=idiag, cD=−μ turns the
+  // existing hierarchy into the momentum operator idiag·I − μ∇², so DeviceMultigrid can be
+  // used as a (non-singular when c0≠0) preconditioner for the momentum BiCGStab. The L path
+  // is bit-exact preserved: c0·u+cD·(L) with c0=0,cD=1 is L exactly in IEEE arithmetic, and
+  // the Jacobi point-solve branches on (c0==0 && cD==1) to keep the original expression.
+  double c0 = 0.0;
+  double cD = 1.0;
 };
 
-/// Lu = L u (consistent conservative FV Laplacian, negative-definite). A non-zero
-/// bcDiag adds the homogeneous-Dirichlet boundary term −bcDiag·u_i.
+/// Hu = (c0·I + cD·L) u (consistent conservative FV Laplacian, c0=0/cD=1 ⇒ pure L). A
+/// non-zero bcDiag adds the homogeneous-Dirichlet boundary term −bcDiag·u_i to L.
 inline void deviceApplyFv(const DeviceFvOp& op, View<const double> u, View<double> Lu) {
   auto invVol = op.invVol;
   auto fs = op.faceStart;
   auto fn = op.faceNbr;
   auto fw = op.faceW;
   auto bc = op.bcDiag;
+  const double c0 = op.c0, cD = op.cD;
   Kokkos::parallel_for(
       "amr::fv_apply", op.n, KOKKOS_LAMBDA(const Index i) {
         const double ui = u(i);
         double acc = 0.0;
         for (Index k = fs(i); k < fs(i + 1); ++k) acc += fw(k) * (u(fn(k)) - ui);
-        Lu(i) = invVol(i) * (acc - bc(i) * ui);
+        Lu(i) = c0 * ui + cD * (invVol(i) * (acc - bc(i) * ui));
       });
 }
 
-/// res = rhs − L u.
+/// res = rhs − H u.
 inline void deviceResidualFv(const DeviceFvOp& op, View<const double> u, View<const double> rhs,
                              View<double> res) {
   auto invVol = op.invVol;
@@ -108,19 +117,22 @@ inline void deviceResidualFv(const DeviceFvOp& op, View<const double> u, View<co
   auto fn = op.faceNbr;
   auto fw = op.faceW;
   auto bc = op.bcDiag;
+  const double c0 = op.c0, cD = op.cD;
   Kokkos::parallel_for(
       "amr::fv_residual", op.n, KOKKOS_LAMBDA(const Index i) {
         const double ui = u(i);
         double acc = 0.0;
         for (Index k = fs(i); k < fs(i + 1); ++k) acc += fw(k) * (u(fn(k)) - ui);
-        res(i) = rhs(i) - invVol(i) * (acc - bc(i) * ui);
+        res(i) = rhs(i) - (c0 * ui + cD * (invVol(i) * (acc - bc(i) * ui)));
       });
 }
 
-/// One weighted-Jacobi sweep of L u = rhs (in place). `tmp` is scratch (size n).
+/// One weighted-Jacobi sweep of H u = rhs (in place). `tmp` is scratch (size n).
 /// Mirrors the host point solve u_i ← (Σ w u_j − V_i rhs_i)/Σ w with damping ω;
 /// pass 1 reads only the previous iterate (into tmp), pass 2 updates — so the
-/// sweep is order-independent / bit-reproducible.
+/// sweep is order-independent / bit-reproducible. The pure-L path (c0=0, cD=1)
+/// keeps the exact original expression (bit-exact); the Helmholtz path uses the
+/// point solve of (c0·I + cD·L) u = rhs.
 inline void deviceJacobiFv(const DeviceFvOp& op, View<double> u, View<const double> rhs,
                            View<double> tmp, double omega) {
   auto invVol = op.invVol;
@@ -128,16 +140,25 @@ inline void deviceJacobiFv(const DeviceFvOp& op, View<double> u, View<const doub
   auto fn = op.faceNbr;
   auto fw = op.faceW;
   auto bc = op.bcDiag;
+  const double c0 = op.c0, cD = op.cD;
+  const bool pureL = (c0 == 0.0 && cD == 1.0);
   Kokkos::parallel_for(
       "amr::fv_jacobi_compute", op.n, KOKKOS_LAMBDA(const Index i) {
-        double sumOff = 0.0, diag = 0.0;
+        double sumOff = 0.0, sw = 0.0;
         for (Index k = fs(i); k < fs(i + 1); ++k) {
           sumOff += fw(k) * u(fn(k));
-          diag += fw(k);
+          sw += fw(k);
         }
-        diag += bc(i);  // Dirichlet boundary adds to the diagonal (no off-diagonal)
-        // V_i rhs_i = rhs_i / invVol_i ; point solve of L u = rhs for u_i.
-        tmp(i) = (diag != 0.0) ? (sumOff - rhs(i) / invVol(i)) / diag : u(i);
+        const double swbc = sw + bc(i);  // Dirichlet boundary adds to the diagonal
+        if (pureL) {
+          // V_i rhs_i = rhs_i / invVol_i ; point solve of L u = rhs (exact original form).
+          tmp(i) = (swbc != 0.0) ? (sumOff - rhs(i) / invVol(i)) / swbc : u(i);
+        } else {
+          // H_ii = c0 − cD·invVol·(Σw+bc) ; H_ij = cD·invVol·w ; point solve H u = rhs.
+          const double Hii = c0 - cD * invVol(i) * swbc;
+          const double Hoff = cD * invVol(i) * sumOff;
+          tmp(i) = (Hii != 0.0) ? (rhs(i) - Hoff) / Hii : u(i);
+        }
       });
   Kokkos::parallel_for(
       "amr::fv_jacobi_update", op.n,

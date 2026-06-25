@@ -119,6 +119,18 @@ class DeviceMultigrid {
   /// volume-average. Experimental — validate with the comparison test before relying on it.
   void setKappaRestrict(bool on) { kappaRestrict_ = on; }
 
+  /// Turn every level's operator into the Helmholtz form H = c0·I + cD·L (default c0=0,
+  /// cD=1 ⇒ the pure Laplacian L). With c0=idiag, cD=−μ the hierarchy represents the
+  /// momentum operator idiag·I − μ∇² and (being non-singular for c0≠0) is an effective
+  /// V-cycle preconditioner for the momentum BiCGStab. The reaction c0 is held constant on
+  /// every level (standard for a Helmholtz MG preconditioner); cD scales the coarsened L.
+  void setHelmholtz(double c0, double cD) {
+    for (auto& lv : levels_) {
+      lv.op.c0 = c0;
+      lv.op.cD = cD;
+    }
+  }
+
   std::size_t numLevels() const { return levels_.size(); }
   Index numLeaves(std::size_t L = 0) const { return levels_[L].n; }
   Code octreeCode(std::size_t L, Index i) const { return hmg_->op(L).octree().code(i); }

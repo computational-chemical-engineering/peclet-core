@@ -130,7 +130,7 @@ void run() {
   View<double> db("b", (std::size_t)n), du("u", (std::size_t)n);
   setDev(db, b);
 
-  DeviceMomentumSolver solver;
+  DeviceMomentumSolver<21> solver;
   solver.setJacobi(2, 0.7);
   // BiCGStab
   Kokkos::deep_copy(du, 0.0);
@@ -192,7 +192,7 @@ void run() {
     View<double> db2("b2", (std::size_t)n), du2("u2", (std::size_t)n);
     setDev(db2, b2);
     Kokkos::deep_copy(du2, 0.0);
-    DeviceMomentumSolver s2;
+    DeviceMomentumSolver<21> s2;
     s2.setJacobi(4, 0.7);
     auto R2 = s2.solveBiCGStab(op2, du2, View<const double>(db2), 2000, 1e-8);
     std::printf("[mom] large-dt BiCGStab: %d iters, rel res %.3e\n", R2.iters, R2.res / R2.res0);
