@@ -143,6 +143,12 @@ if(TPX_HAVE_KOKKOS)
   target_link_libraries(test_amr_device_momentum_kokkos PRIVATE tpx_core)
   target_include_directories(test_amr_device_momentum_kokkos PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   add_test(NAME amr_device_momentum_kokkos COMMAND test_amr_device_momentum_kokkos)
+
+  # Device collocated Stokes flow step (DeviceAmrFlow) — device vs host AmrFlow + analytic.
+  add_executable(test_amr_device_flow_kokkos test_amr_device_flow_kokkos.cpp)
+  target_link_libraries(test_amr_device_flow_kokkos PRIVATE tpx_core)
+  target_include_directories(test_amr_device_flow_kokkos PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME amr_device_flow_kokkos COMMAND test_amr_device_flow_kokkos)
 endif()
 
 add_executable(test_sdf test_sdf.cpp)
