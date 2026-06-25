@@ -51,6 +51,11 @@ target_link_libraries(test_amr_adapt PRIVATE tpx_core)
 target_include_directories(test_amr_adapt PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME amr_adapt COMMAND test_amr_adapt)
 
+add_executable(test_amr_adapt_transport test_amr_adapt_transport.cpp)
+target_link_libraries(test_amr_adapt_transport PRIVATE tpx_core)
+target_include_directories(test_amr_adapt_transport PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME amr_adapt_transport COMMAND test_amr_adapt_transport)
+
 # Quadratic coarse-fine flux + refluxing (2nd-order C/F interface).
 add_executable(test_amr_cf_quadratic test_amr_cf_quadratic.cpp)
 target_link_libraries(test_amr_cf_quadratic PRIVATE tpx_core)
