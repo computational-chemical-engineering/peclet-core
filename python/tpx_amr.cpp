@@ -30,9 +30,12 @@
 #include <string>
 #include <vector>
 
+#include "tpx/amr/adapt.hpp"
 #include "tpx/amr/block_octree.hpp"
+#include "tpx/amr/distributed_adapt.hpp"
 #include "tpx/amr/distributed_octree.hpp"
 #include "tpx/amr/flow.hpp"
+#include "tpx/amr/indicators.hpp"
 #include "tpx/amr/leaf_field.hpp"
 #include "tpx/amr/poisson.hpp"
 #include "tpx/amr/refine.hpp"
@@ -90,6 +93,14 @@ py::array_t<std::uint64_t> leafCodes(const BO& t) {
   py::array_t<std::uint64_t> a(n);
   auto r = a.mutable_unchecked<1>();
   for (Index i = 0; i < n; ++i) r(i) = static_cast<std::uint64_t>(t.code(i));
+  return a;
+}
+
+// A contiguous vector<double> as a (N,) float64 numpy array.
+py::array_t<double> vecToArray(const std::vector<double>& v) {
+  py::array_t<double> a(static_cast<py::ssize_t>(v.size()));
+  auto r = a.mutable_unchecked<1>();
+  for (std::size_t i = 0; i < v.size(); ++i) r(i) = v[i];
   return a;
 }
 
@@ -167,6 +178,25 @@ class Octree {
   // Internal (not bound to Python): give the Poisson solver the underlying octree + geometry.
   const BO& octreeRef() const { return t_; }
   const amr::AmrGeometry<3>& geoRef() const { return geo_; }
+
+  // ---- solution-adaptive refinement ----
+  // Löhner normalized-second-difference indicator E in [0,1] per leaf from a scalar field (N,);
+  // large E marks steep features to refine, small E marks smooth regions to coarsen.
+  py::array_t<double> lohner_indicator(py::array_t<double> field, double eps) {
+    return vecToArray(amr::lohnerIndicator(t_, asField(t_, field, "lohner_indicator"), eps));
+  }
+
+  // One solution-adaptive step driven by the Löhner indicator: refine leaves where the indicator
+  // exceeds refine_thresh (down to finest_level), coarsen sibling groups all below coarsen_thresh,
+  // restore 2:1 balance, and conservatively remap `field` (N,) onto the new mesh. MUTATES the octree
+  // in place (num_leaves/centers/... then reflect the new mesh) and returns the remapped field (M,).
+  py::array_t<double> adapt(py::array_t<double> field, double refine_thresh, double coarsen_thresh,
+                            unsigned finest_level, double eps, bool linear) {
+    auto fv = asField(t_, field, "adapt");
+    auto r = amr::adapt(t_, fv, refine_thresh, coarsen_thresh, finest_level, eps, linear);
+    t_ = std::move(r.octree);
+    return vecToArray(r.field);
+  }
 
   // ---- output ----
   // Write the octree + a per-leaf scalar field (N,) as a VTK UnstructuredGrid (.vtu, ASCII).
@@ -428,6 +458,25 @@ class DistributedOctree {
     return out;
   }
 
+  // ---- solution-adaptive refinement ----
+  // Löhner indicator per local leaf, evaluated across the owner-based halo so cross-block neighbours
+  // contribute exactly as in a whole-domain solve. `field` is this rank's (num_leaves,). Collective.
+  py::array_t<double> lohner_indicator(py::array_t<double> field, double eps) {
+    auto fv = asField(d_.local(), field, "lohner_indicator");
+    return vecToArray(amr::lohnerIndicatorDistributed(d_, fv, eps));
+  }
+
+  // One distributed solution-adaptive step: refine/coarsen each block's local octree from the
+  // Löhner indicator, restore cross-block 2:1 balance, and conservatively remap `field` (num_leaves,)
+  // onto the new local mesh. MUTATES the octree in place (keeping ORB ownership); returns the remapped
+  // local field (M,). Bit-identical across rank counts. Collective.
+  py::array_t<double> adapt(py::array_t<double> field, double refine_thresh, double coarsen_thresh,
+                            unsigned finest_level, double eps, bool linear) {
+    auto fv = asField(d_.local(), field, "adapt");
+    return vecToArray(
+        amr::distributedAdapt(d_, fv, refine_thresh, coarsen_thresh, finest_level, eps, linear));
+  }
+
   // ---- output ----
   // Write THIS rank's local octree + a per-leaf scalar (N,) as a .vtu (one file per rank).
   void write_vtu(const std::string& path, const std::string& name, py::array_t<double> field) {
@@ -480,6 +529,16 @@ PYBIND11_MODULE(tpx_amr, m) {
            "Split leaf `i` into its 8 children; returns True if it was split (level>0).")
       .def("balance", &Octree::balance,
            "Enforce 2:1 graded balance to a fixpoint; returns refinements performed.")
+      .def("lohner_indicator", &Octree::lohner_indicator, py::arg("field"), py::arg("eps") = 0.01,
+           "Löhner normalized-second-difference feature indicator E in [0,1] per leaf from a scalar "
+           "field (num_leaves,); large E = steep feature (refine), small = smooth (coarsen).")
+      .def("adapt", &Octree::adapt, py::arg("field"), py::arg("refine_thresh"),
+           py::arg("coarsen_thresh"), py::arg("finest_level") = 0u, py::arg("eps") = 0.01,
+           py::arg("linear") = true,
+           "Solution-adaptive step (Löhner-driven): refine where the indicator > refine_thresh (to "
+           "finest_level), coarsen sibling groups all < coarsen_thresh, 2:1-balance, and "
+           "conservatively remap `field`. MUTATES the octree in place; returns the remapped field "
+           "(M,). `linear` uses minmod-limited prolongation (else piecewise-constant).")
       .def("write_vtu", &Octree::write_vtu, py::arg("path"), py::arg("name"), py::arg("field"),
            "Write the octree + a per-leaf scalar field (num_leaves,) as a VTK UnstructuredGrid "
            "(.vtu, ASCII, one cell per leaf), openable in ParaView.");
@@ -587,6 +646,18 @@ PYBIND11_MODULE(tpx_amr, m) {
            "For each local leaf, the field value across each of its 6 faces, gathered over the "
            "owner-based halo. `field` is (num_leaves,); returns (num_leaves, 6) laid out "
            "[+x,-x,+y,-y,+z,-z]; domain boundaries carry `sentinel` (collective).")
+      .def("lohner_indicator", &DistributedOctree::lohner_indicator, py::arg("field"),
+           py::arg("eps") = 0.01,
+           "Löhner feature indicator per local leaf, evaluated across the owner-based halo so "
+           "cross-block neighbours count exactly as in a whole-domain solve. `field` is "
+           "(num_leaves,); returns (num_leaves,) (collective).")
+      .def("adapt", &DistributedOctree::adapt, py::arg("field"), py::arg("refine_thresh"),
+           py::arg("coarsen_thresh"), py::arg("finest_level") = 0u, py::arg("eps") = 0.01,
+           py::arg("linear") = true,
+           "Distributed solution-adaptive step (Löhner-driven): refine/coarsen each block, restore "
+           "cross-block 2:1 balance, and conservatively remap `field` (num_leaves,) onto the new "
+           "local mesh. MUTATES the octree in place (keeping ORB ownership); returns the remapped "
+           "local field (M,). Bit-identical across rank counts (collective).")
       .def("write_vtu", &DistributedOctree::write_vtu, py::arg("path"), py::arg("name"),
            py::arg("field"),
            "Write this rank's local octree + a per-leaf scalar (num_leaves,) as a .vtu (one file "

@@ -167,6 +167,39 @@ if rank == 0:
     rel2 = np.abs(uy2[inside] - u_par).max() / u_par.max()
     check(rel2 < 1e-6, f"Poiseuille with advection off parabola (rel err {rel2:.2e})")
 
+    # ------------------------------------------------------------------------------------------
+    # Solution-adaptive AMR: a planar tanh front. The Löhner indicator localizes the front; adapt
+    # refines there and coarsens the (flat) far field, conserving the field under the remap.
+    # ------------------------------------------------------------------------------------------
+    x0, wd = 16.0, 2.0  # front position / width, domain 32 units (8 root cells * 2^2 finest)
+
+    def front(c):  # strictly positive (offset) so sum(V*f) is O(1) — a meaningful conservation ref
+        return 2.0 + np.tanh((c[:, 0] - x0) / wd)
+
+    # (a) Pure-remap conservation: refine a slab, set the field, ONE adapt -> sum(V*f) preserved.
+    tr = tpx_amr.Octree(brick=[8, 8, 8], lmax=2, origin=[0, 0, 0], h0=1.0)
+    tr.refine_to_sdf(lambda x, y, z: abs(x - x0) - 3.0, target_level=0, band=1.0)
+    fr = front(tr.centers())
+    mass0 = float(np.sum(tr.sizes() ** 3 * fr))
+    fr2 = tr.adapt(fr, refine_thresh=0.2, coarsen_thresh=0.05, finest_level=0)
+    mass1 = float(np.sum(tr.sizes() ** 3 * fr2))
+    check(fr2.shape == (tr.num_leaves,), "adapt returned wrong field length")
+    check(abs(mass1 - mass0) <= 1e-12 * abs(mass0), f"adapt remap not conservative ({mass0}->{mass1})")
+
+    # (b) Tracking loop: re-sample the analytic front each step; the mesh converges to a thin refined
+    #     slab around it — every finest leaf near the front, and far fewer leaves than uniform-fine.
+    ta = tpx_amr.Octree(brick=[8, 8, 8], lmax=2, origin=[0, 0, 0], h0=1.0)
+    for _ in range(5):
+        ea = ta.lohner_indicator(front(ta.centers()), eps=0.01)
+        check(ea.min() >= 0.0 and ea.max() <= 1.0 + 1e-12, "Löhner indicator out of [0,1]")
+        ta.adapt(front(ta.centers()), refine_thresh=0.2, coarsen_thresh=0.05, finest_level=0)
+    ca = ta.centers()
+    finest = ta.levels() == 0
+    check(finest.sum() > 0, "no finest leaves after adaptive loop")
+    check(np.all(np.abs(ca[finest, 0] - x0) <= 3.0 * wd), "finest leaves not localized at the front")
+    check(ta.num_leaves < 0.6 * 32 ** 3, f"adaptive mesh not coarser than uniform-fine ({ta.num_leaves})")
+    check(ta.is_balanced(), "adaptive mesh not 2:1 balanced")
+
 # ----------------------------------------------------------------------------------------------
 # DistributedOctree (collective). Same global geometry on every rank; ORB partitions it.
 # ----------------------------------------------------------------------------------------------
@@ -224,6 +257,39 @@ imb_after = imbalance(M)
 check(imb_after <= imb_before + 1e-9, f"rebalance worsened imbalance {imb_before}->{imb_after}")
 # The migrated octree is still usable: geometry matches the new leaf count.
 check(d.centers().shape == (M, 3), "post-rebalance centers shape")
+
+# --- distributed solution-adaptive step (Löhner over the owner-based halo) ---
+# A planar tanh front across the global domain; distributedAdapt refines it, restores cross-block
+# 2:1 balance, and conservatively remaps the field. Check global conservation + localization.
+dgroot = [4, 4, 4]
+da = tpx_amr.DistributedOctree(global_root_size=dgroot, lmax=2, origin=[0, 0, 0], h0=1.0,
+                               periodic=[False, False, False])
+gx0, gw = 8.0, 1.5  # domain is 4*2^2 = 16 units per axis
+
+
+def gfront(c):  # offset -> sum(V*f) is O(domain volume), so the conservation check is well-scaled
+    return 2.0 + np.tanh((c[:, 0] - gx0) / gw)
+
+
+fa = gfront(da.centers())
+# Indicator is in [0,1] and finite across the halo.
+ind = da.lohner_indicator(fa, eps=0.01)
+check(ind.shape == (da.num_leaves,) and np.isfinite(ind).all(), "distributed indicator shape/finite")
+gmass0 = comm.allreduce(float(np.sum(da.sizes() ** 3 * fa)), MPI.SUM)
+gn0 = comm.allreduce(da.num_leaves, MPI.SUM)
+fa2 = da.adapt(fa, refine_thresh=0.25, coarsen_thresh=0.05, finest_level=0)
+check(fa2.shape == (da.num_leaves,), "distributed adapt field length")
+gn1 = comm.allreduce(da.num_leaves, MPI.SUM)
+gmass1 = comm.allreduce(float(np.sum(da.sizes() ** 3 * fa2)), MPI.SUM)
+check(gn1 > gn0, "distributed adapt did not refine the front")
+check(abs(gmass1 - gmass0) <= 1e-10 * abs(gmass0),
+      f"distributed adapt not globally conservative ({gmass0}->{gmass1})")
+# Every finest leaf (any rank) sits near the front.
+cda = da.centers()
+fmask = da.levels() == 0
+local_far = float(np.abs(cda[fmask, 0] - gx0).max()) if fmask.any() else -1.0
+global_far = comm.allreduce(local_far, MPI.MAX)
+check(global_far <= 3.0 * gw, f"distributed finest leaves not localized (max |x-x0|={global_far})")
 
 # ----------------------------------------------------------------------------------------------
 total = comm.allreduce(fail, MPI.SUM)
