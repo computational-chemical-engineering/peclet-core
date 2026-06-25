@@ -33,6 +33,7 @@
 #include "tpx/amr/block_octree.hpp"
 #include "tpx/amr/distributed_octree.hpp"
 #include "tpx/amr/leaf_field.hpp"
+#include "tpx/amr/poisson.hpp"
 #include "tpx/amr/refine.hpp"
 #include "tpx/amr/vtu_io.hpp"
 #include "tpx/common/types.hpp"
@@ -162,6 +163,10 @@ class Octree {
   // Enforce 2:1 (graded) balance; returns the number of refinements performed.
   Index balance() { return t_.balance2to1(); }
 
+  // Internal (not bound to Python): give the Poisson solver the underlying octree + geometry.
+  const BO& octreeRef() const { return t_; }
+  const amr::AmrGeometry<3>& geoRef() const { return geo_; }
+
   // ---- output ----
   // Write the octree + a per-leaf scalar field (N,) as a VTK UnstructuredGrid (.vtu, ASCII).
   void write_vtu(const std::string& path, const std::string& name, py::array_t<double> field) {
@@ -171,6 +176,77 @@ class Octree {
  private:
   BO t_;
   amr::AmrGeometry<3> geo_;
+};
+
+// ---- geometric-multigrid Poisson solver --------------------------------------------------------
+
+// Cell-centered finite-volume Poisson solver (Lu = rhs) on an Octree, via a geometric multigrid
+// V-cycle (tpx::amr::AmrMultigrid). The operator L is the conservative two-point FV Laplacian
+// (negative-definite, suite sign convention); on a graded octree it is consistent and second-order
+// in the bulk (first-order at coarse/fine faces). `periodic=True` solves the singular periodic
+// problem (the constant null space is removed each cycle); the manufactured RHS b = apply(u_exact)
+// is exactly mean-zero, so the residual drives to round-off. The hierarchy snapshots the octree at
+// construction. (Cut-cell openness is handled by the flow solver, which sets it consistently.)
+class Poisson {
+ public:
+  Poisson(const Octree& oct, bool periodic) : n_(oct.octreeRef().numLeaves()) {
+    mg_.build(oct.octreeRef(), oct.geoRef().h0);
+    mg_.setPeriodic(periodic);
+  }
+
+  Index num_leaves() const { return n_; }
+  std::size_t num_levels() const { return mg_.numLevels(); }
+
+  // L applied to u (the FV Laplacian); use it to manufacture a RHS b = apply(u_exact). (N,)->(N,).
+  py::array_t<double> apply(py::array_t<double> u) {
+    std::vector<double> out;
+    mg_.op(0).applyLaplacian(toVec(u, "apply"), out);
+    return fromVec(out);
+  }
+
+  // Volume-weighted L2 residual norm sqrt(sum V*(rhs - L u)^2).
+  double residual(py::array_t<double> u, py::array_t<double> rhs) {
+    std::vector<double> res;
+    return mg_.op(0).residual(toVec(u, "residual"), toVec(rhs, "residual"), res);
+  }
+
+  // Solve L u = rhs with up to `cycles` V-cycles (pre/post smoothing sweeps each), starting from
+  // x0 (or 0). Stops early once the residual <= tol (tol<=0 disables). Returns
+  // (u (N,), final_residual, cycles_done).
+  py::tuple solve(py::array_t<double> rhs, py::object x0, int cycles, int pre, int post,
+                  double tol) {
+    std::vector<double> rv = toVec(rhs, "solve");
+    std::vector<double> u(static_cast<std::size_t>(n_), 0.0);
+    if (!x0.is_none()) u = toVec(x0.cast<py::array_t<double>>(), "solve");
+    std::vector<double> res;
+    double r = mg_.op(0).residual(u, rv, res);
+    int done = 0;
+    for (int k = 0; k < cycles; ++k) {
+      mg_.vcycle(0, u, rv, pre, post);
+      r = mg_.op(0).residual(u, rv, res);
+      ++done;
+      if (tol > 0.0 && r <= tol) break;
+    }
+    return py::make_tuple(fromVec(u), r, done);
+  }
+
+ private:
+  std::vector<double> toVec(py::array_t<double> a, const char* who) const {
+    auto v = a.unchecked<1>();
+    if (v.shape(0) != n_) throw std::runtime_error(std::string(who) + ": length != num_leaves");
+    std::vector<double> o(static_cast<std::size_t>(n_));
+    for (Index i = 0; i < n_; ++i) o[static_cast<std::size_t>(i)] = v(i);
+    return o;
+  }
+  static py::array_t<double> fromVec(const std::vector<double>& v) {
+    py::array_t<double> a(static_cast<py::ssize_t>(v.size()));
+    auto r = a.mutable_unchecked<1>();
+    for (std::size_t i = 0; i < v.size(); ++i) r(i) = v[i];
+    return a;
+  }
+
+  amr::AmrMultigrid<3> mg_;
+  Index n_;
 };
 
 // ---- distributed (MPI) octree ------------------------------------------------------------------
@@ -331,6 +407,27 @@ PYBIND11_MODULE(tpx_amr, m) {
       .def("write_vtu", &Octree::write_vtu, py::arg("path"), py::arg("name"), py::arg("field"),
            "Write the octree + a per-leaf scalar field (num_leaves,) as a VTK UnstructuredGrid "
            "(.vtu, ASCII, one cell per leaf), openable in ParaView.");
+
+  py::class_<Poisson>(
+      m, "Poisson",
+      "Cell-centered finite-volume Poisson solver (L u = rhs) on an Octree, by a geometric-multigrid "
+      "V-cycle. L is the conservative two-point FV Laplacian (suite sign). The hierarchy snapshots "
+      "the octree at construction; per-leaf arrays are (num_leaves,) float64 in Z-order slots.")
+      .def(py::init<const Octree&, bool>(), py::arg("octree"), py::arg("periodic") = true,
+           "Build the multigrid hierarchy from `octree`. periodic=True solves the singular periodic "
+           "problem (constant null space removed each cycle).")
+      .def_property_readonly("num_leaves", &Poisson::num_leaves, "Leaves on the finest level.")
+      .def_property_readonly("num_levels", &Poisson::num_levels, "Number of multigrid levels.")
+      .def("apply", &Poisson::apply, py::arg("u"),
+           "L applied to u (the FV Laplacian); use b = apply(u_exact) to manufacture a RHS. "
+           "(num_leaves,) -> (num_leaves,).")
+      .def("residual", &Poisson::residual, py::arg("u"), py::arg("rhs"),
+           "Volume-weighted L2 residual norm sqrt(sum V*(rhs - L u)^2).")
+      .def("solve", &Poisson::solve, py::arg("rhs"), py::arg("x0") = py::none(),
+           py::arg("cycles") = 20, py::arg("pre") = 2, py::arg("post") = 2, py::arg("tol") = 0.0,
+           "Solve L u = rhs with up to `cycles` V-cycles (pre/post Gauss-Seidel sweeps), from x0 or "
+           "0, stopping once residual <= tol (tol<=0 disables). Returns (u (num_leaves,), "
+           "final_residual, cycles_done).");
 
   py::class_<DistributedOctree>(
       m, "DistributedOctree",

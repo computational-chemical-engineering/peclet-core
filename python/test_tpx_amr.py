@@ -92,6 +92,43 @@ if rank == 0:
     os.remove(path)
     serial_leaves = N
 
+    # ------------------------------------------------------------------------------------------
+    # Poisson multigrid solve (manufactured RHS) through the binding.
+    # ------------------------------------------------------------------------------------------
+    # (a) Uniform multilevel grid: refine a 2x2x2/lmax=3 brick uniformly to a 16^3 finest grid,
+    #     which the multigrid coarsens to several levels. With a periodic manufactured RHS
+    #     b = L u_exact, the solver recovers u_exact exactly and the residual hits round-off.
+    tu = tpx_amr.Octree(brick=[2, 2, 2], lmax=3, origin=[0, 0, 0], h0=1.0)
+    tu.refine_to_sdf(lambda x, y, z: 0.0, target_level=0, band=1e9, balance=False)
+    pois = tpx_amr.Poisson(tu, periodic=True)
+    check(pois.num_levels >= 3, f"multigrid only built {pois.num_levels} levels")
+    check(pois.num_leaves == tu.num_leaves, "Poisson num_leaves mismatch")
+    cc = tu.centers()
+    kk = 2 * np.pi / 16.0
+    u_exact = np.cos(kk * cc[:, 0]) + np.sin(2 * kk * cc[:, 1])
+    u_exact -= u_exact.mean()
+    b = pois.apply(u_exact)
+    check(abs(b.mean()) < 1e-10, f"manufactured RHS not mean-zero ({b.mean():.2e})")
+    r0 = pois.residual(np.zeros_like(b), b)
+    u, r, ncyc = pois.solve(b, cycles=20, tol=0.0)
+    check(r < r0 * 1e-10, f"V-cycle did not converge: {r0:.2e} -> {r:.2e}")
+    err = u - u_exact
+    err -= err.mean()
+    check(np.linalg.norm(err) < 1e-9 * np.linalg.norm(u_exact),
+          f"did not recover u_exact (rel err {np.linalg.norm(err)/np.linalg.norm(u_exact):.2e})")
+
+    # (b) Graded (sphere-refined) octree: same manufactured-RHS recipe still converges to round-off.
+    tg = tpx_amr.Octree(brick=[2, 2, 2], lmax=3, origin=[0, 0, 0], h0=1.0)
+    tg.refine_to_sphere(center=[8, 8, 8], radius=4.0, target_level=0, band=1.0, balance=True)
+    pg = tpx_amr.Poisson(tg, periodic=True)
+    cg = tg.centers()
+    ug = np.cos(kk * cg[:, 0])
+    ug -= ug.mean()
+    bg = pg.apply(ug)
+    rg0 = pg.residual(np.zeros_like(bg), bg)
+    _, rg, _ = pg.solve(bg, cycles=25, tol=0.0)
+    check(rg < rg0 * 1e-8, f"graded V-cycle did not converge: {rg0:.2e} -> {rg:.2e}")
+
 # ----------------------------------------------------------------------------------------------
 # DistributedOctree (collective). Same global geometry on every rank; ORB partitions it.
 # ----------------------------------------------------------------------------------------------
