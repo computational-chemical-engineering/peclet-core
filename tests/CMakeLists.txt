@@ -131,6 +131,12 @@ if(TPX_HAVE_KOKKOS)
   target_link_libraries(test_amr_kappa_dirichlet_kokkos PRIVATE tpx_core)
   target_include_directories(test_amr_kappa_dirichlet_kokkos PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   add_test(NAME amr_kappa_dirichlet_kokkos COMMAND test_amr_kappa_dirichlet_kokkos)
+
+  # Device MG-preconditioned CG (DevicePCG): Krylov acceleration over the device V-cycle.
+  add_executable(test_amr_device_pcg_kokkos test_amr_device_pcg_kokkos.cpp)
+  target_link_libraries(test_amr_device_pcg_kokkos PRIVATE tpx_core)
+  target_include_directories(test_amr_device_pcg_kokkos PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME amr_device_pcg_kokkos COMMAND test_amr_device_pcg_kokkos)
 endif()
 
 add_executable(test_sdf test_sdf.cpp)
