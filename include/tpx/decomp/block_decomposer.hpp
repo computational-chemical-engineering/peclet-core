@@ -6,8 +6,10 @@
 #ifndef TPX_DECOMP_BLOCK_DECOMPOSER_HPP
 #define TPX_DECOMP_BLOCK_DECOMPOSER_HPP
 
+#include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <stack>
 #include <vector>
 
@@ -27,9 +29,26 @@ class BlockDecomposer {
  public:
   BlockDecomposer() = default;
   BlockDecomposer(std::size_t numBlocks, IVec<Dim> globalSize) { init(numBlocks, globalSize); }
+  BlockDecomposer(std::size_t numBlocks, IVec<Dim> globalSize, const std::vector<Real>& weights) {
+    init(numBlocks, globalSize, weights);
+  }
 
-  /// Build the decomposition of a `globalSize` cell grid into `numBlocks` blocks.
-  void init(std::size_t numBlocks, IVec<Dim> globalSize);
+  /// Build the decomposition of a `globalSize` cell grid into `numBlocks` blocks (equal cell count).
+  void init(std::size_t numBlocks, IVec<Dim> globalSize) { initImpl(numBlocks, globalSize, nullptr); }
+
+  /// Weighted ORB: balance the *total weight* per block instead of the cell count. `weights` is a
+  /// per-cell weight array over the global grid (size == product(globalSize), x-fastest). Each split
+  /// is placed on the integer cell boundary whose cumulative weight is closest to the sub-block's
+  /// target fraction. Reduces bit-exactly to the unweighted init() when all weights are equal.
+  void init(std::size_t numBlocks, IVec<Dim> globalSize, const std::vector<Real>& weights) {
+    assert(weights.size() == static_cast<std::size_t>([&] {
+             Index v = 1;
+             for (int i = 0; i < Dim; ++i) v *= globalSize[i];
+             return v;
+           }()) &&
+           "weights array must cover the global grid (x-fastest)");
+    initImpl(numBlocks, globalSize, &weights);
+  }
 
   std::size_t numBlocks() const { return origins_.size(); }
   const IVec<Dim>& globalSize() const { return globalSize_; }
@@ -73,6 +92,17 @@ class BlockDecomposer {
     Index splitValue = 0;   ///< split coordinate (internal) or leaf/block index (leaf)
   };
 
+  /// Shared decomposition driver. `weights == nullptr` ⇒ equal-cell-count split (the classic ORB);
+  /// otherwise the split position balances cumulative weight.
+  void initImpl(std::size_t numBlocks, IVec<Dim> globalSize, const std::vector<Real>* weights);
+
+  /// Number of cells along `kLargest` that fall in the left child when splitting `box` so the left
+  /// child receives `numSub` of `numTotal` sub-blocks. Returns a value in [1, size-1] for a splittable
+  /// axis. `weights == nullptr` reproduces the classic proportional-to-count formula exactly.
+  Index splitPosition(const IVec<Dim>& origin, const IVec<Dim>& size, int kLargest,
+                       std::size_t numSub, std::size_t numTotal,
+                       const std::vector<Real>* weights) const;
+
   IVec<Dim> globalSize_{};
   std::vector<IVec<Dim>> origins_;
   std::vector<IVec<Dim>> sizes_;
@@ -80,7 +110,8 @@ class BlockDecomposer {
 };
 
 template <int Dim>
-void BlockDecomposer<Dim>::init(std::size_t numBlocks, IVec<Dim> globalSize) {
+void BlockDecomposer<Dim>::initImpl(std::size_t numBlocks, IVec<Dim> globalSize,
+                                    const std::vector<Real>* weights) {
   globalSize_ = globalSize;
   origins_.clear();
   sizes_.clear();
@@ -105,15 +136,14 @@ void BlockDecomposer<Dim>::init(std::size_t numBlocks, IVec<Dim> globalSize) {
     }
 
     if (cur.numSub > 1) {
-      // Split along the largest axis, proportionally to the sub-block count.
+      // Split along the largest axis. The split position balances either the sub-block cell count
+      // (unweighted) or the cumulative weight (weighted) of the two children.
       int kLargest = 0;
       for (int k = 1; k < Dim; ++k) {
         if (cur.size[k] > cur.size[kLargest]) kLargest = k;
       }
       std::size_t numSub = cur.numSub / 2;
-      Index szSub = static_cast<Index>(std::round(static_cast<double>(cur.size[kLargest]) *
-                                                  static_cast<double>(numSub) /
-                                                  static_cast<double>(cur.numSub)));
+      Index szSub = splitPosition(cur.origin, cur.size, kLargest, numSub, cur.numSub, weights);
 
       StackBlock left = cur;
       left.numSub = numSub;
@@ -135,6 +165,48 @@ void BlockDecomposer<Dim>::init(std::size_t numBlocks, IVec<Dim> globalSize) {
       sizes_.push_back(cur.size);
     }
   }
+}
+
+template <int Dim>
+Index BlockDecomposer<Dim>::splitPosition(const IVec<Dim>& origin, const IVec<Dim>& size,
+                                          int kLargest, std::size_t numSub, std::size_t numTotal,
+                                          const std::vector<Real>* weights) const {
+  const Index n = size[kLargest];
+
+  // Unweighted (and the degenerate non-splittable axis): the classic proportional-to-count split.
+  // Kept as the exact same expression so the unweighted API is byte-for-byte unchanged.
+  if (weights == nullptr || n <= 1) {
+    return static_cast<Index>(std::round(static_cast<double>(n) * static_cast<double>(numSub) /
+                                         static_cast<double>(numTotal)));
+  }
+
+  // Weighted: accumulate the weight of each slab (fixed kLargest-coordinate) within the box, then
+  // pick the boundary whose cumulative weight is closest to the target fraction of the total.
+  std::vector<double> slab(static_cast<std::size_t>(n), 0.0);
+  IVec<Dim> bgn = origin, end{};
+  for (int i = 0; i < Dim; ++i) end[i] = origin[i] + size[i];
+  forEachInBox<Dim>(bgn, end, [&](const IVec<Dim>& g) {
+    slab[static_cast<std::size_t>(g[kLargest] - origin[kLargest])] += (*weights)[linearGlobal(g)];
+  });
+
+  double total = 0.0;
+  for (double w : slab) total += w;
+  const double target = total * static_cast<double>(numSub) / static_cast<double>(numTotal);
+
+  // Search boundaries in [1, n-1] (non-empty children). Ties resolve to the larger boundary, which
+  // mirrors std::round's half-away-from-zero rule so equal weights reproduce the unweighted split.
+  double cum = 0.0;
+  double bestDist = std::numeric_limits<double>::max();
+  Index best = 1;
+  for (Index s = 1; s < n; ++s) {
+    cum += slab[static_cast<std::size_t>(s - 1)];
+    const double dist = std::abs(cum - target);
+    if (dist <= bestDist) {
+      bestDist = dist;
+      best = s;
+    }
+  }
+  return best;
 }
 
 }  // namespace tpx::decomp
