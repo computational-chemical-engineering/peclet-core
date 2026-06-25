@@ -137,6 +137,12 @@ if(TPX_HAVE_KOKKOS)
   target_link_libraries(test_amr_device_pcg_kokkos PRIVATE tpx_core)
   target_include_directories(test_amr_device_pcg_kokkos PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   add_test(NAME amr_device_pcg_kokkos COMMAND test_amr_device_pcg_kokkos)
+
+  # Device momentum operator + solver (DeviceMomentumOp / DeviceMomentumSolver).
+  add_executable(test_amr_device_momentum_kokkos test_amr_device_momentum_kokkos.cpp)
+  target_link_libraries(test_amr_device_momentum_kokkos PRIVATE tpx_core)
+  target_include_directories(test_amr_device_momentum_kokkos PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME amr_device_momentum_kokkos COMMAND test_amr_device_momentum_kokkos)
 endif()
 
 add_executable(test_sdf test_sdf.cpp)

@@ -132,6 +132,72 @@ class AmrCutCell {
     }
   }
 
+  /// The assembled linear operator A as a per-cell diagonal + face CSR:
+  ///   (A u)_i = diag[i]·u_i + Σ_{k∈[start[i],start[i+1])} coef[k]·u[nbr[k]].
+  /// Reproduces applyOp exactly (same coefficients): identity on solid rows; the C/F-aware
+  /// idiag·I − μ∇² on regular fluid cells; the ξ-overlay 6-stencil on cut cells; plus the
+  /// implicit-FOU advection coupling when buildAdvectionFou has been called. This is the
+  /// device-portable form of the host operator — upload it once and run a parallel
+  /// smoother / Krylov over it (device_momentum.hpp), instead of the serial gaussSeidel.
+  struct Assembled {
+    std::vector<double> diag;   ///< size n
+    std::vector<Index> start;   ///< CSR row offsets, size n+1
+    std::vector<Index> nbr;     ///< neighbour leaf per off-diagonal, size nnz
+    std::vector<double> coef;   ///< off-diagonal coefficient, size nnz
+  };
+  Assembled assembleOperator() const {
+    const Index n = numLeaves();
+    Assembled A;
+    A.diag.assign(static_cast<std::size_t>(n), 0.0);
+    A.start.assign(static_cast<std::size_t>(n) + 1, 0);
+    std::vector<std::vector<std::pair<Index, double>>> rows(static_cast<std::size_t>(n));
+    for (Index i = 0; i < n; ++i) {
+      const std::size_t s = static_cast<std::size_t>(i);
+      if (!fluid_[s]) {  // solid: identity row (u = u_bc)
+        A.diag[s] = 1.0;
+        continue;
+      }
+      if (cut_[s]) {  // ξ-overlay stencil (same-level neighbours)
+        A.diag[s] = AC_[s];
+        for (int k = 0; k < 6; ++k) {
+          double a = off_[s * 6 + k];
+          if (a == 0.0) continue;
+          Index j = nb_[s * 6 + k];
+          if (j >= 0) rows[s].emplace_back(j, a);
+        }
+      } else {  // regular fluid: idiag·I − μ∇² with C/F-aware face coupling
+        const double invV = 1.0 / lap_.cellVolume(i);
+        double dsum = 0.0;
+        lap_.forEachFaceNeighbor(i, [&](Index j, Real c, int, double a) {
+          rows[s].emplace_back(j, -mu_ * invV * (a * c));
+          dsum += a * c;
+        });
+        A.diag[s] = idiag_ + mu_ * invV * dsum;
+      }
+      if (hasAdv_) {  // implicit-FOU advection: diagonal (outflow) + CSR (inflow)
+        A.diag[s] += advDiag_[s];
+        for (std::size_t p = static_cast<std::size_t>(advStart_[s]);
+             p < static_cast<std::size_t>(advStart_[static_cast<std::size_t>(i) + 1]); ++p)
+          rows[s].emplace_back(advNbr_[p], advCoef_[p]);
+      }
+    }
+    for (Index i = 0; i < n; ++i)
+      A.start[static_cast<std::size_t>(i) + 1] =
+          A.start[static_cast<std::size_t>(i)] + static_cast<Index>(rows[static_cast<std::size_t>(i)].size());
+    const Index nnz = A.start[static_cast<std::size_t>(n)];
+    A.nbr.resize(static_cast<std::size_t>(nnz));
+    A.coef.resize(static_cast<std::size_t>(nnz));
+    for (Index i = 0; i < n; ++i) {
+      Index k = A.start[static_cast<std::size_t>(i)];
+      for (auto& e : rows[static_cast<std::size_t>(i)]) {
+        A.nbr[static_cast<std::size_t>(k)] = e.first;
+        A.coef[static_cast<std::size_t>(k)] = e.second;
+        ++k;
+      }
+    }
+    return A;
+  }
+
   /// out = A u. A = idiag·I − μ∇² (C/F-aware) on regular fluid cells; the ξ-overlay
   /// stencil on cut cells (finest, same-level); identity on solid cells (held at u_bc).
   void applyOp(const std::vector<double>& u, std::vector<double>& out) const {
