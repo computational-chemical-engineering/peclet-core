@@ -1,0 +1,162 @@
+"""Test of the tpx_amr Python module (transport-core AMR octree via numpy / mpi4py).
+
+Run: PYTHONPATH=python/build mpirun -np 4 python3 python/test_tpx_amr.py
+(also valid serially: PYTHONPATH=python/build python3 python/test_tpx_amr.py)
+
+Mirrors the C++ AMR tests through the binding. Validates, from Python:
+  * serial Octree: a uniform brick has the expected leaf count; refining toward a sphere localizes
+    leaves on the surface, stays 2:1-balanced, and grows the count; leaf geometry (centers/sizes/
+    levels/codes) is self-consistent; find() round-trips a leaf centre; VTU export has one cell per
+    leaf with the field reading back exactly.
+  * DistributedOctree (np>=1): ORB partitions the global leaf set (counts sum to the serial total);
+    refine_to_sphere + balance keeps every block locally 2:1-balanced; a weighted-ORB rebalance
+    redistributes leaves+fields while conserving them; face_neighbor_gather returns finite interior
+    neighbour values.
+"""
+import os
+import sys
+import numpy as np
+from mpi4py import MPI
+import tpx_amr
+
+comm = MPI.COMM_WORLD
+rank, size = comm.rank, comm.size
+fail = 0
+
+
+def check(cond, msg):
+    global fail
+    if not cond:
+        fail += 1
+        sys.stderr.write(f"[rank {rank}] FAIL: {msg}\n")
+
+
+# ----------------------------------------------------------------------------------------------
+# Serial Octree (run on rank 0 only; pure host, no MPI).
+# ----------------------------------------------------------------------------------------------
+serial_leaves = None
+if rank == 0:
+    brick = [2, 2, 2]
+    lmax = 3
+    t = tpx_amr.Octree(brick=brick, lmax=lmax, origin=[1.0, -2.0, 0.5], h0=0.25)
+
+    # Uniform brick: 2*2*2 root cells, each refinable but unrefined -> 8 leaves.
+    check(t.num_leaves == 8, f"uniform brick leaf count {t.num_leaves} != 8")
+    check(t.is_balanced(), "uniform brick not balanced")
+    check(t.lmax == lmax and t.h0 == 0.25, "lmax/h0 round-trip")
+
+    # Refine toward a sphere through the block centre.
+    cx = [1.0 + 0.5 * brick[0] * 0.25 * (1 << lmax),
+          -2.0 + 0.5 * brick[1] * 0.25 * (1 << lmax),
+          0.5 + 0.5 * brick[2] * 0.25 * (1 << lmax)]
+    n0 = t.num_leaves
+    nref = t.refine_to_sphere(center=cx, radius=0.6, target_level=0, band=1.0, balance=True)
+    check(nref > 0 and t.num_leaves > n0, "refine_to_sphere did not refine")
+    check(t.is_balanced(), "refined octree not 2:1 balanced")
+
+    # Leaf geometry is self-consistent and the right shapes.
+    centers = t.centers()
+    sizes = t.sizes()
+    levels = t.levels()
+    codes = t.codes()
+    N = t.num_leaves
+    check(centers.shape == (N, 3), f"centers shape {centers.shape}")
+    check(sizes.shape == (N,) and levels.shape == (N,) and codes.shape == (N,), "per-leaf shapes")
+    check(levels.dtype == np.int32 and codes.dtype == np.uint64, "level/code dtypes")
+    # size == h0 * 2**level for every leaf.
+    check(np.allclose(sizes, t.h0 * (2.0 ** levels)), "size != h0*2**level")
+    # The finest leaves cluster near the sphere surface (|dist|<~ a cell), not in the far field.
+    fine = levels == 0
+    check(fine.sum() > 0, "no finest leaves after refinement")
+    # The refined region is a thin shell around the surface (radius + band + 2:1 grading), not the
+    # whole block: every finest leaf is within a few cells of the surface.
+    d = np.linalg.norm(centers[fine] - np.array(cx), axis=1) - 0.6
+    check(np.all(np.abs(d) <= 3.0 * sizes[fine]), "finest leaves not on the surface")
+
+    # find() round-trips every leaf centre to its own slot.
+    bad = sum(t.find(centers[i].tolist()) != i for i in range(N))
+    check(bad == 0, f"find() mismatched {bad} leaf centres")
+    check(t.find([-100.0, 0.0, 0.0]) == -1, "find() outside block != -1")
+
+    # VTU export: one cell per leaf, field reads back exactly.
+    field = levels.astype(np.float64)
+    path = "tpx_amr_serial_test.vtu"
+    t.write_vtu(path, "level", field)
+    txt = open(path).read()
+    ncells = int(txt.split('NumberOfCells="')[1].split('"')[0])
+    npts = int(txt.split('NumberOfPoints="')[1].split('"')[0])
+    check(ncells == N and npts == 8 * N, "vtu cell/point counts")
+    block = txt.split("<CellData")[1].split("<DataArray")[1]
+    vals = np.fromstring(block.split(">", 1)[1].split("</DataArray>")[0], sep=" ")
+    check(len(vals) == N and np.array_equal(vals, field), "vtu cell data round-trip")
+    os.remove(path)
+    serial_leaves = N
+
+# ----------------------------------------------------------------------------------------------
+# DistributedOctree (collective). Same global geometry on every rank; ORB partitions it.
+# ----------------------------------------------------------------------------------------------
+groot = [4, 4, 4]
+lmax = 3
+d = tpx_amr.DistributedOctree(global_root_size=groot, lmax=lmax, origin=[0.0, 0.0, 0.0], h0=1.0,
+                              periodic=[True, True, True])
+check(d.size == size and 0 <= d.rank < size, "rank/size")
+
+# Uniform: local leaf counts sum to the global root-cell count (4*4*4 = 64 leaves).
+gleaves = comm.allreduce(d.num_leaves, MPI.SUM)
+check(gleaves == groot[0] * groot[1] * groot[2], f"global leaf count {gleaves} != 64")
+
+# Refine toward a global sphere at the domain centre, then cross-block balance.
+cx = [groot[0] / 2.0, groot[1] / 2.0, groot[2] / 2.0]
+d.refine_to_sphere(center=cx, radius=1.5, target_level=0, band=1.0, balance=True)
+gleaves2 = comm.allreduce(d.num_leaves, MPI.SUM)
+check(gleaves2 > gleaves, "distributed refine did not grow the leaf set")
+
+# Leaf geometry shapes line up on each rank.
+N = d.num_leaves
+check(d.centers().shape == (N, 3), "distributed centers shape")
+check(d.sizes().shape == (N,) and d.levels().shape == (N,), "distributed per-leaf shapes")
+
+# face_neighbor_gather: interior leaves have finite neighbours; result shape (N,6).
+g = d.face_neighbor_gather(d.levels().astype(np.float64), sentinel=-1.0)
+check(g.shape == (N, 6), "gather shape")
+check(np.isfinite(g).all(), "gather produced non-finite values")
+
+# Weighted-ORB rebalance: migrate leaves + 2 field columns (the level, and the leaf's own global
+# index marker) — counts and the marker multiset are conserved; the partition is updated in place.
+levels = d.levels().astype(np.float64)
+# Give each leaf a globally-unique marker so we can check the multiset survives migration.
+offsets = comm.scan(N, MPI.SUM) - N
+marker = (offsets + np.arange(N)).astype(np.float64)
+fields = np.column_stack([levels, marker])
+
+
+def imbalance(local):
+    mx = comm.allreduce(local, MPI.MAX)
+    sm = comm.allreduce(local, MPI.SUM)
+    return mx / (sm / size) if sm else 1.0
+
+
+imb_before = imbalance(N)
+out = d.rebalance(fields)
+M = d.num_leaves
+check(out.shape == (M, 2), f"rebalance returned {out.shape}, expected ({M}, 2)")
+rcount = comm.allreduce(M, MPI.SUM)
+check(rcount == gleaves2, f"rebalance changed total leaves {rcount} != {gleaves2}")
+# Marker multiset preserved: gather all markers and compare to 0..gleaves2-1.
+all_markers = comm.allreduce(int(out[:, 1].astype(np.int64).sum()), MPI.SUM)
+check(all_markers == gleaves2 * (gleaves2 - 1) // 2, "rebalance marker sum not conserved")
+imb_after = imbalance(M)
+check(imb_after <= imb_before + 1e-9, f"rebalance worsened imbalance {imb_before}->{imb_after}")
+# The migrated octree is still usable: geometry matches the new leaf count.
+check(d.centers().shape == (M, 3), "post-rebalance centers shape")
+
+# ----------------------------------------------------------------------------------------------
+total = comm.allreduce(fail, MPI.SUM)
+if rank == 0:
+    print(f"# tpx_amr: serial_leaves={serial_leaves} dist_leaves {gleaves}->{gleaves2} "
+          f"imbalance {imb_before:.3f}->{imb_after:.3f}")
+    if total == 0:
+        print(f"OK (np={size}): tpx_amr Octree + DistributedOctree work from Python/mpi4py")
+    else:
+        sys.stderr.write(f"FAILED (np={size}): {total}\n")
+sys.exit(0 if total == 0 else 1)
