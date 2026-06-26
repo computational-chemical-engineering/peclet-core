@@ -455,6 +455,129 @@ void test_momentum_gs() {
   }
 }
 
+// P4: the velocity-MG used as the *solver* (MG-preconditioned defect correction, no Krylov — the
+// sdflow mirror) must reach the same converged step as the default MG-preconditioned BiCGStab. Runs
+// both with the Galerkin and the staircase hierarchy, and with the GS smoother (the full RB-GS/MG
+// path) to confirm the Krylov-free solve is robust there too.
+void test_momentum_mgsolver() {
+  const unsigned L = 4;  // 16³
+  BO t = uniformFine(L);
+  const double h0 = 1.0 / (double)(1L << L);
+  Vec<3> c{0.5, 0.5, 0.5};
+  double rad = 0.25;
+  auto sdf = [&](const Vec<3>& p) {
+    double dx = p[0] - c[0], dy = p[1] - c[1], dz = p[2] - c[2];
+    return std::sqrt(dx * dx + dy * dy + dz * dz) - rad;
+  };
+  auto run = [&](bool staircase, bool mgSolver) {
+    DeviceAmrFlow<21> f;
+    f.init(t, h0);
+    f.setViscosity(1.0);
+    f.setDt(1e6);
+    f.setBodyForce(1.0, 0, 0);
+    f.setVelocityMGStaircase(staircase);
+    if (staircase) f.setVelocityMGMinCoarse(512);
+    f.setMomentumGS(true);          // exercise the Krylov-free solve with the RB-GS smoother
+    f.setMomentumMGSolver(mgSolver);
+    f.setSolid(sdf);
+    for (int s = 0; s < 6; ++s) f.step(400, 60);
+    return f.velocity(0);
+  };
+  const Index n = t.numLeaves();
+  for (bool staircase : {false, true}) {
+    auto ub = run(staircase, false);  // BiCGStab + MG preconditioner
+    auto um = run(staircase, true);   // MG as the solver (defect correction)
+    double dmax = 0, mag = 0;
+    for (Index i = 0; i < n; ++i) {
+      dmax = std::max(dmax, std::fabs(um[(std::size_t)i] - ub[(std::size_t)i]));
+      mag = std::max(mag, std::fabs(ub[(std::size_t)i]));
+    }
+    std::printf("[flow] MG-solver-vs-BiCGStab (%s): max|mg-bicg| = %.3e (mag %.3e)\n",
+                staircase ? "staircase" : "Galerkin", dmax, mag);
+    TPX_CHECK(dmax < 1e-4 * mag);
+  }
+}
+
+// P4: the optional Picard outer loop over the lagged advection.
+//   (a) Stokes (advection off): the extra outer iterations are genuine no-ops — re-lagging an absent
+//       advection cannot move the already-projected iterate — so the early-stop must engage (a couple
+//       of iterations, not the cap) and the field must match the single-step run.
+//   (b) Navier–Stokes: the loop must reach a valid NS steady field close to the single lagged step
+//       (they coincide exactly only at true steady; after a finite number of steps the gap is at the
+//       transient level — the same bar the device-vs-host advection field check uses).
+void test_picard_outer() {
+  const unsigned L = 4;
+  BO t = uniformFine(L);
+  const double h0 = 1.0 / (double)(1L << L);
+  Vec<3> c{0.5, 0.5, 0.5};
+  const Index n = t.numLeaves();
+
+  // (a) Stokes: outer loop is a no-op beyond convergence detection.
+  {
+    double rad = 0.25;
+    auto sdf = [&](const Vec<3>& p) {
+      double dx = p[0] - c[0], dy = p[1] - c[1], dz = p[2] - c[2];
+      return std::sqrt(dx * dx + dy * dy + dz * dz) - rad;
+    };
+    auto run = [&](int outer, int* lastOuter) {
+      DeviceAmrFlow<21> f;
+      f.init(t, h0);
+      f.setViscosity(1.0);
+      f.setDt(1e6);
+      f.setBodyForce(1.0, 0, 0);
+      f.setOuterIterations(outer, 1e-9);
+      f.setSolid(sdf);
+      for (int s = 0; s < 6; ++s) f.step(400, 60);
+      if (lastOuter) *lastOuter = f.lastOuterIters();
+      return f.velocity(0);
+    };
+    int lo1 = 0, lo5 = 0;
+    auto u1 = run(1, &lo1);
+    auto u5 = run(5, &lo5);
+    double dmax = 0, mag = 0;
+    for (Index i = 0; i < n; ++i) {
+      dmax = std::max(dmax, std::fabs(u5[(std::size_t)i] - u1[(std::size_t)i]));
+      mag = std::max(mag, std::fabs(u1[(std::size_t)i]));
+    }
+    std::printf("[flow] picard outer Stokes: max|n5-n1| = %.3e (mag %.3e), lastOuter n1=%d n5=%d\n",
+                dmax, mag, lo1, lo5);
+    TPX_CHECK(dmax < 1e-6 * mag);  // extra outer iters change nothing without advection
+    TPX_CHECK(lo1 == 1);           // default cap = a single outer iteration
+    TPX_CHECK(lo5 <= 3);           // early-stop engages well below the cap of 5
+  }
+
+  // (b) Navier–Stokes: valid steady close to the single lagged step.
+  {
+    const double mu = 0.5, G = 1.0, dt = 2.0;
+    double rad = 0.2;
+    auto sdf = [&](const Vec<3>& p) {
+      double dx = p[0] - c[0], dy = p[1] - c[1], dz = p[2] - c[2];
+      return std::sqrt(dx * dx + dy * dy + dz * dz) - rad;
+    };
+    auto run = [&](int outer) {
+      DeviceAmrFlow<21> f;
+      f.init(t, h0);
+      f.setViscosity(mu);
+      f.setDt(dt);
+      f.setBodyForce(G, 0, 0);
+      f.setAdvection(true);
+      f.setOuterIterations(outer, 1e-7);
+      f.setSolid(sdf);
+      for (int s = 0; s < 50; ++s) f.step(200, 80);
+      return f.velocity(0);
+    };
+    auto u1 = run(1);
+    auto u4 = run(4);
+    double dmax = 0, mag = 0;
+    for (Index i = 0; i < n; ++i) {
+      dmax = std::max(dmax, std::fabs(u4[(std::size_t)i] - u1[(std::size_t)i]));
+      mag = std::max(mag, std::fabs(u1[(std::size_t)i]));
+    }
+    std::printf("[flow] picard outer NS (n=4): max|picard-single| = %.3e (mag %.3e)\n", dmax, mag);
+    TPX_CHECK(dmax < 1e-2 * mag);  // same NS steady field (transient-level gap, sibling's bar)
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -462,11 +585,13 @@ int main(int argc, char** argv) {
   test_poiseuille();
   test_staircase_mg();
   test_momentum_gs();
+  test_momentum_mgsolver();
   test_sphere();
   test_momentum_mg_option();
   test_momentum_scaling();
   test_advection_kernel();
   test_advection();
+  test_picard_outer();
   Kokkos::finalize();
   TPX_RETURN_TEST_RESULT();
 }

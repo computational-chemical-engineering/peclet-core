@@ -440,6 +440,29 @@ class DeviceAmrFlow {
   /// strong fine smoother the staircase needs on the cut band. Default off. Call before setSolid.
   void setMomentumGS(bool on) { momGS_ = on; }
 
+  /// Opt-in (P4): solve the momentum predictor with the velocity multigrid used **as the solver**
+  /// — MG-preconditioned defect correction `u ← u + M⁻¹(b − A u)` iterated to tolerance — instead of
+  /// BiCGStab with the same MG as a preconditioner. This is the faithful mirror of sdflow's velocity
+  /// solve, which uses no Krylov method at all (RB-GS smoother / velocity-MG directly): the momentum
+  /// operator is diagonally dominant and invertible, so the stationary iteration converges, and
+  /// unlike BiCGStab it cannot break down on the strongly non-symmetric (D_rescale + FOU) operator
+  /// (no bi-orthogonal recurrence to lose — the failure mode P5 had to symmetrise the smoother to
+  /// avoid). With the GS smoother (setMomentumGS) and a velocity-MG (setMomentumMG, default on) this
+  /// is the full RB-GS/MG sdflow path; with MG off it degrades to plain damped-Jacobi sweeps
+  /// (sdflow's smoothComp). Default off (BiCGStab stays the validated default). Requires setMomentumMG
+  /// to actually be multigrid-accelerated; otherwise the Richardson iteration converges only slowly.
+  void setMomentumMGSolver(bool on) { momMGSolver_ = on; }
+
+  /// Optional Picard outer loop over the lagged advection (mirror of sdflow's outerIters_): each
+  /// outer iteration re-freezes the advecting velocity at the latest u and re-solves the predictor,
+  /// stopping early when the max |Δu| between successive outer iterates falls below `tol`. `n = 1`
+  /// (default) is the single lagged step used until now (no extra cost). Only meaningful with
+  /// advection on; for Stokes the loop converges in one iteration. n ≥ 1.
+  void setOuterIterations(int n, double tol = 1e-6) {
+    outerIters_ = (n < 1) ? 1 : n;
+    outerTol_ = tol;
+  }
+
   /// Build the cut-cell operators (host) + upload all device structures. Requires the
   /// density / viscosity / dt to be set first (the momentum operator carries ρ/dt and μ).
   template <class SdfFn>
@@ -511,6 +534,10 @@ class DeviceAmrFlow {
     for (int c = 0; c < 3; ++c) {
       defc_[c] = View<double>("df_defc", static_cast<std::size_t>(n));
       Kokkos::deep_copy(defc_[c], 0.0);
+      // uⁿ snapshot for the backward-Euler mass term (frozen across Picard outer iters) + the
+      // previous outer iterate for the outer-loop convergence test.
+      u0_[c] = View<double>("df_u0", static_cast<std::size_t>(n));
+      uprev_[c] = View<double>("df_uprev", static_cast<std::size_t>(n));
     }
     // Device-resident implicit-FOU advection: the FOU operator (advDiag + per-face advCoef over the
     // face-geometry CSR) is rebuilt on device each step from uⁿ and added to the static Stokes
@@ -546,41 +573,71 @@ class DeviceAmrFlow {
     const Index n = n_;
     const double idiag = rho_ / dt_;
     lastMomIters_ = 0;
-    // --- advection (lagged to u^n): build the implicit-FOU operator + the explicit ρ(SOU−FOU)
-    // deferred correction, BEFORE the predictor overwrites u_. The advecting velocity is frozen
-    // at u^n via the precomputed advDiag_/advCoef_, so the matvec stays linear during the solve.
-    if (advect_) {
-      momOp_.hasAdv = implicitFou_;
-      if (implicitFou_)
-        deviceBuildFou(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
-                       View<const double>(u_[2]), rho_, View<const double>(rscale_), advDiag_,
-                       advCoef_);
-      for (int c = 0; c < 3; ++c) {
+    lastOuterIters_ = 1;
+    // Freeze the time-level uⁿ for the backward-Euler mass term + warm start; it stays anchored
+    // across the Picard outer iterations (only the advecting velocity re-lags). For outerIters_==1
+    // this is just a copy of uⁿ ⇒ bit-identical to the single lagged step.
+    for (int c = 0; c < 3; ++c) Kokkos::deep_copy(u0_[c], View<const double>(u_[c]));
+    // −∇p^n is constant across the outer iterations (pressure is projected once, after the loop, like
+    // sdflow's single per-step projection) ⇒ hoist it out.
+    deviceGrad3(geom_, View<const double>(p_), gx_[0], gx_[1], gx_[2]);
+    // Picard outer loop over the lagged advection only (the momentum nonlinearity); for outerIters_==1
+    // this is the single lagged predictor, then one projection — bit-identical to before.
+    for (int outer = 0; outer < outerIters_; ++outer) {
+      // --- advection lagged to the *current* predictor iterate (uⁿ on the first pass): implicit-FOU
+      // operator + explicit ρ(SOU−FOU) deferred correction. The matvec stays linear during each solve
+      // (the advecting velocity is frozen in advDiag_/advCoef_). With advection OFF the operator and
+      // RHS are identical every pass, so a second pass reproduces the first ⇒ instant early-stop. ---
+      if (advect_) {
+        momOp_.hasAdv = implicitFou_;
         if (implicitFou_)
-          deviceDeferredSou(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
-                            View<const double>(u_[2]), c, rho_, advScheme_, defc_[c]);
-        else
-          deviceAdvectExplicit(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
-                               View<const double>(u_[2]), c, rho_, advScheme_, defc_[c]);
+          deviceBuildFou(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
+                         View<const double>(u_[2]), rho_, View<const double>(rscale_), advDiag_,
+                         advCoef_);
+        for (int c = 0; c < 3; ++c) {
+          if (implicitFou_)
+            deviceDeferredSou(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
+                              View<const double>(u_[2]), c, rho_, advScheme_, defc_[c]);
+          else
+            deviceAdvectExplicit(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
+                                 View<const double>(u_[2]), c, rho_, advScheme_, defc_[c]);
+        }
+        // The staircase MG's fine level mirrors the sharp operator; refresh it so it picks up the
+        // current advection state (hasAdv). (The Galerkin MG is the static viscous operator.)
+        if (momMGon_ && useStaircaseMG_) velMG_.setFineOp(momOp_);
+      }
+      // --- predictor: incremental BE viscous (+ implicit-FOU) solve per component, RHS carries −∇p^n
+      // and −ρ(SOU−FOU); the mass term is anchored at uⁿ (u0_), the solve warm-starts at the current
+      // iterate. ---
+      for (int c = 0; c < 3; ++c) {
+        deviceMomRhs(View<const double>(u0_[c]), View<const double>(gx_[c]),
+                     View<const double>(defc_[c]), View<const double>(rscale_),
+                     View<const char>(fluid_), idiag, f_[c], bmom_, n);
+        // P4 (opt-in): the velocity-MG used as the *solver* — MG-preconditioned defect correction,
+        // no Krylov (the sdflow RB-GS/velocity-MG mirror; cannot break down on the non-symmetric
+        // operator) — vs the default MG-preconditioned BiCGStab. Both reach the same solution (the
+        // matvec is the exact operator); the choice only trades robustness for convergence rate.
+        lastMomIters_ +=
+            (momMGSolver_ ? momSolver_.solveDefectCorrection(momOp_, u_[c],
+                                                             View<const double>(bmom_), momIters, momTol_)
+                          : momSolver_.solveBiCGStab(momOp_, u_[c], View<const double>(bmom_),
+                                                     momIters, momTol_))
+                .iters;
+      }
+      // Outer-loop convergence on the predictor velocity (skipped for the default outerIters_==1, so
+      // that path is untouched). With advection off the second iterate equals the first ⇒ stops at 2.
+      if (outerIters_ > 1) {
+        lastOuterIters_ = outer + 1;
+        if (outer > 0) {
+          double dmax = 0.0;
+          for (int c = 0; c < 3; ++c)
+            dmax = std::max(dmax, maxAbsDiff(View<const double>(u_[c]), View<const double>(uprev_[c]), n));
+          if (dmax < outerTol_) break;
+        }
+        for (int c = 0; c < 3; ++c) Kokkos::deep_copy(uprev_[c], View<const double>(u_[c]));
       }
     }
-    // The staircase MG's fine level mirrors the sharp operator; refresh it so it picks up the
-    // current advection state (hasAdv). (The Galerkin MG is the static viscous operator.)
-    if (momMGon_ && useStaircaseMG_) velMG_.setFineOp(momOp_);
-    // --- predictor: incremental BE viscous (+ implicit-FOU) solve per component, RHS carries
-    // −∇p^n and −ρ(SOU−FOU). ---
-    deviceGrad3(geom_, View<const double>(p_), gx_[0], gx_[1], gx_[2]);
-    for (int c = 0; c < 3; ++c) {
-      deviceMomRhs(View<const double>(u_[c]), View<const double>(gx_[c]), View<const double>(defc_[c]),
-                   View<const double>(rscale_), View<const char>(fluid_), idiag, f_[c], bmom_, n);
-      // warm start from u^n (good initial guess for the time step). The momentum operator is the
-      // static cut-cell Stokes operator + the device-resident FOU advection; the Galerkin MG (built
-      // once from the static operator) preconditions the BiCGStab. [P4 replaces BiCGStab with the
-      // sdflow smoother/velocity-MG path.]
-      lastMomIters_ +=
-          momSolver_.solveBiCGStab(momOp_, u_[c], View<const double>(bmom_), momIters, momTol_).iters;
-    }
-    project(presIters);
+    project(presIters);  // single pressure projection per step (sdflow structure)
   }
 
   /// Pressure projection of the current velocity in place.
@@ -633,6 +690,19 @@ class DeviceAmrFlow {
     mg.vcycle(mgVcPre_, mgVcPre_, mgVcBottom_, 0.7);
     Kokkos::deep_copy(z, mg.x(0));
   }
+  /// Max |a − b| over all cells (the Picard outer-loop convergence measure).
+  static double maxAbsDiff(View<const double> a, View<const double> b, Index n) {
+    double m = 0.0;
+    Kokkos::parallel_reduce(
+        "amr::flow_maxdiff", n,
+        KOKKOS_LAMBDA(const Index i, double& lm) {
+          double d = a(i) - b(i);
+          if (d < 0.0) d = -d;
+          if (d > lm) lm = d;
+        },
+        Kokkos::Max<double>(m));
+    return m;
+  }
   /// Copy a device View into a host vector (sized n_).
   void copyToHost(const View<double>& d, std::vector<double>& h) const {
     auto m = Kokkos::create_mirror_view(d);
@@ -664,6 +734,8 @@ class DeviceAmrFlow {
   int lastMomIters() const { return lastMomIters_; }
   /// Pressure PCG iterations of the last step.
   int lastPresIters() const { return lastPresIters_; }
+  /// Picard outer iterations actually run in the last step (1 unless setOuterIterations(>1)).
+  int lastOuterIters() const { return lastOuterIters_; }
 
  private:
   // sdflow ccFractionCore aperture (verbatim from AmrFlow::faceFrac).
@@ -698,12 +770,15 @@ class DeviceAmrFlow {
   int mgVcPre_ = 2, mgVcBottom_ = 30;  // momentum-MG V-cycle pre/post sweeps + bottom sweeps
   Index mgMinCoarse_ = 256;            // staircase velocity-MG pore-scale cap (coarsest cell count)
   bool momGS_ = false;                 // opt-in: multicolour Gauss–Seidel smoother in the momentum MG
+  bool momMGSolver_ = false;           // opt-in (P4): velocity-MG as the solver (defect correction), not BiCGStab
+  int outerIters_ = 1;                 // Picard outer iterations over the lagged advection (default 1)
+  double outerTol_ = 1e-6;             // outer-loop early-stop tolerance on max|Δu|
   double momTol_ = 1e-8;  // per-step momentum BiCGStab relative tolerance (Phase-0 knob)
   bool advect_ = false;       // momentum advection ∇·(u u) (off ⇒ Stokes)
   bool implicitFou_ = true;   // implicit-FOU deferred-correction (stable) vs fully-explicit
   int advScheme_ = 0;         // high-order flux: 0 = SOU (default), 1 = Koren TVD
   Index n_ = 0;
-  int lastMomIters_ = 0, lastPresIters_ = 0;
+  int lastMomIters_ = 0, lastPresIters_ = 0, lastOuterIters_ = 1;
 
   AmrCutCell<Bits> mom_;
   AmrPoisson<3, Bits> pres_;
@@ -719,6 +794,7 @@ class DeviceAmrFlow {
   View<double> rscale_;
   View<char> fluid_;
   std::array<View<double>, 3> u_, gx_;
+  std::array<View<double>, 3> u0_, uprev_;  // frozen uⁿ (BE mass term) + previous Picard outer iterate
   View<double> p_, phi_, div_, bmom_;
 };
 
