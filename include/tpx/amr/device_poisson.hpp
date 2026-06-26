@@ -18,6 +18,7 @@
 #ifdef TPX_HAVE_MORTON
 
 #include "tpx/amr/block_octree_kokkos.hpp"
+#include "tpx/amr/face_csr.hpp"  // shared host+device FV (weight-CSR) row kernels
 #include "tpx/common/view.hpp"
 
 namespace tpx::amr {
@@ -91,40 +92,36 @@ struct DeviceFvOp {
   double cD = 1.0;
 };
 
+/// View the assembled FV operator through the shared backend-agnostic FvCsrOpT, so the device
+/// kernels and the host AmrPoisson run the *same* row arithmetic (face_csr.hpp).
+inline FvCsrOpT<View<const double>, View<const Index>> fvView(const DeviceFvOp& op) {
+  FvCsrOpT<View<const double>, View<const Index>> v;
+  v.n = op.n;
+  v.invVol = op.invVol;
+  v.coef = op.faceW;
+  v.start = op.faceStart;
+  v.nbr = op.faceNbr;
+  v.bcDiag = op.bcDiag;
+  v.c0 = op.c0;
+  v.cD = op.cD;
+  return v;
+}
+
 /// Hu = (c0·I + cD·L) u (consistent conservative FV Laplacian, c0=0/cD=1 ⇒ pure L). A
 /// non-zero bcDiag adds the homogeneous-Dirichlet boundary term −bcDiag·u_i to L.
 inline void deviceApplyFv(const DeviceFvOp& op, View<const double> u, View<double> Lu) {
-  auto invVol = op.invVol;
-  auto fs = op.faceStart;
-  auto fn = op.faceNbr;
-  auto fw = op.faceW;
-  auto bc = op.bcDiag;
-  const double c0 = op.c0, cD = op.cD;
+  const auto A = fvView(op);
   Kokkos::parallel_for(
-      "amr::fv_apply", op.n, KOKKOS_LAMBDA(const Index i) {
-        const double ui = u(i);
-        double acc = 0.0;
-        for (Index k = fs(i); k < fs(i + 1); ++k) acc += fw(k) * (u(fn(k)) - ui);
-        Lu(i) = c0 * ui + cD * (invVol(i) * (acc - bc(i) * ui));
-      });
+      "amr::fv_apply", op.n, KOKKOS_LAMBDA(const Index i) { Lu(i) = fvApplyRow(A, i, u); });
 }
 
 /// res = rhs − H u.
 inline void deviceResidualFv(const DeviceFvOp& op, View<const double> u, View<const double> rhs,
                              View<double> res) {
-  auto invVol = op.invVol;
-  auto fs = op.faceStart;
-  auto fn = op.faceNbr;
-  auto fw = op.faceW;
-  auto bc = op.bcDiag;
-  const double c0 = op.c0, cD = op.cD;
+  const auto A = fvView(op);
   Kokkos::parallel_for(
-      "amr::fv_residual", op.n, KOKKOS_LAMBDA(const Index i) {
-        const double ui = u(i);
-        double acc = 0.0;
-        for (Index k = fs(i); k < fs(i + 1); ++k) acc += fw(k) * (u(fn(k)) - ui);
-        res(i) = rhs(i) - (c0 * ui + cD * (invVol(i) * (acc - bc(i) * ui)));
-      });
+      "amr::fv_residual", op.n,
+      KOKKOS_LAMBDA(const Index i) { res(i) = rhs(i) - fvApplyRow(A, i, u); });
 }
 
 /// One weighted-Jacobi sweep of H u = rhs (in place). `tmp` is scratch (size n).
@@ -135,31 +132,10 @@ inline void deviceResidualFv(const DeviceFvOp& op, View<const double> u, View<co
 /// point solve of (c0·I + cD·L) u = rhs.
 inline void deviceJacobiFv(const DeviceFvOp& op, View<double> u, View<const double> rhs,
                            View<double> tmp, double omega) {
-  auto invVol = op.invVol;
-  auto fs = op.faceStart;
-  auto fn = op.faceNbr;
-  auto fw = op.faceW;
-  auto bc = op.bcDiag;
-  const double c0 = op.c0, cD = op.cD;
-  const bool pureL = (c0 == 0.0 && cD == 1.0);
+  const auto A = fvView(op);
   Kokkos::parallel_for(
-      "amr::fv_jacobi_compute", op.n, KOKKOS_LAMBDA(const Index i) {
-        double sumOff = 0.0, sw = 0.0;
-        for (Index k = fs(i); k < fs(i + 1); ++k) {
-          sumOff += fw(k) * u(fn(k));
-          sw += fw(k);
-        }
-        const double swbc = sw + bc(i);  // Dirichlet boundary adds to the diagonal
-        if (pureL) {
-          // V_i rhs_i = rhs_i / invVol_i ; point solve of L u = rhs (exact original form).
-          tmp(i) = (swbc != 0.0) ? (sumOff - rhs(i) / invVol(i)) / swbc : u(i);
-        } else {
-          // H_ii = c0 − cD·invVol·(Σw+bc) ; H_ij = cD·invVol·w ; point solve H u = rhs.
-          const double Hii = c0 - cD * invVol(i) * swbc;
-          const double Hoff = cD * invVol(i) * sumOff;
-          tmp(i) = (Hii != 0.0) ? (rhs(i) - Hoff) / Hii : u(i);
-        }
-      });
+      "amr::fv_jacobi_compute", op.n,
+      KOKKOS_LAMBDA(const Index i) { tmp(i) = fvPointSolve(A, i, u, rhs(i), u(i)); });
   Kokkos::parallel_for(
       "amr::fv_jacobi_update", op.n,
       KOKKOS_LAMBDA(const Index i) { u(i) = (1.0 - omega) * u(i) + omega * tmp(i); });

@@ -91,6 +91,51 @@ MORTON_HD inline double faceCsrPointUpdate(double b_i, double off, double d, dou
   return (1.0 - omega) * uOld + omega * nu;
 }
 
+// ---------------------------------------------------------------------------
+// The conservative FV (graded-Laplacian) operator — the *pressure* form. Unlike the general
+// momentum operator above it stores per-face conductances `w` and a per-cell `invVol`, with the
+// diagonal *derived* (the symmetric Laplacian Σ w·(u_nbr − u_i)); a Helmholtz generalisation
+//   H u = c0·u + cD·( invVol·( Σ w·(u_nbr − u_i) − bcDiag·u ) )
+// (c0=0, cD=1 ⇒ the pure FV Laplacian L) keeps the L path bit-exact. Same body for host (AmrPoisson)
+// and device (device_poisson.hpp DeviceFvOp).
+// ---------------------------------------------------------------------------
+
+/// A backend-agnostic view of an assembled FV (weight-CSR) operator.
+template <class D, class I>
+struct FvCsrOpT {
+  Index n = 0;
+  D invVol, coef;  // coef = per-face conductance w = openness·A_f/d_f
+  I start, nbr;
+  D bcDiag;        // homogeneous-Dirichlet boundary diagonal (0 when periodic)
+  double c0 = 0.0, cD = 1.0;
+};
+
+/// (H u)_i = c0·u_i + cD·( invVol_i·( Σ w·(u_nbr − u_i) − bcDiag_i·u_i ) ).
+template <class Op, class U>
+MORTON_HD inline double fvApplyRow(const Op& op, Index i, const U& u) {
+  const double ui = u(i);
+  double acc = 0.0;
+  for (Index k = op.start(i); k < op.start(i + 1); ++k) acc += op.coef(k) * (u(op.nbr(k)) - ui);
+  return op.c0 * ui + op.cD * (op.invVol(i) * (acc - op.bcDiag(i) * ui));
+}
+
+/// The point solve of H u = rhs for one row (raw value, before damping), matching the host point
+/// solve and device deviceJacobiFv: the pure-L path (c0=0,cD=1) keeps the exact original expression.
+template <class Op, class U>
+MORTON_HD inline double fvPointSolve(const Op& op, Index i, const U& u, double rhs_i, double uOld) {
+  double sumOff = 0.0, sw = 0.0;
+  for (Index k = op.start(i); k < op.start(i + 1); ++k) {
+    sumOff += op.coef(k) * u(op.nbr(k));
+    sw += op.coef(k);
+  }
+  const double swbc = sw + op.bcDiag(i);
+  if (op.c0 == 0.0 && op.cD == 1.0)
+    return (swbc != 0.0) ? (sumOff - rhs_i / op.invVol(i)) / swbc : uOld;
+  const double Hii = op.c0 - op.cD * op.invVol(i) * swbc;
+  const double Hoff = op.cD * op.invVol(i) * sumOff;
+  return (Hii != 0.0) ? (rhs_i - Hoff) / Hii : uOld;
+}
+
 }  // namespace tpx::amr
 
 #endif  // TPX_AMR_FACE_CSR_HPP

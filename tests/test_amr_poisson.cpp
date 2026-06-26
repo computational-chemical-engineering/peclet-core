@@ -58,6 +58,19 @@ void test_conservation(const BO& t, Real h0) {
     scale += P.cellVolume(i) * std::fabs(Lu[static_cast<std::size_t>(i)]);
   }
   TPX_CHECK(std::fabs(integral) < 1e-9 * (scale + 1e-30));
+
+  // Anti-drift lock: the shared face_csr.hpp FV kernel over the assembled CSR (the same arithmetic
+  // the device deviceApplyFv runs) must reproduce the geometric applyLaplacian. Validates the shared
+  // FV kernel in the pure-C++ (no-Kokkos) build.
+  std::vector<double> LuShared;
+  P.applyFvShared(u, LuShared);
+  double de = 0.0, mg = 0.0;
+  for (Index i = 0; i < t.numLeaves(); ++i) {
+    de = std::max(de, std::fabs(Lu[static_cast<std::size_t>(i)] - LuShared[static_cast<std::size_t>(i)]));
+    mg = std::max(mg, std::fabs(Lu[static_cast<std::size_t>(i)]));
+  }
+  std::printf("[poisson] shared-CSR vs geometric applyLaplacian: max|Δ| = %.3e (mag %.3e)\n", de, mg);
+  TPX_CHECK(de < 1e-12 * (1.0 + mg));
 }
 
 // Manufactured solve on a uniform 2^L grid over [0,1)^3; returns the L2 error.

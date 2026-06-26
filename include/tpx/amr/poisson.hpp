@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "tpx/amr/block_octree.hpp"
+#include "tpx/amr/face_csr.hpp"  // shared host+device FV (weight-CSR) row kernels
 #include "tpx/amr/leaf_field.hpp"
 #include "tpx/common/types.hpp"
 
@@ -330,6 +331,66 @@ class AmrPoisson {
       s += cellVolume(i) * r * r;
     }
     return std::sqrt(s);
+  }
+
+  /// The assembled FV (weight-CSR) operator: per-face conductance w = A_f/d_f·openness, per-cell
+  /// invVol and Dirichlet boundary diagonal, in the exact face order forEachFaceNeighbor emits. This
+  /// is the single host assembler the device MG build (device_multigrid.hpp) and the host shared-FV
+  /// apply both consume — and the form the shared face_csr.hpp kernels run.
+  struct FvAssembled {
+    std::vector<double> invVol;  ///< 1/V_i, size n
+    std::vector<Index> start;    ///< CSR row offsets, size n+1
+    std::vector<Index> nbr;      ///< neighbour leaf per face, size nFaces
+    std::vector<double> coef;    ///< w = A_f/d_f·openness per face, size nFaces
+    std::vector<double> bcDiag;  ///< Dirichlet boundary diagonal per cell (0 if periodic)
+  };
+  FvAssembled assembleFv() const {
+    const Index n = numLeaves();
+    FvAssembled A;
+    A.start.assign(static_cast<std::size_t>(n) + 1, 0);
+    for (Index i = 0; i < n; ++i) {
+      Index cnt = 0;
+      forEachFaceNeighbor(i, [&](Index, Real, int, double) { ++cnt; });
+      A.start[static_cast<std::size_t>(i) + 1] = A.start[static_cast<std::size_t>(i)] + cnt;
+    }
+    const Index nf = A.start[static_cast<std::size_t>(n)];
+    A.nbr.resize(static_cast<std::size_t>(nf));
+    A.coef.resize(static_cast<std::size_t>(nf));
+    A.invVol.resize(static_cast<std::size_t>(n));
+    A.bcDiag.resize(static_cast<std::size_t>(n));
+    for (Index i = 0; i < n; ++i) {
+      A.invVol[static_cast<std::size_t>(i)] = 1.0 / cellVolume(i);
+      A.bcDiag[static_cast<std::size_t>(i)] = boundaryDiag(i);
+      Index k = A.start[static_cast<std::size_t>(i)];
+      forEachFaceNeighbor(i, [&](Index j, Real c, int, double a) {
+        A.nbr[static_cast<std::size_t>(k)] = j;
+        A.coef[static_cast<std::size_t>(k)] = a * c;
+        ++k;
+      });
+    }
+    return A;
+  }
+  /// View an FvAssembled as the backend-agnostic FvCsrOpT (c0=0,cD=1 ⇒ pure FV Laplacian).
+  FvCsrOpT<HostArr<double>, HostArr<Index>> hostFvOp(const FvAssembled& A) const {
+    FvCsrOpT<HostArr<double>, HostArr<Index>> v;
+    v.n = numLeaves();
+    v.invVol = HostArr<double>(A.invVol.data());
+    v.coef = HostArr<double>(A.coef.data());
+    v.start = HostArr<Index>(A.start.data());
+    v.nbr = HostArr<Index>(A.nbr.data());
+    v.bcDiag = HostArr<double>(A.bcDiag.data());
+    return v;
+  }
+  /// out = L u via the SHARED face_csr.hpp FV kernel over the assembled CSR — the same arithmetic the
+  /// device deviceApplyFv runs, executed serially. The geometric applyLaplacian below is the oracle;
+  /// test_amr_poisson asserts the two agree (anti-drift lock, no-Kokkos build).
+  void applyFvShared(const std::vector<double>& u, std::vector<double>& out) const {
+    const FvAssembled A = assembleFv();
+    const auto op = hostFvOp(A);
+    const Index n = numLeaves();
+    out.assign(static_cast<std::size_t>(n), 0.0);
+    const HostArr<double> uacc(u.data());
+    for (Index i = 0; i < n; ++i) out[static_cast<std::size_t>(i)] = fvApplyRow(op, i, uacc);
   }
 
   /// out = L u (periodic FV Laplacian).
