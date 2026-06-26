@@ -32,6 +32,7 @@
 #include "tpx/amr/device_momentum.hpp"
 #include "tpx/amr/device_multigrid.hpp"
 #include "tpx/amr/device_pcg.hpp"
+#include "tpx/amr/device_velocity_mg.hpp"
 #include "tpx/amr/poisson.hpp"
 #include "tpx/common/types.hpp"
 #include "tpx/common/view.hpp"
@@ -424,6 +425,12 @@ class DeviceAmrFlow {
   /// step. Call before setSolid (the hierarchy is built there). Default ON.
   void setMomentumMG(bool on) { momMGon_ = on; }
 
+  /// Choose the momentum-MG coarse-operator strategy: false (default) = Galerkin
+  /// (DeviceMomentumMG, A_c = R·A·P of the exact cut-cell operator); true = rediscretized
+  /// staircase (DeviceVelocityMG, mirroring sdflow's VelocityMG). Call before setSolid. Both are
+  /// device-resident BiCGStab preconditioners; this lets the two be benchmarked head-to-head.
+  void setVelocityMGStaircase(bool on) { useStaircaseMG_ = on; }
+
   /// Build the cut-cell operators (host) + upload all device structures. Requires the
   /// density / viscosity / dt to be set first (the momentum operator carries ρ/dt and μ).
   template <class SdfFn>
@@ -452,7 +459,21 @@ class DeviceAmrFlow {
     // of all-solid children stays an identity row). It only changes the preconditioner (the
     // BiCGStab matvec is the exact operator) ⇒ same converged solution, but the iteration
     // count stays ~flat with N instead of growing like the Jacobi-preconditioned BiCGStab.
-    if (momMGon_) momMG_.build(*t_, A.diag, A.start, A.nbr, A.coef);
+    // Build the chosen momentum-MG: Galerkin (DeviceMomentumMG) by default, or the rediscretized
+    // staircase (DeviceVelocityMG) — both from the static Stokes operator, once.
+    if (momMGon_) {
+      if (useStaircaseMG_) {
+        std::vector<double> kap(static_cast<std::size_t>(n));
+        std::vector<char> fl(static_cast<std::size_t>(n));
+        for (Index i = 0; i < n; ++i) {
+          kap[static_cast<std::size_t>(i)] = mom_.kappa(i);
+          fl[static_cast<std::size_t>(i)] = mom_.isFluid(i) ? 1 : 0;
+        }
+        velMG_.build(*t_, h0_, rho_ / dt_, mu_, momOp_, kap, fl);
+      } else {
+        momMG_.build(*t_, A.diag, A.start, A.nbr, A.coef);
+      }
+    }
     geom_ = buildFaceGeom(pres_, [&](Index i) { return mom_.isFluid(i); });
     std::vector<double> rs(static_cast<std::size_t>(n));
     for (Index i = 0; i < n; ++i) rs[static_cast<std::size_t>(i)] = mom_.rhsScale(i);
@@ -491,7 +512,16 @@ class DeviceAmrFlow {
     momOp_.advCoef = advCoef_;
     momOp_.hasAdv = false;  // set per-step when advection is on
     momSolver_.setJacobi(2, 0.7);
-    if (momMGon_) momSolver_.setMgPreconditioner(&momMG_, 1);
+    // Generic MG preconditioner: dispatch the chosen hierarchy's V-cycle (z = M⁻¹ r), decoupling
+    // the solver from the MG type so Galerkin and staircase are interchangeable.
+    if (momMGon_) {
+      if (useStaircaseMG_)
+        momSolver_.setPreconditioner(
+            [this](View<const double> r, View<double> z) { runMgVcycle(velMG_, r, z); });
+      else
+        momSolver_.setPreconditioner(
+            [this](View<const double> r, View<double> z) { runMgVcycle(momMG_, r, z); });
+    }
     pcg_.setVcycle(2, 2, 60, 0.8);
     pcg_.setSingular(true);
     n_ = n;
@@ -522,6 +552,9 @@ class DeviceAmrFlow {
                                View<const double>(u_[2]), c, rho_, advScheme_, defc_[c]);
       }
     }
+    // The staircase MG's fine level mirrors the sharp operator; refresh it so it picks up the
+    // current advection state (hasAdv). (The Galerkin MG is the static viscous operator.)
+    if (momMGon_ && useStaircaseMG_) velMG_.setFineOp(momOp_);
     // --- predictor: incremental BE viscous (+ implicit-FOU) solve per component, RHS carries
     // −∇p^n and −ρ(SOU−FOU). ---
     deviceGrad3(geom_, View<const double>(p_), gx_[0], gx_[1], gx_[2]);
@@ -577,6 +610,16 @@ class DeviceAmrFlow {
     Kokkos::deep_copy(m, s);
     for (Index i = 0; i < n_; ++i) h[static_cast<std::size_t>(i)] = m(i);
     return h;
+  }
+  /// Run one V-cycle of a momentum MG as a preconditioner: z = M⁻¹ r. Templated on the MG type
+  /// (DeviceMomentumMG or DeviceVelocityMG — both expose b(0)/x(0)/vcycle), so the BiCGStab
+  /// preconditioner is decoupled from the coarse-operator strategy.
+  template <class MG>
+  void runMgVcycle(MG& mg, View<const double> r, View<double> z) {
+    Kokkos::deep_copy(mg.b(0), r);
+    Kokkos::deep_copy(mg.x(0), 0.0);
+    mg.vcycle(2, 2, 30, 0.7);
+    Kokkos::deep_copy(z, mg.x(0));
   }
   /// Copy a device View into a host vector (sized n_).
   void copyToHost(const View<double>& d, std::vector<double>& h) const {
@@ -638,7 +681,8 @@ class DeviceAmrFlow {
   double rho_ = 1.0, mu_ = 1.0, dt_ = 1e6;
   Vec<3> f_{};
   bool presPCG_ = true;
-  bool momMGon_ = true;   // Galerkin velocity-MG momentum preconditioner (scalable; see setMomentumMG)
+  bool momMGon_ = true;        // velocity-MG momentum preconditioner (scalable; see setMomentumMG)
+  bool useStaircaseMG_ = false;  // false = Galerkin (DeviceMomentumMG), true = staircase (DeviceVelocityMG)
   double momTol_ = 1e-8;  // per-step momentum BiCGStab relative tolerance (Phase-0 knob)
   bool advect_ = false;       // momentum advection ∇·(u u) (off ⇒ Stokes)
   bool implicitFou_ = true;   // implicit-FOU deferred-correction (stable) vs fully-explicit
@@ -650,6 +694,7 @@ class DeviceAmrFlow {
   AmrPoisson<3, Bits> pres_;
   DeviceMultigrid<3, Bits> presMG_;
   DeviceMomentumMG<Bits> momMG_;  // Galerkin velocity multigrid (momentum preconditioner)
+  DeviceVelocityMG<Bits> velMG_;  // rediscretized staircase velocity multigrid (alternative)
   DeviceMomentumOp momOp_;
   DeviceMomentumSolver<Bits> momSolver_;
   DevicePCG<3, Bits> pcg_;

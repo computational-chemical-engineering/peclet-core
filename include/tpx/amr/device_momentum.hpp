@@ -24,6 +24,7 @@
 #ifdef TPX_HAVE_MORTON
 
 #include <cmath>
+#include <functional>
 #include <map>
 #include <vector>
 
@@ -321,15 +322,14 @@ class DeviceMomentumSolver {
     omega_ = omega;
   }
 
-  /// Use a Galerkin DeviceMomentumMG (built from the same assembled operator) as the BiCGStab
-  /// preconditioner instead of damped-Jacobi sweeps. The V-cycle gives the multigrid
-  /// smooth-mode coverage Jacobi lacks, so the momentum iteration count stops growing with N.
-  /// `vcycles` V-cycles per preconditioner application. Pass nullptr to revert to Jacobi. The
-  /// preconditioner never changes the converged solution (the BiCGStab matvec is the exact
-  /// operator) — only the iteration count.
-  void setMgPreconditioner(DeviceMomentumMG<Bits>* mg, int vcycles = 1) {
-    mgPre_ = mg;
-    mgVcycles_ = vcycles;
+  /// Set a generic preconditioner `z = M⁻¹ r` (a host callable that launches device kernels) — the
+  /// multigrid V-cycle gives the smooth-mode coverage Jacobi lacks, so the momentum iteration count
+  /// stops growing with N. Decoupled from the MG type (Galerkin DeviceMomentumMG or rediscretized
+  /// DeviceVelocityMG) via std::function, so the two coarse-operator strategies are interchangeable
+  /// (and the solver carries no MG type). Pass an empty function to revert to damped-Jacobi. The
+  /// preconditioner never changes the converged solution (the matvec is the exact operator).
+  void setPreconditioner(std::function<void(View<const double>, View<double>)> fn) {
+    precFn_ = std::move(fn);
   }
 
   /// Plain weighted-Jacobi solve (the simple parallel mirror of the host GS smoother):
@@ -441,14 +441,11 @@ class DeviceMomentumSolver {
   }
 
  private:
-  // z = M^{-1} v : a Helmholtz MG V-cycle if set, else `jacPre_` damped-Jacobi sweeps of
+  // z = M^{-1} v : the generic MG preconditioner if set, else `jacPre_` damped-Jacobi sweeps of
   // A z = v starting from z = 0.
   void applyPrec(const DeviceMomentumOp& op, View<double> v, View<double> z) {
-    if (mgPre_) {  // V-cycle of the Helmholtz operator (≈ the momentum operator)
-      Kokkos::deep_copy(mgPre_->b(0), v);
-      Kokkos::deep_copy(mgPre_->x(0), 0.0);
-      for (int k = 0; k < mgVcycles_; ++k) mgPre_->vcycle(2, 2, 60, 0.8);
-      Kokkos::deep_copy(z, mgPre_->x(0));
+    if (precFn_) {
+      precFn_(View<const double>(v), z);
       return;
     }
     Kokkos::deep_copy(z, 0.0);
@@ -475,8 +472,7 @@ class DeviceMomentumSolver {
   View<double> r_, rhat_, p_, phat_, v_, s_, shat_, t_, tmp_;
   int jacPre_ = 2;
   double omega_ = 0.7;
-  DeviceMomentumMG<Bits>* mgPre_ = nullptr;
-  int mgVcycles_ = 1;
+  std::function<void(View<const double>, View<double>)> precFn_;  // generic z = M^{-1} r
 };
 
 }  // namespace tpx::amr

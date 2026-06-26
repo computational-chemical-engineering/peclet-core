@@ -85,6 +85,18 @@ inline void deviceProlongAdd(View<const Index> c2p, View<const double> coarse, V
       });
 }
 
+/// Masked piecewise-constant prolong + correct: fine(i) += coarse(c2p(i)) only on non-solid fine
+/// cells (mirrors sdflow VelocityMG::prolongMasked — no correction into a cut/solid cell). Generic.
+inline void deviceProlongAddMasked(View<const Index> c2p, View<const double> coarse,
+                                   View<const char> solid, View<double> fine, Index nFine) {
+  Kokkos::parallel_for(
+      "amr::device_prolong_masked", nFine, KOKKOS_LAMBDA(const Index i) {
+        if (solid(i)) return;
+        const Index p = c2p(i);
+        if (p >= 0) fine(i) += coarse(p);
+      });
+}
+
 template <int Dim, unsigned Bits = (Dim == 2 ? 32u : (Dim == 3 ? 21u : 16u))>
 class DeviceMultigrid {
  public:

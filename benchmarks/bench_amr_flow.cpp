@@ -184,6 +184,45 @@ void velocityMgCompare(unsigned L) {
               L, (long)n, j.first, j.second, m.first, m.second, (double)j.first / m.first);
 }
 
+// Q2 head-to-head: Galerkin (DeviceMomentumMG) vs rediscretized staircase (DeviceVelocityMG) as
+// the momentum BiCGStab preconditioner — Stokes momentum iters/step to a fixed tolerance.
+void mgStrategyCompare(unsigned L) {
+  BO t = uniformFine(L);
+  const long N = 1L << L;
+  const double h0 = 1.0 / (double)N;
+  const Index n = t.numLeaves();
+  auto sdf = sphereSdf(Vec<3>{0.5, 0.5, 0.5}, 0.25);
+  auto runIt = [&](bool staircase) {
+    DeviceAmrFlow<21> dfl;
+    dfl.init(t, h0);
+    dfl.setViscosity(1.0);
+    dfl.setDt(1e6);
+    dfl.setBodyForce(1.0, 0, 0);
+    dfl.setVelocityMGStaircase(staircase);
+    dfl.setSolid(sdf);
+    double tm = 0;
+    int it = 0;
+    double um = 0;
+    for (int s = 0; s < 6; ++s) {
+      Kokkos::fence();
+      auto a = Clock::now();
+      dfl.step(400, 60);
+      Kokkos::fence();
+      tm = ms(a, Clock::now());
+      it = dfl.lastMomIters();
+    }
+    auto u = dfl.velocity(0);
+    for (Index i = 0; i < n; ++i) um += u[(std::size_t)i];
+    return std::make_tuple(it, tm, um / n);
+  };
+  auto g = runIt(false);
+  auto s = runIt(true);
+  std::printf("mgstrat L=%u cells=%8ld :  Galerkin %4d it/step %8.2f ms (Umean %.4e)  |  staircase "
+              "%4d it/step %8.2f ms (Umean %.4e)\n",
+              L, (long)n, std::get<0>(g), std::get<1>(g), std::get<2>(g), std::get<0>(s),
+              std::get<1>(s), std::get<2>(s));
+}
+
 // Device-only flow-step throughput scaling (host too slow at these sizes).
 void benchFlowDevice(unsigned L, int steps) {
   BO t = uniformFine(L);
@@ -293,6 +332,8 @@ int main(int argc, char** argv) {
     dtSweep(Ldev >= 6 ? 6 : Ldev);
     std::printf("# --- Phase 1: velocity-MG vs Jacobi-BiCGStab momentum (steady dt) ---\n");
     for (unsigned L = 5; L <= Ldev; ++L) velocityMgCompare(L);
+    std::printf("# --- Q2: Galerkin vs rediscretized staircase momentum-MG ---\n");
+    for (unsigned L = 4; L <= Ldev; ++L) mgStrategyCompare(L);
   }
   Kokkos::finalize();
   return 0;
