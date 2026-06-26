@@ -85,16 +85,24 @@ inline void deviceProlongAdd(View<const Index> c2p, View<const double> coarse, V
       });
 }
 
-/// Masked piecewise-constant prolong + correct: fine(i) += coarse(c2p(i)) only on non-solid fine
+/// Masked piecewise-constant prolong + correct: fine(i) += coarse(c2p(i)) only on non-excluded fine
 /// cells (mirrors sdflow VelocityMG::prolongMasked — no correction into a cut/solid cell). Generic.
 inline void deviceProlongAddMasked(View<const Index> c2p, View<const double> coarse,
-                                   View<const char> solid, View<double> fine, Index nFine) {
+                                   View<const char> excl, View<double> fine, Index nFine) {
   Kokkos::parallel_for(
       "amr::device_prolong_masked", nFine, KOKKOS_LAMBDA(const Index i) {
-        if (solid(i)) return;
+        if (excl(i)) return;
         const Index p = c2p(i);
         if (p >= 0) fine(i) += coarse(p);
       });
+}
+
+/// Zero `v` at excluded cells (excl != 0). Mirrors sdflow's mg_mul_mask: applied to the fine
+/// residual before restriction so the inconsistent cut-cell + solid residuals never reach the
+/// coarse grid (the clean-fluid exclude). Generic.
+inline void deviceZeroMasked(View<double> v, View<const char> excl, Index n) {
+  Kokkos::parallel_for(
+      "amr::device_zero_masked", n, KOKKOS_LAMBDA(const Index i) { if (excl(i)) v(i) = 0.0; });
 }
 
 template <int Dim, unsigned Bits = (Dim == 2 ? 32u : (Dim == 3 ? 21u : 16u))>

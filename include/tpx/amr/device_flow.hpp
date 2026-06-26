@@ -430,6 +430,11 @@ class DeviceAmrFlow {
   /// staircase (DeviceVelocityMG, mirroring sdflow's VelocityMG). Call before setSolid. Both are
   /// device-resident BiCGStab preconditioners; this lets the two be benchmarked head-to-head.
   void setVelocityMGStaircase(bool on) { useStaircaseMG_ = on; }
+  /// Pore-scale cap for the staircase velocity-MG: the coarsest level keeps ≥ this many cells, so
+  /// it still resolves the immersed feature (a small object that vanishes from the coarse κ
+  /// classification leaves an inconsistent operator that diverges). Feature-dependent — raise it
+  /// for small immersed objects. Only affects the staircase strategy.
+  void setVelocityMGMinCoarse(Index m) { mgMinCoarse_ = m; }
 
   /// Build the cut-cell operators (host) + upload all device structures. Requires the
   /// density / viscosity / dt to be set first (the momentum operator carries ρ/dt and μ).
@@ -464,12 +469,13 @@ class DeviceAmrFlow {
     if (momMGon_) {
       if (useStaircaseMG_) {
         std::vector<double> kap(static_cast<std::size_t>(n));
-        std::vector<char> fl(static_cast<std::size_t>(n));
+        std::vector<char> fl(static_cast<std::size_t>(n)), cu(static_cast<std::size_t>(n));
         for (Index i = 0; i < n; ++i) {
           kap[static_cast<std::size_t>(i)] = mom_.kappa(i);
           fl[static_cast<std::size_t>(i)] = mom_.isFluid(i) ? 1 : 0;
+          cu[static_cast<std::size_t>(i)] = mom_.isCut(i) ? 1 : 0;
         }
-        velMG_.build(*t_, h0_, rho_ / dt_, mu_, momOp_, kap, fl);
+        velMG_.build(*t_, h0_, rho_ / dt_, mu_, momOp_, kap, fl, cu, mgMinCoarse_);
       } else {
         momMG_.build(*t_, A.diag, A.start, A.nbr, A.coef);
       }
@@ -618,7 +624,7 @@ class DeviceAmrFlow {
   void runMgVcycle(MG& mg, View<const double> r, View<double> z) {
     Kokkos::deep_copy(mg.b(0), r);
     Kokkos::deep_copy(mg.x(0), 0.0);
-    mg.vcycle(2, 2, 30, 0.7);
+    mg.vcycle(mgVcPre_, mgVcPre_, mgVcBottom_, 0.7);
     Kokkos::deep_copy(z, mg.x(0));
   }
   /// Copy a device View into a host vector (sized n_).
@@ -683,6 +689,8 @@ class DeviceAmrFlow {
   bool presPCG_ = true;
   bool momMGon_ = true;        // velocity-MG momentum preconditioner (scalable; see setMomentumMG)
   bool useStaircaseMG_ = false;  // false = Galerkin (DeviceMomentumMG), true = staircase (DeviceVelocityMG)
+  int mgVcPre_ = 2, mgVcBottom_ = 30;  // momentum-MG V-cycle pre/post sweeps + bottom sweeps
+  Index mgMinCoarse_ = 256;            // staircase velocity-MG pore-scale cap (coarsest cell count)
   double momTol_ = 1e-8;  // per-step momentum BiCGStab relative tolerance (Phase-0 knob)
   bool advect_ = false;       // momentum advection ∇·(u u) (off ⇒ Stokes)
   bool implicitFou_ = true;   // implicit-FOU deferred-correction (stable) vs fully-explicit

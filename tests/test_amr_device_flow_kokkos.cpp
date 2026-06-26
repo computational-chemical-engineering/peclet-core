@@ -378,11 +378,48 @@ void test_advection() {
   }
 }
 
+// The rediscretized staircase velocity-MG (DeviceVelocityMG) must reach the same converged step as
+// the Galerkin MG on a cut geometry — validates the clean-fluid exclude mask + pore-scale cap fix.
+void test_staircase_mg() {
+  const unsigned L = 4;  // 16³
+  BO t = uniformFine(L);
+  const double h0 = 1.0 / (double)(1L << L);
+  Vec<3> c{0.5, 0.5, 0.5};
+  double rad = 0.25;
+  auto sdf = [&](const Vec<3>& p) {
+    double dx = p[0] - c[0], dy = p[1] - c[1], dz = p[2] - c[2];
+    return std::sqrt(dx * dx + dy * dy + dz * dz) - rad;
+  };
+  auto run = [&](bool staircase) {
+    DeviceAmrFlow<21> f;
+    f.init(t, h0);
+    f.setViscosity(1.0);
+    f.setDt(1e6);
+    f.setBodyForce(1.0, 0, 0);
+    f.setVelocityMGStaircase(staircase);
+    if (staircase) f.setVelocityMGMinCoarse(512);
+    f.setSolid(sdf);
+    for (int s = 0; s < 6; ++s) f.step(400, 60);
+    return f.velocity(0);
+  };
+  auto ug = run(false);  // Galerkin
+  auto us = run(true);   // staircase
+  const Index n = t.numLeaves();
+  double dmax = 0, mag = 0;
+  for (Index i = 0; i < n; ++i) {
+    dmax = std::max(dmax, std::fabs(us[(std::size_t)i] - ug[(std::size_t)i]));
+    mag = std::max(mag, std::fabs(ug[(std::size_t)i]));
+  }
+  std::printf("[flow] staircase-vs-Galerkin MG: max|stair-galerkin| = %.3e (mag %.3e)\n", dmax, mag);
+  TPX_CHECK(dmax < 1e-4 * mag);  // same converged step regardless of coarse-operator strategy
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   Kokkos::initialize(argc, argv);
   test_poiseuille();
+  test_staircase_mg();
   test_sphere();
   test_momentum_mg_option();
   test_momentum_scaling();

@@ -49,11 +49,18 @@ class DeviceVelocityMG {
   /// ρ/dt, `mu` = μ. The fine octree is coarsened uniformly (one local octree per level), as in
   /// AmrMultigrid. The fine operator is referenced (not copied); rebuild it (e.g. with the FOU)
   /// before each solve and the V-cycle picks it up.
+  /// `minCoarse` clamps the coarsening depth (sdflow's pore-scale cap): levels are dropped once a
+  /// level would have fewer than `minCoarse` cells, so the coarsest grid still resolves the
+  /// immersed feature. Coarsening below the feature scale makes a small object vanish from the
+  /// staircase classification, leaving an inconsistent coarse operator that diverges (deep
+  /// coarsening only sets the rate, not the answer — the fine smoother + exclude carry it).
   void build(const Octree& finest, double h0, double idiag, double mu, const DeviceMomentumOp& fineOp,
-             const std::vector<double>& kappa, const std::vector<char>& fluid) {
+             const std::vector<double>& kappa, const std::vector<char>& fluid,
+             const std::vector<char>& cut, Index minCoarse = 256) {
     hmg_ = std::make_unique<AmrMultigrid<3, Bits>>();
     hmg_->build(finest, h0);  // octree hierarchy + per-level AmrPoisson (periodicNeighbor etc.)
-    const std::size_t nl = hmg_->numLevels();
+    std::size_t nl = hmg_->numLevels();
+    while (nl > 1 && hmg_->op(nl - 1).octree().numLeaves() < minCoarse) --nl;  // pore-scale cap
     levels_.clear();
     levels_.resize(nl);
 
@@ -78,12 +85,17 @@ class DeviceVelocityMG {
       kap[L + 1] = std::move(ks);
     }
 
-    // Level 0: the sharp fine operator + the actual solid mask.
+    // Level 0: the sharp fine operator + the clean-fluid EXCLUDE mask (= cut OR solid). This is
+    // sdflow VelocityMG's Phase-3 fix (doc/velocity_mg_plan.md): the cut cells' D_rescale-scaled
+    // residuals and the solid cells are excluded from the coarse defect (zeroed before restriction
+    // + skipped in prolongation), so the inconsistent sharp-IBM rows never reach the coarse grid —
+    // the fine smoother owns the cut band, the coarse grid solves the clean interior. Without it the
+    // staircase V-cycle diverges at large dt.
     levels_[0].op = fineOp;
     {
-      std::vector<char> sol(fluid.size());
-      for (std::size_t i = 0; i < fluid.size(); ++i) sol[i] = fluid[i] ? 0 : 1;
-      levels_[0].solid = toDevice(sol, "vmg_solid0");
+      std::vector<char> excl(fluid.size());
+      for (std::size_t i = 0; i < fluid.size(); ++i) excl[i] = (!fluid[i] || cut[i]) ? 1 : 0;
+      levels_[0].solid = toDevice(excl, "vmg_excl0");
       allocScratch(levels_[0], static_cast<Index>(fluid.size()));
     }
     // Coarse levels: rediscretized staircase operator + classified solid mask.
@@ -111,6 +123,10 @@ class DeviceVelocityMG {
     }
     for (int s = 0; s < pre; ++s) deviceJacobiMom(lv.op, lv.x, bc, lv.tmp, omega);
     deviceResidualMom(lv.op, View<const double>(lv.x), bc, lv.res);
+    // Clean-fluid exclude: zero the residual at cut/solid cells before restriction so the
+    // inconsistent sharp-IBM cut-cell residuals never pollute the coarse defect (the fix for the
+    // large-dt staircase divergence — sdflow VelocityMG mg_mul_mask).
+    deviceZeroMasked(lv.res, View<const char>(lv.solid), lv.op.n);
     Level& cl = levels_[L + 1];
     deviceRestrict(lv.childStart, lv.childIdx, View<const double>(lv.res), cl.b, cl.op.n);
     Kokkos::deep_copy(cl.x, 0.0);

@@ -199,6 +199,7 @@ void mgStrategyCompare(unsigned L) {
     dfl.setDt(1e6);
     dfl.setBodyForce(1.0, 0, 0);
     dfl.setVelocityMGStaircase(staircase);
+    if (staircase) dfl.setVelocityMGMinCoarse(4096);  // sphere (r=0.25) resolved only to ~16³
     dfl.setSolid(sdf);
     double tm = 0;
     int it = 0;
