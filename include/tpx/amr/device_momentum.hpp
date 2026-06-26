@@ -24,8 +24,11 @@
 #ifdef TPX_HAVE_MORTON
 
 #include <cmath>
+#include <map>
+#include <vector>
 
-#include "tpx/amr/device_multigrid.hpp"  // optional Helmholtz V-cycle preconditioner
+#include "tpx/amr/block_octree.hpp"
+#include "tpx/amr/device_multigrid.hpp"  // deviceRestrict / deviceProlongAdd transfer kernels
 #include "tpx/amr/device_pcg.hpp"        // dotPlain-style primitives: axpy, zpby, negate
 #include "tpx/common/view.hpp"
 
@@ -106,6 +109,168 @@ inline void bicgPUpdate(View<double> p, View<const double> r, View<const double>
       KOKKOS_LAMBDA(const Index i) { p(i) = r(i) + beta * (p(i) - omega * v(i)); });
 }
 
+// ===========================================================================
+// DeviceMomentumMG — Galerkin geometric multigrid for the momentum operator.
+//
+// The cut-cell momentum operator carries the ξ-polynomial Dirichlet overlay and its
+// D_rescale row scaling, so a *rediscretised* coarse operator (the openness-Helmholtz
+// attempt) mismatches it and makes a poor preconditioner. Instead the coarse operators are
+// built by **Galerkin coarsening** A_c = R·A·P of the exact assembled fine CSR: R = volume
+// average over a coarse cell's children, P = piecewise-constant injection (the same transfer
+// pair the pressure MG uses). This is consistent with the fine operator by construction — it
+// inherits the cut-cell stencil and row scaling, and a coarse cell whose children are all
+// solid (identity rows) stays an identity row (ε-solid-on-coarse emerges for free). The
+// hierarchy is the uniformly-coarsened octree; the smoother is deviceJacobiMom, the residual
+// restriction / correction prolongation are the shared deviceRestrict / deviceProlongAdd.
+// Used as the momentum BiCGStab preconditioner ⇒ the iteration count stays ~flat with N.
+// ===========================================================================
+template <unsigned Bits = 21u>
+class DeviceMomentumMG {
+ public:
+  using Octree = BlockOctree<3, Bits>;
+  using M = typename Octree::M;
+  using Code = typename Octree::Code;
+
+  /// Build the Galerkin hierarchy from the finest octree + the assembled fine operator CSR
+  /// (diag + face CSR, as produced by AmrCutCell::assembleOperator).
+  void build(const Octree& finest, const std::vector<double>& diag0,
+             const std::vector<Index>& start0, const std::vector<Index>& nbr0,
+             const std::vector<double>& coef0) {
+    octs_.clear();
+    octs_.push_back(finest);
+    for (;;) {
+      Octree c = octs_.back();
+      Index merged = c.coarsenIf([](Code, unsigned) { return true; });
+      if (merged == 0 || c.numLeaves() == octs_.back().numLeaves()) break;
+      octs_.push_back(c);
+      if (c.numLeaves() == 1) break;
+    }
+    const std::size_t nl = octs_.size();
+    levels_.clear();
+    levels_.resize(nl);
+
+    std::vector<double> hdiag = diag0, hcoef = coef0;
+    std::vector<Index> hstart = start0, hnbr = nbr0;
+    uploadLevel(0, hdiag, hstart, hnbr, hcoef);
+
+    for (std::size_t L = 0; L + 1 < nl; ++L) {
+      const Octree& f = octs_[L];
+      const Octree& c = octs_[L + 1];
+      const Index nf = f.numLeaves(), nc = c.numLeaves();
+      std::vector<Index> c2p(static_cast<std::size_t>(nf));
+      std::vector<Index> cnt(static_cast<std::size_t>(nc), 0);
+      for (Index i = 0; i < nf; ++i) {
+        Code par = M::from_code(f.code(i)).ancestor(f.level(i) + 1).code();
+        Index p = c.find(par);
+        c2p[static_cast<std::size_t>(i)] = p;
+        if (p >= 0) ++cnt[static_cast<std::size_t>(p)];
+      }
+      std::vector<Index> cstart(static_cast<std::size_t>(nc) + 1, 0);
+      for (Index p = 0; p < nc; ++p)
+        cstart[static_cast<std::size_t>(p) + 1] = cstart[static_cast<std::size_t>(p)] + cnt[static_cast<std::size_t>(p)];
+      std::vector<Index> cidx(static_cast<std::size_t>(nf));
+      std::vector<Index> cur(cstart.begin(), cstart.end() - 1);
+      for (Index i = 0; i < nf; ++i) {
+        Index p = c2p[static_cast<std::size_t>(i)];
+        if (p >= 0) cidx[static_cast<std::size_t>(cur[static_cast<std::size_t>(p)]++)] = i;
+      }
+      levels_[L].c2p = toDevice(c2p, "mmg_c2p");
+      levels_[L].childStart = toDevice(cstart, "mmg_cstart");
+      levels_[L].childIdx = toDevice(cidx, "mmg_cidx");
+
+      // Galerkin A_c[p][q] = (1/n_ch[p]) Σ_{i child of p} ( A[i] entries mapped to parents ).
+      std::vector<std::map<Index, double>> acc(static_cast<std::size_t>(nc));
+      for (Index i = 0; i < nf; ++i) {
+        Index p = c2p[static_cast<std::size_t>(i)];
+        if (p < 0) continue;
+        const double w = 1.0 / static_cast<double>(cnt[static_cast<std::size_t>(p)]);
+        acc[static_cast<std::size_t>(p)][p] += w * hdiag[static_cast<std::size_t>(i)];
+        for (Index k = hstart[static_cast<std::size_t>(i)]; k < hstart[static_cast<std::size_t>(i) + 1]; ++k) {
+          Index q = c2p[static_cast<std::size_t>(hnbr[static_cast<std::size_t>(k)])];
+          if (q < 0) continue;
+          acc[static_cast<std::size_t>(p)][q] += w * hcoef[static_cast<std::size_t>(k)];
+        }
+      }
+      std::vector<double> cdiag(static_cast<std::size_t>(nc), 0.0);
+      std::vector<Index> cs(static_cast<std::size_t>(nc) + 1, 0);
+      for (Index p = 0; p < nc; ++p) {
+        int off = 0;
+        for (auto& e : acc[static_cast<std::size_t>(p)]) {
+          if (e.first == p)
+            cdiag[static_cast<std::size_t>(p)] = e.second;
+          else
+            ++off;
+        }
+        cs[static_cast<std::size_t>(p) + 1] = cs[static_cast<std::size_t>(p)] + off;
+      }
+      std::vector<Index> cn(static_cast<std::size_t>(cs[static_cast<std::size_t>(nc)]));
+      std::vector<double> ccoef(static_cast<std::size_t>(cs[static_cast<std::size_t>(nc)]));
+      for (Index p = 0; p < nc; ++p) {
+        Index k = cs[static_cast<std::size_t>(p)];
+        for (auto& e : acc[static_cast<std::size_t>(p)])
+          if (e.first != p) {
+            cn[static_cast<std::size_t>(k)] = e.first;
+            ccoef[static_cast<std::size_t>(k)] = e.second;
+            ++k;
+          }
+      }
+      uploadLevel(L + 1, cdiag, cs, cn, ccoef);
+      hdiag = cdiag;
+      hstart = cs;
+      hnbr = cn;
+      hcoef = ccoef;
+    }
+    for (auto& lv : levels_) {
+      lv.x = View<double>("mmg_x", static_cast<std::size_t>(lv.op.n));
+      lv.b = View<double>("mmg_b", static_cast<std::size_t>(lv.op.n));
+      lv.res = View<double>("mmg_res", static_cast<std::size_t>(lv.op.n));
+      lv.tmp = View<double>("mmg_tmp", static_cast<std::size_t>(lv.op.n));
+    }
+  }
+
+  /// One V-cycle on level L solving A u = b (correction scheme), Jacobi smoother.
+  void vcycle(int pre = 2, int post = 2, int bottom = 30, double omega = 0.7, std::size_t L = 0) {
+    Level& lv = levels_[L];
+    View<const double> bc(lv.b);
+    if (L + 1 == levels_.size()) {
+      for (int s = 0; s < bottom; ++s) deviceJacobiMom(lv.op, lv.x, bc, lv.tmp, omega);
+      return;
+    }
+    for (int s = 0; s < pre; ++s) deviceJacobiMom(lv.op, lv.x, bc, lv.tmp, omega);
+    deviceResidualMom(lv.op, View<const double>(lv.x), bc, lv.res);
+    Level& cl = levels_[L + 1];
+    deviceRestrict(lv.childStart, lv.childIdx, View<const double>(lv.res), cl.b, cl.op.n);
+    Kokkos::deep_copy(cl.x, 0.0);
+    vcycle(pre, post, bottom, omega, L + 1);
+    deviceProlongAdd(lv.c2p, View<const double>(cl.x), lv.x, lv.op.n);
+    for (int s = 0; s < post; ++s) deviceJacobiMom(lv.op, lv.x, bc, lv.tmp, omega);
+  }
+
+  std::size_t numLevels() const { return levels_.size(); }
+  Index numLeaves(std::size_t L = 0) const { return levels_[L].op.n; }
+  View<double> x(std::size_t L = 0) { return levels_[L].x; }
+  View<double> b(std::size_t L = 0) { return levels_[L].b; }
+  const DeviceMomentumOp& op(std::size_t L = 0) const { return levels_[L].op; }
+
+ private:
+  struct Level {
+    DeviceMomentumOp op;
+    View<double> x, b, res, tmp;
+    View<Index> c2p, childStart, childIdx;
+  };
+  void uploadLevel(std::size_t L, const std::vector<double>& diag, const std::vector<Index>& start,
+                   const std::vector<Index>& nbr, const std::vector<double>& coef) {
+    Level& lv = levels_[L];
+    lv.op.n = static_cast<Index>(diag.size());
+    lv.op.diag = toDevice(diag, "mmg_diag");
+    lv.op.faceStart = toDevice(start, "mmg_start");
+    lv.op.faceNbr = toDevice(nbr, "mmg_nbr");
+    lv.op.faceCoef = toDevice(coef, "mmg_coef");
+  }
+  std::vector<Octree> octs_;
+  std::vector<Level> levels_;
+};
+
 // ---------------------------------------------------------------------------
 // Jacobi-preconditioned BiCGStab for the (non-symmetric) momentum operator. Reuses the
 // device matvec + Kokkos reductions; the preconditioner is `jacPre` damped-Jacobi sweeps
@@ -120,13 +285,13 @@ class DeviceMomentumSolver {
     omega_ = omega;
   }
 
-  /// Use a Helmholtz DeviceMultigrid (built with setHelmholtz(idiag, −μ) on the same mesh)
-  /// as the BiCGStab preconditioner instead of damped-Jacobi sweeps. The V-cycle gives the
-  /// multigrid smooth-mode coverage Jacobi lacks, so the momentum iteration count stops
-  /// growing with N. `vcycles` V-cycles per preconditioner application. Pass nullptr to
-  /// revert to the Jacobi preconditioner. The preconditioner never changes the converged
-  /// solution (BiCGStab matvec is the exact operator) — only the iteration count.
-  void setMgPreconditioner(DeviceMultigrid<3, Bits>* mg, int vcycles = 1) {
+  /// Use a Galerkin DeviceMomentumMG (built from the same assembled operator) as the BiCGStab
+  /// preconditioner instead of damped-Jacobi sweeps. The V-cycle gives the multigrid
+  /// smooth-mode coverage Jacobi lacks, so the momentum iteration count stops growing with N.
+  /// `vcycles` V-cycles per preconditioner application. Pass nullptr to revert to Jacobi. The
+  /// preconditioner never changes the converged solution (the BiCGStab matvec is the exact
+  /// operator) — only the iteration count.
+  void setMgPreconditioner(DeviceMomentumMG<Bits>* mg, int vcycles = 1) {
     mgPre_ = mg;
     mgVcycles_ = vcycles;
   }
@@ -241,7 +406,7 @@ class DeviceMomentumSolver {
   View<double> r_, rhat_, p_, phat_, v_, s_, shat_, t_, tmp_;
   int jacPre_ = 2;
   double omega_ = 0.7;
-  DeviceMultigrid<3, Bits>* mgPre_ = nullptr;
+  DeviceMomentumMG<Bits>* mgPre_ = nullptr;
   int mgVcycles_ = 1;
 };
 

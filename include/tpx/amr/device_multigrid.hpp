@@ -107,11 +107,13 @@ class DeviceMultigrid {
   /// coarsenOpenAvg the host uses): each level's face weight is α·A/d with α the
   /// coarsened aperture, so the coarse operators stay consistent cut-cell operators.
   template <class OpenFn>
-  void build(const Octree& finest, double h0, OpenFn&& openFn, bool periodic = true) {
+  void build(const Octree& finest, double h0, OpenFn&& openFn, bool periodic = true,
+             bool immersedWall = false) {
     hmg_ = std::make_unique<AmrMultigrid<Dim, Bits>>();
     hmg_->build(finest, h0);
     hmg_->setOpenness(std::forward<OpenFn>(openFn));
-    hmg_->setPeriodic(periodic);  // non-periodic ⇒ homogeneous Dirichlet domain walls
+    hmg_->setPeriodic(periodic);          // non-periodic ⇒ homogeneous Dirichlet domain walls
+    hmg_->setImmersedWall(immersedWall);  // true ⇒ velocity operator (solid faces = no-slip walls)
     buildFromHostMg();
   }
 

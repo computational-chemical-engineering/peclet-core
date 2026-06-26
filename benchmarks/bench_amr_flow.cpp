@@ -148,6 +148,42 @@ void dtSweep(unsigned L) {
   }
 }
 
+// Velocity multigrid (Phase 1): momentum solver effort with the cut-cell-Dirichlet velocity
+// MG preconditioner (setMomentumMG) vs the default Jacobi-BiCGStab, at the steady dt. The MG
+// momentum iteration count should stay ~flat with N where Jacobi-BiCGStab grows like N^⅓.
+void velocityMgCompare(unsigned L) {
+  BO t = uniformFine(L);
+  const long N = 1L << L;
+  const double h0 = 1.0 / (double)N;
+  const Index n = t.numLeaves();
+  auto sdf = sphereSdf(Vec<3>{0.5, 0.5, 0.5}, 0.25);
+  auto runIt = [&](bool mg) {
+    DeviceAmrFlow<21> dfl;
+    dfl.init(t, h0);
+    dfl.setViscosity(1.0);
+    dfl.setDt(1e6);
+    dfl.setBodyForce(1.0, 0, 0);
+    dfl.setMomentumMG(mg);
+    dfl.setSolid(sdf);
+    double t0 = 0;
+    int it = 0;
+    for (int s = 0; s < 6; ++s) {
+      Kokkos::fence();
+      auto a = Clock::now();
+      dfl.step(400, 60);
+      Kokkos::fence();
+      t0 = ms(a, Clock::now());
+      it = dfl.lastMomIters();
+    }
+    return std::make_pair(it, t0);
+  };
+  auto j = runIt(false);
+  auto m = runIt(true);
+  std::printf("velmg L=%u cells=%8ld :  Jacobi-BiCGStab %4d it/step %8.2f ms  |  velocity-MG %4d "
+              "it/step %8.2f ms  (%.1fx fewer it)\n",
+              L, (long)n, j.first, j.second, m.first, m.second, (double)j.first / m.first);
+}
+
 // Device-only flow-step throughput scaling (host too slow at these sizes).
 void benchFlowDevice(unsigned L, int steps) {
   BO t = uniformFine(L);
@@ -255,6 +291,8 @@ int main(int argc, char** argv) {
     for (unsigned L = 5; L <= Ldev; ++L) profileFlow(L, steps);
     std::printf("# --- Diagnostic: momentum/pressure solver effort vs dt ---\n");
     dtSweep(Ldev >= 6 ? 6 : Ldev);
+    std::printf("# --- Phase 1: velocity-MG vs Jacobi-BiCGStab momentum (steady dt) ---\n");
+    for (unsigned L = 5; L <= Ldev; ++L) velocityMgCompare(L);
   }
   Kokkos::finalize();
   return 0;

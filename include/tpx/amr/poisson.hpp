@@ -111,21 +111,37 @@ class AmrPoisson {
   void setPeriodic(bool p) { periodic_ = p; }
   bool periodic() const { return periodic_; }
 
-  /// Σ over leaf `i`'s domain-boundary faces of the Dirichlet wall weight
-  /// α · A_f/(½·cellWidth) (0 if periodic). Folded into the operator diagonal so a
-  /// boundary cell sees a u=0 wall at half a cell — making the operator non-singular.
+  /// Immersed no-slip (Dirichlet) wall mode. OFF (default) ⇒ the Neumann/openness operator
+  /// (the pressure Poisson): a solid-adjacent face just loses its flux (α<1). ON ⇒ the
+  /// *velocity* operator: the solid fraction (1−α) of every interior face is a u=0 wall at
+  /// half a cell, folded into the diagonal (`boundaryDiag`). This is the one difference
+  /// between the pressure and velocity discretisations on the same openness geometry, and it
+  /// makes the velocity operator strongly diagonally dominant (the wall pins u) — the basis
+  /// for the velocity multigrid (DeviceMultigrid built with immersedWall + Helmholtz mass).
+  void setImmersedWall(bool w) { immersedWall_ = w; }
+  bool immersedWall() const { return immersedWall_; }
+
+  /// Σ over leaf `i`'s Dirichlet-wall faces of the wall weight A_f/(½·cellWidth), folded
+  /// into the operator diagonal so a wall cell sees a u=0 wall at half a cell (making the
+  /// operator non-singular). Two contributions: domain-boundary faces weighted by α (only
+  /// when non-periodic), and — when `immersedWall_` — the solid fraction (1−α) of every
+  /// interior face (the immersed no-slip wall of the velocity operator).
   double boundaryDiag(Index i) const {
-    if (periodic_) return 0.0;
+    if (periodic_ && !immersedWall_) return 0.0;
     auto b = t_->bounds(i);
     const auto& lo = b[0];
     const Coord si = Coord(Coord(1) << t_->level(i));
+    const double wall = areaOf(si) / (0.5 * static_cast<Real>(si) * h0_);
     double s = 0.0;
     for (int axis = 0; axis < Dim; ++axis)
       for (int dir = -1; dir <= 1; dir += 2) {
         const long pc = (dir > 0) ? static_cast<long>(lo[axis]) + static_cast<long>(si)
                                   : static_cast<long>(lo[axis]) - 1;
-        if (pc < 0 || pc >= static_cast<long>(fineExt_[axis]))
-          s += faceOpenness(i, axis, dir) * areaOf(si) / (0.5 * static_cast<Real>(si) * h0_);
+        const bool domainBoundary = !periodic_ && (pc < 0 || pc >= static_cast<long>(fineExt_[axis]));
+        if (domainBoundary)
+          s += faceOpenness(i, axis, dir) * wall;  // domain Dirichlet wall (open part)
+        else if (immersedWall_)
+          s += (1.0 - faceOpenness(i, axis, dir)) * wall;  // immersed no-slip wall (solid part)
       }
     return s;
   }
@@ -403,6 +419,7 @@ class AmrPoisson {
   std::vector<double> alpha_;  // per-leaf per-face openness (kFaces per leaf), or empty
   bool hasOpen_ = false;
   bool periodic_ = true;  // false ⇒ homogeneous Dirichlet domain walls (boundaryDiag)
+  bool immersedWall_ = false;  // true ⇒ velocity operator: (1−α) interior faces are no-slip walls
 };
 
 /// Geometric multigrid for AmrPoisson over a uniformly-coarsened octree hierarchy.
@@ -449,6 +466,13 @@ class AmrMultigrid {
   /// homogeneous Dirichlet). Call after build().
   void setPeriodic(bool p) {
     for (auto& o : ops_) o.setPeriodic(p);
+  }
+
+  /// Enable the immersed no-slip (Dirichlet) wall on every level — the velocity operator.
+  /// Call after setOpenness() (the wall is derived per level from that level's coarsened
+  /// aperture, so it is consistent down the hierarchy). Call after build().
+  void setImmersedWall(bool w) {
+    for (auto& o : ops_) o.setImmersedWall(w);
   }
 
   /// One V-cycle on level L solving L u = rhs (correction scheme).
