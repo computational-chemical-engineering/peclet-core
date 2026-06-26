@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "tpx/amr/block_octree.hpp"
+#include "tpx/amr/face_csr.hpp"  // shared host+device assembled-operator row kernels
 #include "tpx/amr/leaf_field.hpp"
 #include "tpx/amr/poisson.hpp"
 #include "tpx/common/types.hpp"
@@ -212,9 +213,72 @@ class AmrCutCell {
     return A;
   }
 
+  // ---- Runtime operator: the assembled CSR applied with the SHARED face_csr.hpp row kernels — the
+  // exact same arithmetic the device runs (device_momentum.hpp), executed serially here. assembleOperator
+  // folds the implicit-FOU advection into the single CSR, so the FaceCsrOpT view sets hasAdv=false. The
+  // *Geometric variants above are the independent reference the oracle tests check this against.
+
+  /// View a host Assembled as a backend-agnostic FaceCsrOpT for the shared row kernels.
+  FaceCsrOpT<HostArr<double>, HostArr<Index>> hostOp(const Assembled& A) const {
+    FaceCsrOpT<HostArr<double>, HostArr<Index>> v;
+    v.n = numLeaves();
+    v.diag = HostArr<double>(A.diag.data());
+    v.coef = HostArr<double>(A.coef.data());
+    v.start = HostArr<Index>(A.start.data());
+    v.nbr = HostArr<Index>(A.nbr.data());
+    v.hasAdv = false;  // advection already folded into the single CSR by assembleOperator
+    return v;
+  }
+
+  /// out = A u, via the shared kernel over the assembled CSR (== device deviceApplyMom arithmetic).
+  void applyOp(const std::vector<double>& u, std::vector<double>& out) const {
+    const Assembled A = assembleOperator();
+    const auto op = hostOp(A);
+    const Index n = numLeaves();
+    out.assign(static_cast<std::size_t>(n), 0.0);
+    const HostArr<double> uacc(u.data());
+    for (Index i = 0; i < n; ++i) out[static_cast<std::size_t>(i)] = faceCsrApplyRow(op, i, uacc);
+  }
+
+  double residual(const std::vector<double>& u, const std::vector<double>& b,
+                  std::vector<double>& res) const {
+    const Assembled A = assembleOperator();
+    const auto op = hostOp(A);
+    const Index n = numLeaves();
+    res.assign(static_cast<std::size_t>(n), 0.0);
+    const HostArr<double> uacc(u.data());
+    double s = 0.0;
+    for (Index i = 0; i < n; ++i) {
+      double r = b[static_cast<std::size_t>(i)] - faceCsrApplyRow(op, i, uacc);
+      res[static_cast<std::size_t>(i)] = r;
+      if (fluid_[static_cast<std::size_t>(i)]) s += r * r;
+    }
+    return std::sqrt(s);
+  }
+
+  /// `sweeps` true serial Gauss–Seidel sweeps (ω=1, in place) over the assembled CSR using the shared
+  /// point-update kernel — the host counterpart of the device multicolour GS, same per-cell formula.
+  void gaussSeidel(std::vector<double>& u, const std::vector<double>& b, int sweeps) const {
+    const Assembled A = assembleOperator();
+    const auto op = hostOp(A);
+    const Index n = numLeaves();
+    const HostArr<double> uacc(u.data());
+    for (int s = 0; s < sweeps; ++s)
+      for (Index i = 0; i < n; ++i) {
+        double off, d;
+        faceCsrOffDiag(op, i, uacc, off, d);
+        u[static_cast<std::size_t>(i)] =
+            faceCsrPointUpdate(b[static_cast<std::size_t>(i)], off, d, u[static_cast<std::size_t>(i)], 1.0);
+      }
+  }
+
+  /// Geometric operator apply (walks the octree live) — the INDEPENDENT reference encoding, kept as
+  /// the test oracle for the assembled CSR (and hence the device kernels). The runtime `applyOp`
+  /// below routes through the shared face_csr.hpp kernels instead, so host and device run identical
+  /// arithmetic; `test_amr_cut_cell` asserts the two agree.
   /// out = A u. A = idiag·I − μ∇² (C/F-aware) on regular fluid cells; the ξ-overlay
   /// stencil on cut cells (finest, same-level); identity on solid cells (held at u_bc).
-  void applyOp(const std::vector<double>& u, std::vector<double>& out) const {
+  void applyOpGeometric(const std::vector<double>& u, std::vector<double>& out) const {
     const Index n = numLeaves();
     out.assign(static_cast<std::size_t>(n), 0.0);
     std::vector<double> Lu;
@@ -302,9 +366,9 @@ class AmrCutCell {
     return b;
   }
 
-  double residual(const std::vector<double>& u, const std::vector<double>& b,
-                  std::vector<double>& res) const {
-    applyOp(u, res);
+  double residualGeometric(const std::vector<double>& u, const std::vector<double>& b,
+                           std::vector<double>& res) const {
+    applyOpGeometric(u, res);
     double s = 0.0;
     const Index n = numLeaves();
     for (Index i = 0; i < n; ++i) {
@@ -315,7 +379,7 @@ class AmrCutCell {
     return std::sqrt(s);
   }
 
-  void gaussSeidel(std::vector<double>& u, const std::vector<double>& b, int sweeps) const {
+  void gaussSeidelGeometric(std::vector<double>& u, const std::vector<double>& b, int sweeps) const {
     const Index n = numLeaves();
     for (int s = 0; s < sweeps; ++s)
       for (Index i = 0; i < n; ++i) {

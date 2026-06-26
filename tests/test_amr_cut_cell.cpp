@@ -66,6 +66,23 @@ Result solveSphere(unsigned L) {
     src[static_cast<std::size_t>(i)] = 6.0 * h0 * h0;  // A u = -h^2 f, f = lap u = -6
   }
   std::vector<double> b = cc.makeRhs(src, /*u_bc=*/0.0);
+
+  // Anti-drift lock: the runtime operator (shared face_csr.hpp kernel over the assembled CSR — the
+  // SAME arithmetic the device runs) must reproduce the independent geometric reference. Validates the
+  // shared kernel in the pure-C++ (no-Kokkos) build.
+  {
+    std::vector<double> ag, ac;
+    cc.applyOpGeometric(uex, ag);
+    cc.applyOp(uex, ac);
+    double de = 0, mg = 0;
+    for (Index i = 0; i < n; ++i) {
+      de = std::max(de, std::fabs(ag[static_cast<std::size_t>(i)] - ac[static_cast<std::size_t>(i)]));
+      mg = std::max(mg, std::fabs(ag[static_cast<std::size_t>(i)]));
+    }
+    std::printf("[cut] shared-CSR vs geometric applyOp: max|Δ| = %.3e (mag %.3e)\n", de, mg);
+    TPX_CHECK(de < 1e-12 * (1.0 + mg));
+  }
+
   std::vector<double> u(static_cast<std::size_t>(n), 0.0), res;
   double r0 = cc.residual(u, b, res), r = r0;
   for (int it = 0; it < 200000; ++it) {

@@ -31,6 +31,7 @@
 #include "tpx/amr/block_octree.hpp"
 #include "tpx/amr/device_multigrid.hpp"  // deviceRestrict / deviceProlongAdd transfer kernels
 #include "tpx/amr/device_pcg.hpp"        // dotPlain-style primitives: axpy, zpby, negate
+#include "tpx/amr/face_csr.hpp"          // shared host+device assembled-operator row kernels
 #include "tpx/common/view.hpp"
 
 namespace tpx::amr {
@@ -53,75 +54,51 @@ struct DeviceMomentumOp {
   View<double> advCoef;   ///< per-face inflow advection coefficient (0 on outflow/solid faces)
 };
 
+/// View the assembled momentum operator through the shared, backend-agnostic FaceCsrOpT, so the
+/// device kernels and the host serial solver (cut_cell.hpp) run the *same* row arithmetic
+/// (face_csr.hpp) and cannot drift. Non-const Views convert to their const accessor form implicitly;
+/// the advection arrays are empty (and untouched) when hasAdv is false.
+inline FaceCsrOpT<View<const double>, View<const Index>> momView(const DeviceMomentumOp& op) {
+  FaceCsrOpT<View<const double>, View<const Index>> v;
+  v.n = op.n;
+  v.diag = op.diag;
+  v.coef = op.faceCoef;
+  v.start = op.faceStart;
+  v.nbr = op.faceNbr;
+  v.hasAdv = op.hasAdv;
+  v.advDiag = op.advDiag;
+  v.advCoef = op.advCoef;
+  v.advStart = op.advStart;
+  v.advNbr = op.advNbr;
+  return v;
+}
+
 /// Au = A u (cut-cell operator + optional implicit-FOU advection).
 inline void deviceApplyMom(const DeviceMomentumOp& op, View<const double> u, View<double> Au) {
-  auto diag = op.diag;
-  auto fs = op.faceStart;
-  auto fn = op.faceNbr;
-  auto fc = op.faceCoef;
-  const bool hasAdv = op.hasAdv;
-  auto ad = op.advDiag;
-  auto as = op.advStart;
-  auto an = op.advNbr;
-  auto ac = op.advCoef;
+  const auto A = momView(op);
   Kokkos::parallel_for(
-      "amr::mom_apply", op.n, KOKKOS_LAMBDA(const Index i) {
-        double acc = diag(i) * u(i);
-        for (Index k = fs(i); k < fs(i + 1); ++k) acc += fc(k) * u(fn(k));
-        if (hasAdv) {
-          acc += ad(i) * u(i);
-          for (Index k = as(i); k < as(i + 1); ++k) acc += ac(k) * u(an(k));
-        }
-        Au(i) = acc;
-      });
+      "amr::mom_apply", op.n,
+      KOKKOS_LAMBDA(const Index i) { Au(i) = faceCsrApplyRow(A, i, u); });
 }
 
 /// res = b − A u.
 inline void deviceResidualMom(const DeviceMomentumOp& op, View<const double> u,
                               View<const double> b, View<double> res) {
-  auto diag = op.diag;
-  auto fs = op.faceStart;
-  auto fn = op.faceNbr;
-  auto fc = op.faceCoef;
-  const bool hasAdv = op.hasAdv;
-  auto ad = op.advDiag;
-  auto as = op.advStart;
-  auto an = op.advNbr;
-  auto ac = op.advCoef;
+  const auto A = momView(op);
   Kokkos::parallel_for(
-      "amr::mom_residual", op.n, KOKKOS_LAMBDA(const Index i) {
-        double acc = diag(i) * u(i);
-        for (Index k = fs(i); k < fs(i + 1); ++k) acc += fc(k) * u(fn(k));
-        if (hasAdv) {
-          acc += ad(i) * u(i);
-          for (Index k = as(i); k < as(i + 1); ++k) acc += ac(k) * u(an(k));
-        }
-        res(i) = b(i) - acc;
-      });
+      "amr::mom_residual", op.n,
+      KOKKOS_LAMBDA(const Index i) { res(i) = b(i) - faceCsrApplyRow(A, i, u); });
 }
 
 /// One weighted-Jacobi sweep of A u = b (in place). `tmp` is scratch (size n). Pass 1
 /// reads only the previous iterate, pass 2 updates ⇒ order-independent / deterministic.
 inline void deviceJacobiMom(const DeviceMomentumOp& op, View<double> u, View<const double> b,
                             View<double> tmp, double omega) {
-  auto diag = op.diag;
-  auto fs = op.faceStart;
-  auto fn = op.faceNbr;
-  auto fc = op.faceCoef;
-  const bool hasAdv = op.hasAdv;
-  auto ad = op.advDiag;
-  auto as = op.advStart;
-  auto an = op.advNbr;
-  auto ac = op.advCoef;
+  const auto A = momView(op);
   Kokkos::parallel_for(
       "amr::mom_jacobi_compute", op.n, KOKKOS_LAMBDA(const Index i) {
-        double off = 0.0;
-        for (Index k = fs(i); k < fs(i + 1); ++k) off += fc(k) * u(fn(k));
-        double d = diag(i);
-        if (hasAdv) {
-          for (Index k = as(i); k < as(i + 1); ++k) off += ac(k) * u(an(k));
-          d += ad(i);
-        }
+        double off, d;
+        faceCsrOffDiag(A, i, u, off, d);
         tmp(i) = (d != 0.0) ? (b(i) - off) / d : u(i);
       });
   Kokkos::parallel_for(
@@ -239,15 +216,7 @@ inline Coloring greedyColoring(const std::vector<Index>& start, const std::vecto
 /// robust — the textbook remedy, and the behaviour sdflow gets from its RB-GS / MG-as-solver path.
 inline void deviceMulticolorGSMom(const DeviceMomentumOp& op, View<double> u, View<const double> b,
                                   const Coloring& col, double omega) {
-  auto diag = op.diag;
-  auto fs = op.faceStart;
-  auto fn = op.faceNbr;
-  auto fc = op.faceCoef;
-  const bool hasAdv = op.hasAdv;
-  auto ad = op.advDiag;
-  auto as = op.advStart;
-  auto an = op.advNbr;
-  auto ac = op.advCoef;
+  const auto A = momView(op);
   auto idx = col.idx;
   auto colorPass = [&](int c) {
     const Index a0 = col.hStart[static_cast<std::size_t>(c)];
@@ -255,15 +224,9 @@ inline void deviceMulticolorGSMom(const DeviceMomentumOp& op, View<double> u, Vi
     Kokkos::parallel_for(
         "amr::gs_mom", Kokkos::RangePolicy<ExecSpace>(a0, a1), KOKKOS_LAMBDA(const Index k) {
           const Index i = idx(k);
-          double off = 0.0;
-          for (Index t = fs(i); t < fs(i + 1); ++t) off += fc(t) * u(fn(t));
-          double d = diag(i);
-          if (hasAdv) {
-            for (Index t = as(i); t < as(i + 1); ++t) off += ac(t) * u(an(t));
-            d += ad(i);
-          }
-          const double nu = (d != 0.0) ? (b(i) - off) / d : u(i);
-          u(i) = (1.0 - omega) * u(i) + omega * nu;
+          double off, d;
+          faceCsrOffDiag(A, i, u, off, d);
+          u(i) = faceCsrPointUpdate(b(i), off, d, u(i), omega);
         });
   };
   for (int c = 0; c < col.nColors; ++c) colorPass(c);             // forward

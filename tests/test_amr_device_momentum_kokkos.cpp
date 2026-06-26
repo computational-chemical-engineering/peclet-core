@@ -101,13 +101,13 @@ void run() {
     deviceApplyMom(op, View<const double>(du), dAu);
     auto devAu = getDev(dAu, n);
     std::vector<double> hostAu;
-    cc.applyOp(u, hostAu);
+    cc.applyOpGeometric(u, hostAu);  // INDEPENDENT geometric reference (not the shared CSR path)
     double e = 0, mag = 0;
     for (Index i = 0; i < n; ++i) {
       e = std::max(e, std::fabs(devAu[(std::size_t)i] - hostAu[(std::size_t)i]));
       mag = std::max(mag, std::fabs(hostAu[(std::size_t)i]));
     }
-    std::printf("[mom] matvec max|dev-host| = %.3e (mag %.3e)\n", e, mag);
+    std::printf("[mom] matvec max|dev-host(geometric)| = %.3e (mag %.3e)\n", e, mag);
     TPX_CHECK(e < 1e-10 * (1.0 + mag));
   }
 
