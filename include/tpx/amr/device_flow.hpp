@@ -27,6 +27,7 @@
 #include <cstdlib>
 #include <vector>
 
+#include "tpx/amr/advect_recon.hpp"  // shared high-order face reconstruction (host+device)
 #include "tpx/amr/block_octree.hpp"
 #include "tpx/amr/cut_cell.hpp"
 #include "tpx/amr/device_momentum.hpp"
@@ -292,15 +293,7 @@ inline void deviceDeferredSou(const DeviceFaceGeom& g, View<const double> u0, Vi
           const double phiUp = fld(up);
           const double phiUpUp = (upup >= 0 && fl(upup)) ? fld(upup) : phiUp;
           const double phiDown = fld(down);
-          double phiFace;
-          if (advScheme == 0) {
-            phiFace = 1.5 * phiUp - 0.5 * phiUpUp;  // SOU
-          } else {
-            const double den = phiDown - phiUp;
-            const double r = (Kokkos::fabs(den) < 1e-10) ? 0.0 : (phiUp - phiUpUp) / den;
-            const double psi = Kokkos::fmax(0.0, Kokkos::fmin(2.0 * r, Kokkos::fmin((1.0 + 2.0 * r) / 3.0, 2.0)));
-            phiFace = phiUp + 0.5 * psi * den;  // Koren TVD
-          }
+          const double phiFace = hoFaceValue(phiUpUp, phiUp, phiDown, advScheme);  // shared recon
           sou += ra(k) * velOut * phiFace;
           fou += ra(k) * velOut * fld(up);  // FOU flux = velOut · upwind value
         }
@@ -343,15 +336,7 @@ inline void deviceAdvectExplicit(const DeviceFaceGeom& g, View<const double> u0,
           const double phiUp = fld(up);
           const double phiUpUp = (upup >= 0 && fl(upup)) ? fld(upup) : phiUp;
           const double phiDown = fld(down);
-          double phiFace;
-          if (advScheme == 0) {
-            phiFace = 1.5 * phiUp - 0.5 * phiUpUp;
-          } else {
-            const double den = phiDown - phiUp;
-            const double r = (Kokkos::fabs(den) < 1e-10) ? 0.0 : (phiUp - phiUpUp) / den;
-            const double psi = Kokkos::fmax(0.0, Kokkos::fmin(2.0 * r, Kokkos::fmin((1.0 + 2.0 * r) / 3.0, 2.0)));
-            phiFace = phiUp + 0.5 * psi * den;
-          }
+          const double phiFace = hoFaceValue(phiUpUp, phiUp, phiDown, advScheme);  // shared recon
           sou += ra(k) * velOut * phiFace;
         }
         defc(i) = rho * sou * iv(i);  // ρ·SOU (fully explicit)

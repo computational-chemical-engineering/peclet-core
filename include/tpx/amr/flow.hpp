@@ -39,6 +39,7 @@
 #include <cmath>
 #include <vector>
 
+#include "tpx/amr/advect_recon.hpp"  // shared high-order face reconstruction (host+device)
 #include "tpx/amr/block_octree.hpp"
 #include "tpx/amr/cut_cell.hpp"
 #include "tpx/amr/poisson.hpp"
@@ -198,14 +199,9 @@ class AmrFlow {
   static double tvd(double LL, double L, double R, double RR, double vel) {
     return (vel > 0.0) ? koren(LL, L, R, vel) : koren(RR, R, L, vel);
   }
-  // High-order face value from the two upwind cells (upup,up) and the downwind cell
-  // (down): SOU = 1.5·up − 0.5·upup (default); Koren TVD via the limiter (advScheme_).
+  // High-order face value: the SHARED reconstruction (advect_recon.hpp) the device runs too.
   double hoFace(double upup, double up, double down) const {
-    if (advScheme_ == 0) return 1.5 * up - 0.5 * upup;  // SOU
-    double den = down - up;
-    double r = (std::fabs(den) < 1e-10) ? 0.0 : (up - upup) / den;
-    double psi = std::fmax(0.0, std::fmin(2.0 * r, std::fmin((1.0 + 2.0 * r) / 3.0, 2.0)));
-    return up + 0.5 * psi * den;  // Koren TVD
+    return hoFaceValue(upup, up, down, advScheme_);
   }
 
   // C/F-consistent high-order advection ∇·(u u_comp) at leaf i: per (sub)face (via
