@@ -121,6 +121,13 @@ class DeviceMultigrid {
   /// volume-average. Experimental — validate with the comparison test before relying on it.
   void setKappaRestrict(bool on) { kappaRestrict_ = on; }
 
+  /// Opt-in (default off): project the correction to mean-zero over fluid cells at every V-cycle
+  /// level — the singular (periodic pure-Neumann) nullspace removal, mirroring sdflow
+  /// CutcellMG::vcycle. Needed when the V-cycle is the MG-PCG preconditioner for a singular
+  /// operator (otherwise the cycle drifts / amplifies a near-nullspace mode and the projection
+  /// blows up under large transient divergence). The bit-exact-vs-host MG test keeps this OFF.
+  void setRemoveMean(bool on) { removeMean_ = on; }
+
   /// Turn every level's operator into the Helmholtz form H = c0·I + cD·L (default c0=0,
   /// cD=1 ⇒ the pure Laplacian L). With c0=idiag, cD=−μ the hierarchy represents the
   /// momentum operator idiag·I − μ∇² and (being non-singular for c0≠0) is an effective
@@ -150,6 +157,7 @@ class DeviceMultigrid {
     View<const double> bc(lv.b);
     if (L + 1 == levels_.size()) {
       for (int s = 0; s < bottom; ++s) deviceJacobiFv(lv.op, lv.x, bc, lv.tmp, omega);
+      if (removeMean_) deviceRemoveMeanFv(lv.op, lv.x);
       return;
     }
     for (int s = 0; s < pre; ++s) deviceJacobiFv(lv.op, lv.x, bc, lv.tmp, omega);
@@ -164,6 +172,7 @@ class DeviceMultigrid {
     vcycle(pre, post, bottom, omega, L + 1);
     deviceProlongAdd(lv.c2p, View<const double>(cl.x), lv.x, lv.n);
     for (int s = 0; s < post; ++s) deviceJacobiFv(lv.op, lv.x, bc, lv.tmp, omega);
+    if (removeMean_) deviceRemoveMeanFv(lv.op, lv.x);
   }
 
   /// Solve L_quad u = rhs (the 2nd-order graded operator) by deferred correction:
@@ -379,6 +388,7 @@ class DeviceMultigrid {
   std::unique_ptr<AmrMultigrid<Dim, Bits>> hmg_;
   std::vector<Level> levels_;
   bool kappaRestrict_ = false;  // default: plain volume-average restriction
+  bool removeMean_ = false;     // default off; per-level nullspace projection for singular MG-PCG
   View<Index> qStart_, qSlot_;  // finest-level quadratic correction CSR
   View<double> qCoef_;
   View<double> dq_, b0true_;  // finest-level deferred-correction scratch

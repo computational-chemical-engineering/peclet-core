@@ -165,6 +165,43 @@ inline void deviceJacobiFv(const DeviceFvOp& op, View<double> u, View<const doub
       KOKKOS_LAMBDA(const Index i) { u(i) = (1.0 - omega) * u(i) + omega * tmp(i); });
 }
 
+/// Project `u` to volume-weighted-mean-zero over the ACTIVE (fluid) cells of the operator —
+/// the constant-nullspace removal for the singular periodic (pure-Neumann) operator. A cell is
+/// active when its diagonal (Σw + bc) > 0; fully-closed (solid) cells are excluded. Mirrors
+/// sdflow CutcellMG::removeMean (sum over cells with AC > 1e-30). Applied at every V-cycle level
+/// so the multigrid preconditioner does not drift / amplify the nullspace.
+inline void deviceRemoveMeanFv(const DeviceFvOp& op, View<double> u) {
+  auto invVol = op.invVol;
+  auto fs = op.faceStart;
+  auto fw = op.faceW;
+  auto bc = op.bcDiag;
+  double sx = 0.0, sv = 0.0;
+  Kokkos::parallel_reduce(
+      "amr::fv_rmean_num", op.n,
+      KOKKOS_LAMBDA(const Index i, double& a) {
+        double d = bc(i);
+        for (Index k = fs(i); k < fs(i + 1); ++k) d += fw(k);
+        if (d > 1e-30) a += u(i) / invVol(i);  // V_i = 1/invVol_i
+      },
+      sx);
+  Kokkos::parallel_reduce(
+      "amr::fv_rmean_den", op.n,
+      KOKKOS_LAMBDA(const Index i, double& a) {
+        double d = bc(i);
+        for (Index k = fs(i); k < fs(i + 1); ++k) d += fw(k);
+        if (d > 1e-30) a += 1.0 / invVol(i);
+      },
+      sv);
+  if (sv <= 0.0) return;
+  const double m = sx / sv;
+  Kokkos::parallel_for(
+      "amr::fv_rmean_sub", op.n, KOKKOS_LAMBDA(const Index i) {
+        double d = bc(i);
+        for (Index k = fs(i); k < fs(i + 1); ++k) d += fw(k);
+        if (d > 1e-30) u(i) -= m;
+      });
+}
+
 /// dq = (L_quad − L_std) u, the quadratic coarse-fine correction as its own SpMV
 /// over a precomputed CSR (built from AmrPoisson::coarseStar). Used for deferred
 /// correction: solve L_std u = rhs − dq with dq lagged ⇒ 2nd-order at 2:1 faces.

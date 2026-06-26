@@ -388,6 +388,7 @@ class DeviceAmrFlow {
     auto openFn = [&](const Vec<3>& fc, int axis) { return faceFrac(sdfFn, fc, axis); };
     pres_.buildOpenness(openFn);
     presMG_.build(*t_, h0_, openFn, /*periodic=*/true);
+    presMG_.setRemoveMean(true);  // singular periodic pressure: per-level nullspace projection
 
     // Device upload: momentum operator CSR, face geometry, rscale, fluid flags.
     auto A = mom_.assembleOperator();
@@ -497,11 +498,13 @@ class DeviceAmrFlow {
     deviceDivergence(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
                      View<const double>(u_[2]), div_);
     Kokkos::deep_copy(phi_, 0.0);
-    // Advection (transient NS) uses the stationary V-cycle, not MG-PCG: the large per-step
-    // divergence of a far-from-steady field excites a near-nullspace mode of the cut-cell
-    // openness Poisson (a near-disconnected fluid pocket) that CG amplifies (the global
-    // mean-removal only deflates the constant), blowing the projection up; the V-cycle is
-    // bounded. Stokes (compatible, near-steady divergence) keeps the faster MG-PCG.
+    // Two selectable pressure drivers, like sdflow's CutcellMG (MG-PCG single-rank default,
+    // standalone V-cycle the robust multi-rank default): MG-PCG for the near-steady, divergence-
+    // compatible Stokes case (faster), and the stationary V-cycle for the large transient
+    // divergence of advection, which excites near-nullspace modes of the cut-cell openness Poisson
+    // (near-isolated fluid cells) that CG amplifies — the V-cycle is bounded. (Per-level mean
+    // removal is on for both; making MG-PCG robust enough to also cover advection needs sdflow's
+    // near-isolated-cell pinning/classification — a follow-up.)
     if (presPCG_ && !advect_) {
       lastPresIters_ = pcg_.solve(presMG_, phi_, View<const double>(div_), presIters, 1e-10).iters;
     } else {
