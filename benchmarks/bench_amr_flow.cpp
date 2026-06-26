@@ -122,6 +122,32 @@ void profileFlow(unsigned L, int steps) {
               L, (long)n, momMs / steps, momIt, presMs / steps, presIt);
 }
 
+// Diagnostic: how the per-step momentum vs pressure solver effort depends on dt. The
+// momentum operator is (ρ/dt)I − μ∇²; large dt ⇒ the mass term vanishes ⇒ it degrades to a
+// bare elliptic Laplacian (as hard as the pressure Poisson, but solved without multigrid).
+void dtSweep(unsigned L) {
+  BO t = uniformFine(L);
+  const long N = 1L << L;
+  const double h0 = 1.0 / (double)N;
+  const Index n = t.numLeaves();
+  auto sdf = sphereSdf(Vec<3>{0.5, 0.5, 0.5}, 0.25);
+  const double rho = 1.0, mu = 1.0;
+  const double dtVisc = rho * h0 * h0 / mu;  // viscous-stability scale (idiag ~ diffusion)
+  for (double dt : {dtVisc, 100 * dtVisc, 1e4 * dtVisc, 1e6}) {
+    DeviceAmrFlow<21> dfl;
+    dfl.init(t, h0);
+    dfl.setViscosity(mu);
+    dfl.setDensity(rho);
+    dfl.setDt(dt);
+    dfl.setBodyForce(1.0, 0, 0);
+    dfl.setSolid(sdf);
+    for (int s = 0; s < 4; ++s) dfl.step(400, 60);  // measure per-step solver effort
+    std::printf("dt    L=%u  dt=%9.2e (idiag=ρ/dt=%9.2e, μ/h²=%9.2e) :  momentum %4d it/step  "
+                "pressure %3d it/step\n",
+                L, dt, rho / dt, mu / (h0 * h0), dfl.lastMomIters(), dfl.lastPresIters());
+  }
+}
+
 // Device-only flow-step throughput scaling (host too slow at these sizes).
 void benchFlowDevice(unsigned L, int steps) {
   BO t = uniformFine(L);
@@ -227,6 +253,8 @@ int main(int argc, char** argv) {
     for (unsigned L = 4; L <= Ldev; ++L) benchFlowDevice(L, steps);
     std::printf("# --- Flow: momentum-vs-pressure profile ---\n");
     for (unsigned L = 5; L <= Ldev; ++L) profileFlow(L, steps);
+    std::printf("# --- Diagnostic: momentum/pressure solver effort vs dt ---\n");
+    dtSweep(Ldev >= 6 ? 6 : Ldev);
   }
   Kokkos::finalize();
   return 0;
