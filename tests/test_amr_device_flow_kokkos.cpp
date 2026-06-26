@@ -187,6 +187,36 @@ void test_momentum_mg_option() {
   TPX_CHECK(dmax < 1e-3 * mag);  // same converged step regardless of preconditioner
 }
 
+// Phase 2 scalability guard: with the Galerkin velocity multigrid the per-step momentum
+// BiCGStab iteration count must stay ~flat as the grid refines (multigrid), not grow like
+// the unpreconditioned ~N^⅓. Refining 16³→32³ (8× cells) the Jacobi path roughly doubles;
+// the velocity-MG path must grow only mildly and stay well bounded.
+void test_momentum_scaling() {
+  auto momIters = [](unsigned L) {
+    BO t = uniformFine(L);
+    const double h0 = 1.0 / (double)(1L << L);
+    Vec<3> c{0.5, 0.5, 0.5};
+    double rad = 0.25;
+    auto sdf = [&](const Vec<3>& p) {
+      double dx = p[0] - c[0], dy = p[1] - c[1], dz = p[2] - c[2];
+      return std::sqrt(dx * dx + dy * dy + dz * dz) - rad;
+    };
+    DeviceAmrFlow<21> f;
+    f.init(t, h0);
+    f.setViscosity(1.0);
+    f.setDt(1e6);
+    f.setBodyForce(1.0, 0, 0);
+    f.setSolid(sdf);  // momentum MG on by default
+    for (int s = 0; s < 4; ++s) f.step(400, 60);
+    return f.lastMomIters();
+  };
+  int m4 = momIters(4), m5 = momIters(5);  // 16³, 32³
+  std::printf("[flow] velocity-MG momentum iters: 16³=%d  32³=%d  (ratio %.2f)\n", m4, m5,
+              (double)m5 / std::max(1, m4));
+  TPX_CHECK(m5 < 2 * m4);  // near-flat (multigrid) — would ~double without it
+  TPX_CHECK(m5 < 150);     // absolute bound (3 components × a few dozen MG-accelerated iters)
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -194,6 +224,7 @@ int main(int argc, char** argv) {
   test_poiseuille();
   test_sphere();
   test_momentum_mg_option();
+  test_momentum_scaling();
   Kokkos::finalize();
   TPX_RETURN_TEST_RESULT();
 }
