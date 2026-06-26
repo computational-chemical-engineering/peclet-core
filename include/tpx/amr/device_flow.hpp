@@ -223,6 +223,16 @@ class DeviceAmrFlow {
   void setBodyForce(double fx, double fy, double fz) { f_ = {fx, fy, fz}; }
   /// Use MG-preconditioned CG for the pressure solve (default) vs plain V-cycles.
   void setPressurePCG(bool on) { presPCG_ = on; }
+  /// Relative tolerance for the per-step momentum BiCGStab solve (default 1e-8). The
+  /// momentum predictor is one step of a pseudo-transient outer iteration to steady state,
+  /// so it need not be solved to round-off — a looser tolerance bounds the per-step cost.
+  /// NOTE on the cost regime: the momentum operator is the Helmholtz (ρ/dt)I − μ∇²; for a
+  /// physical dt the (ρ/dt) mass term dominates and it is cheap (diagonally dominant). At the
+  /// large dt used for *steady* drag, ρ/dt → 0 and it degrades to a bare elliptic Laplacian
+  /// (a saddle-point Stokes problem) — as hard as the pressure Poisson and, unlike the
+  /// pressure, solved here per velocity component. Bounding the tolerance (this knob) caps the
+  /// over-solve; making it actually *scale* needs the velocity multigrid (setMomentumMG).
+  void setMomentumTol(double tol) { momTol_ = tol; }
   /// Opt-in (default OFF): use the openness-Helmholtz multigrid V-cycle as the momentum
   /// BiCGStab preconditioner instead of damped-Jacobi. NOTE: experimental and currently NOT
   /// a win for the cut-cell Dirichlet momentum operator at large dt — the Neumann/openness
@@ -305,7 +315,7 @@ class DeviceAmrFlow {
       deviceMomRhs(View<const double>(u_[c]), View<const double>(gx_[c]),
                    View<const double>(rscale_), View<const char>(fluid_), idiag, f_[c], bmom_, n);
       // warm start from u^n (good initial guess for the time step).
-      lastMomIters_ += momSolver_.solveBiCGStab(momOp_, u_[c], View<const double>(bmom_), momIters, 1e-10).iters;
+      lastMomIters_ += momSolver_.solveBiCGStab(momOp_, u_[c], View<const double>(bmom_), momIters, momTol_).iters;
     }
     project(presIters);
   }
@@ -379,6 +389,7 @@ class DeviceAmrFlow {
   Vec<3> f_{};
   bool presPCG_ = true;
   bool momMGon_ = false;  // opt-in (see setMomentumMG): Jacobi-BiCGStab is the robust default
+  double momTol_ = 1e-8;  // per-step momentum BiCGStab relative tolerance (Phase-0 knob)
   Index n_ = 0;
   int lastMomIters_ = 0, lastPresIters_ = 0;
 
