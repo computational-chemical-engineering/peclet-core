@@ -97,6 +97,16 @@ class DeviceVelocityMG {
       for (std::size_t i = 0; i < fluid.size(); ++i) excl[i] = (!fluid[i] || cut[i]) ? 1 : 0;
       levels_[0].solid = toDevice(excl, "vmg_excl0");
       allocScratch(levels_[0], static_cast<Index>(fluid.size()));
+      // Colour the sharp fine operator (its face graph) for the optional GS smoother — copy the
+      // face CSR off the device once.
+      std::vector<Index> hs(static_cast<std::size_t>(fineOp.n) + 1), hn(fineOp.faceNbr.extent(0));
+      auto ms = Kokkos::create_mirror_view(fineOp.faceStart);
+      auto mn = Kokkos::create_mirror_view(fineOp.faceNbr);
+      Kokkos::deep_copy(ms, fineOp.faceStart);
+      Kokkos::deep_copy(mn, fineOp.faceNbr);
+      for (std::size_t i = 0; i < hs.size(); ++i) hs[i] = ms(static_cast<Index>(i));
+      for (std::size_t i = 0; i < hn.size(); ++i) hn[i] = mn(static_cast<Index>(i));
+      levels_[0].col = greedyColoring(hs, hn, fineOp.n);
     }
     // Coarse levels: rediscretized staircase operator + classified solid mask.
     for (std::size_t L = 1; L < nl; ++L) buildStaircase(L, idiag, mu, kap[L]);
@@ -111,17 +121,21 @@ class DeviceVelocityMG {
   View<double> b(std::size_t L = 0) { return levels_[L].b; }
   /// Re-point level 0 at the (possibly FOU-updated) fine operator before a solve.
   void setFineOp(const DeviceMomentumOp& fineOp) { levels_[0].op = fineOp; }
+  /// Opt-in: use multicolour Gauss–Seidel as the smoother (per-level colouring) instead of Jacobi —
+  /// the strong fine smoother that "owns the cut band" (sdflow uses RB-GS), markedly improving the
+  /// staircase at high resolution. Default off (Jacobi).
+  void setGaussSeidel(bool on) { useGS_ = on; }
 
-  /// One V-cycle (correction scheme) solving the fine operator. Jacobi smoother, average
-  /// restriction, masked piecewise-constant prolongation.
+  /// One V-cycle (correction scheme) solving the fine operator. Average restriction, masked
+  /// piecewise-constant prolongation, clean-fluid residual exclude; Jacobi or multicolour-GS smoother.
   void vcycle(int pre = 2, int post = 2, int bottom = 30, double omega = 0.7, std::size_t L = 0) {
     Level& lv = levels_[L];
     View<const double> bc(lv.b);
     if (L + 1 == levels_.size()) {
-      for (int s = 0; s < bottom; ++s) deviceJacobiMom(lv.op, lv.x, bc, lv.tmp, omega);
+      smooth(lv, bottom, omega);
       return;
     }
-    for (int s = 0; s < pre; ++s) deviceJacobiMom(lv.op, lv.x, bc, lv.tmp, omega);
+    smooth(lv, pre, omega);
     deviceResidualMom(lv.op, View<const double>(lv.x), bc, lv.res);
     // Clean-fluid exclude: zero the residual at cut/solid cells before restriction so the
     // inconsistent sharp-IBM cut-cell residuals never pollute the coarse defect (the fix for the
@@ -132,7 +146,7 @@ class DeviceVelocityMG {
     Kokkos::deep_copy(cl.x, 0.0);
     vcycle(pre, post, bottom, omega, L + 1);
     deviceProlongAddMasked(lv.c2p, View<const double>(cl.x), View<const char>(lv.solid), lv.x, lv.op.n);
-    for (int s = 0; s < post; ++s) deviceJacobiMom(lv.op, lv.x, bc, lv.tmp, omega);
+    smooth(lv, post, omega);
   }
 
  private:
@@ -141,7 +155,17 @@ class DeviceVelocityMG {
     View<char> solid;
     View<double> x, b, res, tmp;
     View<Index> c2p, childStart, childIdx;
+    Coloring col;
   };
+  void smooth(Level& lv, int sweeps, double omega) {
+    View<const double> bc(lv.b);
+    if (useGS_)
+      // Undamped GS (omega=1.0): stable on the staircase Helmholtz diagonal, and the passed omega is
+      // Jacobi's damping limit (~0.7) which would needlessly weaken the GS smoothing.
+      for (int s = 0; s < sweeps; ++s) deviceMulticolorGSMom(lv.op, lv.x, bc, lv.col, 1.0);
+    else
+      for (int s = 0; s < sweeps; ++s) deviceJacobiMom(lv.op, lv.x, bc, lv.tmp, omega);
+  }
 
   void allocScratch(Level& lv, Index n) {
     lv.x = View<double>("vmg_x", static_cast<std::size_t>(n));
@@ -202,6 +226,7 @@ class DeviceVelocityMG {
     lv.op.faceNbr = toDevice(nbr, "vmg_fnbr");
     lv.op.faceCoef = toDevice(coef, "vmg_fcoef");
     lv.solid = toDevice(solid, "vmg_solid");
+    lv.col = greedyColoring(start, nbr, n);  // for the optional GS smoother
     allocScratch(lv, n);
   }
 
@@ -233,6 +258,7 @@ class DeviceVelocityMG {
 
   std::unique_ptr<AmrMultigrid<3, Bits>> hmg_;
   std::vector<Level> levels_;
+  bool useGS_ = false;  // multicolour Gauss–Seidel smoother (opt-in; default weighted Jacobi)
 };
 
 }  // namespace tpx::amr

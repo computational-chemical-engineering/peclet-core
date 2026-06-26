@@ -414,12 +414,54 @@ void test_staircase_mg() {
   TPX_CHECK(dmax < 1e-4 * mag);  // same converged step regardless of coarse-operator strategy
 }
 
+// Multicolour Gauss–Seidel smoother (P5): for both coarse-operator strategies, the GS-smoothed MG
+// must converge to the same steady velocity as the Jacobi-smoothed MG — GS only changes the
+// smoothing rate, not the fixed point.
+void test_momentum_gs() {
+  const unsigned L = 4;  // 16³
+  BO t = uniformFine(L);
+  const double h0 = 1.0 / (double)(1L << L);
+  Vec<3> c{0.5, 0.5, 0.5};
+  double rad = 0.25;
+  auto sdf = [&](const Vec<3>& p) {
+    double dx = p[0] - c[0], dy = p[1] - c[1], dz = p[2] - c[2];
+    return std::sqrt(dx * dx + dy * dy + dz * dz) - rad;
+  };
+  auto run = [&](bool staircase, bool gs) {
+    DeviceAmrFlow<21> f;
+    f.init(t, h0);
+    f.setViscosity(1.0);
+    f.setDt(1e6);
+    f.setBodyForce(1.0, 0, 0);
+    f.setVelocityMGStaircase(staircase);
+    if (staircase) f.setVelocityMGMinCoarse(512);
+    f.setMomentumGS(gs);
+    f.setSolid(sdf);
+    for (int s = 0; s < 6; ++s) f.step(400, 60);
+    return f.velocity(0);
+  };
+  const Index n = t.numLeaves();
+  for (bool staircase : {false, true}) {
+    auto uj = run(staircase, false);  // Jacobi
+    auto ug = run(staircase, true);   // multicolour-GS
+    double dmax = 0, mag = 0;
+    for (Index i = 0; i < n; ++i) {
+      dmax = std::max(dmax, std::fabs(ug[(std::size_t)i] - uj[(std::size_t)i]));
+      mag = std::max(mag, std::fabs(uj[(std::size_t)i]));
+    }
+    std::printf("[flow] GS-vs-Jacobi MG (%s): max|gs-jac| = %.3e (mag %.3e)\n",
+                staircase ? "staircase" : "Galerkin", dmax, mag);
+    TPX_CHECK(dmax < 1e-4 * mag);
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   Kokkos::initialize(argc, argv);
   test_poiseuille();
   test_staircase_mg();
+  test_momentum_gs();
   test_sphere();
   test_momentum_mg_option();
   test_momentum_scaling();

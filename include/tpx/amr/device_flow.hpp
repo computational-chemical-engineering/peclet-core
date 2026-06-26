@@ -435,6 +435,10 @@ class DeviceAmrFlow {
   /// classification leaves an inconsistent operator that diverges). Feature-dependent — raise it
   /// for small immersed objects. Only affects the staircase strategy.
   void setVelocityMGMinCoarse(Index m) { mgMinCoarse_ = m; }
+  /// Opt-in: use the multicolour Gauss–Seidel smoother in the momentum MG (Galerkin or staircase)
+  /// instead of weighted Jacobi — ~2× better smoothing (fewer V-cycles / BiCGStab iters), and the
+  /// strong fine smoother the staircase needs on the cut band. Default off. Call before setSolid.
+  void setMomentumGS(bool on) { momGS_ = on; }
 
   /// Build the cut-cell operators (host) + upload all device structures. Requires the
   /// density / viscosity / dt to be set first (the momentum operator carries ρ/dt and μ).
@@ -476,8 +480,10 @@ class DeviceAmrFlow {
           cu[static_cast<std::size_t>(i)] = mom_.isCut(i) ? 1 : 0;
         }
         velMG_.build(*t_, h0_, rho_ / dt_, mu_, momOp_, kap, fl, cu, mgMinCoarse_);
+        velMG_.setGaussSeidel(momGS_);
       } else {
         momMG_.build(*t_, A.diag, A.start, A.nbr, A.coef);
+        momMG_.setGaussSeidel(momGS_);
       }
     }
     geom_ = buildFaceGeom(pres_, [&](Index i) { return mom_.isFluid(i); });
@@ -691,6 +697,7 @@ class DeviceAmrFlow {
   bool useStaircaseMG_ = false;  // false = Galerkin (DeviceMomentumMG), true = staircase (DeviceVelocityMG)
   int mgVcPre_ = 2, mgVcBottom_ = 30;  // momentum-MG V-cycle pre/post sweeps + bottom sweeps
   Index mgMinCoarse_ = 256;            // staircase velocity-MG pore-scale cap (coarsest cell count)
+  bool momGS_ = false;                 // opt-in: multicolour Gauss–Seidel smoother in the momentum MG
   double momTol_ = 1e-8;  // per-step momentum BiCGStab relative tolerance (Phase-0 knob)
   bool advect_ = false;       // momentum advection ∇·(u u) (off ⇒ Stokes)
   bool implicitFou_ = true;   // implicit-FOU deferred-correction (stable) vs fully-explicit

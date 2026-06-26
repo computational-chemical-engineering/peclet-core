@@ -147,6 +147,130 @@ inline void bicgPUpdate(View<double> p, View<const double> r, View<const double>
 }
 
 // ===========================================================================
+// Multicolour Gauss–Seidel smoother + graph colouring (the RB-GS mirror of sdflow's
+// ibmRbgsStencilColor on the AMR). On a 2:1-graded octree (or a Voronoi-cell mesh) the
+// face-adjacency graph needs a general greedy colouring (~6–8 colours); a colour is a set of
+// cells with no shared face, so all of one colour update in parallel reading the already-updated
+// other colours — a true GS sweep, deterministic (fixed cell order ⇒ fixed colouring). GS smooths
+// ~2× better than damped Jacobi (and is the strong fine smoother that "owns the cut band" the
+// rediscretized staircase velocity-MG excludes from its coarse grid). Mesh-agnostic: operates on a
+// face CSR + the assembled operator, no octree types.
+// ===========================================================================
+
+/// A graph colouring of a face CSR: cells grouped by colour. `hStart` (host, size nColors+1) slices
+/// `idx` (device, cells in colour order). Rebuilt when the connectivity changes (adapt / re-tess).
+struct Coloring {
+  std::vector<Index> hStart;
+  View<Index> idx;
+  int nColors = 1;
+};
+
+/// Greedy colouring of the face CSR (`start`/`nbr`, host): each cell gets the smallest colour not
+/// used by any face neighbour, so cells of one colour share no edge (race-free parallel GS sweep).
+/// Deterministic from the natural cell order.
+///
+/// The adjacency is **symmetrised** first (undirected: i conflicts with j if i∈nbr(j) OR j∈nbr(i)).
+/// The assembled cut-cell operator's CSR can be structurally *asymmetric* — the ξ-polynomial Dirichlet
+/// overlay adds extrapolation entries a cut cell references but its target doesn't reference back — and
+/// colouring only the outgoing edges would then leave two mutually-adjacent cells the same colour, a
+/// data race that makes the GS sweep a non-deterministic (inconsistent) operator and silently breaks
+/// the BiCGStab it preconditions (false convergence to NaN at scale). Symmetrising is the correctness
+/// guard; it costs one O(nnz) host pass at build/adapt time.
+inline Coloring greedyColoring(const std::vector<Index>& start, const std::vector<Index>& nbr,
+                               Index n) {
+  // Build the symmetric (undirected) adjacency in CSR form.
+  std::vector<Index> deg(static_cast<std::size_t>(n) + 1, 0);
+  for (Index i = 0; i < n; ++i)
+    for (Index k = start[static_cast<std::size_t>(i)]; k < start[static_cast<std::size_t>(i) + 1]; ++k) {
+      ++deg[static_cast<std::size_t>(i) + 1];
+      ++deg[static_cast<std::size_t>(nbr[static_cast<std::size_t>(k)]) + 1];
+    }
+  for (Index i = 0; i < n; ++i) deg[static_cast<std::size_t>(i) + 1] += deg[static_cast<std::size_t>(i)];
+  std::vector<Index> aStart(deg);  // copy of the offsets
+  std::vector<Index> aNbr(static_cast<std::size_t>(deg[static_cast<std::size_t>(n)]));
+  std::vector<Index> acur(deg.begin(), deg.end() - 1);
+  for (Index i = 0; i < n; ++i)
+    for (Index k = start[static_cast<std::size_t>(i)]; k < start[static_cast<std::size_t>(i) + 1]; ++k) {
+      const Index j = nbr[static_cast<std::size_t>(k)];
+      aNbr[static_cast<std::size_t>(acur[static_cast<std::size_t>(i)]++)] = j;
+      aNbr[static_cast<std::size_t>(acur[static_cast<std::size_t>(j)]++)] = i;
+    }
+  std::vector<int> color(static_cast<std::size_t>(n), -1);
+  std::vector<int> stamp;  // stamp[c]==i ⇒ colour c forbidden for cell i (avoids per-cell clears)
+  int nColors = 1;
+  for (Index i = 0; i < n; ++i) {
+    for (Index k = aStart[static_cast<std::size_t>(i)]; k < aStart[static_cast<std::size_t>(i) + 1]; ++k) {
+      const int nc = color[static_cast<std::size_t>(aNbr[static_cast<std::size_t>(k)])];
+      if (nc >= 0) {
+        if (static_cast<std::size_t>(nc) >= stamp.size()) stamp.resize(static_cast<std::size_t>(nc) + 1, -1);
+        stamp[static_cast<std::size_t>(nc)] = static_cast<int>(i);
+      }
+    }
+    int c = 0;
+    while (c < static_cast<int>(stamp.size()) && stamp[static_cast<std::size_t>(c)] == static_cast<int>(i)) ++c;
+    color[static_cast<std::size_t>(i)] = c;
+    if (c + 1 > nColors) nColors = c + 1;
+  }
+  Coloring col;
+  col.nColors = nColors;
+  col.hStart.assign(static_cast<std::size_t>(nColors) + 1, 0);
+  for (Index i = 0; i < n; ++i) ++col.hStart[static_cast<std::size_t>(color[static_cast<std::size_t>(i)]) + 1];
+  for (int c = 0; c < nColors; ++c)
+    col.hStart[static_cast<std::size_t>(c) + 1] += col.hStart[static_cast<std::size_t>(c)];
+  std::vector<Index> idx(static_cast<std::size_t>(n));
+  std::vector<Index> cur(col.hStart.begin(), col.hStart.end() - 1);
+  for (Index i = 0; i < n; ++i) {
+    const int c = color[static_cast<std::size_t>(i)];
+    idx[static_cast<std::size_t>(cur[static_cast<std::size_t>(c)]++)] = i;
+  }
+  col.idx = toDevice(idx, "gs_coloring");
+  return col;
+}
+
+/// One **symmetric** multicolour Gauss–Seidel sweep of A u = b in place (momentum operator: diag +
+/// face CSR + optional implicit-FOU advection): a forward pass over colours 0…C-1 followed by a
+/// reverse pass C-1…0. Each colour is a parallel_for over its cells doing the GS point update reading
+/// the current (already-updated) neighbours; cells of one colour share no edge ⇒ race-free.
+///
+/// The forward+reverse pairing makes the smoother **symmetric**, which matters when the MG V-cycle is
+/// used as a *preconditioner* for BiCGStab (the momentum path): a forward-only GS V-cycle is a
+/// non-symmetric, non-normal operator that breaks BiCGStab's bi-orthogonal recurrence on the larger
+/// non-symmetric 64³ system (false convergence to NaN), whereas the symmetric (SGS) V-cycle keeps it
+/// robust — the textbook remedy, and the behaviour sdflow gets from its RB-GS / MG-as-solver path.
+inline void deviceMulticolorGSMom(const DeviceMomentumOp& op, View<double> u, View<const double> b,
+                                  const Coloring& col, double omega) {
+  auto diag = op.diag;
+  auto fs = op.faceStart;
+  auto fn = op.faceNbr;
+  auto fc = op.faceCoef;
+  const bool hasAdv = op.hasAdv;
+  auto ad = op.advDiag;
+  auto as = op.advStart;
+  auto an = op.advNbr;
+  auto ac = op.advCoef;
+  auto idx = col.idx;
+  auto colorPass = [&](int c) {
+    const Index a0 = col.hStart[static_cast<std::size_t>(c)];
+    const Index a1 = col.hStart[static_cast<std::size_t>(c) + 1];
+    Kokkos::parallel_for(
+        "amr::gs_mom", Kokkos::RangePolicy<ExecSpace>(a0, a1), KOKKOS_LAMBDA(const Index k) {
+          const Index i = idx(k);
+          double off = 0.0;
+          for (Index t = fs(i); t < fs(i + 1); ++t) off += fc(t) * u(fn(t));
+          double d = diag(i);
+          if (hasAdv) {
+            for (Index t = as(i); t < as(i + 1); ++t) off += ac(t) * u(an(t));
+            d += ad(i);
+          }
+          const double nu = (d != 0.0) ? (b(i) - off) / d : u(i);
+          u(i) = (1.0 - omega) * u(i) + omega * nu;
+        });
+  };
+  for (int c = 0; c < col.nColors; ++c) colorPass(c);             // forward
+  for (int c = col.nColors - 2; c >= 0; --c) colorPass(c);         // reverse (last colour not repeated)
+}
+
+// ===========================================================================
 // DeviceMomentumMG — Galerkin geometric multigrid for the momentum operator.
 //
 // The cut-cell momentum operator carries the ξ-polynomial Dirichlet overlay and its
@@ -265,22 +389,26 @@ class DeviceMomentumMG {
     }
   }
 
-  /// One V-cycle on level L solving A u = b (correction scheme), Jacobi smoother.
+  /// Opt-in: use multicolour Gauss–Seidel as the smoother (per-level colouring built at build)
+  /// instead of weighted Jacobi — ~2× better smoothing, fewer V-cycles. Default off (Jacobi).
+  void setGaussSeidel(bool on) { useGS_ = on; }
+
+  /// One V-cycle on level L solving A u = b (correction scheme).
   void vcycle(int pre = 2, int post = 2, int bottom = 30, double omega = 0.7, std::size_t L = 0) {
     Level& lv = levels_[L];
     View<const double> bc(lv.b);
     if (L + 1 == levels_.size()) {
-      for (int s = 0; s < bottom; ++s) deviceJacobiMom(lv.op, lv.x, bc, lv.tmp, omega);
+      smooth(lv, bottom, omega);
       return;
     }
-    for (int s = 0; s < pre; ++s) deviceJacobiMom(lv.op, lv.x, bc, lv.tmp, omega);
+    smooth(lv, pre, omega);
     deviceResidualMom(lv.op, View<const double>(lv.x), bc, lv.res);
     Level& cl = levels_[L + 1];
     deviceRestrict(lv.childStart, lv.childIdx, View<const double>(lv.res), cl.b, cl.op.n);
     Kokkos::deep_copy(cl.x, 0.0);
     vcycle(pre, post, bottom, omega, L + 1);
     deviceProlongAdd(lv.c2p, View<const double>(cl.x), lv.x, lv.op.n);
-    for (int s = 0; s < post; ++s) deviceJacobiMom(lv.op, lv.x, bc, lv.tmp, omega);
+    smooth(lv, post, omega);
   }
 
   std::size_t numLevels() const { return levels_.size(); }
@@ -294,7 +422,17 @@ class DeviceMomentumMG {
     DeviceMomentumOp op;
     View<double> x, b, res, tmp;
     View<Index> c2p, childStart, childIdx;
+    Coloring col;
   };
+  void smooth(Level& lv, int sweeps, double omega) {
+    View<const double> bc(lv.b);
+    if (useGS_)
+      // Multicolour GS is stable undamped on this diagonally-dominant operator (ρ/dt + 6μ + FOU > 0);
+      // the passed omega is Jacobi's damping limit (~0.7) and would needlessly weaken GS, so use 1.0.
+      for (int s = 0; s < sweeps; ++s) deviceMulticolorGSMom(lv.op, lv.x, bc, lv.col, 1.0);
+    else
+      for (int s = 0; s < sweeps; ++s) deviceJacobiMom(lv.op, lv.x, bc, lv.tmp, omega);
+  }
   void uploadLevel(std::size_t L, const std::vector<double>& diag, const std::vector<Index>& start,
                    const std::vector<Index>& nbr, const std::vector<double>& coef) {
     Level& lv = levels_[L];
@@ -303,9 +441,11 @@ class DeviceMomentumMG {
     lv.op.faceStart = toDevice(start, "mmg_start");
     lv.op.faceNbr = toDevice(nbr, "mmg_nbr");
     lv.op.faceCoef = toDevice(coef, "mmg_coef");
+    lv.col = greedyColoring(start, nbr, lv.op.n);
   }
   std::vector<Octree> octs_;
   std::vector<Level> levels_;
+  bool useGS_ = false;  // multicolour Gauss–Seidel smoother (opt-in; default weighted Jacobi)
 };
 
 // ---------------------------------------------------------------------------

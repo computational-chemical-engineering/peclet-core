@@ -192,7 +192,7 @@ void mgStrategyCompare(unsigned L) {
   const double h0 = 1.0 / (double)N;
   const Index n = t.numLeaves();
   auto sdf = sphereSdf(Vec<3>{0.5, 0.5, 0.5}, 0.25);
-  auto runIt = [&](bool staircase) {
+  auto runIt = [&](bool staircase, bool gs) {
     DeviceAmrFlow<21> dfl;
     dfl.init(t, h0);
     dfl.setViscosity(1.0);
@@ -200,6 +200,7 @@ void mgStrategyCompare(unsigned L) {
     dfl.setBodyForce(1.0, 0, 0);
     dfl.setVelocityMGStaircase(staircase);
     if (staircase) dfl.setVelocityMGMinCoarse(4096);  // sphere (r=0.25) resolved only to ~16³
+    dfl.setMomentumGS(gs);
     dfl.setSolid(sdf);
     double tm = 0;
     int it = 0;
@@ -216,12 +217,18 @@ void mgStrategyCompare(unsigned L) {
     for (Index i = 0; i < n; ++i) um += u[(std::size_t)i];
     return std::make_tuple(it, tm, um / n);
   };
-  auto g = runIt(false);
-  auto s = runIt(true);
-  std::printf("mgstrat L=%u cells=%8ld :  Galerkin %4d it/step %8.2f ms (Umean %.4e)  |  staircase "
-              "%4d it/step %8.2f ms (Umean %.4e)\n",
-              L, (long)n, std::get<0>(g), std::get<1>(g), std::get<2>(g), std::get<0>(s),
-              std::get<1>(s), std::get<2>(s));
+  // 2×2: coarse-operator strategy (Galerkin / staircase) × smoother (Jacobi / multicolour-GS).
+  // it/step is the momentum-MG-preconditioned BiCGStab count to a fixed tolerance — GS should cut it
+  // (RB-GS "owns the cut band"), most visibly for the staircase at finer L.
+  auto gj = runIt(false, false);
+  auto gg = runIt(false, true);
+  auto sj = runIt(true, false);
+  auto sg = runIt(true, true);
+  std::printf(
+      "mgstrat L=%u cells=%8ld :  Galerkin[jac %4d / gs %4d] it/step  |  staircase[jac %4d / gs %4d] "
+      "it/step  (Umean Gj %.3e Gg %.3e Sj %.3e Sg %.3e)\n",
+      L, (long)n, std::get<0>(gj), std::get<0>(gg), std::get<0>(sj), std::get<0>(sg),
+      std::get<2>(gj), std::get<2>(gg), std::get<2>(sj), std::get<2>(sg));
 }
 
 // Device-only flow-step throughput scaling (host too slow at these sizes).
