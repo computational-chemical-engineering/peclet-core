@@ -34,25 +34,43 @@
 
 namespace tpx::amr {
 
-/// Assembled momentum operator on the device: (A u)_i = diag_i u_i + Σ coef·u[nbr].
+/// Assembled momentum operator on the device: (A u)_i = diag_i u_i + Σ coef·u[nbr], with an
+/// optional implicit-FOU advection part (rebuilt each step from the lagged velocity): a
+/// per-cell outflow diagonal `advDiag` + per-face inflow coefficients over a second
+/// (face-geometry) CSR. hasAdv=false ⇒ the pure cut-cell operator, bit-exact unchanged.
 struct DeviceMomentumOp {
   View<double> diag;      ///< size n
   View<Index> faceStart;  ///< CSR row offsets, size n+1
   View<Index> faceNbr;    ///< neighbour leaf per off-diagonal, size nnz
   View<double> faceCoef;  ///< off-diagonal coefficient, size nnz
   Index n = 0;
+  // Optional implicit-FOU advection (over the face-geometry CSR):
+  bool hasAdv = false;
+  View<double> advDiag;   ///< per-cell outflow (diagonal) advection weight, size n
+  View<Index> advStart;   ///< face-geom CSR row offsets, size n+1
+  View<Index> advNbr;     ///< face-geom neighbour per face, size nFaces
+  View<double> advCoef;   ///< per-face inflow advection coefficient (0 on outflow/solid faces)
 };
 
-/// Au = A u.
+/// Au = A u (cut-cell operator + optional implicit-FOU advection).
 inline void deviceApplyMom(const DeviceMomentumOp& op, View<const double> u, View<double> Au) {
   auto diag = op.diag;
   auto fs = op.faceStart;
   auto fn = op.faceNbr;
   auto fc = op.faceCoef;
+  const bool hasAdv = op.hasAdv;
+  auto ad = op.advDiag;
+  auto as = op.advStart;
+  auto an = op.advNbr;
+  auto ac = op.advCoef;
   Kokkos::parallel_for(
       "amr::mom_apply", op.n, KOKKOS_LAMBDA(const Index i) {
         double acc = diag(i) * u(i);
         for (Index k = fs(i); k < fs(i + 1); ++k) acc += fc(k) * u(fn(k));
+        if (hasAdv) {
+          acc += ad(i) * u(i);
+          for (Index k = as(i); k < as(i + 1); ++k) acc += ac(k) * u(an(k));
+        }
         Au(i) = acc;
       });
 }
@@ -64,10 +82,19 @@ inline void deviceResidualMom(const DeviceMomentumOp& op, View<const double> u,
   auto fs = op.faceStart;
   auto fn = op.faceNbr;
   auto fc = op.faceCoef;
+  const bool hasAdv = op.hasAdv;
+  auto ad = op.advDiag;
+  auto as = op.advStart;
+  auto an = op.advNbr;
+  auto ac = op.advCoef;
   Kokkos::parallel_for(
       "amr::mom_residual", op.n, KOKKOS_LAMBDA(const Index i) {
         double acc = diag(i) * u(i);
         for (Index k = fs(i); k < fs(i + 1); ++k) acc += fc(k) * u(fn(k));
+        if (hasAdv) {
+          acc += ad(i) * u(i);
+          for (Index k = as(i); k < as(i + 1); ++k) acc += ac(k) * u(an(k));
+        }
         res(i) = b(i) - acc;
       });
 }
@@ -80,11 +107,20 @@ inline void deviceJacobiMom(const DeviceMomentumOp& op, View<double> u, View<con
   auto fs = op.faceStart;
   auto fn = op.faceNbr;
   auto fc = op.faceCoef;
+  const bool hasAdv = op.hasAdv;
+  auto ad = op.advDiag;
+  auto as = op.advStart;
+  auto an = op.advNbr;
+  auto ac = op.advCoef;
   Kokkos::parallel_for(
       "amr::mom_jacobi_compute", op.n, KOKKOS_LAMBDA(const Index i) {
         double off = 0.0;
         for (Index k = fs(i); k < fs(i + 1); ++k) off += fc(k) * u(fn(k));
-        const double d = diag(i);
+        double d = diag(i);
+        if (hasAdv) {
+          for (Index k = as(i); k < as(i + 1); ++k) off += ac(k) * u(an(k));
+          d += ad(i);
+        }
         tmp(i) = (d != 0.0) ? (b(i) - off) / d : u(i);
       });
   Kokkos::parallel_for(
@@ -306,13 +342,46 @@ class DeviceMomentumSolver {
     return std::sqrt(dotPlain(View<const double>(r_), View<const double>(r_), op.n));
   }
 
-  /// Jacobi-preconditioned BiCGStab solve of A u = b in place. `maxIters` caps the outer
-  /// iterations; `tol` is relative to ||b−Au0||. Returns {iters, final residual L2}.
   struct Result {
     int iters = 0;
     double res0 = 0.0;
     double res = 0.0;
   };
+
+  /// MG-preconditioned defect-correction (Richardson) solve of A u = b in place:
+  /// u ← u + M⁻¹(b − A u), M = the preconditioner (velocity-MG if set, else Jacobi sweeps).
+  /// Unlike BiCGStab it cannot break down — robust for the strongly non-symmetric momentum
+  /// operator with implicit-FOU advection, where the velocity-MG (built from the viscous base)
+  /// is only an approximate inverse. Converges when the advection is a perturbation of the
+  /// viscous+reaction operator (low–moderate cell Reynolds number). `maxIters` caps the
+  /// iterations; `tol` is relative to ||b−Au₀||.
+  Result solveDefectCorrection(const DeviceMomentumOp& op, View<double> u, View<const double> b,
+                               int maxIters = 200, double tol = 1e-8) {
+    const Index n = op.n;
+    ensure(n);
+    Result R;
+    deviceResidualMom(op, View<const double>(u), b, r_);
+    R.res0 = std::sqrt(dotPlain(View<const double>(r_), View<const double>(r_), n));
+    if (R.res0 == 0.0) return R;
+    double rnorm = R.res0;
+    int it = 0;
+    for (; it < maxIters; ++it) {
+      applyPrec(op, r_, phat_);                       // phat = M⁻¹ r
+      axpy(u, 1.0, View<const double>(phat_), n);     // u += phat
+      deviceResidualMom(op, View<const double>(u), b, r_);
+      rnorm = std::sqrt(dotPlain(View<const double>(r_), View<const double>(r_), n));
+      if (rnorm <= tol * R.res0) {
+        ++it;
+        break;
+      }
+    }
+    R.iters = it;
+    R.res = rnorm;
+    return R;
+  }
+
+  /// Jacobi-preconditioned BiCGStab solve of A u = b in place. `maxIters` caps the outer
+  /// iterations; `tol` is relative to ||b−Au0||. Returns {iters, final residual L2}.
   Result solveBiCGStab(const DeviceMomentumOp& op, View<double> u, View<const double> b,
                        int maxIters = 500, double tol = 1e-10) {
     const Index n = op.n;

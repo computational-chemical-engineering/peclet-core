@@ -145,7 +145,16 @@ class AmrCutCell {
     std::vector<Index> nbr;     ///< neighbour leaf per off-diagonal, size nnz
     std::vector<double> coef;   ///< off-diagonal coefficient, size nnz
   };
-  Assembled assembleOperator() const {
+  /// `scaleAdvByRscale` (default false ⇒ reproduces applyOp/gaussSeidel exactly, for the matvec
+  /// test): when true, the implicit-FOU advection is multiplied by the cut-cell D_rescale row
+  /// scale, so the *entire* cut-cell row (base + advection) is scaled consistently. applyOp
+  /// scales the base + RHS but not the advection — fine for the host serial GS (which gives a
+  /// bounded approximation) but the inconsistency leaves a (1−rscale)/rscale·FOU amplification in
+  /// the *exact* solution that blows up an accurate device solve at thin cut cells. With the
+  /// advection scaled, the row is the unscaled equation × rscale and the implicit FOU cancels the
+  /// (rscale-scaled) explicit deferred-correction FOU at steady state. The collocated device flow
+  /// uses this; regular fluid cells (rscale=1) are unchanged.
+  Assembled assembleOperator(bool scaleAdvByRscale = false) const {
     const Index n = numLeaves();
     Assembled A;
     A.diag.assign(static_cast<std::size_t>(n), 0.0);
@@ -175,10 +184,11 @@ class AmrCutCell {
         A.diag[s] = idiag_ + mu_ * invV * dsum;
       }
       if (hasAdv_) {  // implicit-FOU advection: diagonal (outflow) + CSR (inflow)
-        A.diag[s] += advDiag_[s];
+        const double as = scaleAdvByRscale ? rscale_[s] : 1.0;
+        A.diag[s] += as * advDiag_[s];
         for (std::size_t p = static_cast<std::size_t>(advStart_[s]);
              p < static_cast<std::size_t>(advStart_[static_cast<std::size_t>(i) + 1]); ++p)
-          rows[s].emplace_back(advNbr_[p], advCoef_[p]);
+          rows[s].emplace_back(advNbr_[p], as * advCoef_[p]);
       }
     }
     for (Index i = 0; i < n; ++i)

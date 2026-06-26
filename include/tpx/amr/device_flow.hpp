@@ -24,6 +24,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <vector>
 
 #include "tpx/amr/block_octree.hpp"
@@ -49,8 +50,11 @@ struct DeviceFaceGeom {
   View<int> axis;          ///< face axis 0/1/2, size nFaces
   View<int> dir;           ///< face direction +1/-1, size nFaces
   View<double> alphaArea;  ///< α·area (physical) per face, size nFaces
+  View<double> rawArea;    ///< raw face area (physical, no openness) per face — advection flux
   View<double> dist;       ///< face-normal distance (physical) per face, size nFaces
   View<double> alpha;      ///< openness per face (gradient gate), size nFaces
+  View<Index> upupI;       ///< upstream-of-i probe (periodicNeighbor(i,axis,−dir)) — SOU, size nFaces
+  View<Index> upupJ;       ///< upstream-of-j probe (periodicNeighbor(j,axis,+dir)) — SOU, size nFaces
   View<double> invVol;     ///< 1/V_i per cell, size n
   View<char> fluid;        ///< per-cell fluid flag, size n
   Index n = 0;
@@ -69,8 +73,9 @@ DeviceFaceGeom buildFaceGeom(const AmrPoisson<Dim, Bits>& ap, FluidFn&& isFluid)
   const Index nf = start[static_cast<std::size_t>(n)];
   std::vector<Index> nbr(static_cast<std::size_t>(nf));
   std::vector<int> axis(static_cast<std::size_t>(nf)), dir(static_cast<std::size_t>(nf));
-  std::vector<double> aArea(static_cast<std::size_t>(nf)), dist(static_cast<std::size_t>(nf)),
-      alpha(static_cast<std::size_t>(nf));
+  std::vector<double> aArea(static_cast<std::size_t>(nf)), rArea(static_cast<std::size_t>(nf)),
+      dist(static_cast<std::size_t>(nf)), alpha(static_cast<std::size_t>(nf));
+  std::vector<Index> upupI(static_cast<std::size_t>(nf)), upupJ(static_cast<std::size_t>(nf));
   std::vector<double> invVol(static_cast<std::size_t>(n));
   std::vector<char> fluid(static_cast<std::size_t>(n));
   for (Index i = 0; i < n; ++i) {
@@ -82,8 +87,13 @@ DeviceFaceGeom buildFaceGeom(const AmrPoisson<Dim, Bits>& ap, FluidFn&& isFluid)
       axis[static_cast<std::size_t>(k)] = ax;
       dir[static_cast<std::size_t>(k)] = dr;
       aArea[static_cast<std::size_t>(k)] = al * area;
+      rArea[static_cast<std::size_t>(k)] = area;
       dist[static_cast<std::size_t>(k)] = d;
       alpha[static_cast<std::size_t>(k)] = al;
+      // SOU upstream-of-upwind probes (point neighbour one cell further upstream): if i is the
+      // upwind cell the upstream is across i's −dir face; if j is upwind, across j's +dir face.
+      upupI[static_cast<std::size_t>(k)] = ap.periodicNeighbor(i, ax, -dr);
+      upupJ[static_cast<std::size_t>(k)] = ap.periodicNeighbor(j, ax, dr);
       ++k;
     });
   }
@@ -94,8 +104,11 @@ DeviceFaceGeom buildFaceGeom(const AmrPoisson<Dim, Bits>& ap, FluidFn&& isFluid)
   g.axis = toDevice(axis, "fg_axis");
   g.dir = toDevice(dir, "fg_dir");
   g.alphaArea = toDevice(aArea, "fg_aarea");
+  g.rawArea = toDevice(rArea, "fg_rarea");
   g.dist = toDevice(dist, "fg_dist");
   g.alpha = toDevice(alpha, "fg_alpha");
+  g.upupI = toDevice(upupI, "fg_upupi");
+  g.upupJ = toDevice(upupJ, "fg_upupj");
   g.invVol = toDevice(invVol, "fg_invvol");
   g.fluid = toDevice(fluid, "fg_fluid");
   return g;
@@ -177,13 +190,121 @@ inline void deviceGrad3(const DeviceFaceGeom& g, View<const double> f, View<doub
       });
 }
 
-/// Momentum RHS for one component: b_i = fluid ? (idiag·u_i + f_c − gradP_i)·rscale_i : 0
-/// (== AmrCutCell::makeRhs of the AmrFlow predictor source, u_bc = 0).
-inline void deviceMomRhs(View<const double> uc, View<const double> gradP, View<const double> rscale,
-                         View<const char> fluid, double idiag, double fc, View<double> b, Index n) {
+/// Momentum RHS for one component: b_i = fluid ? (idiag·u_i + f_c − gradP_i − adv_i)·rscale_i : 0
+/// (== AmrCutCell::makeRhs of the AmrFlow predictor source, u_bc = 0). `adv` is the explicit
+/// deferred-correction advection term ρ(SOU−FOU) (zero for Stokes / fully-implicit at steady).
+inline void deviceMomRhs(View<const double> uc, View<const double> gradP, View<const double> adv,
+                         View<const double> rscale, View<const char> fluid, double idiag, double fc,
+                         View<double> b, Index n) {
   Kokkos::parallel_for(
       "amr::flow_momrhs", n, KOKKOS_LAMBDA(const Index i) {
-        b(i) = fluid(i) ? (idiag * uc(i) + fc - gradP(i)) * rscale(i) : 0.0;
+        b(i) = fluid(i) ? (idiag * uc(i) + fc - gradP(i) - adv(i)) * rscale(i) : 0.0;
+      });
+}
+
+/// Deferred-correction advection term for component `comp`: defc = ρ·SOU − ρ·FOU (UNSCALED; the
+/// predictor RHS applies the cut-cell rscale once). The explicit part of the implicit-FOU/SOU
+/// split, it vanishes at steady state. The advecting velocity is u0..2 (uⁿ) and — for a lagged
+/// step — the advected field is the same component. SOU is the second-order-upwind
+/// reconstruction 1.5·up−0.5·upup (advScheme 0) or Koren TVD (1), upstream point-probed
+/// (upupI/upupJ); the FOU flux is velOut·upwind. The implicit FOU is baked into the momentum
+/// operator (AmrCutCell::buildAdvectionFou + assembleOperator) so the two cancel at steady state.
+inline void deviceDeferredSou(const DeviceFaceGeom& g, View<const double> u0, View<const double> u1,
+                              View<const double> u2, int comp, double rho, int advScheme,
+                              View<double> defc) {
+  auto st = g.start;
+  auto nb = g.nbr;
+  auto ax = g.axis;
+  auto dr = g.dir;
+  auto ra = g.rawArea;
+  auto iv = g.invVol;
+  auto fl = g.fluid;
+  auto uiP = g.upupI;
+  auto ujP = g.upupJ;
+  Kokkos::parallel_for(
+      "amr::flow_defsou", g.n, KOKKOS_LAMBDA(const Index i) {
+        if (!fl(i)) {
+          defc(i) = 0.0;
+          return;
+        }
+        auto fld = [&](Index c) { return (comp == 0) ? u0(c) : (comp == 1) ? u1(c) : u2(c); };
+        double sou = 0.0, fou = 0.0;
+        for (Index k = st(i); k < st(i + 1); ++k) {
+          const Index j = nb(k);
+          if (!fl(j)) continue;
+          const int a = ax(k);
+          const double uai = (a == 0) ? u0(i) : (a == 1) ? u1(i) : u2(i);
+          const double uaj = (a == 0) ? u0(j) : (a == 1) ? u1(j) : u2(j);
+          const double velOut = dr(k) * 0.5 * (uai + uaj);
+          const Index up = (velOut > 0.0) ? i : j;
+          const Index down = (velOut > 0.0) ? j : i;
+          const Index upup = (velOut > 0.0) ? uiP(k) : ujP(k);
+          const double phiUp = fld(up);
+          const double phiUpUp = (upup >= 0 && fl(upup)) ? fld(upup) : phiUp;
+          const double phiDown = fld(down);
+          double phiFace;
+          if (advScheme == 0) {
+            phiFace = 1.5 * phiUp - 0.5 * phiUpUp;  // SOU
+          } else {
+            const double den = phiDown - phiUp;
+            const double r = (Kokkos::fabs(den) < 1e-10) ? 0.0 : (phiUp - phiUpUp) / den;
+            const double psi = Kokkos::fmax(0.0, Kokkos::fmin(2.0 * r, Kokkos::fmin((1.0 + 2.0 * r) / 3.0, 2.0)));
+            phiFace = phiUp + 0.5 * psi * den;  // Koren TVD
+          }
+          sou += ra(k) * velOut * phiFace;
+          fou += ra(k) * velOut * fld(up);  // FOU flux = velOut · upwind value
+        }
+        defc(i) = rho * iv(i) * (sou - fou);  // ρ·(SOU − FOU), unscaled
+      });
+}
+
+/// Fully-explicit high-order advection for component `comp`: defc = ρ·SOU (no implicit FOU; the
+/// `setImplicitAdvection(false)` fallback). Same SOU/TVD reconstruction as deviceDeferredSou.
+inline void deviceAdvectExplicit(const DeviceFaceGeom& g, View<const double> u0,
+                                 View<const double> u1, View<const double> u2, int comp, double rho,
+                                 int advScheme, View<double> defc) {
+  auto st = g.start;
+  auto nb = g.nbr;
+  auto ax = g.axis;
+  auto dr = g.dir;
+  auto ra = g.rawArea;
+  auto iv = g.invVol;
+  auto fl = g.fluid;
+  auto uiP = g.upupI;
+  auto ujP = g.upupJ;
+  Kokkos::parallel_for(
+      "amr::flow_advexpl", g.n, KOKKOS_LAMBDA(const Index i) {
+        if (!fl(i)) {
+          defc(i) = 0.0;
+          return;
+        }
+        auto fld = [&](Index c) { return (comp == 0) ? u0(c) : (comp == 1) ? u1(c) : u2(c); };
+        double sou = 0.0;
+        for (Index k = st(i); k < st(i + 1); ++k) {
+          const Index j = nb(k);
+          if (!fl(j)) continue;
+          const int a = ax(k);
+          const double uai = (a == 0) ? u0(i) : (a == 1) ? u1(i) : u2(i);
+          const double uaj = (a == 0) ? u0(j) : (a == 1) ? u1(j) : u2(j);
+          const double velOut = dr(k) * 0.5 * (uai + uaj);
+          const Index up = (velOut > 0.0) ? i : j;
+          const Index down = (velOut > 0.0) ? j : i;
+          const Index upup = (velOut > 0.0) ? uiP(k) : ujP(k);
+          const double phiUp = fld(up);
+          const double phiUpUp = (upup >= 0 && fl(upup)) ? fld(upup) : phiUp;
+          const double phiDown = fld(down);
+          double phiFace;
+          if (advScheme == 0) {
+            phiFace = 1.5 * phiUp - 0.5 * phiUpUp;
+          } else {
+            const double den = phiDown - phiUp;
+            const double r = (Kokkos::fabs(den) < 1e-10) ? 0.0 : (phiUp - phiUpUp) / den;
+            const double psi = Kokkos::fmax(0.0, Kokkos::fmin(2.0 * r, Kokkos::fmin((1.0 + 2.0 * r) / 3.0, 2.0)));
+            phiFace = phiUp + 0.5 * psi * den;
+          }
+          sou += ra(k) * velOut * phiFace;
+        }
+        defc(i) = rho * sou * iv(i);  // ρ·SOU (fully explicit)
       });
 }
 
@@ -223,6 +344,18 @@ class DeviceAmrFlow {
   void setBodyForce(double fx, double fy, double fz) { f_ = {fx, fy, fz}; }
   /// Use MG-preconditioned CG for the pressure solve (default) vs plain V-cycles.
   void setPressurePCG(bool on) { presPCG_ = on; }
+  /// Enable momentum advection ∇·(u u) (default OFF ⇒ Stokes). The high-order flux is
+  /// second-order upwind (SOU) by default; the first-order-upwind part is solved *implicitly*
+  /// (folded into the momentum operator) and the (SOU−FOU) difference is the explicit deferred
+  /// correction — unconditionally stable for the FOU part, exact-SOU at steady state. This is
+  /// the same implicit-FOU + deferred-SOU scheme as the host AmrFlow and sdflow's collocated
+  /// grid (`set_implicit_advection`).
+  void setAdvection(bool on) { advect_ = on; }
+  /// Implicit-FOU deferred correction (default ON). OFF ⇒ the whole high-order advection is
+  /// explicit (no FOU in the operator) — only conditionally stable.
+  void setImplicitAdvection(bool on) { implicitFou_ = on; }
+  /// High-order advection scheme: 0 = second-order upwind (SOU, default), 1 = Koren TVD.
+  void setAdvectionScheme(int s) { advScheme_ = s; }
   /// Relative tolerance for the per-step momentum BiCGStab solve (default 1e-8). The
   /// momentum predictor is one step of a pseudo-transient outer iteration to steady state,
   /// so it need not be solved to round-off — a looser tolerance bounds the per-step cost.
@@ -287,6 +420,17 @@ class DeviceAmrFlow {
     div_ = View<double>("df_div", static_cast<std::size_t>(n));
     bmom_ = View<double>("df_bmom", static_cast<std::size_t>(n));
     Kokkos::deep_copy(p_, 0.0);
+    // Implicit-FOU advection state. The momentum operator + its velocity-MG are rebuilt each
+    // step from the *full* operator (viscous + FOU) so the MG is advection-aware (the viscous-
+    // only MG diverges on the advection operator at cut cells); the FOU is baked into the CSR
+    // (momOp_.hasAdv stays false). defc holds the device-computed explicit ρ(SOU−FOU)
+    // deferred correction. uadvHost_ caches u^n on the host for the per-step operator rebuild.
+    for (int c = 0; c < 3; ++c) {
+      defc_[c] = View<double>("df_defc", static_cast<std::size_t>(n));
+      Kokkos::deep_copy(defc_[c], 0.0);
+      uadvHost_[c].assign(static_cast<std::size_t>(n), 0.0);
+    }
+    momOp_.hasAdv = false;
     momSolver_.setJacobi(2, 0.7);
     if (momMGon_) momSolver_.setMgPreconditioner(&momMG_, 1);
     pcg_.setVcycle(2, 2, 60, 0.8);
@@ -294,19 +438,55 @@ class DeviceAmrFlow {
     n_ = n;
   }
 
-  /// One Stokes projection step on device. `momIters` BiCGStab iterations for each momentum
-  /// component; `presIters` PCG iterations (or V-cycles) for the pressure solve.
+  /// One incompressible step on device (Stokes, or Navier–Stokes with setAdvection). `momIters`
+  /// BiCGStab iterations for each momentum component; `presIters` PCG iterations for the
+  /// pressure solve.
   void step(int momIters = 100, int presIters = 60) {
     const Index n = n_;
     const double idiag = rho_ / dt_;
     lastMomIters_ = 0;
-    // --- predictor: incremental BE viscous solve per component, RHS carries −∇p^n ---
+    // --- advection (lagged to u^n): build the implicit-FOU operator + the explicit ρ(SOU−FOU)
+    // deferred correction, BEFORE the predictor overwrites u_. The advecting velocity is frozen
+    // at u^n via the precomputed advDiag_/advCoef_, so the matvec stays linear during the solve.
+    if (advect_) {
+      if (implicitFou_) {
+        // Rebuild the momentum operator + its velocity-MG from the full (viscous + FOU) operator
+        // so the MG is advection-aware: copy u^n to host, build the FOU stencil (lagged u^n) and
+        // reassemble, upload, and re-Galerkin the MG. (The FOU is baked into momOp_'s CSR.)
+        for (int c = 0; c < 3; ++c) copyToHost(u_[c], uadvHost_[c]);
+        mom_.buildAdvectionFou(uadvHost_, rho_);
+        auto A = mom_.assembleOperator(/*scaleAdvByRscale=*/true);
+        momOp_.diag = toDevice(A.diag, "df_diag");
+        momOp_.faceStart = toDevice(A.start, "df_fstart");
+        momOp_.faceNbr = toDevice(A.nbr, "df_fnbr");
+        momOp_.faceCoef = toDevice(A.coef, "df_fcoef");
+        momOp_.n = n;
+        if (momMGon_) momMG_.build(*t_, A.diag, A.start, A.nbr, A.coef);
+      }
+      for (int c = 0; c < 3; ++c) {
+        if (implicitFou_)
+          deviceDeferredSou(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
+                            View<const double>(u_[2]), c, rho_, advScheme_, defc_[c]);
+        else
+          deviceAdvectExplicit(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
+                               View<const double>(u_[2]), c, rho_, advScheme_, defc_[c]);
+      }
+    }
+    // --- predictor: incremental BE viscous (+ implicit-FOU) solve per component, RHS carries
+    // −∇p^n and −ρ(SOU−FOU). ---
     deviceGrad3(geom_, View<const double>(p_), gx_[0], gx_[1], gx_[2]);
     for (int c = 0; c < 3; ++c) {
-      deviceMomRhs(View<const double>(u_[c]), View<const double>(gx_[c]),
+      deviceMomRhs(View<const double>(u_[c]), View<const double>(gx_[c]), View<const double>(defc_[c]),
                    View<const double>(rscale_), View<const char>(fluid_), idiag, f_[c], bmom_, n);
-      // warm start from u^n (good initial guess for the time step).
-      lastMomIters_ += momSolver_.solveBiCGStab(momOp_, u_[c], View<const double>(bmom_), momIters, momTol_).iters;
+      // warm start from u^n (good initial guess for the time step). With advection on, the
+      // velocity-MG is rebuilt each step from the full (viscous + FOU) operator, so it is an
+      // accurate preconditioner (M ≈ A) and the robust MG-preconditioned defect correction
+      // converges where BiCGStab breaks down on the strongly non-symmetric operator. Stokes
+      // keeps the faster BiCGStab.
+      auto R = advect_
+                   ? momSolver_.solveDefectCorrection(momOp_, u_[c], View<const double>(bmom_), momIters, momTol_)
+                   : momSolver_.solveBiCGStab(momOp_, u_[c], View<const double>(bmom_), momIters, momTol_);
+      lastMomIters_ += R.iters;
     }
     project(presIters);
   }
@@ -317,13 +497,19 @@ class DeviceAmrFlow {
     deviceDivergence(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
                      View<const double>(u_[2]), div_);
     Kokkos::deep_copy(phi_, 0.0);
-    if (presPCG_) {
+    // Advection (transient NS) uses the stationary V-cycle, not MG-PCG: the large per-step
+    // divergence of a far-from-steady field excites a near-nullspace mode of the cut-cell
+    // openness Poisson (a near-disconnected fluid pocket) that CG amplifies (the global
+    // mean-removal only deflates the constant), blowing the projection up; the V-cycle is
+    // bounded. Stokes (compatible, near-steady divergence) keeps the faster MG-PCG.
+    if (presPCG_ && !advect_) {
       lastPresIters_ = pcg_.solve(presMG_, phi_, View<const double>(div_), presIters, 1e-10).iters;
     } else {
       Kokkos::deep_copy(presMG_.b(0), div_);
       Kokkos::deep_copy(presMG_.x(0), 0.0);
       for (int it = 0; it < presIters; ++it) presMG_.vcycle(2, 2, 60, 0.8);
       Kokkos::deep_copy(phi_, presMG_.x(0));
+      lastPresIters_ = presIters;
     }
     deviceGrad3(geom_, View<const double>(phi_), gx_[0], gx_[1], gx_[2]);
     for (int c = 0; c < 3; ++c) deviceCorrect(u_[c], View<const double>(gx_[c]), View<const char>(fluid_), n);
@@ -331,6 +517,30 @@ class DeviceAmrFlow {
                      View<const char>(fluid_), rho_ / dt_, mu_, n);
   }
 
+  /// DEBUG: the raw high-order advection ∇·(u u_comp) per cell from the current velocity
+  /// (== host AmrFlow::advectTerm). Isolates the SOU kernel from the solve.
+  std::vector<double> debugSou(int comp) {
+    View<double> s("dbg_sou", static_cast<std::size_t>(n_));
+    deviceAdvectExplicit(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
+                         View<const double>(u_[2]), comp, 1.0, advScheme_, s);
+    std::vector<double> h(static_cast<std::size_t>(n_));
+    auto m = Kokkos::create_mirror_view(s);
+    Kokkos::deep_copy(m, s);
+    for (Index i = 0; i < n_; ++i) h[static_cast<std::size_t>(i)] = m(i);
+    return h;
+  }
+  /// Copy a device View into a host vector (sized n_).
+  void copyToHost(const View<double>& d, std::vector<double>& h) const {
+    auto m = Kokkos::create_mirror_view(d);
+    Kokkos::deep_copy(m, d);
+    for (Index i = 0; i < n_; ++i) h[static_cast<std::size_t>(i)] = m(i);
+  }
+  /// Set a velocity component from host (testing / initial conditions).
+  void setVelocity(int c, const std::vector<double>& h) {
+    auto m = Kokkos::create_mirror_view(u_[c]);
+    for (Index i = 0; i < n_; ++i) m(i) = h[static_cast<std::size_t>(i)];
+    Kokkos::deep_copy(u_[c], m);
+  }
   /// Copy a velocity component back to host.
   std::vector<double> velocity(int c) const {
     std::vector<double> h(static_cast<std::size_t>(n_));
@@ -381,6 +591,9 @@ class DeviceAmrFlow {
   bool presPCG_ = true;
   bool momMGon_ = true;   // Galerkin velocity-MG momentum preconditioner (scalable; see setMomentumMG)
   double momTol_ = 1e-8;  // per-step momentum BiCGStab relative tolerance (Phase-0 knob)
+  bool advect_ = false;       // momentum advection ∇·(u u) (off ⇒ Stokes)
+  bool implicitFou_ = true;   // implicit-FOU deferred-correction (stable) vs fully-explicit
+  int advScheme_ = 0;         // high-order flux: 0 = SOU (default), 1 = Koren TVD
   Index n_ = 0;
   int lastMomIters_ = 0, lastPresIters_ = 0;
 
@@ -391,6 +604,8 @@ class DeviceAmrFlow {
   DeviceMomentumOp momOp_;
   DeviceMomentumSolver<Bits> momSolver_;
   DevicePCG<3, Bits> pcg_;
+  std::array<View<double>, 3> defc_;       // explicit ρ(SOU−FOU) deferred correction per component
+  std::array<std::vector<double>, 3> uadvHost_;  // host cache of u^n for the per-step operator rebuild
   DeviceFaceGeom geom_;
   View<double> rscale_;
   View<char> fluid_;
