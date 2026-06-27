@@ -357,6 +357,9 @@ class Flow {
 
   // Volume-weighted L2 norm of the residual cell divergence (a projection-quality diagnostic).
   double divergence_norm() { return flow_.divNormL2(); }
+  // L2 norm of the divergence of the ABC divergence-free FACE field (≈ the pressure-solve residual,
+  // far below divergence_norm — including across 2:1 interfaces).
+  double divergence_norm_face() { return flow_.divNormFace(); }
 
  private:
   amr::AmrFlow<> flow_;  // the canonical device (Kokkos) AMR flow
@@ -625,7 +628,10 @@ PYBIND11_MODULE(tpx_amr, m) {
            "All three velocity components, (num_leaves, 3) float64.")
       .def("is_fluid", &Flow::is_fluid, "Per-leaf fluid mask (False in the solid), (num_leaves,) bool.")
       .def("divergence_norm", &Flow::divergence_norm,
-           "Volume-weighted L2 norm of the residual cell divergence (projection-quality diagnostic).");
+           "Volume-weighted L2 norm of the residual cell divergence (projection-quality diagnostic).")
+      .def("divergence_norm_face", &Flow::divergence_norm_face,
+           "L2 norm of the divergence of the ABC divergence-free FACE field (≈ pressure-solve "
+           "residual, far below divergence_norm — including across 2:1 interfaces).");
 
   py::class_<DistributedOctree>(
       m, "DistributedOctree",

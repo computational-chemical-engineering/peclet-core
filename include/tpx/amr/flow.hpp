@@ -146,6 +146,52 @@ inline void deviceDivergence(const FaceGeom& g, View<const double> u0, View<cons
       });
 }
 
+/// Build the ABC/Basilisk divergence-free FACE field: uf(k) = ½(u^axis_i+u^axis_j) − (φ₊−φ₋)/dist for
+/// face k of cell i (+axis velocity), from u* (call after the pressure solve, before the cell gradient
+/// correction). Because L = D·G_face on the SAME (sub)faces, D(uf) = D u* − Lφ = 0 (to the φ residual).
+/// Each (sub)face is written from both incident cells; the +axis-orientation build makes the two copies
+/// identical, including across 2:1 interfaces (fine area + (φ_fine−φ_coarse)/dist on each sub-face).
+inline void deviceBuildFaceField(const FaceGeom& g, View<const double> u0, View<const double> u1,
+                                 View<const double> u2, View<const double> phi, View<double> uf) {
+  auto st = g.start;
+  auto nb = g.nbr;
+  auto ax = g.axis;
+  auto dr = g.dir;
+  auto di = g.dist;
+  Kokkos::parallel_for(
+      "amr::flow_buildface", g.n, KOKKOS_LAMBDA(const Index i) {
+        for (Index k = st(i); k < st(i + 1); ++k) {
+          const int a = ax(k);
+          const Index j = nb(k);
+          const double ui = (a == 0) ? u0(i) : (a == 1) ? u1(i) : u2(i);
+          const double uj = (a == 0) ? u0(j) : (a == 1) ? u1(j) : u2(j);
+          const double gphi = (dr(k) > 0) ? (phi(j) - phi(i)) / di(k) : (phi(i) - phi(j)) / di(k);
+          uf(k) = 0.5 * (ui + uj) - gphi;
+        }
+      });
+}
+
+/// L2 norm of the divergence of the FACE field uf (the div-free flux diagnostic / host-parity check).
+inline double deviceDivFaceNorm(const FaceGeom& g, View<const double> uf) {
+  auto st = g.start;
+  auto dr = g.dir;
+  auto aA = g.alphaArea;
+  auto iv = g.invVol;
+  auto fl = g.fluid;
+  double s = 0.0;
+  Kokkos::parallel_reduce(
+      "amr::flow_divface", g.n,
+      KOKKOS_LAMBDA(const Index i, double& acc) {
+        if (!fl(i)) return;
+        double d = 0.0;
+        for (Index k = st(i); k < st(i + 1); ++k) d += aA(k) * dr(k) * uf(k);
+        d *= iv(i);
+        acc += d * d;
+      },
+      s);
+  return std::sqrt(s);
+}
+
 /// ABC cell-gradient of a scalar field `f`: gx/gy/gz = ½(g⁻+g⁺) of the adjacent face
 /// gradients along each axis, a closed face (α≤1e-12) contributing nothing (and not
 /// counted). On fluid cells only. Mirrors oracle::AmrFlow::gradOf for all three components.
@@ -509,6 +555,7 @@ class AmrFlow {
     p_ = View<double>("df_p", static_cast<std::size_t>(n));
     phi_ = View<double>("df_phi", static_cast<std::size_t>(n));
     div_ = View<double>("df_div", static_cast<std::size_t>(n));
+    uf_ = View<double>("df_uf", geom_.nbr.extent(0));  // ABC divergence-free face field (per CSR face)
     bmom_ = View<double>("df_bmom", static_cast<std::size_t>(n));
     Kokkos::deep_copy(p_, 0.0);
     // Implicit-FOU advection state. The momentum operator + its velocity-MG are rebuilt each
@@ -647,6 +694,9 @@ class AmrFlow {
       Kokkos::deep_copy(phi_, presMG_.x(0));
       lastPresIters_ = presIters;
     }
+    // Build the divergence-free FACE field from u* (still in u_) + φ, before the cell correction.
+    deviceBuildFaceField(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
+                         View<const double>(u_[2]), View<const double>(phi_), uf_);
     deviceGrad3(geom_, View<const double>(phi_), gx_[0], gx_[1], gx_[2]);
     for (int c = 0; c < 3; ++c) deviceCorrect(u_[c], View<const double>(gx_[c]), View<const char>(fluid_), n);
     devicePresUpdate(p_, View<const double>(phi_), View<const double>(div_),
@@ -713,6 +763,17 @@ class AmrFlow {
     deviceDivergence(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
                      View<const double>(u_[2]), div_);
     return std::sqrt(dotPlain(View<const double>(div_), View<const double>(div_), n_));
+  }
+  /// L2 norm of the divergence of the ABC face field uf_ (built each project()): the φ-solve residual,
+  /// far below the cell field's O(h²) divNormL2 — including across 2:1 interfaces.
+  double divNormFace() { return deviceDivFaceNorm(geom_, View<const double>(uf_)); }
+  /// Copy the divergence-free face field to host (one value per CSR (sub)face, forEachFaceFull order).
+  std::vector<double> faceField() const {
+    std::vector<double> h(uf_.extent(0));
+    auto m = Kokkos::create_mirror_view(uf_);
+    Kokkos::deep_copy(m, uf_);
+    for (std::size_t k = 0; k < h.size(); ++k) h[k] = m(k);
+    return h;
   }
   Index numLeaves() const { return n_; }
   /// Per-leaf fluid mask (false inside the solid) — for host-side post-processing / bindings.
@@ -783,6 +844,7 @@ class AmrFlow {
   std::array<View<double>, 3> u_, gx_;
   std::array<View<double>, 3> u0_, uprev_;  // frozen uⁿ (BE mass term) + previous Picard outer iterate
   View<double> p_, phi_, div_, bmom_;
+  View<double> uf_;  // ABC/Basilisk divergence-free face field (one per CSR (sub)face)
 };
 
 }  // namespace tpx::amr
