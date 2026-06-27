@@ -341,6 +341,10 @@ class DistributedFvOperator {
 /// guarded by `level < lmax` — so every rank stops at the uniform root brick and no
 /// cross-block re-decomposition is needed). 2:1 grading is preserved by uniform
 /// coarsening; the consistent per-level operator handles whatever grading remains.
+/// Ranks reach the root brick after DIFFERENT numbers of coarsening steps (deep vs
+/// shallow blocks), so the level count is padded to the global max with identity
+/// root-brick levels — otherwise the per-level collective gather deadlocks at np>1
+/// (see buildImpl).
 ///
 /// Transfers are local: a fine leaf's covering coarse leaf is in the same block
 /// (parents never cross root cells), so restriction (average children) and
@@ -393,6 +397,26 @@ class GradedDistributedMultigrid {
       lv->d.init(g, lmax, geo, per, comm);
       lv->d.local() = coarse;  // same ORB block, coarsened local octree
       levels_.push_back(std::move(lv));
+    }
+    // The coarsening above stops per-rank when this block reaches its root brick, so a
+    // rank owning shallow blocks builds FEWER levels than one owning deep refinement.
+    // Each level's op.init / vcycle drives a COLLECTIVE owner request/reply (coverLevels,
+    // coverValues over `comm`), so an unequal level count would mismatch the collectives
+    // and deadlock at np>1. Pad every rank up to the global max with repeats of its root
+    // brick: the extra levels are identity transfers (c2p maps a root cell to itself), a
+    // no-op in the V-cycle — and they exactly mirror what the whole-domain COMM_SELF
+    // reference does in its already-coarse regions, so the bit-exact WORLD==SELF check is
+    // preserved. (Allreduce on COMM_SELF is a no-op, leaving the serial path unchanged.)
+    {
+      int localLevels = static_cast<int>(levels_.size());
+      int globalLevels = localLevels;
+      MPI_Allreduce(&localLevels, &globalLevels, 1, MPI_INT, MPI_MAX, comm);
+      while (static_cast<int>(levels_.size()) < globalLevels) {
+        auto lv = std::make_unique<Level>();
+        lv->d.init(g, lmax, geo, per, comm);
+        lv->d.local() = levels_.back()->d.local();  // repeat the root brick (identity level)
+        levels_.push_back(std::move(lv));
+      }
     }
     for (auto& lv : levels_) {
       lv->op.init(lv->d, openFn);
