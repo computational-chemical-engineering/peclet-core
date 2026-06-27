@@ -86,6 +86,12 @@ target_link_libraries(test_amr_drag PRIVATE tpx_core)
 target_include_directories(test_amr_drag PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME amr_drag COMMAND test_amr_drag)
 
+# ABC/Basilisk divergence-free face field (uniform + graded 2:1).
+add_executable(test_amr_face_field test_amr_face_field.cpp)
+target_link_libraries(test_amr_face_field PRIVATE tpx_core)
+target_include_directories(test_amr_face_field PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME amr_face_field COMMAND test_amr_face_field)
+
 # Barnes-Hut particle-tree mode over the octree.
 add_executable(test_amr_barnes_hut test_amr_barnes_hut.cpp)
 target_link_libraries(test_amr_barnes_hut PRIVATE tpx_core)
