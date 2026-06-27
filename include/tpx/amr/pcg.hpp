@@ -48,16 +48,44 @@ inline double dotVol(View<const double> u, View<const double> v, View<const doub
   return s;
 }
 
-/// Project u to volume-weighted-mean-zero (nullspace removal for the singular operator).
-inline void removeMeanVol(View<double> u, View<const double> invVol, Index n) {
+/// Build the fluid mask: mask(i)=1 where the operator diagonal Σ_f w_f (+ bcDiag) is non-trivial,
+/// 0 for a solid cell (every face closed by the cut-cell openness ⇒ Σ w_f = 0). These solid cells
+/// carry their own (per connected solid region) constant null modes; left in the Krylov space CG
+/// amplifies them (the cut-cell-openness near-nullspace blow-up). We project them out — same role as
+/// sdflow's mg_mask_solid_k. Geometry-fixed, so it is rebuilt once per solve.
+inline void buildFluidMask(const FvOp& op, View<double> mask, Index n) {
+  auto start = op.faceStart;
+  auto w = op.faceW;
+  auto bc = op.bcDiag;
+  Kokkos::parallel_for(
+      "amr::pcg_fluidmask", n, KOKKOS_LAMBDA(const Index i) {
+        double d = bc(i);
+        for (Index k = start(i); k < start(i + 1); ++k) d += w(k);
+        mask(i) = (d > 1e-30) ? 1.0 : 0.0;
+      });
+}
+
+/// Zero the solid cells (project out the solid null modes).
+inline void maskSolid(View<double> u, View<const double> mask, Index n) {
+  Kokkos::parallel_for(
+      "amr::pcg_masksolid", n, KOKKOS_LAMBDA(const Index i) { u(i) *= mask(i); });
+}
+
+/// Project u onto the FLUID range: zero solid cells, then subtract the volume-weighted mean over the
+/// fluid cells only (the constant null mode of the connected fluid region). The mean must exclude the
+/// pinned solid cells — including them dilutes it and lets the solid drift.
+inline void removeMeanVol(View<double> u, View<const double> invVol, View<const double> mask, Index n) {
+  Kokkos::parallel_for(
+      "amr::pcg_masksolid", n, KOKKOS_LAMBDA(const Index i) { u(i) *= mask(i); });
   double su = 0.0, sv = 0.0;
   Kokkos::parallel_reduce(
-      "amr::pcg_meannum", n, KOKKOS_LAMBDA(const Index i, double& a) { a += u(i) / invVol(i); }, su);
+      "amr::pcg_meannum", n,
+      KOKKOS_LAMBDA(const Index i, double& a) { a += mask(i) * u(i) / invVol(i); }, su);
   Kokkos::parallel_reduce(
-      "amr::pcg_meanden", n, KOKKOS_LAMBDA(const Index i, double& a) { a += 1.0 / invVol(i); }, sv);
-  const double m = su / sv;
+      "amr::pcg_meanden", n, KOKKOS_LAMBDA(const Index i, double& a) { a += mask(i) / invVol(i); }, sv);
+  const double m = (sv > 0.0) ? su / sv : 0.0;
   Kokkos::parallel_for(
-      "amr::pcg_meansub", n, KOKKOS_LAMBDA(const Index i) { u(i) -= m; });
+      "amr::pcg_meansub", n, KOKKOS_LAMBDA(const Index i) { u(i) -= mask(i) * m; });
 }
 
 /// y += a·x
@@ -116,45 +144,58 @@ class PCG {
     const FvOp& op = mg.op(0);
     View<const double> invVol(op.invVol);
     ensure(n);
+    buildFluidMask(op, mask_, n);
+    View<const double> mask(mask_);
     Result R;
+    // Project onto the fluid range: always zero the solid cells (their per-region null modes); for the
+    // singular (periodic/all-Neumann) operator also remove the fluid constant. Applied to every Krylov
+    // quantity so the iteration stays in the well-posed fluid range (mirrors sdflow removeMean∘maskSolid).
+    auto project = [&](View<double> u) {
+      if (singular_)
+        removeMeanVol(u, invVol, mask, n);
+      else
+        maskSolid(u, mask, n);
+    };
 
     // x = 0 ; r = b_A − A·0 = b_A = −rhs (A = −L, b_A = −rhs)
     Kokkos::deep_copy(x, 0.0);
     Kokkos::deep_copy(r_, rhs);
     negate(r_, n);
-    if (singular_) removeMeanVol(r_, invVol, n);
+    project(r_);
     R.res0 = std::sqrt(dotVol(View<const double>(r_), View<const double>(r_), invVol, n));
     if (R.res0 == 0.0) return R;
 
     applyPrec(mg, r_, z_, n);                  // z = M^{-1} r ≈ A^{-1} r
-    if (singular_) removeMeanVol(z_, invVol, n);
+    project(z_);
     Kokkos::deep_copy(p_, z_);
     double rz = dotVol(View<const double>(r_), View<const double>(z_), invVol, n);
 
     int it = 0;
     double rnorm = R.res0;
     for (; it < maxIters; ++it) {
-      // Ap = A p = −L p
+      // Ap = A p = −L p, projected back onto the fluid range (keeps the search directions there).
       deviceApplyFv(op, View<const double>(p_), Ap_);
       negate(Ap_, n);
+      project(Ap_);
       double pAp = dotVol(View<const double>(p_), View<const double>(Ap_), invVol, n);
       if (pAp == 0.0) break;
       double alpha = rz / pAp;
       axpy(x, alpha, View<const double>(p_), n);    // x += α p
       axpy(r_, -alpha, View<const double>(Ap_), n);  // r −= α Ap
-      if (singular_) removeMeanVol(r_, invVol, n);
+      project(r_);
       rnorm = std::sqrt(dotVol(View<const double>(r_), View<const double>(r_), invVol, n));
       if (rnorm <= tol * R.res0) {
         ++it;
         break;
       }
       applyPrec(mg, r_, z_, n);
-      if (singular_) removeMeanVol(z_, invVol, n);
+      project(z_);
       double rzNew = dotVol(View<const double>(r_), View<const double>(z_), invVol, n);
       double beta = rzNew / rz;
       zpby(p_, View<const double>(z_), beta, n);  // p = z + β p
       rz = rzNew;
     }
+    project(x);  // solid cells exactly 0; fluid mean removed (singular)
     R.iters = it;
     R.res = rnorm;
     return R;
@@ -177,9 +218,10 @@ class PCG {
     z_ = View<double>("pcg_z", static_cast<std::size_t>(n));
     p_ = View<double>("pcg_p", static_cast<std::size_t>(n));
     Ap_ = View<double>("pcg_Ap", static_cast<std::size_t>(n));
+    mask_ = View<double>("pcg_fluidmask", static_cast<std::size_t>(n));
   }
 
-  View<double> r_, z_, p_, Ap_;
+  View<double> r_, z_, p_, Ap_, mask_;
   int pre_ = 2, post_ = 2, bottom_ = 40;
   double omega_ = 0.8;
   int cyclesPerPrec_ = 1;
