@@ -142,7 +142,7 @@ if rank == 0:
     flow.set_solid(lambda x, y, z: min(x - a, b - x))  # >0 inside the channel
     flow.set_body_force(0.0, 1.0, 0.0)
     for _ in range(5):
-        flow.step(mom_sweeps=300, pres_iters=80, pres_sweeps=4)
+        flow.step(mom_iters=300, pres_iters=80)
     cc2 = tc.centers()
     xcoord = cc2[:, 0]
     uy = flow.velocity(1)
@@ -162,7 +162,7 @@ if rank == 0:
     # exact parabola.
     flow.set_advection(True)
     for _ in range(5):
-        flow.step(mom_sweeps=300, pres_iters=80, pres_sweeps=4)
+        flow.step(mom_iters=300, pres_iters=80)
     uy2 = flow.velocity(1)
     rel2 = np.abs(uy2[inside] - u_par).max() / u_par.max()
     check(rel2 < 1e-6, f"Poiseuille with advection off parabola (rel err {rel2:.2e})")

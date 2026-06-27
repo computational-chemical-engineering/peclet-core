@@ -63,7 +63,7 @@ def example_poiseuille() -> None:
     flow.set_solid(lambda x, y, z: min(x - a, b - x))  # >0 inside the channel
     flow.set_body_force(0.0, 1.0, 0.0)  # drive the flow along y
     for _ in range(5):
-        flow.step(mom_sweeps=300, pres_iters=80)
+        flow.step(mom_iters=300, pres_iters=80)
 
     x = oct.centers()[:, 0]
     uy = flow.velocity(1)

@@ -30,11 +30,14 @@
 #include <string>
 #include <vector>
 
+#include <Kokkos_Core.hpp>
+
 #include "tpx/amr/adapt.hpp"
 #include "tpx/amr/block_octree.hpp"
+#include "tpx/amr/device_flow.hpp"  // the canonical (device) AmrFlow exposed to Python
 #include "tpx/amr/distributed_adapt.hpp"
 #include "tpx/amr/distributed_octree.hpp"
-#include "tpx/amr/flow.hpp"
+#include "tpx/amr/flow.hpp"  // oracle::AmrFlow (dev-only reference; not exposed)
 #include "tpx/amr/indicators.hpp"
 #include "tpx/amr/leaf_field.hpp"
 #include "tpx/amr/poisson.hpp"
@@ -313,10 +316,15 @@ class Flow {
     flow_.setSolid([&](const Vec<3>& p) { return sdf(p[0], p[1], p[2]); });
   }
 
+  // Momentum solver controls (device path): velocity multigrid + smoother selection.
+  void set_momentum_mg(bool on) { flow_.setMomentumMG(on); }
+  void set_momentum_gs(bool on) { flow_.setMomentumGS(on); }
+  void set_velocity_mg_staircase(bool on) { flow_.setVelocityMGStaircase(on); }
+  void set_momentum_mg_solver(bool on) { flow_.setMomentumMGSolver(on); }
+  void set_outer_iterations(int n, double tol) { flow_.setOuterIterations(n, tol); }
+
   // Advance one collocated projection step (Stokes, or NS if advection is on).
-  void step(int mom_sweeps, int pres_iters, int pres_sweeps) {
-    flow_.step(mom_sweeps, pres_iters, pres_sweeps);
-  }
+  void step(int mom_iters, int pres_iters) { flow_.step(mom_iters, pres_iters); }
 
   // Per-leaf velocity component c (0=x,1=y,2=z) -> (num_leaves,) float64.
   py::array_t<double> velocity(int c) const {
@@ -348,10 +356,10 @@ class Flow {
   }
 
   // Volume-weighted L2 norm of the residual cell divergence (a projection-quality diagnostic).
-  double divergence_norm() { return flow_.divNormL2(flow_.velocityRef()); }
+  double divergence_norm() { return flow_.divNormL2(); }
 
  private:
-  amr::oracle::AmrFlow<> flow_;  // TODO(phase-1b): rewire to the device amr::AmrFlow (Kokkos)
+  amr::AmrFlow<> flow_;  // the canonical device (Kokkos) AMR flow
   Index n_;
 };
 
@@ -491,10 +499,17 @@ class DistributedOctree {
 }  // namespace
 
 PYBIND11_MODULE(tpx_amr, m) {
+  // The Flow path runs Kokkos kernels — initialise the device runtime on import (the backend/arch is
+  // fixed by the prefix the module was built against). We deliberately do NOT register an atexit
+  // Kokkos::finalize: Python objects holding Kokkos Views (e.g. a live Flow) can outlive atexit, and
+  // finalising first aborts ("deallocated after Kokkos::finalize"). Leaving Kokkos initialised until
+  // process teardown is safe; the OS reclaims the runtime.
+  if (!Kokkos::is_initialized()) Kokkos::initialize();
   m.doc() =
-      "transport-core adaptive-mesh-refinement octree (host path): per-block BlockOctree (serial) "
-      "and DistributedOctree (MPI ORB). Build a graded octree, refine to an SDF surface, read leaf "
-      "geometry + per-leaf fields as numpy, load-rebalance, gather face neighbours, export VTU.";
+      "transport-core adaptive-mesh-refinement: per-block BlockOctree (serial) and DistributedOctree "
+      "(MPI ORB) for the mesh, plus the device (Kokkos) AmrFlow cut-cell Stokes/Navier-Stokes solver. "
+      "Build a graded octree, refine to an SDF surface, read leaf geometry + per-leaf fields as numpy, "
+      "load-rebalance, gather face neighbours, export VTU, and run the flow step on device.";
 
   py::class_<Octree>(m, "Octree",
                      "Serial single-block adaptive octree with a world placement (origin + finest "
@@ -588,10 +603,22 @@ PYBIND11_MODULE(tpx_amr, m) {
       .def("set_implicit_advection", &Flow::set_implicit_advection, py::arg("on"),
            "Implicit first-order-upwind deferred-correction advection (default on): unconditionally "
            "stable. Off = fully explicit high-order advection.")
-      .def("step", &Flow::step, py::arg("mom_sweeps") = 200, py::arg("pres_iters") = 60,
-           py::arg("pres_sweeps") = 4,
-           "Advance one collocated projection step: `mom_sweeps` Gauss-Seidel sweeps per momentum "
-           "component, `pres_iters` pressure V-cycles.")
+      .def("set_momentum_mg", &Flow::set_momentum_mg, py::arg("on"),
+           "Use the Galerkin velocity multigrid as the momentum solve preconditioner (default on; "
+           "makes the momentum solve scale with resolution). Call before set_solid.")
+      .def("set_momentum_gs", &Flow::set_momentum_gs, py::arg("on"),
+           "Use the symmetric multicolour Gauss-Seidel smoother in the momentum multigrid (default "
+           "off = weighted Jacobi). Call before set_solid.")
+      .def("set_velocity_mg_staircase", &Flow::set_velocity_mg_staircase, py::arg("on"),
+           "Use the rediscretised staircase velocity-MG instead of Galerkin (default off).")
+      .def("set_momentum_mg_solver", &Flow::set_momentum_mg_solver, py::arg("on"),
+           "Solve the momentum predictor with the velocity-MG as the solver (no Krylov), mirroring "
+           "sdflow's velocity solve (default off = BiCgStab with the MG as preconditioner).")
+      .def("set_outer_iterations", &Flow::set_outer_iterations, py::arg("n"), py::arg("tol") = 1e-6,
+           "Picard outer iterations over the lagged advection per step (default 1).")
+      .def("step", &Flow::step, py::arg("mom_iters") = 100, py::arg("pres_iters") = 60,
+           "Advance one collocated projection step on device: `mom_iters` momentum solver iterations "
+           "(BiCGStab/MG), `pres_iters` pressure MG-PCG iterations.")
       .def("velocity", &Flow::velocity, py::arg("component"),
            "Per-leaf velocity component (0=x,1=y,2=z), (num_leaves,) float64.")
       .def("velocities", &Flow::velocities,

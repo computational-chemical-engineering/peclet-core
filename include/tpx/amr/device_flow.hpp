@@ -715,6 +715,8 @@ class AmrFlow {
     return std::sqrt(dotPlain(View<const double>(div_), View<const double>(div_), n_));
   }
   Index numLeaves() const { return n_; }
+  /// Per-leaf fluid mask (false inside the solid) — for host-side post-processing / bindings.
+  bool isFluid(Index i) const { return mom_.isFluid(i); }
   /// Total momentum BiCGStab iterations (summed over the 3 components) of the last step.
   int lastMomIters() const { return lastMomIters_; }
   /// Pressure PCG iterations of the last step.
