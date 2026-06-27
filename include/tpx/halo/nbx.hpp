@@ -12,7 +12,7 @@
 //
 // This is the right engine for DYNAMIC / SPARSE patterns where neither the neighbour set nor the
 // message sizes are known ahead of time (particle migration, halo-topology setup). For STATIC grid
-// halos use tpx::halo::GridHalo's persistent-neighbour path instead.
+// halos use tpx::halo::GridHaloTopology's persistent-neighbour path instead.
 #ifndef TPX_HALO_NBX_HPP
 #define TPX_HALO_NBX_HPP
 

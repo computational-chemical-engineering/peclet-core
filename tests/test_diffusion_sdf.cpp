@@ -4,7 +4,7 @@
 // a field through a domain containing solids). A sphere (tpx::geom, negative inside) sits in the
 // middle of a periodic box; cells inside the solid are held at zero (a simple Dirichlet immersed
 // boundary), fluid cells diffuse with a 7-point stencil. The distributed run (block decomposition +
-// GridHalo each step) must match an independent serial integration cell-for-cell.
+// GridHaloTopology each step) must match an independent serial integration cell-for-cell.
 #include <mpi.h>
 
 #include <array>
@@ -20,7 +20,7 @@ using namespace tpx;
 using tpx::decomp::BlockDecomposer;
 using tpx::geom::Sphere;
 using tpx::halo::GridFieldView;
-using tpx::halo::GridHalo;
+using tpx::halo::GridHaloTopology;
 
 static constexpr int kDim = 3;
 static constexpr double kCoeff = 0.1;
@@ -83,7 +83,7 @@ int main(int argc, char** argv) {
   std::vector<double> ref = serialReference(dec, obstacle);
 
   const std::array<bool, kDim> periodic{true, true, true};
-  GridHalo<kDim> halo;
+  GridHaloTopology<kDim> halo;
   halo.buildTopology(dec, rank, /*ghost=*/1, periodic, MPI_COMM_WORLD);
   const auto& idx = halo.indexer();
 

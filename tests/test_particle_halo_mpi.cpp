@@ -1,4 +1,4 @@
-// MPI correctness of the persistent ParticleHalo (forward / forwardPositions / reverse-accumulate).
+// MPI correctness of the persistent ParticleHaloTopology (forward / forwardPositions / reverse-accumulate).
 //
 // After migration each rank owns its block's particles and builds the halo. We check against a
 // brute-force Allgather reference:
@@ -23,7 +23,7 @@
 using namespace tpx;
 using tpx::decomp::BlockDecomposer;
 using tpx::halo::DomainMap;
-using tpx::halo::ParticleHalo;
+using tpx::halo::ParticleHaloTopology;
 using tpx::halo::ParticleMigrator;
 
 struct GP {
@@ -74,7 +74,7 @@ int main(int argc, char** argv) {
   for (std::size_t i = 0; i < Nown; ++i) std::memcpy(&myid[i], &payload[i * stride], stride);
 
   // --- build halo ---
-  ParticleHalo<3> halo;
+  ParticleHaloTopology<3> halo;
   halo.init(mig);
   halo.build(pos, rcut);
   std::size_t G = halo.numGhost();
@@ -159,7 +159,7 @@ int main(int argc, char** argv) {
   // undecomposed periodic axis / np=1). Brute-force oracle: a self-ghost exists for each non-identity
   // periodic image (±L per axis) of an owned particle that comes within rcut of this rank's own block;
   // forwardPositions must place it at owner+shift, and forward(id) must carry the owner's id.
-  ParticleHalo<3> halo2;
+  ParticleHaloTopology<3> halo2;
   halo2.init(mig);
   halo2.build(pos, rcut, /*includePeriodicSelf=*/true);
   const std::size_t G2 = halo2.numGhost();
@@ -206,7 +206,7 @@ int main(int argc, char** argv) {
   long long gG = 0, lG = (long long)G;
   MPI_Reduce(&lG, &gG, 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
   if (rank == 0) {
-    std::printf("# ParticleHalo: ghosts=%lld (forward+forwardPositions+reverse checked)\n", gG);
+    std::printf("# ParticleHaloTopology: ghosts=%lld (forward+forwardPositions+reverse checked)\n", gG);
     if (total == 0)
       std::printf("OK (np=%d): forward / forwardPositions / reverse(sum) match brute force\n", size);
     else

@@ -1,10 +1,10 @@
 // transport-core — portable (Kokkos) device driver for the persistent Lagrangian ghost halo.
 //
 // Kokkos counterpart of the device-resident particle gather that packing-gpu hand-rolls
-// (gatherFloat4 / device-pointer MPI): it drives ParticleHalo<Dim>'s forward/reverse exchanges with
+// (gatherFloat4 / device-pointer MPI): it drives ParticleHaloTopology<Dim>'s forward/reverse exchanges with
 // on-device gather/scatter kernels, so per-particle attribute arrays stay on the GPU and only the
 // compact send/recv buffers are host-staged for MPI (or handed straight to a GPU-aware MPI via
-// TPX_GPU_AWARE_MPI). Topology comes from ParticleHalo::flatten(); results match the CPU exchange.
+// TPX_GPU_AWARE_MPI). Topology comes from ParticleHaloTopology::flatten(); results match the CPU exchange.
 //
 //   forward<T>(owned -> ghost)        : copy each owner's value into its ghost copies (verbatim).
 //   reverse<T>(ghost -> owned, +=)    : accumulate ghost contributions back onto owners (atomic).
@@ -26,14 +26,14 @@
 namespace tpx::halo {
 
 template <int Dim>
-class DeviceParticleHaloKokkos {
+class ParticleHalo {
  public:
-  DeviceParticleHaloKokkos() = default;
-  DeviceParticleHaloKokkos(const DeviceParticleHaloKokkos&) = delete;
-  DeviceParticleHaloKokkos& operator=(const DeviceParticleHaloKokkos&) = delete;
+  ParticleHalo() = default;
+  ParticleHalo(const ParticleHalo&) = delete;
+  ParticleHalo& operator=(const ParticleHalo&) = delete;
 
   /// Capture the (already-built) host halo's topology in device-friendly form.
-  void init(const ParticleHalo<Dim>& halo) {
+  void init(const ParticleHaloTopology<Dim>& halo) {
     auto t = halo.flatten();
     comm_ = halo.comm();
     sendRanks_ = t.sendRanks;

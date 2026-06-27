@@ -1,7 +1,7 @@
 // MPI + Kokkos correctness of the portable GPU-resident ghost-layer exchange.
 //
 // Build the halo topology on the host, then run the SAME logical exchange two ways: on the CPU
-// (GridHalo::exchangeNbx) and on the device via Kokkos (DeviceGridExchangeKokkos). The device result
+// (GridHaloTopology::exchangeNbx) and on the device via Kokkos (GridHalo). The device result
 // must match the CPU result bit-for-bit, and both must equal the analytic global field at every
 // ghost cell. Validates the pack/unpack/self-copy parallel_for kernels + the host-staging path across
 // ranks (all sharing one device). Mirrors test_grid_halo_cuda.cu but on the Kokkos backend.
@@ -20,9 +20,9 @@
 
 using namespace tpx;
 using tpx::decomp::BlockDecomposer;
-using tpx::halo::DeviceGridExchangeKokkos;
-using tpx::halo::GridFieldView;
 using tpx::halo::GridHalo;
+using tpx::halo::GridFieldView;
+using tpx::halo::GridHaloTopology;
 
 static constexpr int kDim = 3;
 static constexpr double kSentinel = -1.0;
@@ -41,7 +41,7 @@ int main(int argc, char** argv) {
     std::array<bool, kDim> periodic{true, true, true};
     BlockDecomposer<kDim> dec(static_cast<std::size_t>(size), gsize);
 
-    GridHalo<kDim> halo;
+    GridHaloTopology<kDim> halo;
     halo.buildTopology(dec, rank, /*ghost=*/1, periodic, MPI_COMM_WORLD);
     const auto& idx = halo.indexer();
     const Index n = idx.numCellsInclGhost();
@@ -66,7 +66,7 @@ int main(int argc, char** argv) {
     for (Index c = 0; c < n; ++c) hField(c) = a0[c];
     Kokkos::deep_copy(dField, hField);
 
-    DeviceGridExchangeKokkos<double> dev;
+    GridHalo<double> dev;
     dev.init(halo);
     dev.exchange(dField);
 

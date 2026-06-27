@@ -20,7 +20,7 @@
 //                             face-neighbour halo; the same call works graded.
 //
 // Owner lookups go through BlockDecomposer::ownerOf on global root-cell
-// coordinates — the same owner-based, no-Cartesian-assumption pattern GridHalo
+// coordinates — the same owner-based, no-Cartesian-assumption pattern GridHaloTopology
 // uses. Self-addressed messages are handled locally (no MPI send-to-self).
 //
 // Header-only, guarded by TPX_HAVE_MORTON; uses the MPI shim (tpx/common/mpi.hpp,

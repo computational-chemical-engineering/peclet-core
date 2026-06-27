@@ -1,7 +1,7 @@
 // MPI + Kokkos correctness of the device-driven Lagrangian ghost halo.
 //
 // Same setup as test_particle_halo_mpi.cpp, but run the persistent forward/reverse exchanges BOTH on
-// the CPU (ParticleHalo) and on the device (DeviceParticleHaloKokkos), and require the device result
+// the CPU (ParticleHaloTopology) and on the device (ParticleHalo), and require the device result
 // to match the CPU result bit-for-bit:
 //   forward(id)        -> each ghost carries its owner's id,
 //   reverse(ones, sum) -> each owned particle accumulates a count of how many ranks ghost it.
@@ -22,9 +22,9 @@
 
 using namespace tpx;
 using tpx::decomp::BlockDecomposer;
-using tpx::halo::DeviceParticleHaloKokkos;
-using tpx::halo::DomainMap;
 using tpx::halo::ParticleHalo;
+using tpx::halo::DomainMap;
+using tpx::halo::ParticleHaloTopology;
 using tpx::halo::ParticleMigrator;
 
 static double frac(std::uint64_t x, int s) {
@@ -78,7 +78,7 @@ int main(int argc, char** argv) {
       ownId[i] = (double)id;
     }
 
-    ParticleHalo<3> halo;
+    ParticleHaloTopology<3> halo;
     halo.init(mig);
     halo.build(pos, rcut);
     const std::size_t G = halo.numGhost();
@@ -89,7 +89,7 @@ int main(int argc, char** argv) {
     halo.reverse(ones.data(), ownCntCpu.data());
 
     // --- device exchanges ---
-    DeviceParticleHaloKokkos<3> dhalo;
+    ParticleHalo<3> dhalo;
     dhalo.init(halo);
 
     View<double> dOwn(Kokkos::view_alloc("own", Kokkos::WithoutInitializing), Nown);
@@ -131,7 +131,7 @@ int main(int argc, char** argv) {
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
   if (rank == 0) {
     if (total == 0)
-      std::printf("OK (np=%d): Kokkos particle forward/reverse match CPU ParticleHalo\n", size);
+      std::printf("OK (np=%d): Kokkos particle forward/reverse match CPU ParticleHaloTopology\n", size);
     else
       std::fprintf(stderr, "FAILED (np=%d): %d mismatches\n", size, total);
   }

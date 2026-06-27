@@ -4,7 +4,7 @@
 // rank=0, size=1, Allreduce/Bcast are local identities. The point-to-point and neighbourhood-collective
 // calls exist only so the single code path compiles and links; they are never reached at size 1.
 //
-// This keeps "one code": the same GridHalo / DeviceGridExchange / NbxEngine run, with MPI replaced by
+// This keeps "one code": the same GridHaloTopology / GridHalo / NbxEngine run, with MPI replaced by
 // these stubs. Build WITH MPI (the default) and this header is never included -- see tpx/common/mpi.hpp.
 #pragma once
 

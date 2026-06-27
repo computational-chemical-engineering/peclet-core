@@ -9,7 +9,7 @@
 //
 // It is a pure redistribution: the global particle set is unchanged (count conserved, positions and
 // payloads preserved); only ownership moves. The BlockDecomposer is re-initialised in place, so a
-// ParticleMigrator (or GridHalo) holding a pointer to it transparently sees the new partition.
+// ParticleMigrator (or GridHaloTopology) holding a pointer to it transparently sees the new partition.
 // MPI-optional: a single rank keeps every particle and the decomposition is unchanged.
 #ifndef TPX_HALO_PARTICLE_REBALANCE_HPP
 #define TPX_HALO_PARTICLE_REBALANCE_HPP

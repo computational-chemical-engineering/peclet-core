@@ -6,7 +6,7 @@
 // the consensus protocol is built for. Positions and an opaque fixed-stride payload travel together,
 // so the caller can carry velocity, orientation, id, etc. without this layer knowing the schema.
 //
-// This is the Lagrangian counterpart to tpx::halo::GridHalo (Eulerian ghost cells): same
+// This is the Lagrangian counterpart to tpx::halo::GridHaloTopology (Eulerian ghost cells): same
 // decomposition, same async engine, different payload — the field-agnostic design in action.
 #ifndef TPX_HALO_PARTICLE_MIGRATOR_HPP
 #define TPX_HALO_PARTICLE_MIGRATOR_HPP

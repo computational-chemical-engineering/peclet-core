@@ -1,4 +1,4 @@
-// End-to-end validation: a distributed explicit heat-diffusion solver built on GridHalo, checked
+// End-to-end validation: a distributed explicit heat-diffusion solver built on GridHaloTopology, checked
 // cell-for-cell against an independent serial reference.
 //
 // This is the real point of the halo layer: each step exchanges the ghost layer, then updates inner
@@ -19,7 +19,7 @@
 using namespace tpx;
 using tpx::decomp::BlockDecomposer;
 using tpx::halo::GridFieldView;
-using tpx::halo::GridHalo;
+using tpx::halo::GridHaloTopology;
 
 static constexpr int kDim = 3;
 static constexpr double kCoeff = 0.1;  // alpha*dt/dx^2; stability: kCoeff*2*Dim = 0.6 < 1
@@ -61,7 +61,7 @@ static std::vector<double> serialReference(const BlockDecomposer<kDim>& dec) {
 static int runDistributed(const BlockDecomposer<kDim>& dec, int rank,
                           const std::vector<double>& ref, bool persistent) {
   const std::array<bool, kDim> periodic{true, true, true};
-  GridHalo<kDim> halo;
+  GridHaloTopology<kDim> halo;
   halo.buildTopology(dec, rank, /*ghost=*/1, periodic, MPI_COMM_WORLD);
   const auto& idx = halo.indexer();
 

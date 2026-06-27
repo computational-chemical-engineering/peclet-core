@@ -40,9 +40,9 @@ struct GridFieldView {
 };
 
 template <int Dim>
-class GridHalo {
+class GridHaloTopology {
  public:
-  GridHalo() = default;
+  GridHaloTopology() = default;
 
   /// Build the halo topology for `rank`'s block of `dec`, with the given ghost width and per-axis
   /// periodicity. Communicates once (NBX) to establish matched send lists.
@@ -243,10 +243,10 @@ class GridHalo {
     return n;
   }
 
-  ~GridHalo() { freeGraphComm(); }
+  ~GridHaloTopology() { freeGraphComm(); }
 
-  GridHalo(const GridHalo&) = delete;
-  GridHalo& operator=(const GridHalo&) = delete;
+  GridHaloTopology(const GridHaloTopology&) = delete;
+  GridHaloTopology& operator=(const GridHaloTopology&) = delete;
 
  private:
   // Free the cached graph communicator, but never after MPI_Finalize (e.g. if this object outlives

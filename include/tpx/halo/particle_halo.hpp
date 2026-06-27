@@ -1,7 +1,7 @@
 // transport-core — persistent Lagrangian ghost halo with forward + reverse(accumulate) exchange.
 //
 // The generic communication machinery behind the standard parallel particle schemes (and the
-// Voronoi conservative-flux scheme). Same topology/exchange split as GridHalo: build() establishes a
+// Voronoi conservative-flux scheme). Same topology/exchange split as GridHaloTopology: build() establishes a
 // persistent owner<->ghost correspondence from particle proximity (rebuilt only when the neighbour
 // list rebuilds), then forward()/reverse() are cheap field-agnostic exchanges over it:
 //
@@ -31,7 +31,7 @@
 namespace tpx::halo {
 
 template <int Dim>
-class ParticleHalo {
+class ParticleHaloTopology {
  public:
   /// Bind to a migrator (provides the decomposition, domain map, rank and comm).
   void init(const ParticleMigrator<Dim>& mig) { mig_ = &mig; }

@@ -6,7 +6,7 @@
 // full field never crosses the bus — only the compact halo buffers are staged to the host for MPI.
 // A GPU-aware-MPI path (hand device pointers straight to MPI) is opt-in via the env var
 // TPX_GPU_AWARE_MPI (the legacy TPX_CUDA_AWARE_MPI is still honoured); host-staging is the portable
-// default. Topology comes from a host-built GridHalo<Dim>::flatten(), exactly like the CUDA version,
+// default. Topology comes from a host-built GridHaloTopology<Dim>::flatten(), exactly like the CUDA version,
 // and the result is bit-for-bit identical to the CPU exchange.
 #ifndef TPX_HALO_GRID_HALO_KOKKOS_HPP
 #define TPX_HALO_GRID_HALO_KOKKOS_HPP
@@ -36,16 +36,16 @@ inline bool gpuAwareMpi() {
 }  // namespace detail
 
 /// GPU ghost-layer exchange for a contiguous device field `tpx::View<T>` (one element per
-/// extended-block cell). Build once from a host GridHalo via init(); exchange() runs every step.
+/// extended-block cell). Build once from a host GridHaloTopology via init(); exchange() runs every step.
 template <class T>
-class DeviceGridExchangeKokkos {
+class GridHalo {
  public:
-  DeviceGridExchangeKokkos() = default;
-  DeviceGridExchangeKokkos(const DeviceGridExchangeKokkos&) = delete;
-  DeviceGridExchangeKokkos& operator=(const DeviceGridExchangeKokkos&) = delete;
+  GridHalo() = default;
+  GridHalo(const GridHalo&) = delete;
+  GridHalo& operator=(const GridHalo&) = delete;
 
   template <int Dim>
-  void init(const GridHalo<Dim>& halo) {
+  void init(const GridHaloTopology<Dim>& halo) {
     auto t = halo.flatten();
     comm_ = t.comm;
     sendRanks_ = t.sendRanks;

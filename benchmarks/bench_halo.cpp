@@ -18,7 +18,7 @@
 using namespace tpx;
 using tpx::decomp::BlockDecomposer;
 using tpx::halo::GridFieldView;
-using tpx::halo::GridHalo;
+using tpx::halo::GridHaloTopology;
 
 static constexpr int kDim = 3;
 
@@ -41,7 +41,7 @@ int main(int argc, char** argv) {
   std::array<bool, kDim> periodic{true, true, true};
 
   BlockDecomposer<kDim> dec(static_cast<std::size_t>(size), gsize);
-  GridHalo<kDim> halo;
+  GridHaloTopology<kDim> halo;
   double tBuild0 = now();
   halo.buildTopology(dec, rank, ghost, periodic, MPI_COMM_WORLD);
   double tBuild = now() - tBuild0;
