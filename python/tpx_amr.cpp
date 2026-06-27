@@ -34,10 +34,10 @@
 
 #include "tpx/amr/adapt.hpp"
 #include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/device_flow.hpp"  // the canonical (device) AmrFlow exposed to Python
+#include "tpx/amr/flow.hpp"  // the canonical (device) AmrFlow exposed to Python
 #include "tpx/amr/distributed_adapt.hpp"
 #include "tpx/amr/distributed_octree.hpp"
-#include "tpx/amr/flow.hpp"  // oracle::AmrFlow (dev-only reference; not exposed)
+#include "tpx/amr/flow_oracle.hpp"  // oracle::AmrFlow (dev-only reference; not exposed)
 #include "tpx/amr/indicators.hpp"
 #include "tpx/amr/leaf_field.hpp"
 #include "tpx/amr/poisson.hpp"

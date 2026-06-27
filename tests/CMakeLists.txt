@@ -98,57 +98,57 @@ target_link_libraries(test_amr_transport PRIVATE tpx_core)
 target_include_directories(test_amr_transport PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME amr_transport COMMAND test_amr_transport)
 
-# Device-resident block-octree queries (Kokkos): device locate / face-neighbour
+# Block-octree queries : device locate / face-neighbour
 # must match the host BlockOctree. No MPI needed; linking tpx_core pulls in Kokkos
 # + the morton include (+ MORTON_ENABLE_KOKKOS) under a Kokkos build.
 if(TPX_HAVE_KOKKOS)
-  add_executable(test_block_octree_kokkos test_block_octree_kokkos.cpp)
-  target_link_libraries(test_block_octree_kokkos PRIVATE tpx_core)
-  target_include_directories(test_block_octree_kokkos PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME block_octree_kokkos COMMAND test_block_octree_kokkos)
+  add_executable(test_block_octree_view test_block_octree_view.cpp)
+  target_link_libraries(test_block_octree_view PRIVATE tpx_core)
+  target_include_directories(test_block_octree_view PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME block_octree_view COMMAND test_block_octree_view)
 
-  add_executable(test_amr_device_poisson_kokkos test_amr_device_poisson_kokkos.cpp)
-  target_link_libraries(test_amr_device_poisson_kokkos PRIVATE tpx_core)
-  target_include_directories(test_amr_device_poisson_kokkos PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME amr_device_poisson_kokkos COMMAND test_amr_device_poisson_kokkos)
+  add_executable(test_amr_fv_op test_amr_fv_op.cpp)
+  target_link_libraries(test_amr_fv_op PRIVATE tpx_core)
+  target_include_directories(test_amr_fv_op PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME amr_fv_op COMMAND test_amr_fv_op)
 
-  add_executable(test_amr_device_multigrid_kokkos test_amr_device_multigrid_kokkos.cpp)
-  target_link_libraries(test_amr_device_multigrid_kokkos PRIVATE tpx_core)
-  target_include_directories(test_amr_device_multigrid_kokkos PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME amr_device_multigrid_kokkos COMMAND test_amr_device_multigrid_kokkos)
+  add_executable(test_amr_multigrid test_amr_multigrid.cpp)
+  target_link_libraries(test_amr_multigrid PRIVATE tpx_core)
+  target_include_directories(test_amr_multigrid PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME amr_multigrid COMMAND test_amr_multigrid)
 
-  add_executable(test_amr_device_openness_kokkos test_amr_device_openness_kokkos.cpp)
-  target_link_libraries(test_amr_device_openness_kokkos PRIVATE tpx_core)
-  target_include_directories(test_amr_device_openness_kokkos PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME amr_device_openness_kokkos COMMAND test_amr_device_openness_kokkos)
+  add_executable(test_amr_fv_openness test_amr_fv_openness.cpp)
+  target_link_libraries(test_amr_fv_openness PRIVATE tpx_core)
+  target_include_directories(test_amr_fv_openness PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME amr_fv_openness COMMAND test_amr_fv_openness)
 
-  add_executable(test_amr_kappa_restrict_kokkos test_amr_kappa_restrict_kokkos.cpp)
-  target_link_libraries(test_amr_kappa_restrict_kokkos PRIVATE tpx_core)
-  target_include_directories(test_amr_kappa_restrict_kokkos PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME amr_kappa_restrict_kokkos COMMAND test_amr_kappa_restrict_kokkos)
+  add_executable(test_amr_kappa_restrict test_amr_kappa_restrict.cpp)
+  target_link_libraries(test_amr_kappa_restrict PRIVATE tpx_core)
+  target_include_directories(test_amr_kappa_restrict PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME amr_kappa_restrict COMMAND test_amr_kappa_restrict)
 
-  add_executable(test_amr_kappa_dirichlet_kokkos test_amr_kappa_dirichlet_kokkos.cpp)
-  target_link_libraries(test_amr_kappa_dirichlet_kokkos PRIVATE tpx_core)
-  target_include_directories(test_amr_kappa_dirichlet_kokkos PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME amr_kappa_dirichlet_kokkos COMMAND test_amr_kappa_dirichlet_kokkos)
+  add_executable(test_amr_kappa_dirichlet test_amr_kappa_dirichlet.cpp)
+  target_link_libraries(test_amr_kappa_dirichlet PRIVATE tpx_core)
+  target_include_directories(test_amr_kappa_dirichlet PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME amr_kappa_dirichlet COMMAND test_amr_kappa_dirichlet)
 
-  # Device MG-preconditioned CG (DevicePCG): Krylov acceleration over the device V-cycle.
-  add_executable(test_amr_device_pcg_kokkos test_amr_device_pcg_kokkos.cpp)
-  target_link_libraries(test_amr_device_pcg_kokkos PRIVATE tpx_core)
-  target_include_directories(test_amr_device_pcg_kokkos PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME amr_device_pcg_kokkos COMMAND test_amr_device_pcg_kokkos)
+  # MG-preconditioned CG (PCG): Krylov acceleration over the device V-cycle.
+  add_executable(test_amr_pcg test_amr_pcg.cpp)
+  target_link_libraries(test_amr_pcg PRIVATE tpx_core)
+  target_include_directories(test_amr_pcg PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME amr_pcg COMMAND test_amr_pcg)
 
-  # Device momentum operator + solver (DeviceMomentumOp / DeviceMomentumSolver).
-  add_executable(test_amr_device_momentum_kokkos test_amr_device_momentum_kokkos.cpp)
-  target_link_libraries(test_amr_device_momentum_kokkos PRIVATE tpx_core)
-  target_include_directories(test_amr_device_momentum_kokkos PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME amr_device_momentum_kokkos COMMAND test_amr_device_momentum_kokkos)
+  # Device momentum operator + solver (MomentumOp / MomentumSolver).
+  add_executable(test_amr_momentum test_amr_momentum.cpp)
+  target_link_libraries(test_amr_momentum PRIVATE tpx_core)
+  target_include_directories(test_amr_momentum PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME amr_momentum COMMAND test_amr_momentum)
 
-  # Device collocated Stokes flow step (DeviceAmrFlow) — device vs host AmrFlow + analytic.
-  add_executable(test_amr_device_flow_kokkos test_amr_device_flow_kokkos.cpp)
-  target_link_libraries(test_amr_device_flow_kokkos PRIVATE tpx_core)
-  target_include_directories(test_amr_device_flow_kokkos PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME amr_device_flow_kokkos COMMAND test_amr_device_flow_kokkos)
+  # Collocated Stokes flow step (AmrFlow) — device vs host AmrFlow + analytic.
+  add_executable(test_amr_flow_solver test_amr_flow_solver.cpp)
+  target_link_libraries(test_amr_flow_solver PRIVATE tpx_core)
+  target_include_directories(test_amr_flow_solver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME amr_flow_solver COMMAND test_amr_flow_solver)
 endif()
 
 add_executable(test_sdf test_sdf.cpp)
@@ -271,27 +271,27 @@ if(MPI_FOUND)
                      ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_rebalance_mpi> ${MPIEXEC_POSTFLAGS})
   endforeach()
 
-  # Portable GPU-resident halo (Kokkos): device result must match the CPU path, on whatever backend
+  # Portable GPU-resident halo : device result must match the CPU path, on whatever backend
   # Kokkos was built for (CUDA / HIP / OpenMP). Compiled as CXX — Kokkos routes it to the device
   # compiler via its launch compiler (so this is a .cpp, not a .cu).
   if(TPX_HAVE_KOKKOS)
-    add_executable(test_grid_halo_kokkos test_grid_halo_kokkos.cpp)
-    target_include_directories(test_grid_halo_kokkos PRIVATE
+    add_executable(test_grid_halo_exchange test_grid_halo_exchange.cpp)
+    target_include_directories(test_grid_halo_exchange PRIVATE
       ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(test_grid_halo_kokkos PRIVATE Kokkos::kokkos MPI::MPI_CXX)
+    target_link_libraries(test_grid_halo_exchange PRIVATE Kokkos::kokkos MPI::MPI_CXX)
 
-    add_executable(test_particle_halo_kokkos test_particle_halo_kokkos.cpp)
-    target_include_directories(test_particle_halo_kokkos PRIVATE
+    add_executable(test_particle_halo_exchange test_particle_halo_exchange.cpp)
+    target_include_directories(test_particle_halo_exchange PRIVATE
       ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(test_particle_halo_kokkos PRIVATE Kokkos::kokkos MPI::MPI_CXX)
+    target_link_libraries(test_particle_halo_exchange PRIVATE Kokkos::kokkos MPI::MPI_CXX)
 
     foreach(np IN ITEMS 1 2 4)
-      add_test(NAME grid_halo_kokkos_np${np}
+      add_test(NAME grid_halo_exchange_np${np}
                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_grid_halo_kokkos> ${MPIEXEC_POSTFLAGS})
-      add_test(NAME particle_halo_kokkos_np${np}
+                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_grid_halo_exchange> ${MPIEXEC_POSTFLAGS})
+      add_test(NAME particle_halo_exchange_np${np}
                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_particle_halo_kokkos> ${MPIEXEC_POSTFLAGS})
+                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_particle_halo_exchange> ${MPIEXEC_POSTFLAGS})
     endforeach()
   endif()
 endif()

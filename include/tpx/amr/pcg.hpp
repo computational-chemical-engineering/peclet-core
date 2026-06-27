@@ -24,15 +24,15 @@
 // convergence + matching the V-cycle's converged solution, not by host bit-exactness.
 //
 // Requires a Kokkos build + the morton checkout (TPX_HAVE_MORTON).
-#ifndef TPX_AMR_DEVICE_PCG_HPP
-#define TPX_AMR_DEVICE_PCG_HPP
+#ifndef TPX_AMR_PCG_HPP
+#define TPX_AMR_PCG_HPP
 
 #ifdef TPX_HAVE_MORTON
 
 #include <cmath>
 
-#include "tpx/amr/device_multigrid.hpp"
-#include "tpx/amr/device_poisson.hpp"
+#include "tpx/amr/multigrid.hpp"
+#include "tpx/amr/fv_op.hpp"
 #include "tpx/common/view.hpp"
 
 namespace tpx::amr {
@@ -189,4 +189,4 @@ class PCG {
 }  // namespace tpx::amr
 
 #endif  // TPX_HAVE_MORTON
-#endif  // TPX_AMR_DEVICE_PCG_HPP
+#endif  // TPX_AMR_PCG_HPP

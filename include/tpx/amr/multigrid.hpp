@@ -23,8 +23,8 @@
 // free: build with an AmrPoisson that has openness set and w_f carries it.
 //
 // Requires a Kokkos build + the morton checkout (TPX_HAVE_MORTON).
-#ifndef TPX_AMR_DEVICE_MULTIGRID_HPP
-#define TPX_AMR_DEVICE_MULTIGRID_HPP
+#ifndef TPX_AMR_MULTIGRID_HPP
+#define TPX_AMR_MULTIGRID_HPP
 
 #ifdef TPX_HAVE_MORTON
 
@@ -34,7 +34,7 @@
 #include <vector>
 
 #include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/device_poisson.hpp"
+#include "tpx/amr/fv_op.hpp"
 #include "tpx/amr/poisson.hpp"
 #include "tpx/common/view.hpp"
 
@@ -417,4 +417,4 @@ class Multigrid {
 }  // namespace tpx::amr
 
 #endif  // TPX_HAVE_MORTON
-#endif  // TPX_AMR_DEVICE_MULTIGRID_HPP
+#endif  // TPX_AMR_MULTIGRID_HPP

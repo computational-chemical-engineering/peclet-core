@@ -14,8 +14,8 @@
 #include <Kokkos_Core.hpp>
 
 #include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/block_octree_kokkos.hpp"
-#include "tpx/amr/device_poisson.hpp"
+#include "tpx/amr/block_octree_view.hpp"
+#include "tpx/amr/fv_op.hpp"
 
 using namespace tpx;
 using namespace tpx::amr;

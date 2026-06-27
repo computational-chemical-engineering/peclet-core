@@ -13,7 +13,7 @@
 
 #include "tpx/common/types.hpp"
 #include "tpx/decomp/block_decomposer.hpp"
-#include "tpx/halo/grid_halo.hpp"
+#include "tpx/halo/grid_halo_topology.hpp"
 
 using namespace tpx;
 using tpx::decomp::BlockDecomposer;

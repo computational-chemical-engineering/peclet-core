@@ -12,8 +12,8 @@
 // Including this header requires Kokkos (build with -DTPX_ENABLE_KOKKOS=ON) and
 // the morton sibling checkout (TPX_HAVE_MORTON, with MORTON_ENABLE_KOKKOS so
 // MORTON_HD == KOKKOS_FUNCTION).
-#ifndef TPX_AMR_BLOCK_OCTREE_KOKKOS_HPP
-#define TPX_AMR_BLOCK_OCTREE_KOKKOS_HPP
+#ifndef TPX_AMR_BLOCK_OCTREE_VIEW_HPP
+#define TPX_AMR_BLOCK_OCTREE_VIEW_HPP
 
 #ifdef TPX_HAVE_MORTON
 
@@ -67,4 +67,4 @@ struct BlockOctreeView {
 }  // namespace tpx::amr
 
 #endif  // TPX_HAVE_MORTON
-#endif  // TPX_AMR_BLOCK_OCTREE_KOKKOS_HPP
+#endif  // TPX_AMR_BLOCK_OCTREE_VIEW_HPP

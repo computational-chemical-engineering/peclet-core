@@ -18,8 +18,8 @@
 // Validation is by convergence + agreement with the host operator to tolerance (the GPU
 // matvec differs from host in the last bit by FMA contraction). Requires a Kokkos build +
 // the morton checkout (TPX_HAVE_MORTON).
-#ifndef TPX_AMR_DEVICE_MOMENTUM_HPP
-#define TPX_AMR_DEVICE_MOMENTUM_HPP
+#ifndef TPX_AMR_MOMENTUM_HPP
+#define TPX_AMR_MOMENTUM_HPP
 
 #ifdef TPX_HAVE_MORTON
 
@@ -29,8 +29,8 @@
 #include <vector>
 
 #include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/device_multigrid.hpp"  // deviceRestrict / deviceProlongAdd transfer kernels
-#include "tpx/amr/device_pcg.hpp"        // dotPlain-style primitives: axpy, zpby, negate
+#include "tpx/amr/multigrid.hpp"  // deviceRestrict / deviceProlongAdd transfer kernels
+#include "tpx/amr/pcg.hpp"        // dotPlain-style primitives: axpy, zpby, negate
 #include "tpx/amr/face_csr.hpp"          // shared host+device assembled-operator row kernels
 #include "tpx/common/view.hpp"
 
@@ -581,4 +581,4 @@ class MomentumSolver {
 }  // namespace tpx::amr
 
 #endif  // TPX_HAVE_MORTON
-#endif  // TPX_AMR_DEVICE_MOMENTUM_HPP
+#endif  // TPX_AMR_MOMENTUM_HPP

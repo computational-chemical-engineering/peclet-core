@@ -22,7 +22,7 @@
 
 #include "tpx/amr/block_octree.hpp"
 #include "tpx/amr/cut_cell.hpp"
-#include "tpx/amr/device_momentum.hpp"
+#include "tpx/amr/momentum.hpp"
 #include "tpx/common/types.hpp"
 
 using namespace tpx;

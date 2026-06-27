@@ -17,7 +17,7 @@
 
 #include "tpx/common/types.hpp"
 #include "tpx/decomp/block_decomposer.hpp"
-#include "tpx/halo/particle_halo.hpp"
+#include "tpx/halo/particle_halo_topology.hpp"
 #include "tpx/halo/particle_migrator.hpp"
 
 using namespace tpx;

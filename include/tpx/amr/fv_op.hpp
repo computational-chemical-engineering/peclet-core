@@ -12,12 +12,12 @@
 //
 // Requires a Kokkos build (MORTON_ENABLE_KOKKOS ⇒ MORTON_HD = KOKKOS_FUNCTION) and
 // the morton checkout (TPX_HAVE_MORTON).
-#ifndef TPX_AMR_DEVICE_POISSON_HPP
-#define TPX_AMR_DEVICE_POISSON_HPP
+#ifndef TPX_AMR_FV_OP_HPP
+#define TPX_AMR_FV_OP_HPP
 
 #ifdef TPX_HAVE_MORTON
 
-#include "tpx/amr/block_octree_kokkos.hpp"
+#include "tpx/amr/block_octree_view.hpp"
 #include "tpx/amr/face_csr.hpp"  // shared host+device FV (weight-CSR) row kernels
 #include "tpx/common/view.hpp"
 
@@ -195,4 +195,4 @@ inline void deviceQuadDelta(View<const Index> qStart, View<const Index> qSlot,
 }  // namespace tpx::amr
 
 #endif  // TPX_HAVE_MORTON
-#endif  // TPX_AMR_DEVICE_POISSON_HPP
+#endif  // TPX_AMR_FV_OP_HPP

@@ -1,284 +1,206 @@
-// transport-core — persistent Lagrangian ghost halo with forward + reverse(accumulate) exchange.
+// transport-core — portable (Kokkos) device driver for the persistent Lagrangian ghost halo.
 //
-// The generic communication machinery behind the standard parallel particle schemes (and the
-// Voronoi conservative-flux scheme). Same topology/exchange split as GridHaloTopology: build() establishes a
-// persistent owner<->ghost correspondence from particle proximity (rebuilt only when the neighbour
-// list rebuilds), then forward()/reverse() are cheap field-agnostic exchanges over it:
+// Kokkos counterpart of the device-resident particle gather that packing-gpu hand-rolls
+// (gatherFloat4 / device-pointer MPI): it drives ParticleHaloTopology<Dim>'s forward/reverse exchanges with
+// on-device gather/scatter kernels, so per-particle attribute arrays stay on the GPU and only the
+// compact send/recv buffers are host-staged for MPI (or handed straight to a GPU-aware MPI via
+// TPX_GPU_AWARE_MPI). Topology comes from ParticleHaloTopology::flatten(); results match the CPU exchange.
 //
-//   forward(owned -> ghost)            : copy each owner's value into its ghost copies (refresh state)
-//   reverse(ghost -> owned, +=)        : accumulate ghost contributions back onto the owner
-//   forwardPositions(owned -> ghost)   : forward with the periodic image shift applied (positions only)
+//   forward<T>(owned -> ghost)        : copy each owner's value into its ghost copies (verbatim).
+//   reverse<T>(ghost -> owned, +=)    : accumulate ghost contributions back onto owners (atomic).
 //
-// The three distributed schemes are compositions of these (see packing-gpu/mpi/README.md):
-//   A (frozen/replicate): forwardPositions+forward(state); compute pairs x2; integrate owned.
-//   B (Newton-on):        forward(state); each pair x1; reverse(force,sum); integrate owned.
-//   C (force-accumulate): each pair x1; reverse(force,sum); forward(totalForce); integrate owned+ghost.
-//
-// The solver supplies the interaction kernel and the integrator; the core supplies forward/reverse.
+// The periodic position-shift forward (forwardPositions) is payload-specific (e.g. packing's float4)
+// and lives in the consumer; this primitive is the field-agnostic core.
 #ifndef TPX_HALO_PARTICLE_HALO_HPP
 #define TPX_HALO_PARTICLE_HALO_HPP
 
 #include "tpx/common/mpi.hpp"
 
-#include <cstring>
-#include <map>
 #include <vector>
 
 #include "tpx/common/types.hpp"
-#include "tpx/halo/nbx.hpp"
-#include "tpx/halo/particle_migrator.hpp"
+#include "tpx/common/view.hpp"
+#include "tpx/halo/grid_halo.hpp"  // detail::gpuAwareMpi()
+#include "tpx/halo/particle_halo_topology.hpp"
 
 namespace tpx::halo {
 
 template <int Dim>
-class ParticleHaloTopology {
+class ParticleHalo {
  public:
-  /// Bind to a migrator (provides the decomposition, domain map, rank and comm).
-  void init(const ParticleMigrator<Dim>& mig) { mig_ = &mig; }
+  ParticleHalo() = default;
+  ParticleHalo(const ParticleHalo&) = delete;
+  ParticleHalo& operator=(const ParticleHalo&) = delete;
 
-  /// (Re)establish the owner<->ghost correspondence: every owned particle within `rcut` of another
-  /// rank's block becomes a ghost there. Call after migration / on neighbour-list rebuild.
-  ///
-  /// `includePeriodicSelf` additionally emits LOCAL periodic self-ghosts: copies of an owned particle
-  /// at its own periodic image(s) that fall within `rcut` of THIS rank's own block. They are needed
-  /// when a rank borders itself across a periodic face — i.e. an undecomposed periodic axis (a "×1"
-  /// ORB axis, e.g. the z of a 2×2×1 layout) or np=1 — where the periodic neighbour is owned by the
-  /// same rank and so is never produced by the cross-rank exchange. Off by default => byte-identical
-  /// to the cross-rank-only behaviour (no self-ghosts, no MPI self-messages). Self-ghosts occupy the
-  /// ghost slots AFTER the received ones ([numReceived, numGhost)) and are filled locally (no MPI).
-  void build(const std::vector<Vec<Dim>>& pos, double rcut, bool includePeriodicSelf = false) {
-    numOwned_ = pos.size();
-    int nranks = 0;
-    MPI_Comm_size(mig_->comm(), &nranks);
-    const int me = mig_->rank();
-
-    // Sender side: which of my particles each other rank needs, and the periodic shift to apply.
-    std::map<int, std::vector<Index>> sendMap;
-    std::map<int, std::vector<Vec<Dim>>> shiftMap;
-    Vec<Dim> img;
-    for (std::size_t i = 0; i < pos.size(); ++i) {
-      for (int r = 0; r < nranks; ++r) {
-        if (r == me) continue;
-        if (!mig_->withinRcutOfBlock(pos[i], r, rcut, img)) continue;
-        Vec<Dim> shift;
-        for (int d = 0; d < Dim; ++d) shift[d] = img[d] - pos[i][d];
-        sendMap[r].push_back(static_cast<Index>(i));
-        shiftMap[r].push_back(shift);
-      }
-    }
-    sendRanks_.clear();
-    sendIdx_.clear();
-    sendRankPos_.clear();
-    for (auto& [r, idx] : sendMap) {
-      sendRankPos_[r] = sendRanks_.size();
-      sendRanks_.push_back(r);
-      sendIdx_.push_back(std::move(idx));
-    }
-
-    // Exchange the shift vectors (one NBX round) to size the ghost array + matched recv lists.
-    recvRanks_.clear();
-    recvCount_.clear();
-    recvRankPos_.clear();
-    shift_.clear();
-    NbxEngine nbx(mig_->comm());
-    std::size_t k = 0;
-    auto packNext = [&](std::vector<char>& out) -> int {
-      if (k >= sendRanks_.size()) return -1;
-      int dst = sendRanks_[k];
-      auto& sh = shiftMap[dst];
-      ++k;
-      out.resize(sh.size() * sizeof(Vec<Dim>));
-      std::memcpy(out.data(), sh.data(), out.size());
-      return dst;
-    };
-    auto onRecv = [&](int src, std::vector<char>& msg) {
-      int cnt = static_cast<int>(msg.size() / sizeof(Vec<Dim>));
-      recvRankPos_[src] = recvRanks_.size();
-      recvRanks_.push_back(src);
-      recvCount_.push_back(cnt);
-      const Vec<Dim>* sh = reinterpret_cast<const Vec<Dim>*>(msg.data());
-      for (int i = 0; i < cnt; ++i) shift_.push_back(sh[i]);
-    };
-    nbx.exchange(packNext, onRecv, /*tag=*/7501);
-
-    recvOffset_.assign(recvRanks_.size() + 1, 0);
-    for (std::size_t i = 0; i < recvCount_.size(); ++i)
-      recvOffset_[i + 1] = recvOffset_[i] + recvCount_[i];
-    numReceived_ = shift_.size();
-
-    // Local periodic self-ghosts (no MPI): each owned particle's non-identity periodic image(s) that
-    // land within rcut of this rank's own block. Appended after the received ghosts; their shift goes
-    // in the shift_ tail so the per-ghost position forward applies the wrap uniformly.
-    selfIdx_.clear();
-    selfShift_.clear();
-    if (includePeriodicSelf) {
-      std::vector<Vec<Dim>> imgs;
-      for (std::size_t i = 0; i < pos.size(); ++i) {
-        imgs.clear();
-        mig_->imagesWithinRcutOfBlock(pos[i], me, rcut, /*allowIdentity=*/false, imgs);
-        for (const auto& sh : imgs) {
-          selfIdx_.push_back(static_cast<Index>(i));
-          selfShift_.push_back(sh);
-        }
-      }
-    }
-    for (const auto& sh : selfShift_) shift_.push_back(sh);
-    numGhost_ = shift_.size();
-
-    // Populate the initial ghost positions (= owner position + shift), received + self.
-    ghostPos_.assign(numGhost_, Vec<Dim>{});
-    forwardPositions(pos.data(), ghostPos_.data());
+  /// Capture the (already-built) host halo's topology in device-friendly form.
+  void init(const ParticleHaloTopology<Dim>& halo) {
+    auto t = halo.flatten();
+    comm_ = halo.comm();
+    sendRanks_ = t.sendRanks;
+    sendCounts_ = t.sendCounts;
+    sendOff_ = t.sendOffsets;  // prefix sum into sendIdx, size sendRanks+1
+    recvRanks_ = t.recvRanks;
+    recvCounts_ = t.recvCounts;
+    recvOff_.assign(t.recvOffsets.begin(), t.recvOffsets.end());  // per recv rank start in [0,numReceived)
+    nSend_ = static_cast<Index>(t.sendIdx.size());
+    numGhost_ = static_cast<Index>(halo.numGhost());
+    numReceived_ = t.numReceived;             // cross-rank ghosts [0,numReceived); self-ghosts after
+    numSelf_ = numGhost_ - numReceived_;
+    d_sendIdx_ = toDevice(t.sendIdx, "tpx::halo::p_sendIdx");
+    d_selfIdx_ = toDevice(t.selfIdx, "tpx::halo::p_selfIdx");
   }
 
-  std::size_t numOwned() const { return numOwned_; }
-  std::size_t numGhost() const { return numGhost_; }
-  const std::vector<Vec<Dim>>& ghostPositions() const { return ghostPos_; }
+  /// owned[N] -> ghost[G], verbatim. Both live on the device.
+  template <class T>
+  void forward(const View<T>& owned, const View<T>& ghost, int tag = 7603) {
+    const bool aware = detail::gpuAwareMpi();
+    View<T> sendBuf(Kokkos::view_alloc("tpx::halo::p_sendBuf", Kokkos::WithoutInitializing),
+                    static_cast<std::size_t>(nSend_));
+    if (nSend_) {
+      View<T> o = owned;
+      IndexView idx = d_sendIdx_;
+      View<T> buf = sendBuf;
+      Kokkos::parallel_for(
+          "tpx::halo::p_gather", Kokkos::RangePolicy<ExecSpace>(0, nSend_),
+          KOKKOS_LAMBDA(const Index i) { buf(i) = o(idx(i)); });
+    }
 
-  /// owned[N] -> ghost[G], with the periodic image shift added (use for positions).
-  /// Direct point-to-point over the topology fixed by build() (no NBX consensus) -- this is the
-  /// per-iteration hot path, so it must not pay the dynamic-discovery cost every call.
-  void forwardPositions(const Vec<Dim>* owned, Vec<Dim>* ghost) {
-    forwardDirect<Vec<Dim>>(owned, /*tag=*/7502, [&](std::size_t p, const Vec<Dim>* in) {
-      Index off = recvOffset_[p];
-      for (int i = 0; i < recvCount_[p]; ++i)
-        for (int d = 0; d < Dim; ++d) ghost[off + i][d] = in[i][d] + shift_[off + i][d];
-    });
-    // Local periodic self-ghosts: owner position + wrap shift (no MPI).
-    for (std::size_t j = 0; j < selfIdx_.size(); ++j)
-      for (int d = 0; d < Dim; ++d)
-        ghost[numReceived_ + j][d] = owned[selfIdx_[j]][d] + shift_[numReceived_ + j][d];
+    // MPI fills only the cross-rank received slots [0,numReceived); the self tail is gathered locally.
+    std::vector<T> hSend, hRecv;
+    T* sendBase;
+    T* recvBase;
+    if (aware) {
+      Kokkos::fence();
+      sendBase = sendBuf.data();
+      recvBase = ghost.data();
+    } else {
+      hSend.resize(static_cast<std::size_t>(nSend_));
+      hRecv.resize(static_cast<std::size_t>(numReceived_));
+      copyToHost(sendBuf, hSend);
+      sendBase = hSend.data();
+      recvBase = hRecv.data();
+    }
+
+    std::vector<MPI_Request> reqs;
+    postRecv(recvBase, recvRanks_, recvOff_, recvCounts_, tag, reqs);
+    postSend(sendBase, sendRanks_, sendOff_, sendCounts_, tag, reqs);
+    if (!reqs.empty()) MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
+
+    if (!aware && numReceived_) {
+      auto sub = Kokkos::subview(
+          ghost, std::pair<std::size_t, std::size_t>(0, static_cast<std::size_t>(numReceived_)));
+      Kokkos::View<const T*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>> hv(
+          hRecv.data(), hRecv.size());
+      Kokkos::deep_copy(sub, hv);
+    }
+    // Local periodic self-ghosts: gather owner -> ghost tail on device (no MPI). Needed when a rank
+    // borders itself across a periodic face (undecomposed axis / np=1).
+    if (numSelf_) {
+      View<T> o = owned;
+      IndexView sidx = d_selfIdx_;
+      View<T> g = ghost;
+      const Index base = numReceived_;
+      Kokkos::parallel_for(
+          "tpx::halo::p_selfGather", Kokkos::RangePolicy<ExecSpace>(0, numSelf_),
+          KOKKOS_LAMBDA(const Index j) { g(base + j) = o(sidx(j)); });
+    }
+    Kokkos::fence();
   }
 
-  /// owned[N] -> ghost[G], verbatim (translation-invariant fields: velocity, id, radius, ...).
-  template <typename T>
-  void forward(const T* owned, T* ghost) {
-    forwardDirect<T>(owned, /*tag=*/7503, [&](std::size_t p, const T* in) {
-      Index off = recvOffset_[p];
-      for (int i = 0; i < recvCount_[p]; ++i) ghost[off + i] = in[i];
-    });
-    // Local periodic self-ghosts: owner value, verbatim (no MPI).
-    for (std::size_t j = 0; j < selfIdx_.size(); ++j) ghost[numReceived_ + j] = owned[selfIdx_[j]];
-  }
+  /// ghost[G] -> owned[N], accumulated (owned += contributions). T must support Kokkos::atomic_add.
+  template <class T>
+  void reverse(const View<T>& ghost, const View<T>& owned, int tag = 7604) {
+    const bool aware = detail::gpuAwareMpi();
 
-  /// ghost[G] -> owned[N], accumulated (T must have operator+=). Use for forces/torques/fluxes:
-  /// each ghost's partial contribution is summed onto its owner. Owner array is added to in place.
-  template <typename T>
-  void reverse(const T* ghost, T* owned) {
-    // Mirror of forwardDirect: the receivers (owners) post recvs sized by sendIdx_, the ghost-holders
-    // send their contiguous ghost slices back; accumulate on arrival.
-    const int ns = static_cast<int>(sendRanks_.size());
-    const int nr = static_cast<int>(recvRanks_.size());
-    std::vector<std::vector<T>> rbuf(ns), sbuf(nr);
-    std::vector<MPI_Request> rreq(ns, MPI_REQUEST_NULL), sreq(nr, MPI_REQUEST_NULL);
-    for (int k = 0; k < ns; ++k) {
-      rbuf[k].resize(sendIdx_[k].size());
-      MPI_Irecv(rbuf[k].data(), static_cast<int>(rbuf[k].size() * sizeof(T)), MPI_BYTE,
-                sendRanks_[k], 7504, mig_->comm(), &rreq[k]);
+    std::vector<T> hGhost, hRecv;
+    T* ghostBase;
+    T* recvBase;
+    View<T> recvBuf(Kokkos::view_alloc("tpx::halo::p_recvBuf", Kokkos::WithoutInitializing),
+                    static_cast<std::size_t>(nSend_));  // owners receive sendIdx-many contributions
+    if (aware) {
+      Kokkos::fence();
+      ghostBase = ghost.data();
+      recvBase = recvBuf.data();
+    } else {
+      hGhost.resize(static_cast<std::size_t>(numGhost_));
+      hRecv.resize(static_cast<std::size_t>(nSend_));
+      copyToHost(ghost, hGhost);
+      ghostBase = hGhost.data();
+      recvBase = hRecv.data();
     }
-    for (int p = 0; p < nr; ++p) {
-      Index off = recvOffset_[p];
-      sbuf[p].assign(ghost + off, ghost + off + recvCount_[p]);
-      MPI_Isend(sbuf[p].data(), static_cast<int>(sbuf[p].size() * sizeof(T)), MPI_BYTE,
-                recvRanks_[p], 7504, mig_->comm(), &sreq[p]);
-    }
-    MPI_Waitall(ns, rreq.data(), MPI_STATUSES_IGNORE);
-    for (int k = 0; k < ns; ++k) {
-      auto& idx = sendIdx_[k];
-      for (std::size_t i = 0; i < idx.size(); ++i) owned[idx[i]] += rbuf[k][i];
+
+    // Mirror of forward: ghost-holders send ghost slices, owners receive into sendIdx-shaped buffer.
+    std::vector<MPI_Request> reqs;
+    postRecv(recvBase, sendRanks_, sendOff_, sendCounts_, tag, reqs);
+    postSend(ghostBase, recvRanks_, recvOff_, recvCounts_, tag, reqs);
+    if (!reqs.empty()) MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
+
+    if (!aware) copyToDevice(hRecv, recvBuf);
+    if (nSend_) {
+      View<T> o = owned;
+      IndexView idx = d_sendIdx_;
+      View<T> buf = recvBuf;
+      // Duplicate owned indices (a particle is a ghost on several ranks) => accumulate atomically.
+      Kokkos::parallel_for(
+          "tpx::halo::p_scatter", Kokkos::RangePolicy<ExecSpace>(0, nSend_),
+          KOKKOS_LAMBDA(const Index i) { Kokkos::atomic_add(&o(idx(i)), buf(i)); });
     }
     // Local periodic self-ghosts accumulate straight onto their (same-rank) owner.
-    for (std::size_t j = 0; j < selfIdx_.size(); ++j) owned[selfIdx_[j]] += ghost[numReceived_ + j];
-    MPI_Waitall(nr, sreq.data(), MPI_STATUSES_IGNORE);
+    if (numSelf_) {
+      View<T> o = owned;
+      IndexView sidx = d_selfIdx_;
+      View<T> g = ghost;
+      const Index base = numReceived_;
+      Kokkos::parallel_for(
+          "tpx::halo::p_selfScatter", Kokkos::RangePolicy<ExecSpace>(0, numSelf_),
+          KOKKOS_LAMBDA(const Index j) { Kokkos::atomic_add(&o(sidx(j)), g(base + j)); });
+    }
+    Kokkos::fence();
   }
+
+  Index numGhost() const { return numGhost_; }
 
  private:
-  // Direct (persistent-topology) forward: owners send their gathered sendIdx_ slices, ghost-holders
-  // receive into contiguous slots and apply `store(recvRankPos, buf)`. No NBX consensus -- the
-  // neighbour set + message sizes are fixed by build(), so plain Irecv/Isend/Waitall is correct.
-  template <typename T, typename Store>
-  void forwardDirect(const T* owned, int tag, Store&& store) {
-    const int ns = static_cast<int>(sendRanks_.size());
-    const int nr = static_cast<int>(recvRanks_.size());
-    std::vector<std::vector<T>> sbuf(ns), rbuf(nr);
-    std::vector<MPI_Request> sreq(ns, MPI_REQUEST_NULL), rreq(nr, MPI_REQUEST_NULL);
-    for (int p = 0; p < nr; ++p) {
-      rbuf[p].resize(recvCount_[p]);
-      MPI_Irecv(rbuf[p].data(), static_cast<int>(rbuf[p].size() * sizeof(T)), MPI_BYTE,
-                recvRanks_[p], tag, mig_->comm(), &rreq[p]);
-    }
-    for (int k = 0; k < ns; ++k) {
-      auto& idx = sendIdx_[k];
-      sbuf[k].resize(idx.size());
-      for (std::size_t i = 0; i < idx.size(); ++i) sbuf[k][i] = owned[idx[i]];
-      MPI_Isend(sbuf[k].data(), static_cast<int>(sbuf[k].size() * sizeof(T)), MPI_BYTE,
-                sendRanks_[k], tag, mig_->comm(), &sreq[k]);
-    }
-    MPI_Waitall(nr, rreq.data(), MPI_STATUSES_IGNORE);
-    for (int p = 0; p < nr; ++p) store(static_cast<std::size_t>(p), rbuf[p].data());
-    MPI_Waitall(ns, sreq.data(), MPI_STATUSES_IGNORE);
+  template <class T>
+  static void copyToHost(const View<T>& d, std::vector<T>& h) {
+    if (h.empty()) return;
+    Kokkos::View<T*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>> hv(h.data(),
+                                                                                    h.size());
+    Kokkos::deep_copy(hv, d);
+  }
+  template <class T>
+  static void copyToDevice(const std::vector<T>& h, const View<T>& d) {
+    if (h.empty()) return;
+    Kokkos::View<const T*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>> hv(h.data(),
+                                                                                          h.size());
+    Kokkos::deep_copy(d, hv);
   }
 
- public:
-  MPI_Comm comm() const { return mig_->comm(); }
-
-  // The send/recv topology in a flat, device-friendly form, so a CUDA consumer can drive the
-  // exchange with on-device gather kernels + device-pointer MPI (see packing-gpu's device-resident
-  // pack). recvOffsets index the contiguous [0,numGhost) ghost array (in recvRanks order); shift is
-  // per-ghost (for position forwards). Rebuild after each build().
-  struct FlatTopo {
-    std::vector<int> sendRanks;         // neighbour ranks I send owned copies to
-    std::vector<Index> sendIdx;         // concatenated owned indices to send (all ranks)
-    std::vector<int> sendCounts;        // per send rank
-    std::vector<int> sendOffsets;       // prefix sum into sendIdx (size sendRanks+1)
-    std::vector<int> recvRanks;         // neighbour ranks I receive ghosts from
-    std::vector<int> recvCounts;        // per recv rank
-    std::vector<Index> recvOffsets;     // per recv rank: start in the [0,numReceived) ghost array
-    std::vector<Vec<Dim>> shift;        // per ghost: periodic image offset (add to forwarded position)
-    std::vector<Index> selfIdx;         // owned index of each LOCAL periodic self-ghost (size numSelf)
-    Index numReceived = 0;              // ghost slots [0,numReceived) are cross-rank (MPI), the rest
-                                        // [numReceived, numGhost) are local self-ghosts gathered from selfIdx
-  };
-  FlatTopo flatten() const {
-    FlatTopo t;
-    t.sendRanks = sendRanks_;
-    t.sendOffsets.push_back(0);
-    for (const auto& idx : sendIdx_) {
-      t.sendCounts.push_back(static_cast<int>(idx.size()));
-      for (Index id : idx) t.sendIdx.push_back(id);
-      t.sendOffsets.push_back(static_cast<int>(t.sendIdx.size()));
+  // Post one Irecv per neighbour rank into `base` at the given per-rank offsets (in elements).
+  template <class T>
+  void postRecv(T* base, const std::vector<int>& ranks, const std::vector<int>& off,
+                const std::vector<int>& cnt, int tag, std::vector<MPI_Request>& reqs) {
+    for (std::size_t k = 0; k < ranks.size(); ++k) {
+      reqs.emplace_back();
+      MPI_Irecv(base + off[k], cnt[k] * static_cast<int>(sizeof(T)), MPI_BYTE, ranks[k], tag, comm_,
+                &reqs.back());
     }
-    t.recvRanks = recvRanks_;
-    t.recvCounts = recvCount_;
-    t.recvOffsets.assign(recvOffset_.begin(),
-                         recvOffset_.begin() + static_cast<std::ptrdiff_t>(recvRanks_.size()));
-    t.shift = shift_;
-    t.selfIdx = selfIdx_;
-    t.numReceived = static_cast<Index>(numReceived_);
-    return t;
+  }
+  template <class T>
+  void postSend(T* base, const std::vector<int>& ranks, const std::vector<int>& off,
+                const std::vector<int>& cnt, int tag, std::vector<MPI_Request>& reqs) {
+    for (std::size_t k = 0; k < ranks.size(); ++k) {
+      reqs.emplace_back();
+      MPI_Isend(base + off[k], cnt[k] * static_cast<int>(sizeof(T)), MPI_BYTE, ranks[k], tag, comm_,
+                &reqs.back());
+    }
   }
 
- private:
-  const ParticleMigrator<Dim>* mig_ = nullptr;
-  std::size_t numOwned_ = 0, numGhost_ = 0;
-
-  // Owner side: particles I send as ghosts to each neighbour rank.
-  std::vector<int> sendRanks_;
-  std::vector<std::vector<Index>> sendIdx_;
-  std::map<int, std::size_t> sendRankPos_;
-
-  // Ghost side: ghosts I receive from each neighbour rank (contiguous slots, in recvRanks_ order).
-  std::vector<int> recvRanks_;
-  std::vector<int> recvCount_;
-  std::vector<Index> recvOffset_;
-  std::map<int, std::size_t> recvRankPos_;
-
-  // Local periodic self-ghosts (undecomposed periodic axis / np=1): appended after the received ones.
-  std::vector<Index> selfIdx_;       // owned index for each self-ghost (ghost slot numReceived_ + j)
-  std::vector<Vec<Dim>> selfShift_;  // matching periodic wrap shift
-  std::size_t numReceived_ = 0;      // count of cross-rank received ghosts (= start of the self tail)
-
-  std::vector<Vec<Dim>> shift_;     // per ghost: periodic image offset (img - owner pos); received then self
-  std::vector<Vec<Dim>> ghostPos_;  // per ghost: current image position
+  MPI_Comm comm_ = MPI_COMM_NULL;
+  std::vector<int> sendRanks_, sendCounts_, sendOff_;
+  std::vector<int> recvRanks_, recvCounts_, recvOff_;
+  Index nSend_ = 0, numGhost_ = 0, numReceived_ = 0, numSelf_ = 0;
+  IndexView d_sendIdx_, d_selfIdx_;
 };
 
 }  // namespace tpx::halo

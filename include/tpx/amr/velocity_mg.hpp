@@ -18,8 +18,8 @@
 // two coarse-operator strategies can be benchmarked head-to-head on the AMR. The implicit-FOU
 // advection on coarse levels (mirror buildUpwindCoarse) is a follow-up — the viscous staircase is
 // the diffusion preconditioner. Requires a Kokkos build + the morton checkout (TPX_HAVE_MORTON).
-#ifndef TPX_AMR_DEVICE_VELOCITY_MG_HPP
-#define TPX_AMR_DEVICE_VELOCITY_MG_HPP
+#ifndef TPX_AMR_VELOCITY_MG_HPP
+#define TPX_AMR_VELOCITY_MG_HPP
 
 #ifdef TPX_HAVE_MORTON
 
@@ -29,8 +29,8 @@
 #include <utility>
 #include <vector>
 
-#include "tpx/amr/device_momentum.hpp"
-#include "tpx/amr/device_multigrid.hpp"
+#include "tpx/amr/momentum.hpp"
+#include "tpx/amr/multigrid.hpp"
 #include "tpx/amr/poisson.hpp"
 #include "tpx/common/view.hpp"
 
@@ -264,4 +264,4 @@ class VelocityMG {
 }  // namespace tpx::amr
 
 #endif  // TPX_HAVE_MORTON
-#endif  // TPX_AMR_DEVICE_VELOCITY_MG_HPP
+#endif  // TPX_AMR_VELOCITY_MG_HPP

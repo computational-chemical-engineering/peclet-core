@@ -1,354 +1,143 @@
-// transport-core — asynchronous ghost-layer exchange for a block-decomposed structured grid.
+// transport-core — portable (Kokkos) GPU-resident ghost-layer exchange.
 //
-// Design (see suite/docs/INTERFACES.md): TOPOLOGY is separated from EXCHANGE.
-//   * buildTopology() (done once, or on re-decomposition) figures out, for every ghost cell of this
-//     rank's block, which rank owns the corresponding global cell (with periodic wrap), then does a
-//     single NBX round so each owner learns which of its inner cells to send. The result is matched
-//     send/recv index lists plus a local self-copy list (for periodic wrap onto one's own block).
-//   * exchange*(field) (done every step) just moves payload. It is FIELD-AGNOSTIC: any type with
-//     bytesPerElem()/pack(localIdx,dst)/unpack(localIdx,src) works, so a scalar grid field, a vector
-//     grid field, or (later) a particle attribute array all flow through one path.
-//
-// Two interchangeable engines, identical results:
-//   exchangeNbx(field)        — nonblocking-consensus; robust for dynamic/sparse patterns.
-//   exchangePersistent(field) — MPI_Neighbor_alltoallv on a cached distributed-graph communicator;
-//                               fastest for the STATIC neighbour pattern of a fixed grid.
-// Both support compute/comm overlap via start()/wait() (NBX) — see exchangeNbx.
+// Portable (Kokkos) GPU-resident grid halo: the field lives on the device as a
+// tpx::View<T>; pack (gather send cells), unpack (scatter into ghost cells) and the periodic
+// self-copy run as Kokkos::parallel_for on the default execution space (CUDA / HIP / OpenMP), so the
+// full field never crosses the bus — only the compact halo buffers are staged to the host for MPI.
+// A GPU-aware-MPI path (hand device pointers straight to MPI) is opt-in via the env var
+// TPX_GPU_AWARE_MPI (the legacy TPX_CUDA_AWARE_MPI is still honoured); host-staging is the portable
+// default. Topology comes from a host-built GridHaloTopology<Dim>::flatten(), exactly like the CUDA version,
+// and the result is bit-for-bit identical to the CPU exchange.
 #ifndef TPX_HALO_GRID_HALO_HPP
 #define TPX_HALO_GRID_HALO_HPP
 
 #include "tpx/common/mpi.hpp"
 
-#include <cstring>
-#include <map>
+#include <cstdlib>
 #include <vector>
 
 #include "tpx/common/types.hpp"
-#include "tpx/decomp/block_decomposer.hpp"
-#include "tpx/decomp/block_indexer.hpp"
-#include "tpx/halo/nbx.hpp"
+#include "tpx/common/view.hpp"
+#include "tpx/halo/grid_halo_topology.hpp"
 
 namespace tpx::halo {
 
-/// A contiguous local array of `T` (one per cell of the extended block) viewed as a packable field.
-template <typename T>
-struct GridFieldView {
-  T* data;
-  std::size_t bytesPerElem() const { return sizeof(T); }
-  void pack(Index localIdx, char* dst) const { std::memcpy(dst, &data[localIdx], sizeof(T)); }
-  void unpack(Index localIdx, const char* src) { std::memcpy(&data[localIdx], src, sizeof(T)); }
-};
+namespace detail {
+/// Whether to hand DEVICE pointers straight to MPI (GPU-aware MPI) instead of host-staging. Gated on
+/// an env var (read once) rather than MPIX_Query_cuda_support(), which under-reports on some stacks.
+inline bool gpuAwareMpi() {
+  static const bool v = [] {
+    const char* e = std::getenv("TPX_GPU_AWARE_MPI");
+    if (!e) e = std::getenv("TPX_CUDA_AWARE_MPI");
+    return e && std::atoi(e) != 0;
+  }();
+  return v;
+}
+}  // namespace detail
 
-template <int Dim>
-class GridHaloTopology {
+/// GPU ghost-layer exchange for a contiguous device field `tpx::View<T>` (one element per
+/// extended-block cell). Build once from a host GridHaloTopology via init(); exchange() runs every step.
+template <class T>
+class GridHalo {
  public:
-  GridHaloTopology() = default;
+  GridHalo() = default;
+  GridHalo(const GridHalo&) = delete;
+  GridHalo& operator=(const GridHalo&) = delete;
 
-  /// Build the halo topology for `rank`'s block of `dec`, with the given ghost width and per-axis
-  /// periodicity. Communicates once (NBX) to establish matched send lists.
-  void buildTopology(const decomp::BlockDecomposer<Dim>& dec, int rank, int ghostWidth,
-                     const std::array<bool, Dim>& periodic, MPI_Comm comm = MPI_COMM_WORLD) {
-    comm_ = comm;
-    rank_ = rank;
-    indexer_.init(dec.origins()[rank], dec.sizes()[rank], ghostWidth);
-    clear();
+  template <int Dim>
+  void init(const GridHaloTopology<Dim>& halo) {
+    auto t = halo.flatten();
+    comm_ = t.comm;
+    sendRanks_ = t.sendRanks;
+    recvRanks_ = t.recvRanks;
+    sendCounts_ = t.sendCounts;
+    recvCounts_ = t.recvCounts;
 
-    // For each ghost cell, find the owner of its (wrapped) global cell.
-    std::map<int, std::vector<Index>> recvIdxByRank;   // local ghost cell indices to fill
-    std::map<int, std::vector<Index>> recvGlobByRank;  // the global cells we need from that owner
-    const IVec<Dim>& gsize = dec.globalSize();
+    sendOff_.assign(sendCounts_.size() + 1, 0);
+    for (std::size_t k = 0; k < sendCounts_.size(); ++k)
+      sendOff_[k + 1] = sendOff_[k] + sendCounts_[k];
+    recvOff_.assign(recvCounts_.size() + 1, 0);
+    for (std::size_t k = 0; k < recvCounts_.size(); ++k)
+      recvOff_[k + 1] = recvOff_[k] + recvCounts_[k];
 
-    indexer_.forEachAll([&](const IVec<Dim>& lmd) {
-      if (indexer_.isInner(lmd)) return;
-      IVec<Dim> g{}, gw{};
-      bool skip = false;
-      for (int i = 0; i < Dim; ++i) {
-        g[i] = lmd[i] + indexer_.originInclGhost()[i];
-        Index c = g[i];
-        if (c < 0 || c >= gsize[i]) {
-          if (periodic[i]) {
-            c = wrap(c, gsize[i]);
-          } else {
-            skip = true;
-            break;
-          }
-        }
-        gw[i] = c;
-      }
-      if (skip) return;  // non-periodic physical boundary: BC fills these, no comm
-      int owner = dec.ownerOf(gw);
-      Index ghostLocal = indexer_.localMdToLocal(lmd);
-      if (owner == rank_) {
-        // Periodic wrap onto our own block (e.g. single block, periodic): pure local copy.
-        selfDst_.push_back(ghostLocal);
-        selfSrc_.push_back(indexer_.globalToLocal(gw));
-      } else {
-        recvIdxByRank[owner].push_back(ghostLocal);
-        recvGlobByRank[owner].push_back(dec.linearGlobal(gw));
-      }
-    });
+    nSend_ = static_cast<Index>(t.sendIdx.size());
+    nRecv_ = static_cast<Index>(t.recvIdx.size());
+    nSelf_ = static_cast<Index>(t.selfSrc.size());
 
-    for (auto& [r, idx] : recvIdxByRank) {
-      recvRanks_.push_back(r);
-      recvIdx_.push_back(std::move(idx));
-      recvGlob_.push_back(std::move(recvGlobByRank[r]));
-    }
-
-    // One NBX round: tell each owner which global cells we need; learn what we must send.
-    NbxEngine nbx(comm_);
-    std::size_t k = 0;
-    auto packNext = [&](std::vector<char>& out) -> int {
-      if (k >= recvRanks_.size()) return -1;
-      int dest = recvRanks_[k];
-      const auto& g = recvGlob_[k];
-      ++k;
-      out.resize(g.size() * sizeof(Index));
-      std::memcpy(out.data(), g.data(), out.size());
-      return dest;
-    };
-    auto onRecv = [&](int src, std::vector<char>& msg) {
-      std::size_t n = msg.size() / sizeof(Index);
-      const Index* g = reinterpret_cast<const Index*>(msg.data());
-      std::vector<Index> sidx(n);
-      for (std::size_t i = 0; i < n; ++i) {
-        sidx[i] = indexer_.globalToLocal(dec.multiGlobal(g[i]));
-      }
-      sendRanks_.push_back(src);
-      sendIdx_.push_back(std::move(sidx));
-    };
-    nbx.exchange(packNext, onRecv, /*tag=*/7301);
-
-    buildRecvLookup();
-    persistentReady_ = false;
+    d_sendIdx_ = toDevice(t.sendIdx, "tpx::halo::sendIdx");
+    d_recvIdx_ = toDevice(t.recvIdx, "tpx::halo::recvIdx");
+    d_selfSrc_ = toDevice(t.selfSrc, "tpx::halo::selfSrc");
+    d_selfDst_ = toDevice(t.selfDst, "tpx::halo::selfDst");
+    d_sendBuf_ = View<T>(Kokkos::view_alloc("tpx::halo::sendBuf", Kokkos::WithoutInitializing),
+                         static_cast<std::size_t>(nSend_));
+    d_recvBuf_ = View<T>(Kokkos::view_alloc("tpx::halo::recvBuf", Kokkos::WithoutInitializing),
+                         static_cast<std::size_t>(nRecv_));
+    h_sendBuf_ = Kokkos::create_mirror_view(d_sendBuf_);
+    h_recvBuf_ = Kokkos::create_mirror_view(d_recvBuf_);
   }
 
-  // --- Field-agnostic exchange (NBX engine, with overlap support) ---------------------------------
+  /// Exchange ghost layers of the device field `field`. Blocking.
+  void exchange(const View<T>& field, int tag = 0) {
+    const bool aware = detail::gpuAwareMpi();
 
-  /// Post all sends/recvs; returns immediately so the caller can compute the block interior.
-  template <typename Field>
-  void start(Field& field, int tag = 0) {
-    applySelfCopy(field);
-    const std::size_t es = field.bytesPerElem();
+    // Periodic copy within our own block (read inner cell, write ghost cell).
+    if (nSelf_) {
+      View<T> f = field;
+      IndexView src = d_selfSrc_, dst = d_selfDst_;
+      Kokkos::parallel_for(
+          "tpx::halo::selfCopy", Kokkos::RangePolicy<ExecSpace>(0, nSelf_),
+          KOKKOS_LAMBDA(const Index i) { f(dst(i)) = f(src(i)); });
+    }
+    // Gather the cells we send into the contiguous send buffer.
+    if (nSend_) {
+      View<T> f = field;
+      IndexView idx = d_sendIdx_;
+      View<T> buf = d_sendBuf_;
+      Kokkos::parallel_for(
+          "tpx::halo::pack", Kokkos::RangePolicy<ExecSpace>(0, nSend_),
+          KOKKOS_LAMBDA(const Index i) { buf(i) = f(idx(i)); });
+      if (!aware) Kokkos::deep_copy(h_sendBuf_, d_sendBuf_);
+    }
+    // The send buffer (host-staged, or device for the aware path) must be ready before MPI reads it.
+    Kokkos::fence();
 
-    // Post receives first.
-    recvReqs_.assign(recvRanks_.size(), MPI_REQUEST_NULL);
-    recvBufs_.resize(recvRanks_.size());
+    T* sendBase = aware ? d_sendBuf_.data() : h_sendBuf_.data();
+    T* recvBase = aware ? d_recvBuf_.data() : h_recvBuf_.data();
+    std::vector<MPI_Request> reqs;
+    reqs.reserve(recvRanks_.size() + sendRanks_.size());
     for (std::size_t k = 0; k < recvRanks_.size(); ++k) {
-      recvBufs_[k].resize(recvIdx_[k].size() * es);
-      MPI_Irecv(recvBufs_[k].data(), static_cast<int>(recvBufs_[k].size()), MPI_BYTE, recvRanks_[k],
-                tag, comm_, &recvReqs_[k]);
+      reqs.emplace_back();
+      MPI_Irecv(recvBase + recvOff_[k], recvCounts_[k] * static_cast<int>(sizeof(T)), MPI_BYTE,
+                recvRanks_[k], tag, comm_, &reqs.back());
     }
-    // Pack and post sends.
-    sendReqs_.assign(sendRanks_.size(), MPI_REQUEST_NULL);
-    sendBufs_.resize(sendRanks_.size());
     for (std::size_t k = 0; k < sendRanks_.size(); ++k) {
-      auto& buf = sendBufs_[k];
-      buf.resize(sendIdx_[k].size() * es);
-      for (std::size_t i = 0; i < sendIdx_[k].size(); ++i) {
-        field.pack(sendIdx_[k][i], buf.data() + i * es);
-      }
-      MPI_Isend(buf.data(), static_cast<int>(buf.size()), MPI_BYTE, sendRanks_[k], tag, comm_,
-                &sendReqs_[k]);
+      reqs.emplace_back();
+      MPI_Isend(sendBase + sendOff_[k], sendCounts_[k] * static_cast<int>(sizeof(T)), MPI_BYTE,
+                sendRanks_[k], tag, comm_, &reqs.back());
     }
-    pendingTag_ = tag;
+    if (!reqs.empty()) MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
+
+    // Scatter received halo cells back into the field's ghost region.
+    if (nRecv_) {
+      if (!aware) Kokkos::deep_copy(d_recvBuf_, h_recvBuf_);
+      View<T> f = field;
+      IndexView idx = d_recvIdx_;
+      View<T> buf = d_recvBuf_;
+      Kokkos::parallel_for(
+          "tpx::halo::unpack", Kokkos::RangePolicy<ExecSpace>(0, nRecv_),
+          KOKKOS_LAMBDA(const Index i) { f(idx(i)) = buf(i); });
+    }
+    Kokkos::fence();
   }
-
-  /// Complete a started exchange: wait for receives and scatter them into the ghost cells.
-  template <typename Field>
-  void wait(Field& field) {
-    const std::size_t es = field.bytesPerElem();
-    // Unpack receives as they arrive.
-    for (std::size_t done = 0; done < recvReqs_.size(); ++done) {
-      int k = 0;
-      MPI_Waitany(static_cast<int>(recvReqs_.size()), recvReqs_.data(), &k, MPI_STATUS_IGNORE);
-      if (k == MPI_UNDEFINED) break;
-      for (std::size_t i = 0; i < recvIdx_[k].size(); ++i) {
-        field.unpack(recvIdx_[k][i], recvBufs_[k].data() + i * es);
-      }
-    }
-    if (!sendReqs_.empty()) {
-      MPI_Waitall(static_cast<int>(sendReqs_.size()), sendReqs_.data(), MPI_STATUSES_IGNORE);
-    }
-  }
-
-  /// Convenience: full blocking exchange via the NBX-style engine (start + wait).
-  template <typename Field>
-  void exchangeNbx(Field& field, int tag = 0) {
-    start(field, tag);
-    wait(field);
-  }
-
-  // --- Field-agnostic exchange (persistent neighborhood collective) -------------------------------
-
-  /// Full exchange via MPI_Neighbor_alltoallv on a cached distributed-graph communicator. Fastest
-  /// for the fixed neighbour pattern of a static grid. Identical result to exchangeNbx.
-  template <typename Field>
-  void exchangePersistent(Field& field) {
-    applySelfCopy(field);
-    const std::size_t es = field.bytesPerElem();
-    ensureGraphComm(es);
-
-    // Pack the contiguous send buffer in destination order.
-    for (std::size_t k = 0; k < sendRanks_.size(); ++k) {
-      char* dst = graphSendBuf_.data() + graphSendDispl_[k];
-      for (std::size_t i = 0; i < sendIdx_[k].size(); ++i) {
-        field.pack(sendIdx_[k][i], dst + i * es);
-      }
-    }
-    MPI_Neighbor_alltoallv(graphSendBuf_.data(), graphSendCnt_.data(), graphSendDispl_.data(),
-                           MPI_BYTE, graphRecvBuf_.data(), graphRecvCnt_.data(),
-                           graphRecvDispl_.data(), MPI_BYTE, graphComm_);
-    // Scatter the contiguous recv buffer into ghost cells (source order == recvRanks_ order).
-    for (std::size_t k = 0; k < recvRanks_.size(); ++k) {
-      const char* src = graphRecvBuf_.data() + graphRecvDispl_[k];
-      for (std::size_t i = 0; i < recvIdx_[k].size(); ++i) {
-        field.unpack(recvIdx_[k][i], src + i * es);
-      }
-    }
-  }
-
-  // --- Flattened topology (contiguous, device-friendly; consumed by the CUDA exchange) ---
-  struct FlatTopology {
-    MPI_Comm comm = MPI_COMM_NULL;
-    std::vector<int> sendRanks, recvRanks;     // neighbour ranks
-    std::vector<int> sendCounts, recvCounts;   // elements per neighbour (same order)
-    std::vector<Index> sendIdx, recvIdx;       // flattened local indices, grouped by neighbour
-    std::vector<Index> selfSrc, selfDst;       // local periodic self-copy (inner -> ghost)
-  };
-
-  FlatTopology flatten() const {
-    FlatTopology t;
-    t.comm = comm_;
-    t.sendRanks = std::vector<int>(sendRanks_.begin(), sendRanks_.end());
-    t.recvRanks = std::vector<int>(recvRanks_.begin(), recvRanks_.end());
-    for (const auto& v : sendIdx_) {
-      t.sendCounts.push_back(static_cast<int>(v.size()));
-      t.sendIdx.insert(t.sendIdx.end(), v.begin(), v.end());
-    }
-    for (const auto& v : recvIdx_) {
-      t.recvCounts.push_back(static_cast<int>(v.size()));
-      t.recvIdx.insert(t.recvIdx.end(), v.begin(), v.end());
-    }
-    t.selfSrc = selfSrc_;
-    t.selfDst = selfDst_;
-    return t;
-  }
-
-  // --- Introspection (used by tests/benchmarks) ---
-  const decomp::BlockIndexer<Dim>& indexer() const { return indexer_; }
-  std::size_t numNeighbors() const { return recvRanks_.size(); }
-  std::size_t numGhostRecv() const {
-    std::size_t n = 0;
-    for (auto& v : recvIdx_) n += v.size();
-    return n;
-  }
-
-  ~GridHaloTopology() { freeGraphComm(); }
-
-  GridHaloTopology(const GridHaloTopology&) = delete;
-  GridHaloTopology& operator=(const GridHaloTopology&) = delete;
 
  private:
-  // Free the cached graph communicator, but never after MPI_Finalize (e.g. if this object outlives
-  // finalize on the stack of main()). Calling MPI_Comm_free post-finalize aborts the job.
-  void freeGraphComm() {
-    if (graphComm_ == MPI_COMM_NULL) return;
-    int finalized = 0;
-    MPI_Finalized(&finalized);
-    if (!finalized) MPI_Comm_free(&graphComm_);
-    graphComm_ = MPI_COMM_NULL;
-  }
-
-  void clear() {
-    sendRanks_.clear();
-    sendIdx_.clear();
-    recvRanks_.clear();
-    recvIdx_.clear();
-    recvGlob_.clear();
-    selfSrc_.clear();
-    selfDst_.clear();
-    freeGraphComm();
-    persistentReady_ = false;
-  }
-
-  void buildRecvLookup() {
-    recvRankPos_.clear();
-    for (std::size_t k = 0; k < recvRanks_.size(); ++k) recvRankPos_[recvRanks_[k]] = k;
-  }
-
-  template <typename Field>
-  void applySelfCopy(Field& field) {
-    // Periodic copy within our own block: read inner cell, write ghost cell. We go through the
-    // field's pack/unpack so it works for any payload type.
-    if (selfSrc_.empty()) return;
-    std::vector<char> tmp(field.bytesPerElem());
-    for (std::size_t i = 0; i < selfSrc_.size(); ++i) {
-      field.pack(selfSrc_[i], tmp.data());
-      field.unpack(selfDst_[i], tmp.data());
-    }
-  }
-
-  void ensureGraphComm(std::size_t es) {
-    if (persistentReady_ && graphElemSize_ == es) return;
-    if (graphComm_ != MPI_COMM_NULL) MPI_Comm_free(&graphComm_);
-
-    // Distributed graph: sources = ranks we receive from, destinations = ranks we send to.
-    std::vector<int> sources(recvRanks_.begin(), recvRanks_.end());
-    std::vector<int> dests(sendRanks_.begin(), sendRanks_.end());
-    MPI_Dist_graph_create_adjacent(comm_, static_cast<int>(sources.size()), sources.data(),
-                                    MPI_UNWEIGHTED, static_cast<int>(dests.size()), dests.data(),
-                                    MPI_UNWEIGHTED, MPI_INFO_NULL, /*reorder=*/0, &graphComm_);
-
-    // Counts/displacements (in bytes) in the graph's neighbour ordering, which for
-    // create_adjacent matches the order we passed sources/dests.
-    graphSendCnt_.resize(dests.size());
-    graphSendDispl_.resize(dests.size());
-    int off = 0;
-    for (std::size_t k = 0; k < dests.size(); ++k) {
-      graphSendCnt_[k] = static_cast<int>(sendIdx_[k].size() * es);
-      graphSendDispl_[k] = off;
-      off += graphSendCnt_[k];
-    }
-    graphSendBuf_.resize(off);
-
-    graphRecvCnt_.resize(sources.size());
-    graphRecvDispl_.resize(sources.size());
-    off = 0;
-    for (std::size_t k = 0; k < sources.size(); ++k) {
-      graphRecvCnt_[k] = static_cast<int>(recvIdx_[k].size() * es);
-      graphRecvDispl_[k] = off;
-      off += graphRecvCnt_[k];
-    }
-    graphRecvBuf_.resize(off);
-
-    graphElemSize_ = es;
-    persistentReady_ = true;
-  }
-
-  MPI_Comm comm_ = MPI_COMM_WORLD;
-  int rank_ = 0;
-  decomp::BlockIndexer<Dim> indexer_;
-
-  // Matched topology: element i of send list k corresponds to element i of the peer's recv list.
-  std::vector<int> sendRanks_;
-  std::vector<std::vector<Index>> sendIdx_;  // local inner-cell indices to send
-  std::vector<int> recvRanks_;
-  std::vector<std::vector<Index>> recvIdx_;   // local ghost-cell indices to fill
-  std::vector<std::vector<Index>> recvGlob_;  // global cells requested (build-time only)
-  std::map<int, std::size_t> recvRankPos_;
-  std::vector<Index> selfSrc_, selfDst_;  // local periodic self-copy (inner -> ghost)
-
-  // NBX exchange scratch.
-  std::vector<MPI_Request> sendReqs_, recvReqs_;
-  std::vector<std::vector<char>> sendBufs_, recvBufs_;
-  int pendingTag_ = 0;
-
-  // Persistent neighborhood-collective state.
-  MPI_Comm graphComm_ = MPI_COMM_NULL;
-  bool persistentReady_ = false;
-  std::size_t graphElemSize_ = 0;
-  std::vector<int> graphSendCnt_, graphSendDispl_, graphRecvCnt_, graphRecvDispl_;
-  std::vector<char> graphSendBuf_, graphRecvBuf_;
+  MPI_Comm comm_ = MPI_COMM_NULL;
+  std::vector<int> sendRanks_, recvRanks_, sendCounts_, recvCounts_;
+  std::vector<int> sendOff_, recvOff_;
+  Index nSend_ = 0, nRecv_ = 0, nSelf_ = 0;
+  IndexView d_sendIdx_, d_recvIdx_, d_selfSrc_, d_selfDst_;
+  View<T> d_sendBuf_, d_recvBuf_;
+  HostView<T> h_sendBuf_, h_recvBuf_;
 };
 
 }  // namespace tpx::halo

@@ -21,8 +21,8 @@
 #include <Kokkos_Core.hpp>
 
 #include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/device_flow.hpp"
 #include "tpx/amr/flow.hpp"
+#include "tpx/amr/flow_oracle.hpp"
 #include "tpx/common/types.hpp"
 
 using namespace tpx;

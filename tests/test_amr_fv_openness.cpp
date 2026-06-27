@@ -18,7 +18,7 @@
 #include <Kokkos_Core.hpp>
 
 #include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/device_multigrid.hpp"
+#include "tpx/amr/multigrid.hpp"
 #include "tpx/amr/poisson.hpp"
 
 using namespace tpx;

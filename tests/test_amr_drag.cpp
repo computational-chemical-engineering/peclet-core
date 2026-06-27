@@ -19,7 +19,7 @@
 #include <vector>
 
 #include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/flow.hpp"
+#include "tpx/amr/flow_oracle.hpp"
 #include "tpx/amr/leaf_field.hpp"
 #include "tpx/amr/refine.hpp"
 #include "tpx/common/types.hpp"

@@ -14,7 +14,7 @@
 #include <Kokkos_Core.hpp>
 
 #include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/block_octree_kokkos.hpp"
+#include "tpx/amr/block_octree_view.hpp"
 
 using namespace tpx;
 using tpx::amr::BlockOctree;
