@@ -37,6 +37,27 @@ set(TPX_HALO_OK OFF)
 if(TPX_ENABLE_MPI)
   find_package(MPI COMPONENTS CXX)
   if(MPI_FOUND)
+    # Pin the launcher to the MPI compiler's own prefix. FindMPI locates the compiler
+    # wrapper (mpicxx) deterministically, but searches MPIEXEC_EXECUTABLE on PATH — so a
+    # foreign launcher earlier on PATH (e.g. ParaView's bundled mpiexec) gets picked up
+    # while the binary is built against the system MPI. That mismatch is silent and nasty:
+    # every rank inits as a singleton (MPI_Comm_size==1), so `mpirun -n N` runs N
+    # independent serial processes and multi-rank tests "pass" without ever communicating.
+    # The launcher next to mpicxx always belongs to the same MPI, on any system.
+    # Scheduler-launcher clusters (srun/aprun) pass -DTPX_PIN_MPIEXEC=OFF and set
+    # MPIEXEC_EXECUTABLE themselves.
+    option(TPX_PIN_MPIEXEC "Pin MPIEXEC_EXECUTABLE to the MPI compiler's prefix" ON)
+    if(TPX_PIN_MPIEXEC AND MPI_CXX_COMPILER)
+      get_filename_component(_mpi_bin "${MPI_CXX_COMPILER}" DIRECTORY)
+      unset(_mpi_launcher CACHE)
+      find_program(_mpi_launcher NAMES mpirun mpiexec HINTS "${_mpi_bin}" NO_DEFAULT_PATH)
+      if(_mpi_launcher AND NOT _mpi_launcher STREQUAL "${MPIEXEC_EXECUTABLE}")
+        message(STATUS "transport-core: MPIEXEC_EXECUTABLE was '${MPIEXEC_EXECUTABLE}' — "
+                       "pinning to '${_mpi_launcher}' (matches ${MPI_CXX_COMPILER})")
+        set(MPIEXEC_EXECUTABLE "${_mpi_launcher}" CACHE FILEPATH "MPI launcher" FORCE)
+      endif()
+      unset(_mpi_launcher CACHE)
+    endif()
     add_library(tpx_halo INTERFACE)
     add_library(tpx::halo ALIAS tpx_halo)
     target_link_libraries(tpx_halo INTERFACE tpx_core MPI::MPI_CXX)
