@@ -40,7 +40,7 @@ double dragK(unsigned L, double phi) {
   const long N = 1L << L;
   const double R = std::pow(phi * 3.0 / (4.0 * M_PI), 1.0 / 3.0) * static_cast<double>(N);
   const double mu = 0.1, f = 1e-3, dt = 60.0, c = N / 2.0;
-  AmrFlow<21> fl;
+  oracle::AmrFlow<21> fl;
   fl.init(t, 1.0, Vec<3>{0, 0, 0});  // grid units (dx=1)
   fl.setDensity(1.0);
   fl.setViscosity(mu);
@@ -85,7 +85,7 @@ void run() {
   refineToSdf(t, geo, [&](const Vec<3>& p) { return -sph.eval(p); }, /*target*/ 0, /*band*/ 2.5, true);
   TPX_CHECK(t.numLeaves() < Nf * Nf * Nf);  // genuinely coarsened (graded)
 
-  AmrFlow<21> fl;
+  oracle::AmrFlow<21> fl;
   fl.init(t, 1.0, Vec<3>{0, 0, 0});
   fl.setDensity(1.0);
   fl.setViscosity(mu);

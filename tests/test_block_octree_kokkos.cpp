@@ -1,4 +1,4 @@
-// Portable device-resident block-octree queries (tpx::amr::DeviceBlockOctree):
+// Portable device-resident block-octree queries (tpx::amr::BlockOctreeView):
 // the device point-location and face-neighbour walk must match the host
 // BlockOctree bit-for-bit, on whatever backend Kokkos was built for (CUDA / HIP /
 // OpenMP). Compiled as CXX — Kokkos routes it to the device compiler.
@@ -18,7 +18,7 @@
 
 using namespace tpx;
 using tpx::amr::BlockOctree;
-using tpx::amr::DeviceBlockOctree;
+using tpx::amr::BlockOctreeView;
 
 namespace {
 
@@ -42,7 +42,7 @@ void run() {
   t.balance2to1();
   TPX_CHECK(t.isBalanced());
 
-  DeviceBlockOctree<3, kBits> dev;
+  BlockOctreeView<3, kBits> dev;
   dev.upload(t);
   TPX_CHECK_EQ((long long)dev.numLeaves(), (long long)t.numLeaves());
 

@@ -1,6 +1,6 @@
 // transport-core — consistent graded FV Laplacian on a *distributed* octree.
 //
-// The distributed analog of AmrPoisson / DeviceMultigrid's consistent operator:
+// The distributed analog of AmrPoisson / Multigrid's consistent operator:
 // the conservative two-point FV Laplacian
 //     (L u)_i = invVol_i · Σ_f w_f (u[nbr_f] − u_i),   w_f = A_f / d_f,
 // on a graded DistributedOctree (refined + cross-block 2:1 balanced), with the

@@ -1,5 +1,5 @@
 // Experiment: Galerkin κ-weighted restriction vs the default plain volume-average,
-// on the device cut-cell MG (tpx::amr::DeviceMultigrid::setKappaRestrict). κ-weighting
+// on the device cut-cell MG (tpx::amr::Multigrid::setKappaRestrict). κ-weighting
 // downweights nearly-solid fine cells at thin cut features (κ = mean face aperture),
 // which can sharpen the coarse residual — but, unlike the plain volume-average, it is
 // not exactly conservative, so the restricted residual of a mean-zero RHS need not stay
@@ -67,7 +67,7 @@ void run() {
   hmg.build(t, h0);
   hmg.setOpenness(openFn);
 
-  DeviceMultigrid<3, kBits> mg;
+  Multigrid<3, kBits> mg;
   mg.build(t, h0, openFn);
   const Index n0 = mg.numLeaves(0);
 

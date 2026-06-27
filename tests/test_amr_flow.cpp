@@ -1,4 +1,4 @@
-// Collocated incompressible Stokes step on the octree (tpx::amr::AmrFlow) — wires
+// Collocated incompressible Stokes step on the octree (tpx::amr::oracle::AmrFlow) — wires
 // the cut-cell Dirichlet momentum operator (no-slip IBM) and the openness pressure
 // projection into one sdflow-style step:
 //   (1) Poiseuille — body-force-driven Stokes flow between immersed no-slip walls
@@ -44,7 +44,7 @@ void test_poiseuille() {
   const double h0 = 1.0 / static_cast<double>(N);
   const double y0 = 0.25, y1 = 0.75, G = 1.0, mu = 1.0;  // walls on cell faces
 
-  AmrFlow<21> fl;
+  oracle::AmrFlow<21> fl;
   fl.init(t, h0);
   fl.setDensity(1.0);
   fl.setViscosity(mu);
@@ -84,7 +84,7 @@ void test_projection() {
   const long N = 1L << L;
   const double h0 = 1.0 / static_cast<double>(N);
 
-  AmrFlow<21> fl;
+  oracle::AmrFlow<21> fl;
   fl.init(t, h0);
   fl.setSolid([](const Vec<3>&) { return 1.0; });  // all fluid, periodic
   const Index n = t.numLeaves();
@@ -121,7 +121,7 @@ double advectErr(unsigned L, double& constMax, int sch = 0) {
   BO t = uniformFine(L);
   const long N = 1L << L;
   const double h0 = 1.0 / static_cast<double>(N), k = 2.0 * M_PI;
-  AmrFlow<21> fl;
+  oracle::AmrFlow<21> fl;
   fl.init(t, h0);
   fl.setAdvectionScheme(sch);
   fl.setSolid([](const Vec<3>&) { return 1.0; });
@@ -171,7 +171,7 @@ void test_advection() {
   const long N = 1L << L;
   const double h0 = 1.0 / static_cast<double>(N);
   const double y0 = 0.25, y1 = 0.75, G = 1.0, mu = 1.0;
-  AmrFlow<21> fl;
+  oracle::AmrFlow<21> fl;
   fl.init(t, h0);
   fl.setViscosity(mu);
   fl.setDt(1e6);
@@ -202,7 +202,7 @@ void test_implicit_advection() {
   BO t = uniformFine(L);
   const long N = 1L << L;
   const double h0 = 1.0 / static_cast<double>(N), k = 2.0 * M_PI, A = 4.0;
-  auto initVortex = [&](AmrFlow<21>& fl) {
+  auto initVortex = [&](oracle::AmrFlow<21>& fl) {
     fl.init(t, h0);
     fl.setDensity(1.0);
     fl.setViscosity(0.005);
@@ -221,7 +221,7 @@ void test_implicit_advection() {
       U[1][static_cast<std::size_t>(i)] = -A * std::cos(k * x) * std::sin(k * y);
     }
   };
-  auto maxU = [&](AmrFlow<21>& fl) {
+  auto maxU = [&](oracle::AmrFlow<21>& fl) {
     double m = 0;
     bool finite = true;
     for (int c = 0; c < 3; ++c)
@@ -233,12 +233,12 @@ void test_implicit_advection() {
     return finite ? m : std::numeric_limits<double>::infinity();
   };
 
-  AmrFlow<21> imp;
+  oracle::AmrFlow<21> imp;
   initVortex(imp);  // implicit-FOU (default on)
   for (int it = 0; it < 25; ++it) imp.step(40, 5, 2);
   double mi = maxU(imp);
 
-  AmrFlow<21> exp_;
+  oracle::AmrFlow<21> exp_;
   initVortex(exp_);
   exp_.setImplicitAdvection(false);  // fully explicit high-order advection
   for (int it = 0; it < 25; ++it) exp_.step(40, 5, 2);
@@ -263,7 +263,7 @@ void test_graded_advection() {
   refineToSdf(t, geo, [&](const Vec<3>& p) { return -sph.eval(p); }, 0, 1.5, true);
   TPX_CHECK(t.numLeaves() < N * N * N);  // genuinely graded
 
-  AmrFlow<21> fl;
+  oracle::AmrFlow<21> fl;
   fl.init(t, 1.0, Vec<3>{0, 0, 0});
   fl.setDensity(1.0);
   fl.setViscosity(0.02);

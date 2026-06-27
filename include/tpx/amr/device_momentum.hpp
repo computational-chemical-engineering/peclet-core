@@ -40,7 +40,7 @@ namespace tpx::amr {
 /// optional implicit-FOU advection part (rebuilt each step from the lagged velocity): a
 /// per-cell outflow diagonal `advDiag` + per-face inflow coefficients over a second
 /// (face-geometry) CSR. hasAdv=false ⇒ the pure cut-cell operator, bit-exact unchanged.
-struct DeviceMomentumOp {
+struct MomentumOp {
   View<double> diag;      ///< size n
   View<Index> faceStart;  ///< CSR row offsets, size n+1
   View<Index> faceNbr;    ///< neighbour leaf per off-diagonal, size nnz
@@ -58,7 +58,7 @@ struct DeviceMomentumOp {
 /// device kernels and the host serial solver (cut_cell.hpp) run the *same* row arithmetic
 /// (face_csr.hpp) and cannot drift. Non-const Views convert to their const accessor form implicitly;
 /// the advection arrays are empty (and untouched) when hasAdv is false.
-inline FaceCsrOpT<View<const double>, View<const Index>> momView(const DeviceMomentumOp& op) {
+inline FaceCsrOpT<View<const double>, View<const Index>> momView(const MomentumOp& op) {
   FaceCsrOpT<View<const double>, View<const Index>> v;
   v.n = op.n;
   v.diag = op.diag;
@@ -74,7 +74,7 @@ inline FaceCsrOpT<View<const double>, View<const Index>> momView(const DeviceMom
 }
 
 /// Au = A u (cut-cell operator + optional implicit-FOU advection).
-inline void deviceApplyMom(const DeviceMomentumOp& op, View<const double> u, View<double> Au) {
+inline void deviceApplyMom(const MomentumOp& op, View<const double> u, View<double> Au) {
   const auto A = momView(op);
   Kokkos::parallel_for(
       "amr::mom_apply", op.n,
@@ -82,7 +82,7 @@ inline void deviceApplyMom(const DeviceMomentumOp& op, View<const double> u, Vie
 }
 
 /// res = b − A u.
-inline void deviceResidualMom(const DeviceMomentumOp& op, View<const double> u,
+inline void deviceResidualMom(const MomentumOp& op, View<const double> u,
                               View<const double> b, View<double> res) {
   const auto A = momView(op);
   Kokkos::parallel_for(
@@ -92,7 +92,7 @@ inline void deviceResidualMom(const DeviceMomentumOp& op, View<const double> u,
 
 /// One weighted-Jacobi sweep of A u = b (in place). `tmp` is scratch (size n). Pass 1
 /// reads only the previous iterate, pass 2 updates ⇒ order-independent / deterministic.
-inline void deviceJacobiMom(const DeviceMomentumOp& op, View<double> u, View<const double> b,
+inline void deviceJacobiMom(const MomentumOp& op, View<double> u, View<const double> b,
                             View<double> tmp, double omega) {
   const auto A = momView(op);
   Kokkos::parallel_for(
@@ -214,7 +214,7 @@ inline Coloring greedyColoring(const std::vector<Index>& start, const std::vecto
 /// non-symmetric, non-normal operator that breaks BiCGStab's bi-orthogonal recurrence on the larger
 /// non-symmetric 64³ system (false convergence to NaN), whereas the symmetric (SGS) V-cycle keeps it
 /// robust — the textbook remedy, and the behaviour sdflow gets from its RB-GS / MG-as-solver path.
-inline void deviceMulticolorGSMom(const DeviceMomentumOp& op, View<double> u, View<const double> b,
+inline void deviceMulticolorGSMom(const MomentumOp& op, View<double> u, View<const double> b,
                                   const Coloring& col, double omega) {
   const auto A = momView(op);
   auto idx = col.idx;
@@ -234,7 +234,7 @@ inline void deviceMulticolorGSMom(const DeviceMomentumOp& op, View<double> u, Vi
 }
 
 // ===========================================================================
-// DeviceMomentumMG — Galerkin geometric multigrid for the momentum operator.
+// MomentumMG — Galerkin geometric multigrid for the momentum operator.
 //
 // The cut-cell momentum operator carries the ξ-polynomial Dirichlet overlay and its
 // D_rescale row scaling, so a *rediscretised* coarse operator (the openness-Helmholtz
@@ -249,7 +249,7 @@ inline void deviceMulticolorGSMom(const DeviceMomentumOp& op, View<double> u, Vi
 // Used as the momentum BiCGStab preconditioner ⇒ the iteration count stays ~flat with N.
 // ===========================================================================
 template <unsigned Bits = 21u>
-class DeviceMomentumMG {
+class MomentumMG {
  public:
   using Octree = BlockOctree<3, Bits>;
   using M = typename Octree::M;
@@ -378,11 +378,11 @@ class DeviceMomentumMG {
   Index numLeaves(std::size_t L = 0) const { return levels_[L].op.n; }
   View<double> x(std::size_t L = 0) { return levels_[L].x; }
   View<double> b(std::size_t L = 0) { return levels_[L].b; }
-  const DeviceMomentumOp& op(std::size_t L = 0) const { return levels_[L].op; }
+  const MomentumOp& op(std::size_t L = 0) const { return levels_[L].op; }
 
  private:
   struct Level {
-    DeviceMomentumOp op;
+    MomentumOp op;
     View<double> x, b, res, tmp;
     View<Index> c2p, childStart, childIdx;
     Coloring col;
@@ -418,7 +418,7 @@ class DeviceMomentumMG {
 // plain Jacobi stalls (large dt / weak reaction term).
 // ---------------------------------------------------------------------------
 template <unsigned Bits = 21u>
-class DeviceMomentumSolver {
+class MomentumSolver {
  public:
   void setJacobi(int preSweeps, double omega) {
     jacPre_ = preSweeps;
@@ -427,8 +427,8 @@ class DeviceMomentumSolver {
 
   /// Set a generic preconditioner `z = M⁻¹ r` (a host callable that launches device kernels) — the
   /// multigrid V-cycle gives the smooth-mode coverage Jacobi lacks, so the momentum iteration count
-  /// stops growing with N. Decoupled from the MG type (Galerkin DeviceMomentumMG or rediscretized
-  /// DeviceVelocityMG) via std::function, so the two coarse-operator strategies are interchangeable
+  /// stops growing with N. Decoupled from the MG type (Galerkin MomentumMG or rediscretized
+  /// VelocityMG) via std::function, so the two coarse-operator strategies are interchangeable
   /// (and the solver carries no MG type). Pass an empty function to revert to damped-Jacobi. The
   /// preconditioner never changes the converged solution (the matvec is the exact operator).
   void setPreconditioner(std::function<void(View<const double>, View<double>)> fn) {
@@ -437,7 +437,7 @@ class DeviceMomentumSolver {
 
   /// Plain weighted-Jacobi solve (the simple parallel mirror of the host GS smoother):
   /// `sweeps` damped-Jacobi sweeps of A u = b in place. Returns the final residual L2.
-  double solveJacobi(const DeviceMomentumOp& op, View<double> u, View<const double> b,
+  double solveJacobi(const MomentumOp& op, View<double> u, View<const double> b,
                      int sweeps) {
     ensure(op.n);
     for (int s = 0; s < sweeps; ++s) deviceJacobiMom(op, u, b, tmp_, omega_);
@@ -458,7 +458,7 @@ class DeviceMomentumSolver {
   /// is only an approximate inverse. Converges when the advection is a perturbation of the
   /// viscous+reaction operator (low–moderate cell Reynolds number). `maxIters` caps the
   /// iterations; `tol` is relative to ||b−Au₀||.
-  Result solveDefectCorrection(const DeviceMomentumOp& op, View<double> u, View<const double> b,
+  Result solveDefectCorrection(const MomentumOp& op, View<double> u, View<const double> b,
                                int maxIters = 200, double tol = 1e-8) {
     const Index n = op.n;
     ensure(n);
@@ -485,7 +485,7 @@ class DeviceMomentumSolver {
 
   /// Jacobi-preconditioned BiCGStab solve of A u = b in place. `maxIters` caps the outer
   /// iterations; `tol` is relative to ||b−Au0||. Returns {iters, final residual L2}.
-  Result solveBiCGStab(const DeviceMomentumOp& op, View<double> u, View<const double> b,
+  Result solveBiCGStab(const MomentumOp& op, View<double> u, View<const double> b,
                        int maxIters = 500, double tol = 1e-10) {
     const Index n = op.n;
     ensure(n);
@@ -546,7 +546,7 @@ class DeviceMomentumSolver {
  private:
   // z = M^{-1} v : the generic MG preconditioner if set, else `jacPre_` damped-Jacobi sweeps of
   // A z = v starting from z = 0.
-  void applyPrec(const DeviceMomentumOp& op, View<double> v, View<double> z) {
+  void applyPrec(const MomentumOp& op, View<double> v, View<double> z) {
     if (precFn_) {
       precFn_(View<const double>(v), z);
       return;

@@ -1,5 +1,5 @@
 // Device (Kokkos) momentum operator + solver for the AMR collocated flow step
-// (tpx::amr::DeviceMomentumOp / DeviceMomentumSolver). Validates, against the host
+// (tpx::amr::MomentumOp / MomentumSolver). Validates, against the host
 // AmrCutCell on a uniform-fine sphere geometry:
 //   (1) the assembled device matvec deviceApplyMom == host AmrCutCell::applyOp (to FP
 //       tolerance — same coefficients; GPU differs only in the last bit by FMA);
@@ -55,8 +55,8 @@ std::vector<double> getDev(View<double> v, Index n) {
   return h;
 }
 
-DeviceMomentumOp upload(const AmrCutCell<21>::Assembled& A) {
-  DeviceMomentumOp op;
+MomentumOp upload(const AmrCutCell<21>::Assembled& A) {
+  MomentumOp op;
   op.n = (Index)A.diag.size();
   op.diag = toDevice(A.diag, "mom_diag");
   op.faceStart = toDevice(A.start, "mom_fstart");
@@ -95,7 +95,7 @@ void run() {
   for (Index i = 0; i < n; ++i) u[(std::size_t)i] = std::sin(0.3 * i) - 0.2 * std::cos(0.11 * i);
   {
     auto A = cc.assembleOperator();
-    DeviceMomentumOp op = upload(A);
+    MomentumOp op = upload(A);
     View<double> du("u", (std::size_t)n), dAu("Au", (std::size_t)n);
     setDev(du, u);
     deviceApplyMom(op, View<const double>(du), dAu);
@@ -126,11 +126,11 @@ void run() {
   }
 
   auto A = cc.assembleOperator();
-  DeviceMomentumOp op = upload(A);
+  MomentumOp op = upload(A);
   View<double> db("b", (std::size_t)n), du("u", (std::size_t)n);
   setDev(db, b);
 
-  DeviceMomentumSolver<21> solver;
+  MomentumSolver<21> solver;
   solver.setJacobi(2, 0.7);
   // BiCGStab
   Kokkos::deep_copy(du, 0.0);
@@ -164,7 +164,7 @@ void run() {
     }
     cc.buildAdvectionFou(vel, rho);
     auto Aa = cc.assembleOperator();
-    DeviceMomentumOp opa = upload(Aa);
+    MomentumOp opa = upload(Aa);
     View<double> dua("u", (std::size_t)n), dAu("Au", (std::size_t)n);
     setDev(dua, u);
     deviceApplyMom(opa, View<const double>(dua), dAu);
@@ -188,11 +188,11 @@ void run() {
     cc2.build(sdf, rho / dtBig, mu / (h0 * h0), 4);
     std::vector<double> b2 = cc2.makeRhs(src, 0.0);
     auto A2 = cc2.assembleOperator();
-    DeviceMomentumOp op2 = upload(A2);
+    MomentumOp op2 = upload(A2);
     View<double> db2("b2", (std::size_t)n), du2("u2", (std::size_t)n);
     setDev(db2, b2);
     Kokkos::deep_copy(du2, 0.0);
-    DeviceMomentumSolver<21> s2;
+    MomentumSolver<21> s2;
     s2.setJacobi(4, 0.7);
     auto R2 = s2.solveBiCGStab(op2, du2, View<const double>(db2), 2000, 1e-8);
     std::printf("[mom] large-dt BiCGStab: %d iters, rel res %.3e\n", R2.iters, R2.res / R2.res0);

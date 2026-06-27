@@ -1,8 +1,8 @@
-// transport-core — device (Kokkos) Poisson operator + smoother on a DeviceBlockOctree.
+// transport-core — device (Kokkos) Poisson operator + smoother on a BlockOctreeView.
 //
 // The device compute path for the AMR octree: the Laplacian matvec and a weighted-
 // Jacobi smoother run as Kokkos::parallel_for over the leaf Views, using the
-// device-callable face-neighbour walk of DeviceBlockOctree (block_octree_kokkos.hpp).
+// device-callable face-neighbour walk of BlockOctreeView (block_octree_kokkos.hpp).
 // Same arithmetic as the host BlockOctree::faceNeighbor, so the result is identical
 // to the host operator (validated bit-for-bit in tests/test_amr_device_poisson_kokkos).
 //
@@ -25,7 +25,7 @@ namespace tpx::amr {
 
 /// y = inv · Σ_faces (x_nb − x_i)  (= ∇² in spacing h0 with inv = 1/h0²), on device.
 template <int Dim, unsigned Bits>
-void deviceLaplacian(DeviceBlockOctree<Dim, Bits> dev, View<double> x, View<double> y, double inv) {
+void deviceLaplacian(BlockOctreeView<Dim, Bits> dev, View<double> x, View<double> y, double inv) {
   const Index n = dev.numLeaves();
   Kokkos::parallel_for(
       "amr::device_laplacian", n, KOKKOS_LAMBDA(const Index i) {
@@ -43,7 +43,7 @@ void deviceLaplacian(DeviceBlockOctree<Dim, Bits> dev, View<double> x, View<doub
 /// −2·Dim·inv), on device. The update u_i += ω (L u_i − b_i)/diag, diag = 2·Dim·inv
 /// (= −L_ii), has the right sign for the negative-definite L. `lx` is scratch (L x).
 template <int Dim, unsigned Bits>
-void deviceJacobiSweep(DeviceBlockOctree<Dim, Bits> dev, View<double> x, View<const double> b,
+void deviceJacobiSweep(BlockOctreeView<Dim, Bits> dev, View<double> x, View<const double> b,
                        View<double> lx, double inv, double omega) {
   const Index n = dev.numLeaves();
   const double diag = 2.0 * Dim * inv;
@@ -75,7 +75,7 @@ void deviceJacobiSweep(DeviceBlockOctree<Dim, Bits> dev, View<double> x, View<co
 // order, so the device operator is bit-identical to the host operator (and the
 // graded V-cycle converges instead of stalling on the inconsistent plain op).
 // ===========================================================================
-struct DeviceFvOp {
+struct FvOp {
   View<double> invVol;     ///< 1/V_i, size n
   View<Index> faceStart;   ///< CSR row offsets, size n+1
   View<Index> faceNbr;     ///< neighbour leaf per face, size nFaces
@@ -84,7 +84,7 @@ struct DeviceFvOp {
   Index n = 0;
   // Helmholtz generalisation: the applied operator is H = c0·I + cD·L (c0=0, cD=1 ⇒ the
   // pure Laplacian L, the default — bit-exact unchanged). Setting c0=idiag, cD=−μ turns the
-  // existing hierarchy into the momentum operator idiag·I − μ∇², so DeviceMultigrid can be
+  // existing hierarchy into the momentum operator idiag·I − μ∇², so Multigrid can be
   // used as a (non-singular when c0≠0) preconditioner for the momentum BiCGStab. The L path
   // is bit-exact preserved: c0·u+cD·(L) with c0=0,cD=1 is L exactly in IEEE arithmetic, and
   // the Jacobi point-solve branches on (c0==0 && cD==1) to keep the original expression.
@@ -94,7 +94,7 @@ struct DeviceFvOp {
 
 /// View the assembled FV operator through the shared backend-agnostic FvCsrOpT, so the device
 /// kernels and the host AmrPoisson run the *same* row arithmetic (face_csr.hpp).
-inline FvCsrOpT<View<const double>, View<const Index>> fvView(const DeviceFvOp& op) {
+inline FvCsrOpT<View<const double>, View<const Index>> fvView(const FvOp& op) {
   FvCsrOpT<View<const double>, View<const Index>> v;
   v.n = op.n;
   v.invVol = op.invVol;
@@ -109,14 +109,14 @@ inline FvCsrOpT<View<const double>, View<const Index>> fvView(const DeviceFvOp& 
 
 /// Hu = (c0·I + cD·L) u (consistent conservative FV Laplacian, c0=0/cD=1 ⇒ pure L). A
 /// non-zero bcDiag adds the homogeneous-Dirichlet boundary term −bcDiag·u_i to L.
-inline void deviceApplyFv(const DeviceFvOp& op, View<const double> u, View<double> Lu) {
+inline void deviceApplyFv(const FvOp& op, View<const double> u, View<double> Lu) {
   const auto A = fvView(op);
   Kokkos::parallel_for(
       "amr::fv_apply", op.n, KOKKOS_LAMBDA(const Index i) { Lu(i) = fvApplyRow(A, i, u); });
 }
 
 /// res = rhs − H u.
-inline void deviceResidualFv(const DeviceFvOp& op, View<const double> u, View<const double> rhs,
+inline void deviceResidualFv(const FvOp& op, View<const double> u, View<const double> rhs,
                              View<double> res) {
   const auto A = fvView(op);
   Kokkos::parallel_for(
@@ -130,7 +130,7 @@ inline void deviceResidualFv(const DeviceFvOp& op, View<const double> u, View<co
 /// sweep is order-independent / bit-reproducible. The pure-L path (c0=0, cD=1)
 /// keeps the exact original expression (bit-exact); the Helmholtz path uses the
 /// point solve of (c0·I + cD·L) u = rhs.
-inline void deviceJacobiFv(const DeviceFvOp& op, View<double> u, View<const double> rhs,
+inline void deviceJacobiFv(const FvOp& op, View<double> u, View<const double> rhs,
                            View<double> tmp, double omega) {
   const auto A = fvView(op);
   Kokkos::parallel_for(
@@ -146,7 +146,7 @@ inline void deviceJacobiFv(const DeviceFvOp& op, View<double> u, View<const doub
 /// active when its diagonal (Σw + bc) > 0; fully-closed (solid) cells are excluded. Mirrors
 /// sdflow CutcellMG::removeMean (sum over cells with AC > 1e-30). Applied at every V-cycle level
 /// so the multigrid preconditioner does not drift / amplify the nullspace.
-inline void deviceRemoveMeanFv(const DeviceFvOp& op, View<double> u) {
+inline void deviceRemoveMeanFv(const FvOp& op, View<double> u) {
   auto invVol = op.invVol;
   auto fs = op.faceStart;
   auto fw = op.faceW;

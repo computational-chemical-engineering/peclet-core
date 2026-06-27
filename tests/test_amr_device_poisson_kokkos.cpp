@@ -60,7 +60,7 @@ void run() {
     v = static_cast<double>((s >> 11) & 0xFFFFF) / static_cast<double>(0x100000) - 0.5;
   }
 
-  DeviceBlockOctree<3, kBits> dev;
+  BlockOctreeView<3, kBits> dev;
   dev.upload(t);
   View<double> dx = toDevice(x, "x");
   View<double> dy("y", static_cast<std::size_t>(n));

@@ -1,5 +1,5 @@
 // Device (Kokkos) multigrid-preconditioned CG for the AMR FV Poisson
-// (tpx::amr::DevicePCG). Validates, on a genuinely graded octree:
+// (tpx::amr::PCG). Validates, on a genuinely graded octree:
 //   (1) PCG drives the manufactured-RHS residual to round-off (the singular periodic
 //       operator: RHS b = L·u_exact is exactly mean-zero, so CG stays in the range
 //       space with nullspace projection and converges to ~machine precision);
@@ -108,9 +108,9 @@ void run() {
   }();
 
   // ===== (1) PCG drives the residual to round-off =====
-  DeviceMultigrid<3, kBits> mg;
+  Multigrid<3, kBits> mg;
   mg.build(t, h0);
-  DevicePCG<3, kBits> pcg;
+  PCG<3, kBits> pcg;
   pcg.setVcycle(2, 2, 40, 0.8);
   pcg.setSingular(true);
 
@@ -186,9 +186,9 @@ void run() {
     return std::sqrt(s);
   }();
 
-  DeviceMultigrid<3, kBits> mgO;
+  Multigrid<3, kBits> mgO;
   mgO.build(t, h0, openFn, /*periodic=*/true);
-  DevicePCG<3, kBits> pcgO;
+  PCG<3, kBits> pcgO;
   pcgO.setVcycle(2, 2, 60, 0.8);
   pcgO.setSingular(true);
   View<double> dxO("pcgO_x", (std::size_t)n), dbO("pcgO_b", (std::size_t)n);

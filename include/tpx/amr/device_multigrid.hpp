@@ -55,7 +55,7 @@ inline void deviceRestrict(View<const Index> childStart, View<const Index> child
 /// Restrict, κ-weighted: coarse(p) = Σ_child κ_c·fine_c / Σ_child κ_c, with κ the fine
 /// cell's fluid-fraction weight (mean face aperture). Downweights nearly-solid children
 /// at thin cut features. Reduces to deviceRestrict when all κ are equal (openness-free).
-/// (Experimental — opt-in via DeviceMultigrid::setKappaRestrict; see the comparison test.
+/// (Experimental — opt-in via Multigrid::setKappaRestrict; see the comparison test.
 /// NOTE: unlike the plain volume-average, this is *not* exactly conservative, so the
 /// restricted residual of a mean-zero RHS need not stay mean-zero.)
 inline void deviceRestrictKappa(View<const Index> childStart, View<const Index> childIdx,
@@ -106,7 +106,7 @@ inline void deviceZeroMasked(View<double> v, View<const char> excl, Index n) {
 }
 
 template <int Dim, unsigned Bits = (Dim == 2 ? 32u : (Dim == 3 ? 21u : 16u))>
-class DeviceMultigrid {
+class Multigrid {
  public:
   using Octree = BlockOctree<Dim, Bits>;
   using M = typename Octree::M;
@@ -165,7 +165,7 @@ class DeviceMultigrid {
   Code octreeCode(std::size_t L, Index i) const { return hmg_->op(L).octree().code(i); }
   View<double> x(std::size_t L = 0) { return levels_[L].x; }
   View<double> b(std::size_t L = 0) { return levels_[L].b; }
-  const DeviceFvOp& op(std::size_t L = 0) const { return levels_[L].op; }
+  const FvOp& op(std::size_t L = 0) const { return levels_[L].op; }
   View<Index> quadStart() const { return qStart_; }
   View<Index> quadSlot() const { return qSlot_; }
   View<double> quadCoef() const { return qCoef_; }
@@ -235,7 +235,7 @@ class DeviceMultigrid {
 
  private:
   struct Level {
-    DeviceFvOp op;
+    FvOp op;
     Index n = 0;
     View<double> x, b, res, tmp;
     View<double> kappa;                     // per-cell fluid-fraction weight (κ restriction)

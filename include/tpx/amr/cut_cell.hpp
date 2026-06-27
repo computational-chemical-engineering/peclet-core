@@ -69,7 +69,7 @@ class AmrCutCell {
   bool isFluid(Index i) const { return fluid_[static_cast<std::size_t>(i)]; }
   /// True for a cut cell: a fluid cell with at least one solid face neighbour (the row-scaled
   /// ξ-overlay band). Its residual is D_rescale-scaled / inconsistent, so it is excluded from the
-  /// velocity-MG coarse defect (the clean-fluid mask — see DeviceVelocityMG).
+  /// velocity-MG coarse defect (the clean-fluid mask — see VelocityMG).
   bool isCut(Index i) const { return cut_[static_cast<std::size_t>(i)] != 0; }
   /// Periodic face neighbour of leaf i in direction k (0=+x,1=-x,2=+y,3=-y,4=+z,5=-z).
   Index neighborOf(Index i, int k) const { return nb_[static_cast<std::size_t>(i) * 6 + k]; }

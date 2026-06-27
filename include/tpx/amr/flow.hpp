@@ -45,7 +45,10 @@
 #include "tpx/amr/poisson.hpp"
 #include "tpx/common/types.hpp"
 
-namespace tpx::amr {
+// Retired from the production path: this serial Gauss-Seidel host driver is kept ONLY as the
+// development-stage oracle that the device AmrFlow (flow_device.hpp) is validated bit-for-bit
+// against. It is NOT exposed by the Python bindings. Production AMR flow runs on the device path.
+namespace tpx::amr::oracle {
 
 template <unsigned Bits = 21u>
 class AmrFlow {
@@ -292,7 +295,7 @@ class AmrFlow {
   std::vector<double> p_;    // accumulated pressure (rotational incremental scheme)
 };
 
-}  // namespace tpx::amr
+}  // namespace tpx::amr::oracle
 
 #endif  // TPX_HAVE_MORTON
 #endif  // TPX_AMR_FLOW_HPP

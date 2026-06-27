@@ -1,5 +1,5 @@
 // Device (Kokkos) geometric-multigrid V-cycle with the CONSISTENT graded operator
-// (tpx::amr::DeviceMultigrid). Validates, on a genuinely graded octree:
+// (tpx::amr::Multigrid). Validates, on a genuinely graded octree:
 //   (1) the device consistent FV operator (deviceApplyFv over the face CSR) ==
 //       host AmrPoisson::applyLaplacian bit-for-bit (same coeffs, same 2:1 sub-faces);
 //   (2) the full standard V-cycle == a host Jacobi-MG mirror bit-for-bit, AND it now
@@ -54,7 +54,7 @@ std::vector<double> smoothRhs(const BO& t, double h0) {
   return b;
 }
 
-// ---- host Jacobi-MG mirror of DeviceMultigrid (consistent operator) ----
+// ---- host Jacobi-MG mirror of Multigrid (consistent operator) ----
 struct HRef {
   std::vector<BO> lvl;
   std::vector<AP> ap;
@@ -167,7 +167,7 @@ void run() {
   const Index n = t.numLeaves();
   const double h0 = 1.0 / 16.0;
 
-  DeviceMultigrid<3, kBits> mg;
+  Multigrid<3, kBits> mg;
   mg.build(t, h0);
   TPX_CHECK_EQ(mg.numLeaves(0), n);
   TPX_CHECK(mg.numLevels() >= 3);

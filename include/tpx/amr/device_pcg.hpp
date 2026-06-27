@@ -2,7 +2,7 @@
 //
 // A Krylov accelerator on top of the existing device machinery: the matvec is the
 // consistent conservative FV Laplacian `deviceApplyFv` (device_poisson.hpp), the
-// preconditioner is one (or a few) DeviceMultigrid V-cycle(s) (device_multigrid.hpp),
+// preconditioner is one (or a few) Multigrid V-cycle(s) (device_multigrid.hpp),
 // and the inner products / vector updates are Kokkos reductions / parallel_fors. This
 // is exactly sdflow's structured MG-PCG, ported onto the AMR octree CSR: CG accelerates
 // the geometric MG so a given residual is reached in far fewer fine-grid matvecs than
@@ -79,14 +79,14 @@ inline void negate(View<double> x, Index n) {
 }
 
 // ---------------------------------------------------------------------------
-// MG-preconditioned CG over a DeviceMultigrid, driving the system L x = rhs on its
+// MG-preconditioned CG over a Multigrid, driving the system L x = rhs on its
 // finest level. Owns the Krylov scratch; reuses the multigrid's own finest x/b as
 // transient preconditioner storage. Solves A x = b_A with A := −L (SPD in <·,·>_D).
 // ---------------------------------------------------------------------------
 template <int Dim, unsigned Bits = (Dim == 2 ? 32u : (Dim == 3 ? 21u : 16u))>
-class DevicePCG {
+class PCG {
  public:
-  using MG = DeviceMultigrid<Dim, Bits>;
+  using MG = Multigrid<Dim, Bits>;
 
   struct Result {
     int iters = 0;
@@ -113,7 +113,7 @@ class DevicePCG {
   Result solve(MG& mg, View<double> x, View<const double> rhs, int maxIters = 200,
                double tol = 1e-10) {
     const Index n = mg.numLeaves(0);
-    const DeviceFvOp& op = mg.op(0);
+    const FvOp& op = mg.op(0);
     View<const double> invVol(op.invVol);
     ensure(n);
     Result R;

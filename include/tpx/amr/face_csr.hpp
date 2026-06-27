@@ -1,7 +1,7 @@
 // transport-core — shared, backend-agnostic kernels for an assembled face-CSR operator.
 //
-// The "host" serial reference solver (tpx::amr::AmrCutCell / AmrFlow, pure C++20) and the "device"
-// Kokkos solver (tpx::amr::DeviceMomentumOp + device_momentum.hpp) used to carry two independent
+// The "host" serial reference solver (tpx::amr::AmrCutCell / oracle::AmrFlow, pure C++20) and the "device"
+// Kokkos solver (tpx::amr::MomentumOp + device_momentum.hpp) used to carry two independent
 // encodings of the SAME per-cell arithmetic — a real drift risk. This header is the single source of
 // that arithmetic: the assembled operator
 //
@@ -97,7 +97,7 @@ MORTON_HD inline double faceCsrPointUpdate(double b_i, double off, double d, dou
 // diagonal *derived* (the symmetric Laplacian Σ w·(u_nbr − u_i)); a Helmholtz generalisation
 //   H u = c0·u + cD·( invVol·( Σ w·(u_nbr − u_i) − bcDiag·u ) )
 // (c0=0, cD=1 ⇒ the pure FV Laplacian L) keeps the L path bit-exact. Same body for host (AmrPoisson)
-// and device (device_poisson.hpp DeviceFvOp).
+// and device (device_poisson.hpp FvOp).
 // ---------------------------------------------------------------------------
 
 /// A backend-agnostic view of an assembled FV (weight-CSR) operator.

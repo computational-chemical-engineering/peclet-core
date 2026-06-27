@@ -351,7 +351,7 @@ class Flow {
   double divergence_norm() { return flow_.divNormL2(flow_.velocityRef()); }
 
  private:
-  amr::AmrFlow<> flow_;
+  amr::oracle::AmrFlow<> flow_;  // TODO(phase-1b): rewire to the device amr::AmrFlow (Kokkos)
   Index n_;
 };
 

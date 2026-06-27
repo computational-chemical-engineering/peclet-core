@@ -1,7 +1,7 @@
 // transport-core — device-resident view of a BlockOctree (portable Kokkos).
 //
 // BlockOctree (block_octree.hpp) owns the topology on the host: refine / coarsen /
-// 2:1 balance rebuild its sorted leaf arrays. DeviceBlockOctree mirrors those
+// 2:1 balance rebuild its sorted leaf arrays. BlockOctreeView mirrors those
 // arrays into Kokkos Views and exposes the *queries* (point location, and the
 // face-neighbour step) as KOKKOS_INLINE_FUNCTIONs over the same code, so field
 // kernels and the (later) octree multigrid can locate / walk leaves on device on
@@ -26,7 +26,7 @@ namespace tpx::amr {
 
 /// Device mirror of a BlockOctree's leaf arrays + device-callable queries.
 template <int Dim, unsigned Bits = (Dim == 2 ? 32u : (Dim == 3 ? 21u : 16u))>
-struct DeviceBlockOctree {
+struct BlockOctreeView {
   using Host = BlockOctree<Dim, Bits>;
   using M = typename Host::M;
   using Code = typename Host::Code;

@@ -1,5 +1,5 @@
-// Benchmark: AMR collocated Stokes flow step + Poisson solve, host (serial AmrFlow) vs
-// device (DeviceAmrFlow / DevicePCG) on whatever backend Kokkos targets (OpenMP multicore
+// Benchmark: AMR collocated Stokes flow step + Poisson solve, host (serial oracle::AmrFlow) vs
+// device (AmrFlow / PCG) on whatever backend Kokkos targets (OpenMP multicore
 // or CUDA/HIP GPU). Reports ms/step and throughput (Mcell/s), the host/device speedup, and
 // — for the Poisson half — V-cycle vs MG-PCG iterations/time to a fixed tolerance.
 //
@@ -53,7 +53,7 @@ void benchFlowCompare(unsigned L, int steps) {
   const Index n = t.numLeaves();
   auto sdf = sphereSdf(Vec<3>{0.5, 0.5, 0.5}, 0.25);
 
-  AmrFlow<21> hfl;
+  oracle::AmrFlow<21> hfl;
   hfl.init(t, h0);
   hfl.setViscosity(1.0);
   hfl.setDt(1e6);
@@ -64,7 +64,7 @@ void benchFlowCompare(unsigned L, int steps) {
   for (int s = 0; s < steps; ++s) hfl.step(200, 5, 2);
   double hostMs = ms(h0t, Clock::now()) / steps;
 
-  DeviceAmrFlow<21> dfl;
+  AmrFlow<21> dfl;
   dfl.init(t, h0);
   dfl.setViscosity(1.0);
   dfl.setDt(1e6);
@@ -90,7 +90,7 @@ void profileFlow(unsigned L, int steps) {
   const double h0 = 1.0 / (double)N;
   const Index n = t.numLeaves();
   auto sdf = sphereSdf(Vec<3>{0.5, 0.5, 0.5}, 0.25);
-  DeviceAmrFlow<21> dfl;
+  AmrFlow<21> dfl;
   dfl.init(t, h0);
   dfl.setViscosity(1.0);
   dfl.setDt(1e6);
@@ -134,7 +134,7 @@ void dtSweep(unsigned L) {
   const double rho = 1.0, mu = 1.0;
   const double dtVisc = rho * h0 * h0 / mu;  // viscous-stability scale (idiag ~ diffusion)
   for (double dt : {dtVisc, 100 * dtVisc, 1e4 * dtVisc, 1e6}) {
-    DeviceAmrFlow<21> dfl;
+    AmrFlow<21> dfl;
     dfl.init(t, h0);
     dfl.setViscosity(mu);
     dfl.setDensity(rho);
@@ -158,7 +158,7 @@ void velocityMgCompare(unsigned L) {
   const Index n = t.numLeaves();
   auto sdf = sphereSdf(Vec<3>{0.5, 0.5, 0.5}, 0.25);
   auto runIt = [&](bool mg) {
-    DeviceAmrFlow<21> dfl;
+    AmrFlow<21> dfl;
     dfl.init(t, h0);
     dfl.setViscosity(1.0);
     dfl.setDt(1e6);
@@ -184,7 +184,7 @@ void velocityMgCompare(unsigned L) {
               L, (long)n, j.first, j.second, m.first, m.second, (double)j.first / m.first);
 }
 
-// Q2 head-to-head: Galerkin (DeviceMomentumMG) vs rediscretized staircase (DeviceVelocityMG) as
+// Q2 head-to-head: Galerkin (MomentumMG) vs rediscretized staircase (VelocityMG) as
 // the momentum BiCGStab preconditioner — Stokes momentum iters/step to a fixed tolerance.
 void mgStrategyCompare(unsigned L) {
   BO t = uniformFine(L);
@@ -193,7 +193,7 @@ void mgStrategyCompare(unsigned L) {
   const Index n = t.numLeaves();
   auto sdf = sphereSdf(Vec<3>{0.5, 0.5, 0.5}, 0.25);
   auto runIt = [&](bool staircase, bool gs) {
-    DeviceAmrFlow<21> dfl;
+    AmrFlow<21> dfl;
     dfl.init(t, h0);
     dfl.setViscosity(1.0);
     dfl.setDt(1e6);
@@ -239,7 +239,7 @@ void benchFlowDevice(unsigned L, int steps) {
   const Index n = t.numLeaves();
   auto sdf = sphereSdf(Vec<3>{0.5, 0.5, 0.5}, 0.25);
 
-  DeviceAmrFlow<21> dfl;
+  AmrFlow<21> dfl;
   dfl.init(t, h0);
   dfl.setViscosity(1.0);
   dfl.setDt(1e6);
@@ -276,7 +276,7 @@ void benchPoisson(unsigned L) {
   bn = std::sqrt(bn);
   const double tol = 1e-8;
 
-  DeviceMultigrid<3, 21> mg;
+  Multigrid<3, 21> mg;
   mg.build(t, h0);
   View<double> db("b", (std::size_t)n);
   {
@@ -305,7 +305,7 @@ void benchPoisson(unsigned L) {
   double vMs = ms(v0, Clock::now());
 
   // MG-PCG
-  DevicePCG<3, 21> pcg;
+  PCG<3, 21> pcg;
   pcg.setVcycle(2, 2, 60, 0.8);
   View<double> dx("x", (std::size_t)n);
   Kokkos::fence();

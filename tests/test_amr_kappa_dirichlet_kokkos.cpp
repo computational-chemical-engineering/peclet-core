@@ -3,7 +3,7 @@
 // On the periodic problem κ-weighting stalled because it breaks the volume-average's
 // conservation and the singular operator's restricted residual was no longer ⊥ the
 // constant null space (see test_amr_kappa_restrict_kokkos). A homogeneous-Dirichlet
-// operator (DeviceMultigrid::build(..., periodic=false): every domain-boundary face is a
+// operator (Multigrid::build(..., periodic=false): every domain-boundary face is a
 // u=0 wall at half a cell, folded into the diagonal) has NO null space, so the
 // conservation argument no longer bites. This A/Bs plain vs κ-weighted there: both
 // should now converge to round-off (no floor), confirming κ-restrict is safe when the
@@ -60,7 +60,7 @@ void run() {
   const double h0 = 1.0 / 16.0;
 
   // Homogeneous-Dirichlet cut-cell device MG (periodic = false).
-  DeviceMultigrid<3, kBits> mg;
+  Multigrid<3, kBits> mg;
   mg.build(t, h0, openFn, /*periodic=*/false);
   const Index n0 = mg.numLeaves(0);
   TPX_CHECK(mg.numLevels() >= 3);

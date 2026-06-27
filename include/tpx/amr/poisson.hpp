@@ -118,7 +118,7 @@ class AmrPoisson {
   /// half a cell, folded into the diagonal (`boundaryDiag`). This is the one difference
   /// between the pressure and velocity discretisations on the same openness geometry, and it
   /// makes the velocity operator strongly diagonally dominant (the wall pins u) — the basis
-  /// for the velocity multigrid (DeviceMultigrid built with immersedWall + Helmholtz mass).
+  /// for the velocity multigrid (Multigrid built with immersedWall + Helmholtz mass).
   void setImmersedWall(bool w) { immersedWall_ = w; }
   bool immersedWall() const { return immersedWall_; }
 

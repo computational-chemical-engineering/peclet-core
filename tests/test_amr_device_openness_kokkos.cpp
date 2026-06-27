@@ -1,5 +1,5 @@
 // Cut-cell openness coarsened across the device (Kokkos) MG levels
-// (tpx::amr::DeviceMultigrid::build(finest, h0, openFn)). The openness is set on the
+// (tpx::amr::Multigrid::build(finest, h0, openFn)). The openness is set on the
 // finest level and area-averaged to every coarser level (via AmrMultigrid::setOpenness),
 // so each level is a consistent cut-cell operator. Validates:
 //   (1) the device operator on EVERY level == host AmrMultigrid::op(L).applyLaplacian
@@ -67,7 +67,7 @@ void run() {
   hmg.setOpenness(openFn);
 
   // Device MG with the same openFn (coarsened across levels internally).
-  DeviceMultigrid<3, kBits> mg;
+  Multigrid<3, kBits> mg;
   mg.build(t, h0, openFn);
   TPX_CHECK(mg.numLevels() == hmg.numLevels());
   TPX_CHECK(mg.numLevels() >= 3);

@@ -1,8 +1,8 @@
 // transport-core — device (Kokkos) REDISCRETIZED velocity multigrid for the AMR momentum solve.
 //
-// The rediscretized counterpart of the Galerkin DeviceMomentumMG, mirroring sdflow's VelocityMG
+// The rediscretized counterpart of the Galerkin MomentumMG, mirroring sdflow's VelocityMG
 // (mac_velocity_mg.hpp) on the octree. The fine level is the *sharp* cut-cell operator (the
-// assembled FaceCsrOp = DeviceMomentumOp the BiCGStab matvec uses); the coarse levels are a
+// assembled FaceCsrOp = MomentumOp the BiCGStab matvec uses); the coarse levels are a
 // **staircase rediscretization** of the geometry rather than a Galerkin R·A·P of the fine
 // operator:
 //   * coarsen the cell fluid-fraction κ to each level (average of children);
@@ -14,7 +14,7 @@
 // Transfers: average restriction + masked piecewise-constant prolongation (no correction into a
 // solid fine cell). Smoother: weighted Jacobi (deviceJacobiMom) — P5 swaps in multicolor-GS.
 //
-// Used as the momentum BiCGStab preconditioner exactly like DeviceMomentumMG; selectable so the
+// Used as the momentum BiCGStab preconditioner exactly like MomentumMG; selectable so the
 // two coarse-operator strategies can be benchmarked head-to-head on the AMR. The implicit-FOU
 // advection on coarse levels (mirror buildUpwindCoarse) is a follow-up — the viscous staircase is
 // the diffusion preconditioner. Requires a Kokkos build + the morton checkout (TPX_HAVE_MORTON).
@@ -37,7 +37,7 @@
 namespace tpx::amr {
 
 template <unsigned Bits = 21u>
-class DeviceVelocityMG {
+class VelocityMG {
  public:
   using Octree = BlockOctree<3, Bits>;
   using M = typename Octree::M;
@@ -54,7 +54,7 @@ class DeviceVelocityMG {
   /// immersed feature. Coarsening below the feature scale makes a small object vanish from the
   /// staircase classification, leaving an inconsistent coarse operator that diverges (deep
   /// coarsening only sets the rate, not the answer — the fine smoother + exclude carry it).
-  void build(const Octree& finest, double h0, double idiag, double mu, const DeviceMomentumOp& fineOp,
+  void build(const Octree& finest, double h0, double idiag, double mu, const MomentumOp& fineOp,
              const std::vector<double>& kappa, const std::vector<char>& fluid,
              const std::vector<char>& cut, Index minCoarse = 256) {
     hmg_ = std::make_unique<AmrMultigrid<3, Bits>>();
@@ -111,7 +111,7 @@ class DeviceVelocityMG {
     // Coarse levels: rediscretized staircase operator + classified solid mask.
     for (std::size_t L = 1; L < nl; ++L) buildStaircase(L, idiag, mu, kap[L]);
 
-    // Transfer maps L → L+1 (child→parent + child CSR), as in DeviceMomentumMG.
+    // Transfer maps L → L+1 (child→parent + child CSR), as in MomentumMG.
     for (std::size_t L = 0; L + 1 < nl; ++L) buildTransfer(L);
   }
 
@@ -120,7 +120,7 @@ class DeviceVelocityMG {
   View<double> x(std::size_t L = 0) { return levels_[L].x; }
   View<double> b(std::size_t L = 0) { return levels_[L].b; }
   /// Re-point level 0 at the (possibly FOU-updated) fine operator before a solve.
-  void setFineOp(const DeviceMomentumOp& fineOp) { levels_[0].op = fineOp; }
+  void setFineOp(const MomentumOp& fineOp) { levels_[0].op = fineOp; }
   /// Opt-in: use multicolour Gauss–Seidel as the smoother (per-level colouring) instead of Jacobi —
   /// the strong fine smoother that "owns the cut band" (sdflow uses RB-GS), markedly improving the
   /// staircase at high resolution. Default off (Jacobi).
@@ -151,7 +151,7 @@ class DeviceVelocityMG {
 
  private:
   struct Level {
-    DeviceMomentumOp op;
+    MomentumOp op;
     View<char> solid;
     View<double> x, b, res, tmp;
     View<Index> c2p, childStart, childIdx;

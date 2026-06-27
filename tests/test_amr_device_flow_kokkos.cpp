@@ -1,9 +1,9 @@
-// Device (Kokkos) collocated Stokes step on the octree (tpx::amr::DeviceAmrFlow) —
-// the device counterpart of AmrFlow. Validates:
+// Device (Kokkos) collocated Stokes step on the octree (tpx::amr::AmrFlow) —
+// the device counterpart of oracle::AmrFlow. Validates:
 //   (1) Poiseuille — body-force-driven Stokes flow between immersed no-slip walls
 //       converges to the analytic parabola u = G/(2μ)(y-y0)(y1-y) to ~round-off, solids
-//       held at 0, and the device field matches the host AmrFlow field to tolerance;
-//   (2) immersed sphere (cut cells) — the device step reproduces the host AmrFlow
+//       held at 0, and the device field matches the host oracle::AmrFlow field to tolerance;
+//   (2) immersed sphere (cut cells) — the device step reproduces the host oracle::AmrFlow
 //       velocity field on a genuinely cut geometry (the cut-cell ξ overlay + openness
 //       projection all on device);
 //   (3) projection — a pure-gradient periodic field's divergence + magnitude drop sharply.
@@ -54,7 +54,7 @@ void test_poiseuille() {
   auto sdf = [&](const Vec<3>& p) { return std::min(p[1] - y0, y1 - p[1]); };
 
   // Host reference.
-  AmrFlow<21> hfl;
+  oracle::AmrFlow<21> hfl;
   hfl.init(t, h0);
   hfl.setDensity(1.0);
   hfl.setViscosity(mu);
@@ -65,7 +65,7 @@ void test_poiseuille() {
   const auto& hux = hfl.velocity(0);
 
   // Device.
-  DeviceAmrFlow<21> dfl;
+  AmrFlow<21> dfl;
   dfl.init(t, h0);
   dfl.setDensity(1.0);
   dfl.setViscosity(mu);
@@ -114,7 +114,7 @@ void test_sphere() {
     return std::sqrt(dx * dx + dy * dy + dz * dz) - rad;  // >0 fluid (outside sphere)
   };
 
-  AmrFlow<21> hfl;
+  oracle::AmrFlow<21> hfl;
   hfl.init(t, h0);
   hfl.setViscosity(mu);
   hfl.setDt(1e6);
@@ -123,7 +123,7 @@ void test_sphere() {
   for (int s = 0; s < 8; ++s) hfl.step(/*momSweeps=*/400, /*presIters=*/8, /*presSweeps=*/2);
   const auto& hux = hfl.velocity(0);
 
-  DeviceAmrFlow<21> dfl;
+  AmrFlow<21> dfl;
   dfl.init(t, h0);
   dfl.setViscosity(mu);
   dfl.setDt(1e6);
@@ -165,7 +165,7 @@ void test_momentum_mg_option() {
     return std::sqrt(dx * dx + dy * dy + dz * dz) - rad;
   };
   auto run = [&](bool mgPre) {
-    DeviceAmrFlow<21> f;
+    AmrFlow<21> f;
     f.init(t, h0);
     f.setViscosity(1.0);
     f.setDt(1e6);
@@ -201,7 +201,7 @@ void test_momentum_scaling() {
       double dx = p[0] - c[0], dy = p[1] - c[1], dz = p[2] - c[2];
       return std::sqrt(dx * dx + dy * dy + dz * dz) - rad;
     };
-    DeviceAmrFlow<21> f;
+    AmrFlow<21> f;
     f.init(t, h0);
     f.setViscosity(1.0);
     f.setDt(1e6);
@@ -218,12 +218,12 @@ void test_momentum_scaling() {
 }
 
 // Implicit-FOU + deferred-correction SOU advection (Navier–Stokes), validated against the host
-// AmrFlow which runs the identical scheme: (a) Poiseuille with advection ON still converges to
+// oracle::AmrFlow which runs the identical scheme: (a) Poiseuille with advection ON still converges to
 // the analytic parabola (∇·(u u)=0 for unidirectional flow) and matches the host; (b) an
 // immersed sphere at finite Re (the advection term is non-trivial) reaches the same steady
 // velocity field on device and host.
 // Kernel-only isolation: the device high-order advection ∇·(u u_c) must equal the host
-// AmrFlow::advectTerm for the same velocity field (no solve, no time-stepping). Run on an
+// oracle::AmrFlow::advectTerm for the same velocity field (no solve, no time-stepping). Run on an
 // all-fluid box AND an immersed sphere (cut faces). This pinpoints any SOU-kernel discrepancy.
 void test_advection_kernel() {
   for (int which = 0; which < 2; ++which) {
@@ -245,7 +245,7 @@ void test_advection_kernel() {
       U[1][(std::size_t)i] = -std::cos(k * x) * std::sin(k * y) * std::cos(k * z);
       U[2][(std::size_t)i] = 0.1 * std::sin(k * z);
     }
-    AmrFlow<21> hfl;
+    oracle::AmrFlow<21> hfl;
     hfl.init(t, h0);
     hfl.setDt(1.0);
     hfl.setAdvection(true);
@@ -253,7 +253,7 @@ void test_advection_kernel() {
     else hfl.setSolid(sphere);
     for (int c = 0; c < 3; ++c) hfl.velocityRef()[c] = U[c];
 
-    DeviceAmrFlow<21> dfl;
+    AmrFlow<21> dfl;
     dfl.init(t, h0);
     dfl.setDt(1.0);
     dfl.setAdvection(true);
@@ -286,7 +286,7 @@ void test_advection() {
     const double y0 = 0.25, y1 = 0.75, G = 1.0, mu = 1.0;
     auto sdf = [&](const Vec<3>& p) { return std::min(p[1] - y0, y1 - p[1]); };
 
-    AmrFlow<21> hfl;
+    oracle::AmrFlow<21> hfl;
     hfl.init(t, h0);
     hfl.setViscosity(mu);
     hfl.setDt(1e6);
@@ -296,7 +296,7 @@ void test_advection() {
     for (int s = 0; s < 6; ++s) hfl.step(300, 5, 2);
     const auto& hux = hfl.velocity(0);
 
-    DeviceAmrFlow<21> dfl;
+    AmrFlow<21> dfl;
     dfl.init(t, h0);
     dfl.setViscosity(mu);
     dfl.setDt(1e6);
@@ -347,9 +347,9 @@ void test_advection() {
       f.setAdvection(true);
       f.setSolid(sdf);
     };
-    AmrFlow<21> hfl;
+    oracle::AmrFlow<21> hfl;
     setup(hfl);
-    DeviceAmrFlow<21> dfl;
+    AmrFlow<21> dfl;
     setup(dfl);
     for (int s = 0; s < 50; ++s) {  // both reach the same NS steady state
       hfl.step(300, 8, 2);
@@ -378,7 +378,7 @@ void test_advection() {
   }
 }
 
-// The rediscretized staircase velocity-MG (DeviceVelocityMG) must reach the same converged step as
+// The rediscretized staircase velocity-MG (VelocityMG) must reach the same converged step as
 // the Galerkin MG on a cut geometry — validates the clean-fluid exclude mask + pore-scale cap fix.
 void test_staircase_mg() {
   const unsigned L = 4;  // 16³
@@ -391,7 +391,7 @@ void test_staircase_mg() {
     return std::sqrt(dx * dx + dy * dy + dz * dz) - rad;
   };
   auto run = [&](bool staircase) {
-    DeviceAmrFlow<21> f;
+    AmrFlow<21> f;
     f.init(t, h0);
     f.setViscosity(1.0);
     f.setDt(1e6);
@@ -428,7 +428,7 @@ void test_momentum_gs() {
     return std::sqrt(dx * dx + dy * dy + dz * dz) - rad;
   };
   auto run = [&](bool staircase, bool gs) {
-    DeviceAmrFlow<21> f;
+    AmrFlow<21> f;
     f.init(t, h0);
     f.setViscosity(1.0);
     f.setDt(1e6);
@@ -470,7 +470,7 @@ void test_momentum_mgsolver() {
     return std::sqrt(dx * dx + dy * dy + dz * dz) - rad;
   };
   auto run = [&](bool staircase, bool mgSolver) {
-    DeviceAmrFlow<21> f;
+    AmrFlow<21> f;
     f.init(t, h0);
     f.setViscosity(1.0);
     f.setDt(1e6);
@@ -520,7 +520,7 @@ void test_picard_outer() {
       return std::sqrt(dx * dx + dy * dy + dz * dz) - rad;
     };
     auto run = [&](int outer, int* lastOuter) {
-      DeviceAmrFlow<21> f;
+      AmrFlow<21> f;
       f.init(t, h0);
       f.setViscosity(1.0);
       f.setDt(1e6);
@@ -555,7 +555,7 @@ void test_picard_outer() {
       return std::sqrt(dx * dx + dy * dy + dz * dz) - rad;
     };
     auto run = [&](int outer) {
-      DeviceAmrFlow<21> f;
+      AmrFlow<21> f;
       f.init(t, h0);
       f.setViscosity(mu);
       f.setDt(dt);
