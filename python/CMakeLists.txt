@@ -21,6 +21,11 @@ suite_require_nanobind()
 nanobind_add_module(tpx_mpi NB_STATIC tpx_mpi.cpp)
 target_include_directories(tpx_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 target_link_libraries(tpx_mpi PRIVATE MPI::MPI_CXX)
+# `pip install .` (scikit-build-core, via ../pyproject.toml with cmake.source-dir=python) installs the
+# built modules. Inert for a plain `cmake --build`, so the developer workflow is unchanged.
+if(DEFINED SKBUILD)
+  install(TARGETS tpx_mpi LIBRARY DESTINATION . COMPONENT python)
+endif()
 
 # AMR octree bindings (tpx_amr): requires the morton sibling checkout, since tpx::amr is guarded by
 # TPX_HAVE_MORTON. Built only when ../../morton/include/morton/morton.hpp is present (a local/opt-in
@@ -38,6 +43,9 @@ if(EXISTS "${_morton_inc}/morton/morton.hpp" AND Kokkos_FOUND)
   target_compile_definitions(tpx_amr PRIVATE TPX_HAVE_MORTON=1 MORTON_ENABLE_KOKKOS=1)
   target_compile_features(tpx_amr PRIVATE cxx_std_20)
   target_link_libraries(tpx_amr PRIVATE MPI::MPI_CXX Kokkos::kokkos)
+  if(DEFINED SKBUILD)
+    install(TARGETS tpx_amr LIBRARY DESTINATION . COMPONENT python)
+  endif()
   message(STATUS "tpx_amr: morton + Kokkos ${Kokkos_VERSION} (${Kokkos_DEVICES}) — building device AMR bindings")
 elseif(NOT Kokkos_FOUND)
   message(STATUS "tpx_amr: Kokkos not found (set CMAKE_PREFIX_PATH to a backend prefix) — skipping AMR bindings")

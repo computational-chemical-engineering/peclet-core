@@ -1,0 +1,35 @@
+# Python packaging for transport-core's Python surface: the Lagrangian halo (`tpx_mpi`) and the AMR
+# octree (`tpx_amr`). transport-core itself is a header-only C++20 library; these are the optional
+# nanobind modules under python/ (scikit-build-core points at that subdirectory).
+#
+# `pip install .` builds them via scikit-build-core. They depend on siblings that are NOT on PyPI:
+#   * tpx_mpi needs MPI (and mpi4py at runtime);
+#   * tpx_amr additionally needs a Kokkos prefix on CMAKE_PREFIX_PATH and the morton sibling (../../morton)
+#     — it is skipped automatically if either is absent.
+#
+#   CMAKE_PREFIX_PATH=/path/to/extern/install/host-openmp pip install .
+#
+# This mirrors the developer flow documented in python/CMakeLists.txt; nanobind is added automatically
+# as a build requirement.
+
+[build-system]
+requires = ["scikit-build-core>=0.8", "nanobind>=2.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "transport-core-python"
+version = "0.1.0"
+description = "nanobind Python modules for transport-core: Lagrangian halo (tpx_mpi) + AMR octree (tpx_amr)"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.20"]
+
+[tool.scikit-build]
+minimum-version = "0.8"
+cmake.version = ">=3.24"
+# The Python modules live in python/ (a standalone find_package project); the SKBUILD-guarded install
+# rules there install tpx_mpi (+ tpx_amr when morton + Kokkos are present).
+cmake.source-dir = "python"
+wheel.install-dir = "."
+# Note: SuiteNanobind.cmake lives in the umbrella (../../cmake), so `pip install .` resolves it from a
+# suite checkout; a standalone sdist of just this repo is not self-contained (by design).
+sdist.include = ["include", "python", "CMakeLists.txt", "README.md"]
