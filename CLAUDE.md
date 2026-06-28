@@ -7,8 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `transport-core` is the shared infrastructure library for the transport-phenomena simulation suite
 (sibling repos under `../`: `sdflow`, `dem`, `vorflow`, `morton`). The suite-wide design contract lives in `../docs/` — read
 `../docs/ARCHITECTURE.md`, `CONVENTIONS.md`, `STYLE.md`, `INTERFACES.md`, `ROADMAP.md` before
-cross-cutting changes. Header-only C++20; anything that must compile as CUDA device code stays
-C++17-compatible.
+cross-cutting changes. Header-only C++20; the device side is compiled through Kokkos (CUDA / HIP /
+OpenMP) and is also C++20 — only the `morton` dependency pins C++17 (see `../docs/STYLE.md`). CUDA is
+retired; Kokkos is the canonical device path.
 
 ## Build / test / benchmark
 
@@ -34,7 +35,8 @@ Header-only under `include/tpx/`:
 
 - `common/types.hpp` — `Index` (int64), `Real` (double), `IVec<Dim>`/`Vec<Dim>`, `wrap()`,
   compile-time `forEachInBox`. **Convention: x-fastest linear index** `I = x + y*nx + z*nx*ny`
-  (matches sdflow and `../docs/CONVENTIONS.md`). Keep this header C++17-clean (pulled into `.cu`).
+  (matches sdflow and `../docs/CONVENTIONS.md`). Keep this header C++17-clean (shared with `morton`,
+  which pins C++17).
 - `decomp/block_decomposer.hpp` — ORB decomposition (ported & modernized from
   `../block_decomposer/src/BlockDecomposer.hpp`). `ownerOf()` walks the implicit binary tree
   (children at `2i+1`/`2i+2`, leaves carry the block index) and is the key primitive for halo
@@ -51,12 +53,13 @@ Header-only under `include/tpx/`:
   `MORTON_ENABLE_KOKKOS` ⇒ `MORTON_HD` is `KOKKOS_FUNCTION`).
 - `halo/nbx.hpp` — `NbxEngine`: canonical NBX (Issend + Ibarrier consensus). Reimplements the engine
   from `../block_decomposer/src/MPISync.hpp`. Use for dynamic/sparse exchange.
-- `halo/grid_halo.hpp` — `GridHalo<Dim>`: the ghost-layer exchange. **Topology** (who owns each ghost
-  cell, established via one NBX round so owners learn what to send) is built once in
+- `halo/grid_halo_topology.hpp` — `GridHaloTopology<Dim>`: the ghost-layer exchange. **Topology** (who
+  owns each ghost cell, established via one NBX round so owners learn what to send) is built once in
   `buildTopology()`; **exchange** runs every step. Field-agnostic: any type with
-  `bytesPerElem()`/`pack(localIdx,dst)`/`unpack(localIdx,src)` works. Two engines give identical
-  results — `exchangeNbx`/`start`+`wait` (overlap-capable) and `exchangePersistent`
-  (`MPI_Neighbor_alltoallv`, faster for static grids). `flatten()` exposes a device-friendly topology.
+  `bytesPerElem()`/`pack(localIdx,dst)`/`unpack(localIdx,src)` works (`GridFieldView<T>` is the
+  contiguous-array adapter). Two engines give identical results — `exchangeNbx`/`start`+`wait`
+  (overlap-capable) and `exchangePersistent` (`MPI_Neighbor_alltoallv`, faster for static grids).
+  `flatten()` exposes a device-friendly topology consumed by the device `GridHalo`.
 - `halo/particle_migrator.hpp` — `ParticleMigrator<Dim>`: Lagrangian counterpart. Reassigns particles
   (positions + opaque fixed-stride payload) to their owning rank via the NBX engine, with periodic wrap.
   `cellOf()` exposes the global binning cell (`ownerOf == dec.ownerOf(cellOf(x))`).
@@ -64,15 +67,40 @@ Header-only under `include/tpx/`:
   balancing. Bins particles onto the grid, re-inits `dec` in place with the **weighted ORB** (so a
   migrator/halo holding a pointer to it sees the new partition), and migrates. Pure redistribution
   (count/payload preserved). The dem distributed step is the consumer; also bound in `python/tpx_mpi.cpp`.
-- `halo/grid_halo_kokkos.hpp` — `DeviceGridExchangeKokkos<T>`: portable GPU-resident halo (Kokkos;
-  CUDA / HIP / OpenMP backends). pack/unpack/self-copy run as `parallel_for` over `Kokkos::View`s; only
-  the compact halo buffers are host-staged for MPI by default (the field stays on the device), with an
-  opt-in GPU-aware path (`TPX_GPU_AWARE_MPI`). Built from a host `GridHalo`'s `flatten()`. Bit-for-bit
-  matches the CPU exchange. (The legacy native-CUDA `grid_halo_cuda.cuh` / `DeviceGridExchange<T>` was
-  retired when Kokkos became the canonical device path; see `docs/cuda-aware-mpi.md` for the historical
+- `halo/grid_halo.hpp` — `GridHalo<T>`: portable GPU-resident halo (Kokkos; CUDA / HIP / OpenMP
+  backends). pack/unpack/self-copy run as `parallel_for` over the device `tpx::View<T>` field; only the
+  compact halo buffers are host-staged for MPI by default (the field stays on the device), with an
+  opt-in GPU-aware path (env `TPX_GPU_AWARE_MPI`, legacy `TPX_CUDA_AWARE_MPI` still honoured). Built
+  from a host `GridHaloTopology<Dim>::flatten()` via `init()`. Bit-for-bit matches the CPU exchange.
+  (The legacy native-CUDA `grid_halo_cuda.cuh` / `DeviceGridExchange<T>` was retired when Kokkos became
+  the canonical device path; see `docs/cuda-aware-mpi.md` for the historical
   host-staging-vs-GPU-aware analysis.)
-- `halo/particle_halo_kokkos.hpp` — `DeviceParticleHaloKokkos<Dim>`: the Lagrangian device counterpart
-  (forward gather + reverse atomic-accumulate), consumed by dem's distributed step.
+- `halo/particle_halo_topology.hpp` — `ParticleHaloTopology<Dim>`: persistent Lagrangian ghost halo
+  (host topology + field-agnostic exchange). `build()` establishes the owner↔ghost correspondence from
+  particle proximity; `forward` (owner→ghost), `reverse` (ghost→owner, accumulate) and
+  `forwardPositions` (periodic image shift) are the cheap per-step exchanges. The standard distributed
+  particle schemes (frozen/replicate, Newton-on, force-accumulate) are compositions of these.
+- `halo/particle_halo.hpp` — `ParticleHalo<Dim>`: the Kokkos GPU-resident driver for
+  `ParticleHaloTopology` (on-device forward gather + reverse atomic-accumulate; host-staged or
+  GPU-aware MPI). Built from `ParticleHaloTopology::flatten()`; consumed by dem's distributed step.
+- `geom/` — shared SDF solids. `geom/sdf.hpp` is the `Sdf` concept + analytic primitives;
+  `geom/grid_sdf.hpp` is the trilinearly-sampled `GridSdf`; `geom/vti_io.hpp` reads/writes scalar &
+  vector VTI (`.vti`). The shared geometry representation behind sdflow's and dem's cut-cell IBM.
+- `amr/` — block-local-Morton **AMR octree** flow subsystem (`tpx::amr`, guarded by `TPX_HAVE_MORTON`).
+  `amr/block_octree.hpp` is the per-block octree; `amr/flow.hpp` is the canonical device `AmrFlow`
+  (collocated-projection Navier–Stokes with `maskSolid` and a div-free face field), with
+  `amr/flow_oracle.hpp` an unexposed serial host reference. Device + distributed multigrid live in
+  `amr/pcg.hpp`, `amr/multigrid.hpp`, `amr/velocity_mg.hpp`, `amr/momentum.hpp` and the
+  `amr/distributed_*.hpp` set (`distributed_octree.hpp::rebalance` is the Eulerian leaf/field load
+  balancer). Cut-cell openness is `amr/cut_cell.hpp`; solution-adaptive refinement is `amr/adapt.hpp` /
+  `amr/indicators.hpp` / `amr/refine.hpp`. Design notes: `docs/amr_collocated_projection.md`,
+  `docs/amr_device_assembly_plan.md`.
+- `python/` + `python/include/tpx/python/ndarray_interop.hpp` — **nanobind** Python bindings over a
+  shared **zero-copy `tpx::View`↔ndarray bridge** (`include/tpx/python/ndarray_interop.hpp`).
+  `python/tpx_mpi.cpp` is host-only (no Kokkos): exposes `ParticleMigrator` / `ParticleHaloTopology` /
+  `rebalanceByParticleCount` for an mpi4py driver. `python/tpx_amr.cpp` exposes the device `AmrFlow`
+  (needs the `morton` sibling + a Kokkos backend). Both are built via `include(SuiteNanobind)` +
+  `suite_require_nanobind()` from `../cmake/SuiteNanobind.cmake` (suite-root).
 
 ## Gotchas
 
@@ -84,3 +112,6 @@ Header-only under `include/tpx/`:
   Cartesian-grid assumption.
 - Tests are dependency-free (`tests/test_util.hpp`, non-zero exit on failure). MPI tests run under
   `mpirun` at several rank counts via ctest.
+- `../cmake/SuiteNanobind.cmake` MUST be a CMake **macro**, not a `function()`: it sets/propagates
+  variables (the located nanobind, the interpreter) into the including scope, which a function's nested
+  scope would swallow. Keep `suite_require_nanobind` defined as a macro.

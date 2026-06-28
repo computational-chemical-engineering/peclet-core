@@ -1,5 +1,11 @@
 # CUDA-aware MPI on this workstation — WORKING (local build)
 
+> **Status note.** This document is the historical host-staging-vs-GPU-aware analysis from before the
+> Kokkos device path was canonical. The **UCX/OpenMPI build recipe below remains valid and current**;
+> the integration/swap-in sections refer to retired native-CUDA code (`grid_halo_cuda.cuh`,
+> `DeviceGridExchange`) — the live equivalent is the Kokkos `GridHalo<T>` device path in
+> `include/tpx/halo/grid_halo.hpp`, gated on the env flag `TPX_GPU_AWARE_MPI`.
+
 Direct **device-pointer** MPI (CUDA-aware MPI) now works on this box via a **user-space** OpenMPI+UCX
 built against CUDA 13.2 — no root, no sysadmin. `tools/cuda_aware_mpi_check.cpp` passes:
 `MPI_Send`/`MPI_Recv` on **device pointers** transfer device→device through UCX `cuda_ipc`/`cuda_copy`.
@@ -48,14 +54,18 @@ mpic++ transport-core/tools/cuda_aware_mpi_check.cpp -I/usr/local/cuda-13.2/incl
 OpenMPI's *accelerator framework* selects the `null` component here (the `cuda` accelerator is built
 but isn't auto-selected), so `MPIX_Query_cuda_support()` reports **0** even though device-pointer
 transfers succeed via UCX. **Do not gate the device path on `MPIX_Query_cuda_support()`** -- it would
-wrongly fall back to host staging. Gate instead on a build/runtime flag (e.g. `TPX_CUDA_AWARE_MPI=1`,
-set when this stack is in use) or probe UCX. This matters for the `DeviceGridExchange` swap-in below.
+wrongly fall back to host staging. Gate instead on a build/runtime flag — the implemented flag is the
+env var `TPX_GPU_AWARE_MPI` (set when this stack is in use; the legacy `TPX_CUDA_AWARE_MPI` is still
+honoured) — or probe UCX. This is exactly what the Kokkos `GridHalo<T>` device path does today.
 
-## Swap-in: device-pointer path in `DeviceGridExchange`
+## Swap-in: device-pointer path (historical — now the Kokkos `GridHalo<T>` path)
 
-`include/tpx/halo/grid_halo_cuda.cuh` currently host-stages (`d_sendBuf_`->host->MPI->host->`d_recvBuf_`).
-The swap-in passes `d_sendBuf_`/`d_recvBuf_` directly to `MPI_Isend`/`MPI_Irecv` (dropping the two
-`cudaMemcpy`s) when CUDA-aware MPI is in use, falling back to host-staging otherwise -- a runtime-gated
-branch in one function. Build the CUDA tests against this MPI (`source ~/opt/cudampi-env.sh`, then
-configure with `-DMPIEXEC_EXECUTABLE=$CUDAMPI_HOME/bin/mpirun` and the matching `mpicc`) to exercise
-it. On one shared GPU the win is modest (intra-GPU `cuda_ipc`); the payoff is real multi-GPU/node.
+This section described the swap-in for the retired native-CUDA `include/tpx/halo/grid_halo_cuda.cuh`
+(`DeviceGridExchange`), which host-staged `d_sendBuf_`->host->MPI->host->`d_recvBuf_`. The idea now
+lives in the canonical Kokkos device halo, `include/tpx/halo/grid_halo.hpp` (`GridHalo<T>`): by default
+it host-stages only the compact halo buffers (the field stays on the device); when
+`TPX_GPU_AWARE_MPI` is set it hands the device pointers straight to `MPI_Isend`/`MPI_Irecv`, dropping
+the two staging copies — a runtime-gated branch in one function. Build the Kokkos GPU tests against
+this MPI (`source ~/opt/cudampi-env.sh`, then configure with
+`-DMPIEXEC_EXECUTABLE=$CUDAMPI_HOME/bin/mpirun` and the matching `mpicc`) to exercise it. On one shared
+GPU the win is modest (intra-GPU `cuda_ipc`); the payoff is real multi-GPU/node.
