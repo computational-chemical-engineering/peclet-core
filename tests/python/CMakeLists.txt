@@ -24,7 +24,9 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../../cmake")
 include(SuiteNanobind)
 suite_require_nanobind()
 
-nanobind_add_module(interop_test_module NB_STATIC interop_test_module.cpp)
+# NOMINSIZE: nanobind's default -Os is rejected by nvcc on the CUDA backend (Kokkos device sources
+# compile as CXX through the launch compiler).
+nanobind_add_module(interop_test_module NB_STATIC NOMINSIZE interop_test_module.cpp)
 target_include_directories(interop_test_module PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include")
 target_link_libraries(interop_test_module PRIVATE Kokkos::kokkos)
 

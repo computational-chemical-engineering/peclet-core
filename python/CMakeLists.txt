@@ -38,7 +38,9 @@ endif()
 set(_morton_inc "${CMAKE_CURRENT_SOURCE_DIR}/../../morton/include")
 find_package(Kokkos CONFIG QUIET)
 if(EXISTS "${_morton_inc}/morton/morton.hpp" AND Kokkos_FOUND)
-  nanobind_add_module(tpx_amr NB_STATIC tpx_amr.cpp)
+  # NOMINSIZE: nanobind's default -Os is rejected by nvcc ("'s': expected a number") since the Kokkos
+  # AMR device sources compile as CXX through the launch compiler.
+  nanobind_add_module(tpx_amr NB_STATIC NOMINSIZE tpx_amr.cpp)
   target_include_directories(tpx_amr PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include ${_morton_inc})
   target_compile_definitions(tpx_amr PRIVATE TPX_HAVE_MORTON=1 MORTON_ENABLE_KOKKOS=1)
   target_compile_features(tpx_amr PRIVATE cxx_std_20)

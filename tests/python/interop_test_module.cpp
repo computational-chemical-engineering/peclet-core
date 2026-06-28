@@ -12,12 +12,26 @@
 namespace nb = nanobind;
 using namespace tpx::python;
 
+// Kernels live in their own (non-auto-returning) functions: nvcc forbids a KOKKOS_LAMBDA inside a
+// function with a deduced return type, and the wrappers below return `auto` (the bridge's return type
+// differs host vs device). Real bindings already keep kernels in solver headers, so this only matters
+// for these inline test kernels.
+static void scale2(tpx::View<double> v) {
+  Kokkos::parallel_for("x2", v.extent(0), KOKKOS_LAMBDA(int i) { v(i) *= 2.0; });
+  Kokkos::fence();
+}
+static void fillLinear(tpx::Field3D<double> f, int nx, int ny, int nz) {
+  Kokkos::parallel_for(
+      "fill", Kokkos::MDRangePolicy<Kokkos::Rank<3>>({0, 0, 0}, {nx, ny, nz}),
+      KOKKOS_LAMBDA(int x, int y, int z) { f(x, y, z) = double(x + y * nx + z * nx * ny); });
+  Kokkos::fence();
+}
+
 // Import a contiguous array into a flat device View, scale on-device, export the View (zero-copy on
 // the host backend; DLPack/CuPy on a device backend).
 static auto double_it(nb::ndarray<double, nb::c_contig> a) {
   auto v = ndarray_to_view<double>(nb::ndarray<>(a), "double_it.tmp");
-  Kokkos::parallel_for("x2", v.extent(0), KOKKOS_LAMBDA(int i) { v(i) *= 2.0; });
-  Kokkos::fence();
+  scale2(v);
   return view_to_ndarray(v);
 }
 
@@ -25,10 +39,7 @@ static auto double_it(nb::ndarray<double, nb::c_contig> a) {
 // I = x + y*nx + z*nx*ny, and export zero-copy. Verifies shape/stride/value round-trip.
 static auto make_field(int nx, int ny, int nz) {
   tpx::Field3D<double> f("f", nx, ny, nz);
-  Kokkos::parallel_for(
-      "fill", Kokkos::MDRangePolicy<Kokkos::Rank<3>>({0, 0, 0}, {nx, ny, nz}),
-      KOKKOS_LAMBDA(int x, int y, int z) { f(x, y, z) = double(x + y * nx + z * nx * ny); });
-  Kokkos::fence();
+  fillLinear(f, nx, ny, nz);
   return view_to_ndarray(f);
 }
 
@@ -43,6 +54,9 @@ static auto vec_field(int nx, int ny, int nz) {
 
 NB_MODULE(interop_test_module, m) {
   if (!Kokkos::is_initialized()) Kokkos::initialize();
+  nb::module_::import_("atexit").attr("register")(nb::cpp_function([]() {
+    if (Kokkos::is_initialized() && !Kokkos::is_finalized()) Kokkos::finalize();
+  }));
   m.attr("execution_space") = nb::str(Kokkos::DefaultExecutionSpace::name());
   m.def("double_it", &double_it);
   m.def("make_field", &make_field);
