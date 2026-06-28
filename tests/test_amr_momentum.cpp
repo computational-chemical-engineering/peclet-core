@@ -162,7 +162,7 @@ void run() {
       for (Index i = 0; i < n; ++i)
         if (cc.isFluid(i)) vel[c][(std::size_t)i] = 0.2 * std::sin(0.05 * i + c);
     }
-    cc.buildAdvectionFou(vel, rho);
+    cc.buildAdvectionFou(vel, rho, {}, {}, false);
     auto Aa = cc.assembleOperator();
     MomentumOp opa = upload(Aa);
     View<double> dua("u", (std::size_t)n), dAu("Au", (std::size_t)n);

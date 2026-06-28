@@ -12,9 +12,9 @@
 //     (FaceGeom) that mirror AmrPoisson::forEachFaceFull (same 2:1 sub-faces +
 //     openness), so D / G / L stay consistent exactly as in the host collocated coupling.
 //
-// Scope: Stokes (advection off) — the Zick&Homsy drag benchmark the host path validates
-// against. The explicit high-order advection deferred-correction term (advectHO) is not yet
-// ported; the implicit-FOU part already rides in the momentum operator via assembleOperator.
+// Stokes (advection off) and Navier–Stokes (setAdvection): implicit-FOU + explicit SOU/Koren
+// deferred correction, advected by the divergence-free face field uf (built each projection;
+// falls back to ½(u_i+u_j) until the first projection) — conservative (∇·uf = 0).
 //
 // Requires a Kokkos build + the morton checkout (TPX_HAVE_MORTON).
 #ifndef TPX_AMR_FLOW_HPP
@@ -260,7 +260,8 @@ inline void deviceMomRhs(View<const double> uc, View<const double> gradP, View<c
 /// bake, so no K/M/X redistribution). Replaces the per-step HOST rebuild ⇒ no host round-trip.
 inline void deviceBuildFou(const FaceGeom& g, View<const double> u0, View<const double> u1,
                            View<const double> u2, double rho, View<const double> rscale,
-                           View<double> advDiag, View<double> advCoef) {
+                           View<double> advDiag, View<double> advCoef, View<const double> uf,
+                           bool useFace) {
   auto st = g.start;
   auto nb = g.nbr;
   auto ax = g.axis;
@@ -286,7 +287,7 @@ inline void deviceBuildFou(const FaceGeom& g, View<const double> u0, View<const 
           const int a = ax(k);
           const double ui = (a == 0) ? u0(i) : (a == 1) ? u1(i) : u2(i);
           const double uj = (a == 0) ? u0(j) : (a == 1) ? u1(j) : u2(j);
-          const double velOut = dr(k) * 0.5 * (ui + uj);
+          const double velOut = useFace ? dr(k) * uf(k) : dr(k) * 0.5 * (ui + uj);
           const double w = rs * rho * ra(k) * velOut * iv(i);
           if (velOut < 0.0) {
             advCoef(k) = w;  // inflow → off-diagonal toward upstream neighbour j
@@ -308,7 +309,7 @@ inline void deviceBuildFou(const FaceGeom& g, View<const double> u0, View<const 
 /// operator (AmrCutCell::buildAdvectionFou + assembleOperator) so the two cancel at steady state.
 inline void deviceDeferredSou(const FaceGeom& g, View<const double> u0, View<const double> u1,
                               View<const double> u2, int comp, double rho, int advScheme,
-                              View<double> defc) {
+                              View<double> defc, View<const double> uf, bool useFace) {
   auto st = g.start;
   auto nb = g.nbr;
   auto ax = g.axis;
@@ -332,7 +333,7 @@ inline void deviceDeferredSou(const FaceGeom& g, View<const double> u0, View<con
           const int a = ax(k);
           const double uai = (a == 0) ? u0(i) : (a == 1) ? u1(i) : u2(i);
           const double uaj = (a == 0) ? u0(j) : (a == 1) ? u1(j) : u2(j);
-          const double velOut = dr(k) * 0.5 * (uai + uaj);
+          const double velOut = useFace ? dr(k) * uf(k) : dr(k) * 0.5 * (uai + uaj);
           const Index up = (velOut > 0.0) ? i : j;
           const Index down = (velOut > 0.0) ? j : i;
           const Index upup = (velOut > 0.0) ? uiP(k) : ujP(k);
@@ -351,7 +352,7 @@ inline void deviceDeferredSou(const FaceGeom& g, View<const double> u0, View<con
 /// `setImplicitAdvection(false)` fallback). Same SOU/TVD reconstruction as deviceDeferredSou.
 inline void deviceAdvectExplicit(const FaceGeom& g, View<const double> u0,
                                  View<const double> u1, View<const double> u2, int comp, double rho,
-                                 int advScheme, View<double> defc) {
+                                 int advScheme, View<double> defc, View<const double> uf, bool useFace) {
   auto st = g.start;
   auto nb = g.nbr;
   auto ax = g.axis;
@@ -375,7 +376,7 @@ inline void deviceAdvectExplicit(const FaceGeom& g, View<const double> u0,
           const int a = ax(k);
           const double uai = (a == 0) ? u0(i) : (a == 1) ? u1(i) : u2(i);
           const double uaj = (a == 0) ? u0(j) : (a == 1) ? u1(j) : u2(j);
-          const double velOut = dr(k) * 0.5 * (uai + uaj);
+          const double velOut = useFace ? dr(k) * uf(k) : dr(k) * 0.5 * (uai + uaj);
           const Index up = (velOut > 0.0) ? i : j;
           const Index down = (velOut > 0.0) ? j : i;
           const Index upup = (velOut > 0.0) ? uiP(k) : ujP(k);
@@ -556,6 +557,7 @@ class AmrFlow {
     phi_ = View<double>("df_phi", static_cast<std::size_t>(n));
     div_ = View<double>("df_div", static_cast<std::size_t>(n));
     uf_ = View<double>("df_uf", geom_.nbr.extent(0));  // ABC divergence-free face field (per CSR face)
+    faceFieldBuilt_ = false;
     bmom_ = View<double>("df_bmom", static_cast<std::size_t>(n));
     Kokkos::deep_copy(p_, 0.0);
     // Implicit-FOU advection state. The momentum operator + its velocity-MG are rebuilt each
@@ -622,17 +624,21 @@ class AmrFlow {
       // RHS are identical every pass, so a second pass reproduces the first ⇒ instant early-stop. ---
       if (advect_) {
         momOp_.hasAdv = implicitFou_;
+        // Advect with the divergence-free face field uf (from the previous projection); fall back to
+        // ½(u_i+u_j) before the first projection has built it. The implicit FOU and the explicit SOU/FOU
+        // deferred correction use the SAME velocity ⇒ the FOU cancels at steady state (host-parity).
+        const View<const double> ufv(uf_);
         if (implicitFou_)
           deviceBuildFou(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
                          View<const double>(u_[2]), rho_, View<const double>(rscale_), advDiag_,
-                         advCoef_);
+                         advCoef_, ufv, faceFieldBuilt_);
         for (int c = 0; c < 3; ++c) {
           if (implicitFou_)
             deviceDeferredSou(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
-                              View<const double>(u_[2]), c, rho_, advScheme_, defc_[c]);
+                              View<const double>(u_[2]), c, rho_, advScheme_, defc_[c], ufv, faceFieldBuilt_);
           else
             deviceAdvectExplicit(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
-                                 View<const double>(u_[2]), c, rho_, advScheme_, defc_[c]);
+                                 View<const double>(u_[2]), c, rho_, advScheme_, defc_[c], ufv, faceFieldBuilt_);
         }
         // The staircase MG's fine level mirrors the sharp operator; refresh it so it picks up the
         // current advection state (hasAdv). (The Galerkin MG is the static viscous operator.)
@@ -697,6 +703,7 @@ class AmrFlow {
     // Build the divergence-free FACE field from u* (still in u_) + φ, before the cell correction.
     deviceBuildFaceField(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
                          View<const double>(u_[2]), View<const double>(phi_), uf_);
+    faceFieldBuilt_ = true;
     deviceGrad3(geom_, View<const double>(phi_), gx_[0], gx_[1], gx_[2]);
     for (int c = 0; c < 3; ++c) deviceCorrect(u_[c], View<const double>(gx_[c]), View<const char>(fluid_), n);
     devicePresUpdate(p_, View<const double>(phi_), View<const double>(div_),
@@ -708,7 +715,7 @@ class AmrFlow {
   std::vector<double> debugSou(int comp) {
     View<double> s("dbg_sou", static_cast<std::size_t>(n_));
     deviceAdvectExplicit(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
-                         View<const double>(u_[2]), comp, 1.0, advScheme_, s);
+                         View<const double>(u_[2]), comp, 1.0, advScheme_, s, View<const double>(uf_), false);
     std::vector<double> h(static_cast<std::size_t>(n_));
     auto m = Kokkos::create_mirror_view(s);
     Kokkos::deep_copy(m, s);
@@ -845,6 +852,7 @@ class AmrFlow {
   std::array<View<double>, 3> u0_, uprev_;  // frozen uⁿ (BE mass term) + previous Picard outer iterate
   View<double> p_, phi_, div_, bmom_;
   View<double> uf_;  // ABC/Basilisk divergence-free face field (one per CSR (sub)face)
+  bool faceFieldBuilt_ = false;  // uf_ populated by a projection (else advection falls back to ½(u_i+u_j))
 };
 
 }  // namespace tpx::amr

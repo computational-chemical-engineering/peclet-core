@@ -101,6 +101,7 @@ class AmrFlow {
       faceStart_[static_cast<std::size_t>(i) + 1] = faceStart_[static_cast<std::size_t>(i)] + cnt;
     }
     uf_.assign(static_cast<std::size_t>(faceStart_[static_cast<std::size_t>(n)]), 0.0);
+    faceFieldBuilt_ = false;
   }
 
   const std::vector<double>& velocity(int c) const { return u_[c]; }
@@ -117,7 +118,8 @@ class AmrFlow {
     // the momentum operator, rebuilt here from the lagged u^n).
     std::array<std::vector<double>, 3> adv;  // full explicit advection term (incl. ρ)
     if (advect_) {
-      if (implicitFou_) mom_.buildAdvectionFou(u_, rho_);  // implicit FOU operator (lagged u^n), C/F-conservative
+      if (implicitFou_)
+        mom_.buildAdvectionFou(u_, rho_, uf_, faceStart_, faceFieldBuilt_);  // FOU advected by the div-free uf
       for (int c = 0; c < 3; ++c) {
         adv[c].assign(static_cast<std::size_t>(n), 0.0);
         for (Index i = 0; i < n; ++i)
@@ -221,6 +223,7 @@ class AmrFlow {
         uf_[static_cast<std::size_t>(s++)] = uface - gphi;
       });
     }
+    faceFieldBuilt_ = true;
   }
 
   /// L2 norm of the divergence of the FACE field uf_ (the div-free flux). After buildFaceField this is
@@ -270,9 +273,18 @@ class AmrFlow {
   // exact high-order − FOU difference.
   double advectHO(int comp, Index i) const {
     double out = 0.0;
+    Index s = faceFieldBuilt_ ? faceStart_[static_cast<std::size_t>(i)] : 0;
     pres_.forEachFaceFull(i, [&](Index j, int axis, int dir, double area, double, double) {
+      // Advecting velocity = the divergence-free FACE field uf (built by the previous projection), so
+      // the advective flux is conservative (∇·uf = 0) — Bell–Colella–Glaz / Basilisk. Falls back to
+      // the simple cell average ½(u_i+u_j) before the first projection has built uf. (At steady state
+      // φ→0 ⇒ uf = ½(u_i+u_j), so the steady solution is unchanged; the gain is in the transient.)
+      const double uface = faceFieldBuilt_
+                               ? uf_[static_cast<std::size_t>(s)]
+                               : 0.5 * (u_[axis][static_cast<std::size_t>(i)] + u_[axis][static_cast<std::size_t>(j)]);
+      ++s;
       if (!mom_.isFluid(j)) return;  // no advection through the immersed boundary
-      double velOut = dir * 0.5 * (u_[axis][static_cast<std::size_t>(i)] + u_[axis][static_cast<std::size_t>(j)]);
+      double velOut = dir * uface;
       Index up = (velOut > 0.0) ? i : j, down = (velOut > 0.0) ? j : i;
       int upDir = (up == i) ? -dir : dir;  // upstream direction from the upwind cell
       Index upup = pres_.periodicNeighbor(up, axis, upDir);
@@ -354,6 +366,7 @@ class AmrFlow {
   // finest resolution touching each face and the coarse-cell divergence sums its sub-faces.
   std::vector<Index> faceStart_;  // CSR offsets into uf_, size n+1
   std::vector<double> uf_;        // +axis face velocity per (cell,face) slot
+  bool faceFieldBuilt_ = false;   // uf_ populated by a projection (else advection falls back to ½(u_i+u_j))
 };
 
 }  // namespace tpx::amr::oracle

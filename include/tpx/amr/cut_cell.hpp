@@ -310,20 +310,29 @@ class AmrCutCell {
   /// (outflow) or to a CSR off-diagonal toward the upstream neighbour (inflow); the
   /// advecting velocity at a wall (solid neighbour) face is zero (no flow through the
   /// immersed boundary). Rebuilt per step. Stable base of the deferred correction.
-  void buildAdvectionFou(const std::array<std::vector<double>, 3>& uadv, double rho) {
+  /// `uf`/`faceStart` (+axis face velocity per forEachFaceFull (sub)face, when `useFace`) is the
+  /// divergence-free advecting velocity; otherwise the cell average ½(uadv_i+uadv_j) is used (before
+  /// the first projection has built uf). The implicit FOU and the explicit deferred correction must use
+  /// the SAME velocity, hence it lives here too — not only in the high-order term.
+  void buildAdvectionFou(const std::array<std::vector<double>, 3>& uadv, double rho,
+                         const std::vector<double>& uf, const std::vector<Index>& faceStart,
+                         bool useFace) {
     const Index n = numLeaves();
     advDiag_.assign(static_cast<std::size_t>(n), 0.0);
     advStart_.assign(static_cast<std::size_t>(n) + 1, 0);
     hasAdv_ = true;
-    auto velOutOf = [&](Index i, Index j, int axis, int dir) {
-      return dir * 0.5 * (uadv[axis][static_cast<std::size_t>(i)] + uadv[axis][static_cast<std::size_t>(j)]);
+    auto velOutOf = [&](Index i, Index j, int axis, int dir, Index slot) {
+      return useFace ? dir * uf[static_cast<std::size_t>(slot)]
+                     : dir * 0.5 * (uadv[axis][static_cast<std::size_t>(i)] + uadv[axis][static_cast<std::size_t>(j)]);
     };
     // pass 1: count inflow (off-diagonal) fluid faces per cell.
     for (Index i = 0; i < n; ++i) {
       if (!fluid_[static_cast<std::size_t>(i)]) continue;
       int cnt = 0;
+      Index s = useFace ? faceStart[static_cast<std::size_t>(i)] : 0;
       lap_.forEachFaceFull(i, [&](Index j, int axis, int dir, double, double, double) {
-        if (fluid_[static_cast<std::size_t>(j)] && velOutOf(i, j, axis, dir) < 0.0) ++cnt;
+        if (fluid_[static_cast<std::size_t>(j)] && velOutOf(i, j, axis, dir, s) < 0.0) ++cnt;
+        ++s;
       });
       advStart_[static_cast<std::size_t>(i) + 1] = cnt;
     }
@@ -335,9 +344,11 @@ class AmrCutCell {
       if (!fluid_[static_cast<std::size_t>(i)]) continue;
       const double Vi = lap_.cellVolume(i);
       std::size_t pos = static_cast<std::size_t>(advStart_[static_cast<std::size_t>(i)]);
+      Index s = useFace ? faceStart[static_cast<std::size_t>(i)] : 0;
       lap_.forEachFaceFull(i, [&](Index j, int axis, int dir, double area, double, double) {
+        const Index slot = s++;
         if (!fluid_[static_cast<std::size_t>(j)]) return;
-        double velOut = velOutOf(i, j, axis, dir);
+        double velOut = velOutOf(i, j, axis, dir, slot);
         double w = rho * area * velOut / Vi;
         if (velOut < 0.0) {       // inflow → couple to upstream neighbour j (matches pass 1)
           advNbr_[pos] = j;
