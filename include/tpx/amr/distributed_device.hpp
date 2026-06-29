@@ -34,6 +34,7 @@
 #include "tpx/amr/multigrid.hpp"            // deviceRestrict / deviceProlongAdd (bit-exact, reused)
 #include "tpx/common/mpi.hpp"
 #include "tpx/common/view.hpp"
+#include "tpx/halo/grid_halo.hpp"  // detail::gpuAwareMpi() (TPX_GPU_AWARE_MPI opt-in, H1)
 
 namespace tpx::amr {
 
@@ -78,6 +79,10 @@ class DistributedGatherHalo {
   /// faceNeighborGather over the same field (periodic ⇒ every slot is filled; no sentinels).
   void gather(View<const double> x, View<double> g, int tag = 41) const {
     const double sentinel = -1e300;  // == DistributedOctree::kNoNeighbor; unused in the periodic case
+    // GPU-aware MPI (H1): when enabled (TPX_GPU_AWARE_MPI) hand the device send/recv buffer pointers
+    // straight to MPI — the field never touches the host even for the compact buffers. Default is the
+    // portable host-staged path (deep_copy to a host mirror), exactly as GridHalo does.
+    const bool aware = tpx::halo::detail::gpuAwareMpi();
     Kokkos::deep_copy(g, sentinel);
     if (nLocal_) {
       IndexView ls = d_localSlot_, ll = d_localLeaf_;
@@ -92,24 +97,26 @@ class DistributedGatherHalo {
       Kokkos::parallel_for(
           "dgh::pack", Kokkos::RangePolicy<ExecSpace>(0, nSend_),
           KOKKOS_LAMBDA(const Index p) { buf(p) = (sl(p) >= 0) ? x(sl(p)) : sentinel; });
-      Kokkos::deep_copy(h_sendBuf_, d_sendBuf_);
+      if (!aware) Kokkos::deep_copy(h_sendBuf_, d_sendBuf_);
     }
-    Kokkos::fence();
+    Kokkos::fence();  // send buffer (host-staged or device) ready before MPI reads it
+    double* sendBase = aware ? d_sendBuf_.data() : h_sendBuf_.data();
+    double* recvBase = aware ? d_recvBuf_.data() : h_recvBuf_.data();
     std::vector<MPI_Request> reqs;
     reqs.reserve(recvRanks_.size() + sendRanks_.size());
     for (std::size_t k = 0; k < recvRanks_.size(); ++k) {
       reqs.emplace_back();
-      MPI_Irecv(h_recvBuf_.data() + recvOff_[k], recvCounts_[k] * static_cast<int>(sizeof(double)),
-                MPI_BYTE, recvRanks_[k], tag, comm_, &reqs.back());
+      MPI_Irecv(recvBase + recvOff_[k], recvCounts_[k] * static_cast<int>(sizeof(double)), MPI_BYTE,
+                recvRanks_[k], tag, comm_, &reqs.back());
     }
     for (std::size_t k = 0; k < sendRanks_.size(); ++k) {
       reqs.emplace_back();
-      MPI_Isend(h_sendBuf_.data() + sendOff_[k], sendCounts_[k] * static_cast<int>(sizeof(double)),
-                MPI_BYTE, sendRanks_[k], tag, comm_, &reqs.back());
+      MPI_Isend(sendBase + sendOff_[k], sendCounts_[k] * static_cast<int>(sizeof(double)), MPI_BYTE,
+                sendRanks_[k], tag, comm_, &reqs.back());
     }
     if (!reqs.empty()) MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
     if (nRecv_) {
-      Kokkos::deep_copy(d_recvBuf_, h_recvBuf_);
+      if (!aware) Kokkos::deep_copy(d_recvBuf_, h_recvBuf_);
       IndexView rs = d_recvSlot_;
       View<double> buf = d_recvBuf_, gv = g;
       Kokkos::parallel_for(
