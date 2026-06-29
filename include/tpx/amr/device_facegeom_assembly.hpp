@@ -22,7 +22,7 @@
 #include "tpx/amr/block_octree_view.hpp"
 #include "tpx/amr/device_assembly.hpp"  // FvFaceEmit (shared geometry traversal helpers)
 #include "tpx/amr/device_csr.hpp"       // deviceScanOffsets
-#include "tpx/amr/flow.hpp"             // FaceGeom
+#include "tpx/amr/face_geom.hpp"        // FaceGeom (the produced type)
 #include "tpx/amr/poisson.hpp"
 #include "tpx/common/view.hpp"
 

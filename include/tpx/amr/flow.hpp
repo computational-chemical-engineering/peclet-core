@@ -30,6 +30,9 @@
 #include "tpx/amr/advect_recon.hpp"  // shared high-order face reconstruction (host+device)
 #include "tpx/amr/block_octree.hpp"
 #include "tpx/amr/cut_cell.hpp"
+#include "tpx/amr/face_geom.hpp"                   // FaceGeom (shared with the device assembler)
+#include "tpx/amr/device_facegeom_assembly.hpp"   // deviceAssembleFaceGeom (D4/D6)
+#include "tpx/amr/device_momentum_assembly.hpp"   // deviceAssembleMomentum (D3/D6)
 #include "tpx/amr/momentum.hpp"
 #include "tpx/amr/multigrid.hpp"
 #include "tpx/amr/pcg.hpp"
@@ -40,27 +43,8 @@
 
 namespace tpx::amr {
 
-// ===========================================================================
-// FaceGeom — the static (sub)face topology+geometry of the collocated
-// projection as a per-cell face CSR, matching AmrPoisson::forEachFaceFull. Per
-// face: neighbour, axis, dir, α·area (divergence weight), distance, α (gradient
-// gate). Per cell: 1/V and a fluid flag.
-// ===========================================================================
-struct FaceGeom {
-  View<Index> start;       ///< CSR row offsets, size n+1
-  View<Index> nbr;         ///< neighbour leaf per face, size nFaces
-  View<int> axis;          ///< face axis 0/1/2, size nFaces
-  View<int> dir;           ///< face direction +1/-1, size nFaces
-  View<double> alphaArea;  ///< α·area (physical) per face, size nFaces
-  View<double> rawArea;    ///< raw face area (physical, no openness) per face — advection flux
-  View<double> dist;       ///< face-normal distance (physical) per face, size nFaces
-  View<double> alpha;      ///< openness per face (gradient gate), size nFaces
-  View<Index> upupI;       ///< upstream-of-i probe (periodicNeighbor(i,axis,−dir)) — SOU, size nFaces
-  View<Index> upupJ;       ///< upstream-of-j probe (periodicNeighbor(j,axis,+dir)) — SOU, size nFaces
-  View<double> invVol;     ///< 1/V_i per cell, size n
-  View<char> fluid;        ///< per-cell fluid flag, size n
-  Index n = 0;
-};
+// FaceGeom (the collocated projection's static face-geometry CSR) now lives in face_geom.hpp so the
+// device assembler and this driver share the type without a circular include.
 
 /// Build FaceGeom from a built AmrPoisson (openness set) + a fluid predicate.
 template <int Dim, unsigned Bits, class FluidFn>
@@ -510,13 +494,15 @@ class AmrFlow {
     presMG_.build(*t_, h0_, openFn, /*periodic=*/true);
     presMG_.setRemoveMean(true);  // singular periodic pressure: per-level nullspace projection
 
-    // Device upload: momentum operator CSR, face geometry, rscale, fluid flags.
-    auto A = mom_.assembleOperator();
-    momOp_.n = n;
-    momOp_.diag = toDevice(A.diag, "df_diag");
-    momOp_.faceStart = toDevice(A.start, "df_fstart");
-    momOp_.faceNbr = toDevice(A.nbr, "df_fnbr");
-    momOp_.faceCoef = toDevice(A.coef, "df_fcoef");
+    // Device assembly (D6): the static cut-cell momentum operator CSR and the collocated face
+    // geometry are assembled ON THE DEVICE (deviceAssembleMomentum / deviceAssembleFaceGeom), and the
+    // pressure MG operators are device-assembled per level (Multigrid D5) — so no host CSR walk and no
+    // operator round-trip. Each is bit-for-bit identical to the host assembler on OpenMP (locked in
+    // test_amr_device_momentum / test_amr_device_facegeom), so the flow result is unchanged. A shared
+    // device octree view backs both assemblers.
+    BlockOctreeView<3, Bits> ov;
+    ov.upload(*t_);
+    momOp_ = deviceAssembleMomentum<Bits>(mom_, ov);  // static Stokes operator (hasAdv stays false)
     // Velocity multigrid (momentum preconditioner): the Galerkin hierarchy A_c = R·A·P built
     // directly from the exact assembled momentum CSR. Consistent with the fine cut-cell
     // operator by construction (inherits the ξ-overlay + D_rescale row scaling; a coarse cell
@@ -537,11 +523,16 @@ class AmrFlow {
         velMG_.build(*t_, h0_, rho_ / dt_, mu_, momOp_, kap, fl, cu, mgMinCoarse_);
         velMG_.setGaussSeidel(momGS_);
       } else {
+        // The Galerkin RAP hierarchy is a host triple-product over the fine CSR, so it needs the
+        // operator on the host; assemble it there for the MG build only (bit-identical to momOp_).
+        auto A = mom_.assembleOperator();
         momMG_.build(*t_, A.diag, A.start, A.nbr, A.coef);
         momMG_.setGaussSeidel(momGS_);
       }
     }
-    geom_ = buildFaceGeom(pres_, [&](Index i) { return mom_.isFluid(i); });
+    std::vector<char> fluidVec(static_cast<std::size_t>(n));
+    for (Index i = 0; i < n; ++i) fluidVec[static_cast<std::size_t>(i)] = mom_.isFluid(i) ? 1 : 0;
+    geom_ = deviceAssembleFaceGeom<Bits>(pres_, fluidVec, ov);
     std::vector<double> rs(static_cast<std::size_t>(n));
     for (Index i = 0; i < n; ++i) rs[static_cast<std::size_t>(i)] = mom_.rhsScale(i);
     rscale_ = toDevice(rs, "df_rscale");

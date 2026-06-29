@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "tpx/amr/block_octree.hpp"
+#include "tpx/amr/device_assembly.hpp"  // deviceAssembleFv (device per-level operator rebuild, D5)
 #include "tpx/amr/fv_op.hpp"
 #include "tpx/amr/poisson.hpp"
 #include "tpx/common/view.hpp"
@@ -304,38 +305,34 @@ class Multigrid {
     b0true_ = View<double>("mg_b0", static_cast<std::size_t>(n0));
   }
 
-  // Build the consistent face CSR (+ invVol) for one level from its AmrPoisson, in
-  // the exact face order AmrPoisson::forEachFaceNeighbor emits ⇒ bit-exact to host.
+  // Build the consistent face CSR (+ invVol/bcDiag) for one level by assembling it ON THE DEVICE
+  // (D5/D2): upload this level's leaf set, then deviceAssembleFv reproduces AmrPoisson's exact
+  // forEachFaceNeighbor enumeration + openness·A_f/d_f weights — bit-for-bit identical to the host
+  // walk on OpenMP (validated in test_amr_device_assembly), but with no host CSR build / no
+  // re-upload. The Helmholtz c0/cD of this level are preserved (deviceAssembleFv returns the pure-L
+  // defaults; setHelmholtz / a prior value is re-applied), so a reassemble after the geometry moves
+  // keeps the momentum-preconditioner form.
   void buildFaceCsr(const Poisson& ap, const Octree& t, Level& lv) {
-    const Index n = t.numLeaves();
-    std::vector<Index> start(static_cast<std::size_t>(n) + 1, 0);
-    for (Index i = 0; i < n; ++i) {
-      Index cnt = 0;
-      ap.forEachFaceNeighbor(i, [&](Index, Real, int, double) { ++cnt; });
-      start[static_cast<std::size_t>(i) + 1] = start[static_cast<std::size_t>(i)] + cnt;
-    }
-    const Index nf = start[static_cast<std::size_t>(n)];
-    std::vector<Index> nbr(static_cast<std::size_t>(nf));
-    std::vector<double> w(static_cast<std::size_t>(nf));
-    std::vector<double> invVol(static_cast<std::size_t>(n));
-    std::vector<double> bcDiag(static_cast<std::size_t>(n));
-    for (Index i = 0; i < n; ++i) {
-      invVol[static_cast<std::size_t>(i)] = 1.0 / ap.cellVolume(i);
-      bcDiag[static_cast<std::size_t>(i)] = ap.boundaryDiag(i);  // 0 unless non-periodic boundary
-      Index k = start[static_cast<std::size_t>(i)];
-      ap.forEachFaceNeighbor(i, [&](Index j, Real c, int, double a) {
-        nbr[static_cast<std::size_t>(k)] = j;
-        w[static_cast<std::size_t>(k)] = a * c;
-        ++k;
-      });
-    }
-    lv.op.n = n;
-    lv.op.invVol = toDevice(invVol, "mg_invVol");
-    lv.op.faceStart = toDevice(start, "mg_fstart");
-    lv.op.faceNbr = toDevice(nbr, "mg_fnbr");
-    lv.op.faceW = toDevice(w, "mg_fw");
-    lv.op.bcDiag = toDevice(bcDiag, "mg_bcdiag");
+    const double c0 = lv.op.c0, cD = lv.op.cD;
+    BlockOctreeView<Dim, Bits> ov;
+    ov.upload(t);
+    lv.op = deviceAssembleFv<Dim, Bits>(ap, ov);
+    lv.op.c0 = c0;
+    lv.op.cD = cD;
   }
+
+ public:
+  /// Re-assemble every level's operator ON THE DEVICE from the (host) hierarchy's current geometry —
+  /// the dynamic-AMR rebuild hook (D5/D6). After a moving boundary re-samples each level's openness on
+  /// the host AmrPoisson (hmg_), this rebuilds all per-level FvOps on device with no host CSR walk and
+  /// no round-trip, preserving each level's Helmholtz c0/cD. Topology (c2p/child maps) is unchanged.
+  void reassembleOperators() {
+    const std::size_t nl = hmg_->numLevels();
+    for (std::size_t L = 0; L < nl && L < levels_.size(); ++L)
+      buildFaceCsr(hmg_->op(L), hmg_->op(L).octree(), levels_[L]);
+  }
+
+ private:
 
   // Build the quadratic coarse-fine correction CSR: dq_i = Σ coef·u[slot] equals
   // (L_quad − L_std)u (AmrPoisson::coarseStar, expressed as a linear stencil).
