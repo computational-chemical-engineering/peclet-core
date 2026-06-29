@@ -36,14 +36,20 @@ namespace tpx::amr {
 // ---- boundary-distance polynomials (port of sdflow cut_cell_ibm.hpp, SCHEME 0,
 //      double precision) ----
 namespace cc {
-inline double poly_D(double xi) { return xi * (1.0 + xi); }
-inline double poly_N_nb(double xi) { return xi * (1.0 - xi); }
-inline double poly_Nc(double xi) { return 2.0 * (xi * xi - 1.0); }
-inline double poly_Nbc(double) { return 2.0; }
-inline double poly_D_sandwich(double xm, double xp) { return xm * xp; }
-inline double poly_N_c_sandwich(double xm, double xp) { return (xm + 1.0) * (xp - 1.0); }
-inline double poly_Nbc_pp_sw(double xm, double xp) { return (xm / (xm + xp)) * (1.0 + xm); }
-inline double poly_Nbc_mp_sw(double xm, double xp) { return (xp / (xm + xp)) * (1.0 - xp); }
+// MORTON_HD (from face_csr.hpp): KOKKOS_FUNCTION on a Kokkos build, empty otherwise — so buildCutStencil
+// and these polynomials are device-callable under the AMR device assembler (device_assembly.hpp) yet
+// compile unchanged in the pure-C++ host oracle build. poly_abs replaces std::fabs (host-only under a
+// CUDA device pass); it is bit-identical to std::fabs for every value buildCutStencil feeds it (the
+// only difference, fabs(-0.0)=+0.0 vs −0.0, never occurs and would not change the |·|< comparisons).
+MORTON_HD inline double poly_abs(double x) { return x < 0.0 ? -x : x; }
+MORTON_HD inline double poly_D(double xi) { return xi * (1.0 + xi); }
+MORTON_HD inline double poly_N_nb(double xi) { return xi * (1.0 - xi); }
+MORTON_HD inline double poly_Nc(double xi) { return 2.0 * (xi * xi - 1.0); }
+MORTON_HD inline double poly_Nbc(double) { return 2.0; }
+MORTON_HD inline double poly_D_sandwich(double xm, double xp) { return xm * xp; }
+MORTON_HD inline double poly_N_c_sandwich(double xm, double xp) { return (xm + 1.0) * (xp - 1.0); }
+MORTON_HD inline double poly_Nbc_pp_sw(double xm, double xp) { return (xm / (xm + xp)) * (1.0 + xm); }
+MORTON_HD inline double poly_Nbc_mp_sw(double xm, double xp) { return (xp / (xm + xp)) * (1.0 - xp); }
 }  // namespace cc
 
 template <unsigned Bits = 21u>
@@ -75,6 +81,26 @@ class AmrCutCell {
   Index neighborOf(Index i, int k) const { return nb_[static_cast<std::size_t>(i) * 6 + k]; }
   double kappa(Index i) const { return kappa_[static_cast<std::size_t>(i)]; }
   double rhsScale(Index i) const { return rscale_[static_cast<std::size_t>(i)]; }
+
+  // ---- read-only views of the built geometry, for the device assembler (device_momentum_assembly.hpp)
+  // to stage to the device and reproduce build()/assembleOperator there. Mirrors how AmrPoisson exposes
+  // its openness to the device FV assembler.
+  const AmrPoisson<3, Bits>& lap() const { return lap_; }        ///< α=1 C/F ∇² geometry for regular cells
+  const std::vector<double>& sdfCRaw() const { return sdfC_; }   ///< per-cell SDF sample (build Pass 1)
+  const std::vector<Index>& nbRaw() const { return nb_; }        ///< n·6 periodic face-neighbour indices
+  const std::vector<char>& fluidRaw() const { return fluid_; }
+  const std::vector<char>& cutRaw() const { return cut_; }
+  const std::vector<double>& acRaw() const { return AC_; }
+  const std::vector<double>& offRaw() const { return off_; }     ///< n·6 ξ-overlay off-diagonals
+  const std::vector<double>& rscaleRaw() const { return rscale_; }
+  double idiag() const { return idiag_; }
+  double mu() const { return mu_; }
+  double beta() const { return mu_ / (h0_ * h0_); }              ///< buildCutStencil's β (= mu_/h0²)
+  bool hasAdv() const { return hasAdv_; }
+  const std::vector<double>& advDiagRaw() const { return advDiag_; }
+  const std::vector<double>& advCoefRaw() const { return advCoef_; }
+  const std::vector<Index>& advStartRaw() const { return advStart_; }
+  const std::vector<Index>& advNbrRaw() const { return advNbr_; }
 
   /// Build the cut-cell stencils from an SDF callable sdfFn(worldPoint) (>0 fluid,
   /// <0 solid). Operator A = idiag*I - beta*Laplacian (grid units, dx=1). `nsub`
@@ -444,9 +470,12 @@ class AmrCutCell {
   }
   double advApply(Index i, const std::vector<double>& u) const { return fouApply(i, u); }
 
-  // Port of ibmFillEntry<0> + ibmModifyStencil for one cut cell (Dirichlet).
-  static void buildCutStencil(double sdf_c, const double sdf_n[6], double beta, double AC0,
-                              double& ACout, double off[6], double& rscaleOut, double& inhomOut) {
+ public:
+  // Port of ibmFillEntry<0> + ibmModifyStencil for one cut cell (Dirichlet). Public + MORTON_HD so the
+  // device assembler (device_momentum_assembly.hpp) runs the SAME per-cell stencil build on device.
+  MORTON_HD static void buildCutStencil(double sdf_c, const double sdf_n[6], double beta, double AC0,
+                                        double& ACout, double off[6], double& rscaleOut,
+                                        double& inhomOut) {
     bool ghost[6];
     double xi[6], D[6];
     for (int k = 0; k < 6; ++k) {
@@ -467,7 +496,7 @@ class AmrCutCell {
     for (int a = 0; a < 3; ++a)
       if (sand[a]) Dsand[a] = cc::poly_D_sandwich(xi[2 * a + 1], xi[2 * a]);
     double minAbs = 1e30, descale = 1.0;
-    auto upd = [&](double v) { if (std::fabs(v) < minAbs) { minAbs = std::fabs(v); descale = v; } };
+    auto upd = [&](double v) { if (cc::poly_abs(v) < minAbs) { minAbs = cc::poly_abs(v); descale = v; } };
     for (int a = 0; a < 3; ++a) {
       if (sand[a])
         upd(Dsand[a]);
@@ -481,7 +510,7 @@ class AmrCutCell {
       int km = 2 * a + 1, kp = 2 * a;
       double Daxis = sand[a] ? Dsand[a] : (ghost[kp] ? D[kp] : (ghost[km] ? D[km] : descale));
       double r = descale / Daxis;
-      if (std::fabs(Daxis) < 1e-9) r = 1.0;
+      if (cc::poly_abs(Daxis) < 1e-9) r = 1.0;
       R[kp] = R[km] = r;
       if (sand[a]) {
         K[kp] = cc::poly_N_c_sandwich(xi[km], xi[kp]) * r;
@@ -503,14 +532,16 @@ class AmrCutCell {
         }
       }
     }
-    // ibmModifyStencil (orig off-diagonal = -beta for every direction).
+    // ibmModifyStencil (orig off-diagonal = -beta for every direction). OPP is a function-local
+    // constexpr (not the static member) so the runtime index mod[OPP[k]] is device-safe under CUDA.
+    constexpr int OPP_[6] = {1, 0, 3, 2, 5, 4};
     double aC = AC0 * descale, mod[6] = {0, 0, 0, 0, 0, 0}, inhom = 0.0;
     for (int k = 0; k < 6; ++k) {
       double vnb = -beta;
       aC += vnb * K[k];
       inhom += Nbc[k] * vnb;
       mod[k] += vnb * (descale * Mf[k] - 1.0);
-      mod[OPP[k]] += vnb * X[k];
+      mod[OPP_[k]] += vnb * X[k];
     }
     ACout = aC;
     for (int k = 0; k < 6; ++k) off[k] = -beta + mod[k];
@@ -518,6 +549,7 @@ class AmrCutCell {
     inhomOut = inhom;
   }
 
+ private:
   Vec<3> cellCenter(Index i) const {
     auto b = t_->bounds(i);
     double s = static_cast<double>(Index(1) << t_->level(i));
