@@ -50,6 +50,29 @@ inline View<T> toDevice(const std::vector<T>& h, const std::string& label) {
   return d;
 }
 
+/// Copy a (host- or device-resident) Kokkos View of any rank into a contiguous host std::vector,
+/// flattened in C/row order (last index fastest) — an Nx3 View comes back as `out[i*3 + c] ==
+/// view(i,c)`, the suite's particle-SoA Python export order. This replaces the redundant
+/// "create_mirror_view → deep_copy → element-by-element loop → std::vector" idiom in the binding
+/// getters (S2a) with a single device→host transfer and no hand-written loop. The row-order flatten
+/// is layout-correct on every backend: a LayoutLeft (e.g. CUDA-default) device View is transposed on
+/// the host hop rather than blindly memcpy'd, so the exported ordering matches across CPU/GPU builds.
+template <class V>
+std::vector<std::remove_const_t<typename V::value_type>> toVector(const V& view) {
+  using T = std::remove_const_t<typename V::value_type>;
+  std::vector<T> out(view.size());
+  if (view.size()) {
+    auto host = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), view);
+    Kokkos::LayoutRight layout;
+    for (std::size_t i = 0; i < V::rank; ++i) layout.dimension[i] = view.extent(i);
+    Kokkos::View<typename V::non_const_data_type, Kokkos::LayoutRight, Kokkos::HostSpace,
+                 Kokkos::MemoryTraits<Kokkos::Unmanaged>>
+        dst(out.data(), layout);
+    Kokkos::deep_copy(dst, host);
+  }
+  return out;
+}
+
 }  // namespace tpx
 
 #endif  // TPX_COMMON_VIEW_HPP

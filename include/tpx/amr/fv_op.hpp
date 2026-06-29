@@ -152,22 +152,22 @@ inline void deviceRemoveMeanFv(const FvOp& op, View<double> u) {
   auto fw = op.faceW;
   auto bc = op.bcDiag;
   double sx = 0.0, sv = 0.0;
+  // Numerator and denominator share the same active-cell diagonal d = bc + Σfw; fold them into a
+  // single multi-output reduction so that diagonal is walked once instead of twice. Each output keeps
+  // its original term verbatim (u/invVol, 1/invVol) and its own Sum reducer over the same range, so
+  // the result is bit-identical to the two separate reduces. (The subtract pass below recomputes d a
+  // third time but is a parallel_for, where reloading a cached mask would cost the same as the walk.)
   Kokkos::parallel_reduce(
-      "amr::fv_rmean_num", op.n,
-      KOKKOS_LAMBDA(const Index i, double& a) {
+      "amr::fv_rmean", op.n,
+      KOKKOS_LAMBDA(const Index i, double& an, double& ad) {
         double d = bc(i);
         for (Index k = fs(i); k < fs(i + 1); ++k) d += fw(k);
-        if (d > 1e-30) a += u(i) / invVol(i);  // V_i = 1/invVol_i
+        if (d > 1e-30) {
+          an += u(i) / invVol(i);  // V_i = 1/invVol_i
+          ad += 1.0 / invVol(i);
+        }
       },
-      sx);
-  Kokkos::parallel_reduce(
-      "amr::fv_rmean_den", op.n,
-      KOKKOS_LAMBDA(const Index i, double& a) {
-        double d = bc(i);
-        for (Index k = fs(i); k < fs(i + 1); ++k) d += fw(k);
-        if (d > 1e-30) a += 1.0 / invVol(i);
-      },
-      sv);
+      sx, sv);
   if (sv <= 0.0) return;
   const double m = sx / sv;
   Kokkos::parallel_for(

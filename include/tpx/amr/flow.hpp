@@ -757,13 +757,24 @@ class AmrFlow {
     for (Index i = 0; i < n_; ++i) m(i) = h[static_cast<std::size_t>(i)];
     Kokkos::deep_copy(u_[c], m);
   }
-  /// Copy a velocity component back to host.
-  std::vector<double> velocity(int c) const {
-    std::vector<double> h(static_cast<std::size_t>(n_));
-    auto m = Kokkos::create_mirror_view(u_[c]);
-    Kokkos::deep_copy(m, u_[c]);
-    for (Index i = 0; i < n_; ++i) h[static_cast<std::size_t>(i)] = m(i);
-    return h;
+  /// Copy a velocity component back to host (single D2H, no host loop — S2a).
+  std::vector<double> velocity(int c) const { return tpx::toVector(u_[c]); }
+
+  /// All three velocity components interleaved as a flat (n,3) row-major host buffer
+  /// (out[i*3+c]) with a single device→host transfer (G6): the three independent component
+  /// Views are packed on-device first (cheap), so the boundary is crossed once rather than
+  /// three times as repeated velocity(c) calls would.
+  std::vector<double> velocities() const {
+    View<double> packed(Kokkos::view_alloc("amr::vel_packed", Kokkos::WithoutInitializing),
+                        static_cast<std::size_t>(n_) * 3);
+    for (int c = 0; c < 3; ++c) {
+      auto uc = u_[c];
+      auto p = packed;
+      const int cc = c;
+      Kokkos::parallel_for(
+          "amr::pack_vel", n_, KOKKOS_LAMBDA(const Index i) { p(i * 3 + cc) = uc(i); });
+    }
+    return tpx::toVector(packed);
   }
   /// L2 norm of the (openness-weighted) divergence of the current velocity.
   double divNormL2() {
@@ -775,13 +786,7 @@ class AmrFlow {
   /// far below the cell field's O(h²) divNormL2 — including across 2:1 interfaces.
   double divNormFace() { return deviceDivFaceNorm(geom_, View<const double>(uf_)); }
   /// Copy the divergence-free face field to host (one value per CSR (sub)face, forEachFaceFull order).
-  std::vector<double> faceField() const {
-    std::vector<double> h(uf_.extent(0));
-    auto m = Kokkos::create_mirror_view(uf_);
-    Kokkos::deep_copy(m, uf_);
-    for (std::size_t k = 0; k < h.size(); ++k) h[k] = m(k);
-    return h;
-  }
+  std::vector<double> faceField() const { return tpx::toVector(uf_); }
   Index numLeaves() const { return n_; }
   /// Per-leaf fluid mask (false inside the solid) — for host-side post-processing / bindings.
   bool isFluid(Index i) const { return mom_.isFluid(i); }

@@ -42,6 +42,10 @@ class DistributedPoisson {
   void init(DistributedOctree<Dim, Bits>& d, double h0) {
     d_ = &d;
     h0_ = h0;
+    // Precompute the face-neighbour gather topology once (C1): apply()/jacobi()/residual() run many
+    // matvecs over a fixed decomposition, so the per-face neighborInfo classification need not be
+    // redone every time. Rebuilt here if init() is called again (e.g. after a rebalance).
+    plan_ = d.buildFaceGatherPlan();
   }
 
   Index numLeaves() const { return d_->local().numLeaves(); }
@@ -50,7 +54,7 @@ class DistributedPoisson {
   /// Cross-block neighbours come from the owner-based halo; periodic global domain ⇒
   /// every face has a neighbour.
   void apply(const std::vector<double>& x, std::vector<double>& y) const {
-    auto g = d_->faceNeighborGather(x);
+    auto g = d_->faceNeighborGather(plan_, x);
     const Index n = numLeaves();
     const int F = 2 * Dim;
     const double inv = 1.0 / (h0_ * h0_);
@@ -114,6 +118,7 @@ class DistributedPoisson {
  private:
   DistributedOctree<Dim, Bits>* d_ = nullptr;
   double h0_ = 1.0;
+  typename DistributedOctree<Dim, Bits>::FaceGatherPlan plan_;  // cached gather topology (C1)
 };
 
 /// Distributed geometric-multigrid V-cycle for the plain Laplacian on a uniform

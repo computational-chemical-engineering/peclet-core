@@ -387,6 +387,62 @@ class DistributedOctree {
     return out;
   }
 
+  /// Static topology of the face-neighbour gather: which out-slots are filled from a local leaf
+  /// (`directSlot`/`directLeaf`) and which must be gathered from an owner (`remoteCoords` at
+  /// `remoteSlot`). This is the per-face `neighborInfo` classification, which depends only on the
+  /// decomposition — not the field — so a matvec loop can build it once and reuse it (C1), mirroring
+  /// how DistributedFvOperator caches its ghost coords. Slots left in neither list keep the sentinel
+  /// (domain boundary / no neighbour). Invalidated by `rebalance` (rebuild after a decomposition
+  /// change); the AMR solvers hold the decomposition fixed across a solve.
+  struct FaceGatherPlan {
+    std::vector<Index> directSlot, directLeaf;        ///< out[directSlot[k]] = field[directLeaf[k]]
+    std::vector<std::array<Coord, Dim>> remoteCoords;  ///< owner-gathered coords (incl. owner==rank)
+    std::vector<Index> remoteSlot;                     ///< out[remoteSlot[k]] = covered value
+    Index nFaces = 0;                                  ///< local leaves * 2*Dim
+  };
+
+  FaceGatherPlan buildFaceGatherPlan() const {
+    const Index n = local_.numLeaves();
+    const int F = 2 * Dim;
+    FaceGatherPlan p;
+    p.nFaces = n * F;
+    for (Index i = 0; i < n; ++i)
+      for (int axis = 0; axis < Dim; ++axis)
+        for (int dir = -1; dir <= 1; dir += 2) {
+          const int slot = faceSlot(i, axis, dir, F);
+          std::array<Coord, Dim> gc{};
+          int owner = -1;
+          Index lnb = -1;
+          NbState st = neighborInfo(i, axis, dir, gc, owner, lnb);
+          if (st == InBlock) {
+            if (lnb >= 0) {
+              p.directSlot.push_back(slot);
+              p.directLeaf.push_back(lnb);
+            }
+          } else if (st == Remote) {
+            // owner==rank resolves locally inside coverValues just as the un-planned path does, so
+            // both remote subcases route through remoteCoords — identical values, identical slots.
+            p.remoteCoords.push_back(gc);
+            p.remoteSlot.push_back(slot);
+          }  // DomainNone -> leave sentinel
+        }
+    return p;
+  }
+
+  /// Face-neighbour gather using a precomputed FaceGatherPlan: only the field values move, the
+  /// classification does not re-run. Bit-identical to `faceNeighborGather(field, sentinel)`.
+  std::vector<double> faceNeighborGather(const FaceGatherPlan& plan, const std::vector<double>& field,
+                                         double sentinel = kNoNeighbor) const {
+    std::vector<double> out(static_cast<std::size_t>(plan.nFaces), sentinel);
+    for (std::size_t k = 0; k < plan.directSlot.size(); ++k)
+      out[static_cast<std::size_t>(plan.directSlot[k])] =
+          field[static_cast<std::size_t>(plan.directLeaf[k])];
+    std::vector<double> vals = coverValues(plan.remoteCoords, field, sentinel);
+    for (std::size_t k = 0; k < plan.remoteSlot.size(); ++k)
+      out[static_cast<std::size_t>(plan.remoteSlot[k])] = vals[k];
+    return out;
+  }
+
   // ---- by-coordinate owner gathers (graded consistent-operator halo) ----
 
   /// Classification of leaf `i`'s face on (axis,dir): {state, global fine probe

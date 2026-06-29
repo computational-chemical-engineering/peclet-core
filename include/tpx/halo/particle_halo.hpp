@@ -54,8 +54,7 @@ class ParticleHalo {
   template <class T>
   void forward(const View<T>& owned, const View<T>& ghost, int tag = 7603) {
     const bool aware = detail::gpuAwareMpi();
-    View<T> sendBuf(Kokkos::view_alloc("tpx::halo::p_sendBuf", Kokkos::WithoutInitializing),
-                    static_cast<std::size_t>(nSend_));
+    View<T> sendBuf = scratchAs<T>("tpx::halo::p_sendBuf");
     if (nSend_) {
       View<T> o = owned;
       IndexView idx = d_sendIdx_;
@@ -115,16 +114,22 @@ class ParticleHalo {
     std::vector<T> hGhost, hRecv;
     T* ghostBase;
     T* recvBase;
-    View<T> recvBuf(Kokkos::view_alloc("tpx::halo::p_recvBuf", Kokkos::WithoutInitializing),
-                    static_cast<std::size_t>(nSend_));  // owners receive sendIdx-many contributions
+    View<T> recvBuf = scratchAs<T>("tpx::halo::p_recvBuf");  // owners receive sendIdx-many contributions
     if (aware) {
       Kokkos::fence();
       ghostBase = ghost.data();
       recvBase = recvBuf.data();
     } else {
-      hGhost.resize(static_cast<std::size_t>(numGhost_));
+      // Only the cross-rank ghost slice [0,numReceived) is sent over MPI (recvOff_/recvCounts_ index
+      // into it); the self-ghost tail [numReceived,numGhost) is consumed by the device self-scatter
+      // below straight from `ghost`, so it never needs to reach the host.
+      hGhost.resize(static_cast<std::size_t>(numReceived_));
       hRecv.resize(static_cast<std::size_t>(nSend_));
-      copyToHost(ghost, hGhost);
+      if (numReceived_)
+        copyToHost(Kokkos::subview(
+                       ghost, std::pair<std::size_t, std::size_t>(
+                                  0, static_cast<std::size_t>(numReceived_))),
+                   hGhost);
       ghostBase = hGhost.data();
       recvBase = hRecv.data();
     }
@@ -161,12 +166,25 @@ class ParticleHalo {
   Index numGhost() const { return numGhost_; }
 
  private:
-  template <class T>
-  static void copyToHost(const View<T>& d, std::vector<T>& h) {
+  template <class SrcView, class T>
+  static void copyToHost(const SrcView& d, std::vector<T>& h) {
     if (h.empty()) return;
     Kokkos::View<T*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>> hv(h.data(),
                                                                                     h.size());
     Kokkos::deep_copy(hv, d);
+  }
+
+  /// A reusable nSend_-sized device scratch buffer, laid out as `View<T>`. The exchange scratch is
+  /// topologically fixed in size (nSend_) but its element type T varies per call, so we keep one
+  /// byte buffer and place a typed unmanaged view over it — avoiding a fresh view_alloc on every
+  /// forward()/reverse() (D3). It grows monotonically; forward and reverse never overlap in time.
+  template <class T>
+  View<T> scratchAs(const char* label) {
+    const std::size_t bytes = static_cast<std::size_t>(nSend_) * sizeof(T);
+    if (scratch_.size() < bytes)
+      scratch_ = Kokkos::View<char*, MemSpace>(
+          Kokkos::view_alloc(std::string(label), Kokkos::WithoutInitializing), bytes);
+    return View<T>(reinterpret_cast<T*>(scratch_.data()), static_cast<std::size_t>(nSend_));
   }
   template <class T>
   static void copyToDevice(const std::vector<T>& h, const View<T>& d) {
@@ -201,6 +219,7 @@ class ParticleHalo {
   std::vector<int> recvRanks_, recvCounts_, recvOff_;
   Index nSend_ = 0, numGhost_ = 0, numReceived_ = 0, numSelf_ = 0;
   IndexView d_sendIdx_, d_selfIdx_;
+  Kokkos::View<char*, MemSpace> scratch_;  // reusable per-call exchange scratch (see scratchAs)
 };
 
 }  // namespace tpx::halo

@@ -355,15 +355,9 @@ class Flow : public Releasable {
     return vec1<double>(std::vector<double>(v.begin(), v.end()));
   }
 
-  // All three velocity components -> (num_leaves, 3) float64.
-  nb::ndarray<nb::numpy, double> velocities() const {
-    std::vector<double> d(static_cast<std::size_t>(n_) * 3);
-    for (int c = 0; c < 3; ++c) {
-      const auto& v = flow_.velocity(c);
-      for (Index i = 0; i < n_; ++i) d[static_cast<std::size_t>(i) * 3 + c] = v[static_cast<std::size_t>(i)];
-    }
-    return vec2<double>(std::move(d), 3);
-  }
+  // All three velocity components -> (num_leaves, 3) float64. Packed on-device into one interleaved
+  // buffer, so the device->host boundary is crossed once (G6) instead of three times.
+  nb::ndarray<nb::numpy, double> velocities() const { return vec2<double>(flow_.velocities(), 3); }
 
   // Per-leaf fluid mask (False inside the solid) -> (num_leaves,) bool.
   nb::ndarray<nb::numpy, bool> is_fluid() const {
