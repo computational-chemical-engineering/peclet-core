@@ -45,6 +45,25 @@ struct CsrFillSink {
   }
 };
 
+/// CSR row offsets (size n+1) from a per-cell count functor, via one exclusive prefix scan, with the
+/// total written to `nTotal`. The standalone scan half of S1 — for assemblers whose per-face payload is
+/// richer than (nbr, coef) (e.g. the face-geometry tables), which then run their own own-slice fill
+/// over these offsets. `CountFn` is device-callable: KOKKOS Index operator()(Index i) const.
+template <class CountFn>
+View<Index> deviceScanOffsets(Index n, const CountFn& countFn, Index& nTotal) {
+  View<Index> start(Kokkos::view_alloc("tpx::amr::csr_off", Kokkos::WithoutInitializing),
+                    static_cast<std::size_t>(n) + 1);
+  Kokkos::parallel_scan(
+      "tpx::amr::csr_off_scan", n + 1,
+      KOKKOS_LAMBDA(const Index i, Index& partial, const bool final_pass) {
+        const Index c = (i < n) ? countFn(i) : Index(0);
+        if (final_pass) start(i) = partial;
+        partial += c;
+      });
+  Kokkos::deep_copy(nTotal, Kokkos::subview(start, n));
+  return start;
+}
+
 /// An assembled face-CSR: row offsets (size n+1), neighbour index + coefficient per face (size nFaces).
 struct DeviceCsr {
   View<Index> start;   ///< CSR row offsets, size n+1; start(n) == nFaces
