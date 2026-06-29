@@ -443,6 +443,89 @@ class DistributedOctree {
     return out;
   }
 
+  // ---- device-resident gather halo topology (C2) -------------------------
+
+  /// Flattened, value-only topology for the face-neighbour gather, established ONCE: the per-matvec
+  /// exchange then moves only `double` values (no coords, no locateGlobal) over a fixed graph — the
+  /// octree analogue of GridHaloTopology::flatten(). A device DistributedGatherHalo mirrors only the
+  /// compact send/recv buffers across MPI (à la grid_halo.hpp); the field stays on the device.
+  struct GatherHaloTopology {
+    // Locally-resolved faces (InBlock + Remote-but-owner==rank): out[localSlot[k]] = field[localLeaf[k]].
+    std::vector<Index> localSlot, localLeaf;
+    // Owner side of the value exchange: gather these local leaves (−1 ⇒ send sentinel) and send to the
+    // requester ranks (concatenated per sendRanks/sendCounts, in received reqId order).
+    std::vector<int> sendRanks, sendCounts;
+    std::vector<Index> sendLeaf;
+    // Requester side: scatter the received values into these out-slots (per recvRanks/recvCounts).
+    std::vector<int> recvRanks, recvCounts;
+    std::vector<Index> recvSlot;
+    Index nFaces = 0;
+  };
+
+  /// Build the value-only gather topology from a FaceGatherPlan: classify each remote coord by owner
+  /// (owner==rank folds into the local fills), then ONE NBX round in which each owner learns which of
+  /// its local leaves to send to each requester (locateGlobal happens here, once — never per matvec).
+  GatherHaloTopology buildGatherHaloTopology(const FaceGatherPlan& plan) const {
+    GatherHaloTopology t;
+    t.nFaces = plan.nFaces;
+    t.localSlot = plan.directSlot;  // InBlock direct fills
+    t.localLeaf = plan.directLeaf;
+    // Classify remote coords; group cross-rank requests by owner with a per-owner reqId = its position.
+    std::map<int, std::vector<char>> req;             // owner -> serialized (coord, reqId) requests
+    std::map<int, std::vector<Index>> recvSlotByOwner;  // owner -> out-slots in reqId order
+    for (std::size_t k = 0; k < plan.remoteCoords.size(); ++k) {
+      const std::array<Coord, Dim>& gc = plan.remoteCoords[k];
+      const Index slot = plan.remoteSlot[k];
+      const int owner = ownerOfFine(gc);
+      if (owner == rank_) {
+        const Index leaf = locateGlobal(gc);
+        if (leaf >= 0) {
+          t.localSlot.push_back(slot);
+          t.localLeaf.push_back(leaf);
+        }  // leaf < 0 ⇒ leave sentinel
+      } else {
+        const std::int64_t reqId = static_cast<std::int64_t>(recvSlotByOwner[owner].size());
+        appendRequest(req[owner], gc, reqId);
+        recvSlotByOwner[owner].push_back(slot);
+      }
+    }
+    for (auto& kv : recvSlotByOwner) {  // requester side (deterministic owner order from std::map)
+      t.recvRanks.push_back(kv.first);
+      t.recvCounts.push_back(static_cast<int>(kv.second.size()));
+      for (Index s : kv.second) t.recvSlot.push_back(s);
+    }
+    // One NBX round: owners receive coord requests and resolve them to local leaves (in reqId order).
+    std::map<int, std::vector<Index>> sendLeafBySrc;
+    {
+      halo::NbxEngine eng(comm_);
+      auto it = req.begin();
+      eng.exchange(
+          [&](std::vector<char>& o) -> int {
+            if (it == req.end()) return -1;
+            o = it->second;
+            int d = it->first;
+            ++it;
+            return d;
+          },
+          [&](int src, std::vector<char>& msg) {
+            std::vector<Index>& leaves = sendLeafBySrc[src];
+            parseRequests(msg, [&](const std::array<Coord, Dim>& gc, std::int64_t reqId) {
+              const Index leaf = locateGlobal(gc);
+              if (static_cast<std::int64_t>(leaves.size()) <= reqId)
+                leaves.resize(static_cast<std::size_t>(reqId) + 1, -1);
+              leaves[static_cast<std::size_t>(reqId)] = leaf;
+            });
+          },
+          /*tag=*/31);
+    }
+    for (auto& kv : sendLeafBySrc) {  // owner side
+      t.sendRanks.push_back(kv.first);
+      t.sendCounts.push_back(static_cast<int>(kv.second.size()));
+      for (Index l : kv.second) t.sendLeaf.push_back(l);
+    }
+    return t;
+  }
+
   // ---- by-coordinate owner gathers (graded consistent-operator halo) ----
 
   /// Classification of leaf `i`'s face on (axis,dir): {state, global fine probe

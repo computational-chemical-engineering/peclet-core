@@ -244,7 +244,20 @@ if(MPI_FOUND)
   target_link_libraries(test_amr_distributed_rebalance_mpi PRIVATE tpx_halo)
   target_include_directories(test_amr_distributed_rebalance_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+  # Device-resident distributed AMR multigrid (C2): needs Kokkos + MPI. tpx_halo carries both when
+  # TPX_ENABLE_KOKKOS is on (same target the Kokkos grid-halo test links).
+  if(TPX_ENABLE_KOKKOS)
+    add_executable(test_amr_distributed_device_mpi test_amr_distributed_device_mpi.cpp)
+    target_link_libraries(test_amr_distributed_device_mpi PRIVATE tpx_halo)
+    target_include_directories(test_amr_distributed_device_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  endif()
+
   foreach(np IN ITEMS 1 2 4 8)
+    if(TARGET test_amr_distributed_device_mpi)
+      add_test(NAME amr_distributed_device_np${np}
+               COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
+                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_device_mpi> ${MPIEXEC_POSTFLAGS})
+    endif()
     add_test(NAME grid_halo_np${np}
              COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
                      ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_grid_halo> ${MPIEXEC_POSTFLAGS})
