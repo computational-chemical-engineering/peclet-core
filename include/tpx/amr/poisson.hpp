@@ -455,6 +455,10 @@ class AmrPoisson {
 
   const Octree& octree() const { return *t_; }
   Real h0() const { return h0_; }
+  /// Per-axis fine-grid extent (brick·2^lmax) — the periodic wrap modulus. Needed by the device
+  /// assembler to reproduce `wrap()` / the domain-boundary test on device.
+  const std::array<Coord, Dim>& fineExt() const { return fineExt_; }
+  const Vec<Dim>& origin() const { return origin_; }
 
  private:
   Coord wrap(long c, int axis) const {

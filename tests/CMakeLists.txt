@@ -118,6 +118,11 @@ if(TPX_HAVE_KOKKOS)
   target_include_directories(test_amr_fv_op PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   add_test(NAME amr_fv_op COMMAND test_amr_fv_op)
 
+  add_executable(test_amr_device_assembly test_amr_device_assembly.cpp)
+  target_link_libraries(test_amr_device_assembly PRIVATE tpx_core)
+  target_include_directories(test_amr_device_assembly PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME amr_device_assembly COMMAND test_amr_device_assembly)
+
   add_executable(test_amr_multigrid test_amr_multigrid.cpp)
   target_link_libraries(test_amr_multigrid PRIVATE tpx_core)
   target_include_directories(test_amr_multigrid PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
