@@ -1,22 +1,22 @@
-// SDF-driven refinement (tpx::amr::refineToSdf): refining a uniform coarse block
+// SDF-driven refinement (peclet::core::amr::refineToSdf): refining a uniform coarse block
 // around a sphere must (a) drive every surface-crossing leaf to the target level,
 // (b) leave interior/far-field leaves coarse (genuine adaptivity, far fewer cells
 // than a uniform fine grid), and (c) stay 2:1 balanced.
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
-#include "tpx/common/types.hpp"
+#include "peclet/core/common/types.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
 
-#include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/leaf_field.hpp"
-#include "tpx/amr/refine.hpp"
-#include "tpx/geom/sdf.hpp"
+#include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/leaf_field.hpp"
+#include "peclet/core/amr/refine.hpp"
+#include "peclet/core/geom/sdf.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -24,21 +24,21 @@ void run() {
   using BO = BlockOctree<3, 21>;
   // 1 root cell, lmax=5 -> a 32^3 fine domain available, starting fully coarse.
   BO t(IVec<3>{1, 1, 1}, 5);
-  TPX_CHECK_EQ((long long)t.numLeaves(), 1LL);
+  PECLET_CORE_CHECK_EQ((long long)t.numLeaves(), 1LL);
 
   AmrGeometry<3> geo;
   geo.origin = {0.0, 0.0, 0.0};
   geo.h0 = 1.0;  // fine cell = 1 world unit; domain is [0,32]^3
 
-  tpx::geom::Sphere sph;
+  peclet::core::geom::Sphere sph;
   sph.center = {16.0, 16.0, 16.0};
   sph.radius = 8.0;
   auto sdf = [&](const Vec<3>& p) { return sph.eval(p); };
 
   const unsigned target = 1;  // refine the surface band down to level 1 (2-wide cells)
   Index nref = refineToSdf(t, geo, sdf, target, /*band=*/1.0, /*balance=*/true);
-  TPX_CHECK(nref > 0);
-  TPX_CHECK(t.isBalanced());
+  PECLET_CORE_CHECK(nref > 0);
+  PECLET_CORE_CHECK(t.isBalanced());
 
   // (a) every leaf the surface actually passes through is at the target level.
   // (b) adaptivity: far fewer leaves than a uniform grid at the target level.
@@ -54,12 +54,12 @@ void run() {
       if (t.level(i) != target) allCrossingFine = false;
     }
   }
-  TPX_CHECK(crossing > 0);
-  TPX_CHECK(allCrossingFine);
+  PECLET_CORE_CHECK(crossing > 0);
+  PECLET_CORE_CHECK(allCrossingFine);
 
   // Uniform grid at level `target` would be (32 / 2)^3 = 4096 cells; adaptivity
   // must beat that comfortably.
-  TPX_CHECK(t.numLeaves() < 4096);
+  PECLET_CORE_CHECK(t.numLeaves() < 4096);
 
   // Volume is conserved (refinement only splits).
   long vol = 0;
@@ -67,18 +67,18 @@ void run() {
     long s = 1L << t.level(i);
     vol += s * s * s;
   }
-  TPX_CHECK_EQ((long long)vol, (long long)(32L * 32L * 32L));
+  PECLET_CORE_CHECK_EQ((long long)vol, (long long)(32L * 32L * 32L));
 }
 
 }  // namespace
 
 int main() {
   run();
-  TPX_RETURN_TEST_RESULT();
+  PECLET_CORE_RETURN_TEST_RESULT();
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping AMR SDF refinement test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping AMR SDF refinement test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

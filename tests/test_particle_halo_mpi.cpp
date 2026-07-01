@@ -15,16 +15,16 @@
 #include <cstring>
 #include <vector>
 
-#include "tpx/common/types.hpp"
-#include "tpx/decomp/block_decomposer.hpp"
-#include "tpx/halo/particle_halo_topology.hpp"
-#include "tpx/halo/particle_migrator.hpp"
+#include "peclet/core/common/types.hpp"
+#include "peclet/core/decomp/block_decomposer.hpp"
+#include "peclet/core/halo/particle_halo_topology.hpp"
+#include "peclet/core/halo/particle_migrator.hpp"
 
-using namespace tpx;
-using tpx::decomp::BlockDecomposer;
-using tpx::halo::DomainMap;
-using tpx::halo::ParticleHaloTopology;
-using tpx::halo::ParticleMigrator;
+using namespace peclet::core;
+using peclet::core::decomp::BlockDecomposer;
+using peclet::core::halo::DomainMap;
+using peclet::core::halo::ParticleHaloTopology;
+using peclet::core::halo::ParticleMigrator;
 
 struct GP {
   double p[3];

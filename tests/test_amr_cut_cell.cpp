@@ -1,4 +1,4 @@
-// Robust-Scaled cut-cell Dirichlet operator (tpx::amr::AmrCutCell) — the port of
+// Robust-Scaled cut-cell Dirichlet operator (peclet::core::amr::AmrCutCell) — the port of
 // sdflow's ξ-polynomial sub-cell BC onto the octree:
 //   (1) 2nd-order accuracy on an embedded-Dirichlet problem with an exact
 //       solution: fluid = inside a sphere, u = 0 on the surface, u = R^2 - r^2
@@ -6,19 +6,19 @@
 //   (2) the cell volume fraction κ integrates to the sphere volume (4/3 π R^3);
 //   (3) solid cells are held at the wall value u_bc.
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
 #include <vector>
 
-#include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/cut_cell.hpp"
-#include "tpx/common/types.hpp"
+#include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/cut_cell.hpp"
+#include "peclet/core/common/types.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -80,7 +80,7 @@ Result solveSphere(unsigned L) {
       mg = std::max(mg, std::fabs(ag[static_cast<std::size_t>(i)]));
     }
     std::printf("[cut] shared-CSR vs geometric applyOp: max|Δ| = %.3e (mag %.3e)\n", de, mg);
-    TPX_CHECK(de < 1e-12 * (1.0 + mg));
+    PECLET_CORE_CHECK(de < 1e-12 * (1.0 + mg));
   }
 
   std::vector<double> u(static_cast<std::size_t>(n), 0.0), res;
@@ -106,7 +106,7 @@ Result solveSphere(unsigned L) {
   bool solidHeld = true;
   for (Index i = 0; i < n; ++i)
     if (!cc.isFluid(i) && std::fabs(u[static_cast<std::size_t>(i)]) > 1e-9) solidHeld = false;
-  TPX_CHECK(solidHeld);
+  PECLET_CORE_CHECK(solidHeld);
 
   return {std::sqrt(e / nf), vol, nf};
 }
@@ -117,23 +117,23 @@ void run() {
 
   // (1) 2nd-order convergence.
   double order = a.err / b.err;
-  TPX_CHECK(order > 3.3);
+  PECLET_CORE_CHECK(order > 3.3);
 
   // (2) κ integrates to the sphere volume.
   const double exactVol = 4.0 / 3.0 * M_PI * kR * kR * kR;
-  TPX_CHECK(std::fabs(b.fluidVol - exactVol) < 0.03 * exactVol);
-  TPX_CHECK(b.nfluid > a.nfluid);
+  PECLET_CORE_CHECK(std::fabs(b.fluidVol - exactVol) < 0.03 * exactVol);
+  PECLET_CORE_CHECK(b.nfluid > a.nfluid);
 }
 
 }  // namespace
 
 int main() {
   run();
-  TPX_RETURN_TEST_RESULT();
+  PECLET_CORE_RETURN_TEST_RESULT();
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping cut-cell test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping cut-cell test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

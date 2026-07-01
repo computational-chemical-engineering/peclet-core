@@ -7,22 +7,22 @@
 //   (2) the mesh tracks the moving blob (the finest cells stay near its centre);
 //   (3) the adaptive mesh stays far smaller than a uniform-fine grid.
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <array>
 #include <cmath>
 #include <vector>
 
-#include "tpx/amr/adapt.hpp"
-#include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/leaf_field.hpp"
-#include "tpx/amr/scalar_transport.hpp"
-#include "tpx/common/types.hpp"
+#include "peclet/core/amr/adapt.hpp"
+#include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/leaf_field.hpp"
+#include "peclet/core/amr/scalar_transport.hpp"
+#include "peclet/core/common/types.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -108,7 +108,7 @@ void run() {
   }
 
   // (1) mass conserved through all steps + adapts
-  TPX_CHECK(massMaxDev < 1e-9 * std::fabs(m0));
+  PECLET_CORE_CHECK(massMaxDev < 1e-9 * std::fabs(m0));
 
   // (2) the blob advected to the right place: mass-weighted x-centroid ≈ cx0 + U*T
   // (blob stays interior, no wrap), and the finest cells are present near it.
@@ -130,23 +130,23 @@ void run() {
   }
   const double xc = sx / sw;            // scalar mass-weighted x-centroid
   const double fc = fineCx / fineW;     // mean x of the finest cells
-  TPX_CHECK(std::fabs(xc - cxEnd) < 0.05);  // advection moved the blob correctly
-  TPX_CHECK(nFinest > 0);
-  TPX_CHECK(std::fabs(fc - cxEnd) < 0.1);   // finest cells follow the blob
+  PECLET_CORE_CHECK(std::fabs(xc - cxEnd) < 0.05);  // advection moved the blob correctly
+  PECLET_CORE_CHECK(nFinest > 0);
+  PECLET_CORE_CHECK(std::fabs(fc - cxEnd) < 0.1);   // finest cells follow the blob
 
   // (3) adaptive mesh stays smaller than uniform-fine (32^3 = 32768)
-  TPX_CHECK(maxLeaves < 32768);
+  PECLET_CORE_CHECK(maxLeaves < 32768);
 }
 
 }  // namespace
 
 int main() {
   run();
-  TPX_RETURN_TEST_RESULT();
+  PECLET_CORE_RETURN_TEST_RESULT();
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping adaptive transport test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping adaptive transport test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

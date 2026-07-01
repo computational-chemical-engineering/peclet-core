@@ -1,4 +1,4 @@
-// Distributed dynamic adapt (tpx::amr::distributedAdapt): solution-adaptive (re)meshing
+// Distributed dynamic adapt (peclet::core::amr::distributedAdapt): solution-adaptive (re)meshing
 // on a DistributedOctree, keeping the ORB decomposition. On a field with a localized
 // feature, each rank refines/coarsens its block from the Löhner indicator (evaluated
 // through the owner-based halo), cross-block 2:1 balances, and conservatively remaps the
@@ -8,20 +8,20 @@
 //   (2) the global scalar Σ V·f is conserved through the adapt.
 // np = 1,2,4,8.
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
 #include <vector>
 
-#include "tpx/amr/distributed_adapt.hpp"
-#include "tpx/amr/distributed_octree.hpp"
-#include "tpx/amr/leaf_field.hpp"
-#include "tpx/common/mpi.hpp"
+#include "peclet/core/amr/distributed_adapt.hpp"
+#include "peclet/core/amr/distributed_octree.hpp"
+#include "peclet/core/amr/leaf_field.hpp"
+#include "peclet/core/common/mpi.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -86,7 +86,7 @@ void run() {
   const Index nw = world.local().numLeaves();
   long lnw = nw, gnw = 0;
   MPI_Allreduce(&lnw, &gnw, 1, MPI_LONG, MPI_SUM, MPI_COMM_WORLD);
-  TPX_CHECK(gnw == self.local().numLeaves());  // same global leaf count
+  PECLET_CORE_CHECK(gnw == self.local().numLeaves());  // same global leaf count
   int mism = 0;
   for (Index i = 0; i < nw; ++i) {
     Index si = self.local().find(world.globalCode(i));
@@ -97,7 +97,7 @@ void run() {
     if (world.local().level(i) != self.local().level(si)) ++mism;
     if (fw[(std::size_t)i] != fs[(std::size_t)si]) ++mism;
   }
-  TPX_CHECK_EQ(mism, 0);
+  PECLET_CORE_CHECK_EQ(mism, 0);
 
   // (2) refinement actually happened, and the global mass is conserved through adapt
   // (compare the *transferred* field, before the re-sample, to m0).
@@ -107,12 +107,12 @@ void run() {
   f2 = distributedAdapt(w2, f2, 0.2, 0.03, 0);
   double lm = localMass(w2, f2), gm = 0.0;
   MPI_Allreduce(&lm, &gm, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-  TPX_CHECK(std::fabs(gm - m0) < 1e-9 * std::fabs(m0));  // conservative remap
+  PECLET_CORE_CHECK(std::fabs(gm - m0) < 1e-9 * std::fabs(m0));  // conservative remap
   unsigned minL = 99;
   for (Index i = 0; i < w2.local().numLeaves(); ++i) minL = std::min(minL, w2.local().level(i));
   long lminL = minL, gminL = 99;
   MPI_Allreduce(&lminL, &gminL, 1, MPI_LONG, MPI_MIN, MPI_COMM_WORLD);
-  TPX_CHECK(gminL < (long)kLmax);  // refined below the base level
+  PECLET_CORE_CHECK(gminL < (long)kLmax);  // refined below the base level
 }
 
 }  // namespace
@@ -122,7 +122,7 @@ int main(int argc, char** argv) {
   run();
   int rank = 0;
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-  int fails = tpx::test::g_failures, total = 0;
+  int fails = peclet::core::test::g_failures, total = 0;
   MPI_Reduce(&fails, &total, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
   MPI_Finalize();
   if (rank == 0) {
@@ -137,7 +137,7 @@ int main(int argc, char** argv) {
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping distributed adapt test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping distributed adapt test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

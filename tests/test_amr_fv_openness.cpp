@@ -1,5 +1,5 @@
 // Cut-cell openness coarsened across the device (Kokkos) MG levels
-// (tpx::amr::Multigrid::build(finest, h0, openFn)). The openness is set on the
+// (peclet::core::amr::Multigrid::build(finest, h0, openFn)). The openness is set on the
 // finest level and area-averaged to every coarser level (via AmrMultigrid::setOpenness),
 // so each level is a consistent cut-cell operator. Validates:
 //   (1) the device operator on EVERY level == host AmrMultigrid::op(L).applyLaplacian
@@ -8,21 +8,21 @@
 //   (2) the openness V-cycle converges on the graded mesh (manufactured RHS).
 // Runs on whatever backend Kokkos was built for (CUDA / HIP / OpenMP).
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
 #include <vector>
 
 #include <Kokkos_Core.hpp>
 
-#include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/multigrid.hpp"
-#include "tpx/amr/poisson.hpp"
+#include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/multigrid.hpp"
+#include "peclet/core/amr/poisson.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -69,15 +69,15 @@ void run() {
   // Device MG with the same openFn (coarsened across levels internally).
   Multigrid<3, kBits> mg;
   mg.build(t, h0, openFn);
-  TPX_CHECK(mg.numLevels() == hmg.numLevels());
-  TPX_CHECK(mg.numLevels() >= 3);
+  PECLET_CORE_CHECK(mg.numLevels() == hmg.numLevels());
+  PECLET_CORE_CHECK(mg.numLevels() >= 3);
 
   // ===== (1) device operator == host op(L).applyLaplacian on EVERY level (bit-exact) =====
   std::uint64_t s = 99991;
   int totalMism = 0;
   for (std::size_t L = 0; L < hmg.numLevels(); ++L) {
     const Index n = hmg.op(L).octree().numLeaves();
-    TPX_CHECK(mg.numLeaves(L) == n);
+    PECLET_CORE_CHECK(mg.numLeaves(L) == n);
     std::vector<double> x((std::size_t)n);
     for (auto& v : x) {
       s = s * 6364136223846793005ULL + 1442695040888963407ULL;
@@ -92,7 +92,7 @@ void run() {
     for (Index i = 0; i < n; ++i)
       if (dLh[(std::size_t)i] != hLu[(std::size_t)i]) ++totalMism;
   }
-  TPX_CHECK_EQ(totalMism, 0);
+  PECLET_CORE_CHECK_EQ(totalMism, 0);
 
   // ===== (2) openness V-cycle converges on the graded mesh (manufactured RHS) =====
   const Index n0 = mg.numLeaves(0);
@@ -125,7 +125,7 @@ void run() {
   const double r0 = resNorm();
   for (int c = 0; c < 40; ++c) mg.vcycle(2, 2, 60, 0.8);
   const double r1 = resNorm();
-  TPX_CHECK(r1 < r0 * 1e-3);
+  PECLET_CORE_CHECK(r1 < r0 * 1e-3);
 }
 
 }  // namespace
@@ -134,11 +134,11 @@ int main(int argc, char** argv) {
   Kokkos::initialize(argc, argv);
   run();
   Kokkos::finalize();
-  TPX_RETURN_TEST_RESULT();
+  PECLET_CORE_RETURN_TEST_RESULT();
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping device openness test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping device openness test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

@@ -1,25 +1,25 @@
-// Device-resident distributed AMR multigrid (tpx::amr::DistributedMultigridDevice, C2): the V-cycle
+// Device-resident distributed AMR multigrid (peclet::core::amr::DistributedMultigridDevice, C2): the V-cycle
 // runs entirely in Kokkos kernels over the device field, mirroring only the compact gather buffer
 // across MPI. It must (1) reproduce the HOST DistributedMultigrid on the same decomposition bit-for-bit
 // (the device port is exact), (2) match the single-block MPI_COMM_SELF reference bit-for-bit (consistent
 // across rank counts), and (3) actually solve. np = 1,2,4,8.
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
 #include <vector>
 
 #include <Kokkos_Core.hpp>
 
-#include "tpx/amr/distributed_device.hpp"
-#include "tpx/amr/distributed_octree.hpp"
-#include "tpx/amr/distributed_poisson.hpp"
-#include "tpx/common/mpi.hpp"
+#include "peclet/core/amr/distributed_device.hpp"
+#include "peclet/core/amr/distributed_octree.hpp"
+#include "peclet/core/amr/distributed_poisson.hpp"
+#include "peclet/core/common/mpi.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -101,11 +101,11 @@ void run() {
     maxS = std::max(maxS, std::fabs(xwh[static_cast<std::size_t>(i)] - xsh[static_cast<std::size_t>(si)]));
   }
   (void)mismH;
-  TPX_CHECK_EQ(mismS, 0);
-  TPX_CHECK(maxH == 0.0);  // device == host on the same decomposition, bit-for-bit
-  TPX_CHECK(maxS == 0.0);  // device WORLD == device SELF, bit-for-bit across rank counts
-  TPX_CHECK(dmg.numLevels() == 4);
-  TPX_CHECK(r1 < r0 * 1e-3);  // MG actually solves
+  PECLET_CORE_CHECK_EQ(mismS, 0);
+  PECLET_CORE_CHECK(maxH == 0.0);  // device == host on the same decomposition, bit-for-bit
+  PECLET_CORE_CHECK(maxS == 0.0);  // device WORLD == device SELF, bit-for-bit across rank counts
+  PECLET_CORE_CHECK(dmg.numLevels() == 4);
+  PECLET_CORE_CHECK(r1 < r0 * 1e-3);  // MG actually solves
 }
 
 }  // namespace
@@ -117,7 +117,7 @@ int main(int argc, char** argv) {
   Kokkos::finalize();
   int rank = 0;
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-  int fails = tpx::test::g_failures, total = 0;
+  int fails = peclet::core::test::g_failures, total = 0;
   MPI_Reduce(&fails, &total, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
   MPI_Finalize();
   if (rank == 0) {
@@ -132,7 +132,7 @@ int main(int argc, char** argv) {
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping distributed device test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping distributed device test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

@@ -1,4 +1,4 @@
-// Device (Kokkos) collocated Stokes step on the octree (tpx::amr::AmrFlow) —
+// Device (Kokkos) collocated Stokes step on the octree (peclet::core::amr::AmrFlow) —
 // the device counterpart of oracle::AmrFlow. Validates:
 //   (1) Poiseuille — body-force-driven Stokes flow between immersed no-slip walls
 //       converges to the analytic parabola u = G/(2μ)(y-y0)(y1-y) to ~round-off, solids
@@ -10,23 +10,23 @@
 // Runs on whatever backend Kokkos targets (CUDA / HIP / OpenMP). Validation is host-vs-
 // device agreement + the analytic solution (the GPU differs from host only in FP last bits).
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <algorithm>
 #include <cmath>
 #include <vector>
 
 #include <Kokkos_Core.hpp>
 
-#include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/flow.hpp"
-#include "tpx/amr/flow_oracle.hpp"
-#include "tpx/common/types.hpp"
+#include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/flow.hpp"
+#include "peclet/core/amr/flow_oracle.hpp"
+#include "peclet/core/common/types.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -94,10 +94,10 @@ void test_poiseuille() {
   }
   double l2 = std::sqrt(e / nf);
   std::printf("[flow] poiseuille: device L2 vs analytic = %.3e, max|dev-host| = %.3e\n", l2, dh);
-  TPX_CHECK(l2 < 1e-6);
-  TPX_CHECK(solidsZero);
-  TPX_CHECK(fluidPositive);
-  TPX_CHECK(dh < 1e-7);  // device matches host
+  PECLET_CORE_CHECK(l2 < 1e-6);
+  PECLET_CORE_CHECK(solidsZero);
+  PECLET_CORE_CHECK(fluidPositive);
+  PECLET_CORE_CHECK(dh < 1e-7);  // device matches host
 }
 
 void test_sphere() {
@@ -147,9 +147,9 @@ void test_sphere() {
   double hmean = hsum / nf, dmean = dsum / nf;
   std::printf("[flow] sphere: Umean host %.6e dev %.6e (rel %.2e), max|dev-host| %.3e (mag %.3e)\n",
               hmean, dmean, std::fabs(dmean - hmean) / hmean, dmax, hmax);
-  TPX_CHECK(dmean > 0.0);
-  TPX_CHECK(std::fabs(dmean - hmean) / hmean < 2e-3);  // same permeability
-  TPX_CHECK(dmax < 5e-3 * hmax);                       // fields agree
+  PECLET_CORE_CHECK(dmean > 0.0);
+  PECLET_CORE_CHECK(std::fabs(dmean - hmean) / hmean < 2e-3);  // same permeability
+  PECLET_CORE_CHECK(dmax < 5e-3 * hmax);                       // fields agree
 }
 
 // The optional Helmholtz-MG momentum preconditioner (setMomentumMG) must not change the
@@ -184,7 +184,7 @@ void test_momentum_mg_option() {
     mag = std::max(mag, std::fabs(uoff[(std::size_t)i]));
   }
   std::printf("[flow] momentum-MG option: max|on-off| = %.3e (mag %.3e)\n", dmax, mag);
-  TPX_CHECK(dmax < 1e-3 * mag);  // same converged step regardless of preconditioner
+  PECLET_CORE_CHECK(dmax < 1e-3 * mag);  // same converged step regardless of preconditioner
 }
 
 // Phase 2 scalability guard: with the Galerkin velocity multigrid the per-step momentum
@@ -213,8 +213,8 @@ void test_momentum_scaling() {
   int m4 = momIters(4), m5 = momIters(5);  // 16³, 32³
   std::printf("[flow] velocity-MG momentum iters: 16³=%d  32³=%d  (ratio %.2f)\n", m4, m5,
               (double)m5 / std::max(1, m4));
-  TPX_CHECK(m5 < 2 * m4);  // near-flat (multigrid) — would ~double without it
-  TPX_CHECK(m5 < 150);     // absolute bound (3 components × a few dozen MG-accelerated iters)
+  PECLET_CORE_CHECK(m5 < 2 * m4);  // near-flat (multigrid) — would ~double without it
+  PECLET_CORE_CHECK(m5 < 150);     // absolute bound (3 components × a few dozen MG-accelerated iters)
 }
 
 // Implicit-FOU + deferred-correction SOU advection (Navier–Stokes), validated against the host
@@ -273,7 +273,7 @@ void test_advection_kernel() {
     }
     std::printf("[flow] advect-kernel (%s): max|dev-host SOU| = %.3e (mag %.3e)\n",
                 which == 0 ? "all-fluid" : "sphere", emax, mag);
-    TPX_CHECK(emax < 1e-10 * (1.0 + mag));
+    PECLET_CORE_CHECK(emax < 1e-10 * (1.0 + mag));
   }
 }
 
@@ -319,8 +319,8 @@ void test_advection() {
       }
     std::printf("[flow] poiseuille+adv: device L2 vs analytic = %.3e, max|dev-host| = %.3e\n",
                 std::sqrt(e / nf), dh);
-    TPX_CHECK(std::sqrt(e / nf) < 1e-6);  // ∇·(u u)=0 ⇒ unchanged parabola
-    TPX_CHECK(dh < 1e-6);
+    PECLET_CORE_CHECK(std::sqrt(e / nf) < 1e-6);  // ∇·(u u)=0 ⇒ unchanged parabola
+    PECLET_CORE_CHECK(dh < 1e-6);
   }
 
   // (b) immersed sphere at finite Re (non-trivial advection): device == host steady field.
@@ -373,8 +373,8 @@ void test_advection() {
                 "%.3e (mag %.3e)\n",
                 G * (hsum / nf) * 0.4 / mu, hsum / nf, dsum / nf,
                 std::fabs(dsum - hsum) / std::fabs(hsum), dmax, hmax);
-    TPX_CHECK(std::fabs(dsum - hsum) / std::fabs(hsum) < 5e-3);  // same steady permeability
-    TPX_CHECK(dmax < 1e-2 * hmax);                               // fields agree
+    PECLET_CORE_CHECK(std::fabs(dsum - hsum) / std::fabs(hsum) < 5e-3);  // same steady permeability
+    PECLET_CORE_CHECK(dmax < 1e-2 * hmax);                               // fields agree
   }
 }
 
@@ -411,7 +411,7 @@ void test_staircase_mg() {
     mag = std::max(mag, std::fabs(ug[(std::size_t)i]));
   }
   std::printf("[flow] staircase-vs-Galerkin MG: max|stair-galerkin| = %.3e (mag %.3e)\n", dmax, mag);
-  TPX_CHECK(dmax < 1e-4 * mag);  // same converged step regardless of coarse-operator strategy
+  PECLET_CORE_CHECK(dmax < 1e-4 * mag);  // same converged step regardless of coarse-operator strategy
 }
 
 // Multicolour Gauss–Seidel smoother (P5): for both coarse-operator strategies, the GS-smoothed MG
@@ -451,7 +451,7 @@ void test_momentum_gs() {
     }
     std::printf("[flow] GS-vs-Jacobi MG (%s): max|gs-jac| = %.3e (mag %.3e)\n",
                 staircase ? "staircase" : "Galerkin", dmax, mag);
-    TPX_CHECK(dmax < 1e-4 * mag);
+    PECLET_CORE_CHECK(dmax < 1e-4 * mag);
   }
 }
 
@@ -494,7 +494,7 @@ void test_momentum_mgsolver() {
     }
     std::printf("[flow] MG-solver-vs-BiCGStab (%s): max|mg-bicg| = %.3e (mag %.3e)\n",
                 staircase ? "staircase" : "Galerkin", dmax, mag);
-    TPX_CHECK(dmax < 1e-4 * mag);
+    PECLET_CORE_CHECK(dmax < 1e-4 * mag);
   }
 }
 
@@ -541,9 +541,9 @@ void test_picard_outer() {
     }
     std::printf("[flow] picard outer Stokes: max|n5-n1| = %.3e (mag %.3e), lastOuter n1=%d n5=%d\n",
                 dmax, mag, lo1, lo5);
-    TPX_CHECK(dmax < 1e-6 * mag);  // extra outer iters change nothing without advection
-    TPX_CHECK(lo1 == 1);           // default cap = a single outer iteration
-    TPX_CHECK(lo5 <= 3);           // early-stop engages well below the cap of 5
+    PECLET_CORE_CHECK(dmax < 1e-6 * mag);  // extra outer iters change nothing without advection
+    PECLET_CORE_CHECK(lo1 == 1);           // default cap = a single outer iteration
+    PECLET_CORE_CHECK(lo5 <= 3);           // early-stop engages well below the cap of 5
   }
 
   // (b) Navier–Stokes: valid steady close to the single lagged step.
@@ -574,7 +574,7 @@ void test_picard_outer() {
       mag = std::max(mag, std::fabs(u1[(std::size_t)i]));
     }
     std::printf("[flow] picard outer NS (n=4): max|picard-single| = %.3e (mag %.3e)\n", dmax, mag);
-    TPX_CHECK(dmax < 1e-2 * mag);  // same NS steady field (transient-level gap, sibling's bar)
+    PECLET_CORE_CHECK(dmax < 1e-2 * mag);  // same NS steady field (transient-level gap, sibling's bar)
   }
 }
 
@@ -593,11 +593,11 @@ int main(int argc, char** argv) {
   test_advection();
   test_picard_outer();
   Kokkos::finalize();
-  TPX_RETURN_TEST_RESULT();
+  PECLET_CORE_RETURN_TEST_RESULT();
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping device flow test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping device flow test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

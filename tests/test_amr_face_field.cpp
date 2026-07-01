@@ -2,19 +2,19 @@
 // makes the *cell* field approximately divergence-free (O(h²)); the face field uf_f = ½(u_i+u_j) −
 // (φ₊−φ₋)/d is divergence-free to the pressure-solve residual, because L = D·G_face on the same
 // (sub)faces ⇒ D(uf) = D u* − Lφ. This must hold across 2:1 interfaces too (the coarse cell sums its
-// fine sub-faces). Guarded by TPX_HAVE_MORTON.
+// fine sub-faces). Guarded by PECLET_CORE_HAVE_MORTON.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
 
-#include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/flow_oracle.hpp"
-#include "tpx/amr/refine.hpp"
-#include "tpx/common/types.hpp"
+#include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/flow_oracle.hpp"
+#include "peclet/core/amr/refine.hpp"
+#include "peclet/core/common/types.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 using BO = BlockOctree<3, 21>;
 using Code = BO::Code;
 
@@ -45,9 +45,9 @@ void run_test() {
   auto [dCell6, dFace6] = run(t6, R, Vec<3>{cc, cc, cc}, 6);
   BO t30(IVec<3>{1, 1, 1}, L); for (unsigned k = 0; k < L; ++k) t30.refineIf([](Code, unsigned) { return true; });
   auto [dCell30, dFace30] = run(t30, R, Vec<3>{cc, cc, cc}, 30);
-  TPX_CHECK(dFace6 < 0.05 * dCell6);     // face field ≥20× more divergence-free than the cell field
-  TPX_CHECK(dFace30 < 0.05 * dCell30);   // ditto at the tighter solve
-  TPX_CHECK(dFace30 < dFace6);            // tightening the pressure solve shrinks the face divergence
+  PECLET_CORE_CHECK(dFace6 < 0.05 * dCell6);     // face field ≥20× more divergence-free than the cell field
+  PECLET_CORE_CHECK(dFace30 < 0.05 * dCell30);   // ditto at the tighter solve
+  PECLET_CORE_CHECK(dFace30 < dFace6);            // tightening the pressure solve shrinks the face divergence
   //         (the cell-field divergence is the fixed O(h²) approximate-projection error, ~unchanged)
 
   // (2) graded 2:1 grid: the face field stays divergence-free across the coarse–fine interfaces, where
@@ -60,21 +60,21 @@ void run_test() {
     double dx = p[0] - cg, dy = p[1] - cg, dz = p[2] - cg;
     return std::sqrt(dx * dx + dy * dy + dz * dz) - Rg;
   }, /*target_level=*/0, /*band=*/3.0, /*balance=*/true);
-  TPX_CHECK(tg.isBalanced());
+  PECLET_CORE_CHECK(tg.isBalanced());
   auto [dCellG, dFaceG] = run(tg, Rg, Vec<3>{cg, cg, cg}, 30);
-  TPX_CHECK(dFaceG < 0.01 * dCellG);     // across 2:1: face field ≥100× cleaner than the cell field
+  PECLET_CORE_CHECK(dFaceG < 0.01 * dCellG);     // across 2:1: face field ≥100× cleaner than the cell field
 }
 
 }  // namespace
 
 int main() {
   run_test();
-  if (tpx::test::g_failures == 0) std::printf("OK\n");
-  return tpx::test::g_failures == 0 ? 0 : 1;
+  if (peclet::core::test::g_failures == 0) std::printf("OK\n");
+  return peclet::core::test::g_failures == 0 ? 0 : 1;
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping face-field test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping face-field test\n");
   return 0;
 }
 #endif

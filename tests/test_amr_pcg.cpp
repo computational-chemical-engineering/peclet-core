@@ -1,5 +1,5 @@
 // Device (Kokkos) multigrid-preconditioned CG for the AMR FV Poisson
-// (tpx::amr::PCG). Validates, on a genuinely graded octree:
+// (peclet::core::amr::PCG). Validates, on a genuinely graded octree:
 //   (1) PCG drives the manufactured-RHS residual to round-off (the singular periodic
 //       operator: RHS b = L·u_exact is exactly mean-zero, so CG stays in the range
 //       space with nullspace projection and converges to ~machine precision);
@@ -11,22 +11,22 @@
 // convergence + tolerance (not host bit-exactness): the GPU matvec differs from the host
 // in the last bit due to FMA contraction, but the iteration is mathematically identical.
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
 #include <vector>
 
 #include <Kokkos_Core.hpp>
 
-#include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/multigrid.hpp"
-#include "tpx/amr/pcg.hpp"
-#include "tpx/amr/poisson.hpp"
+#include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/multigrid.hpp"
+#include "peclet/core/amr/pcg.hpp"
+#include "peclet/core/amr/poisson.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -121,8 +121,8 @@ void run() {
   double rpcg = resNorm(xpcg);
   std::printf("[pcg] graded: %d iters, res %.3e -> %.3e (rel %.3e)\n", R.iters, R.res0,
               rpcg, rpcg / bnorm);
-  TPX_CHECK(rpcg < bnorm * 1e-9);
-  TPX_CHECK(R.iters < 60);  // CG over MG converges in a handful of iterations
+  PECLET_CORE_CHECK(rpcg < bnorm * 1e-9);
+  PECLET_CORE_CHECK(R.iters < 60);  // CG over MG converges in a handful of iterations
 
   // ===== (2) PCG beats plain V-cycling in fine matvecs, (3) same solution =====
   // Count V-cycles to reach the same relative residual PCG hit.
@@ -142,7 +142,7 @@ void run() {
   // markedly fewer *preconditioner V-cycles* than stationary V-cycling.
   std::printf("[pcg] to reach rel %.3e: PCG %d iters (=%d precond V-cycles) vs %d plain V-cycles\n",
               rpcg / bnorm, R.iters, R.iters, vcyc + 1);
-  TPX_CHECK(R.iters <= vcyc);  // Krylov acceleration: fewer V-cycles than stationary
+  PECLET_CORE_CHECK(R.iters <= vcyc);  // Krylov acceleration: fewer V-cycles than stationary
 
   // (3) solution agreement (up to the nullspace constant): compare mean-removed fields.
   auto xv = getDev(mg.x(0), n);
@@ -152,7 +152,7 @@ void run() {
   for (Index i = 0; i < n; ++i)
     dmax = std::max(dmax, std::fabs(xpcg[(std::size_t)i] - xv[(std::size_t)i]));
   std::printf("[pcg] |x_pcg - x_vcyc|_max (mean-removed) = %.3e\n", dmax);
-  TPX_CHECK(dmax < bnorm * 1e-6);
+  PECLET_CORE_CHECK(dmax < bnorm * 1e-6);
 
   // ===== (4) openness (cut-cell) operator path converges =====
   // A sphere-shaped openness (aperture from an SDF) on the same mesh.
@@ -197,7 +197,7 @@ void run() {
   auto xO = getDev(dxO, n);
   double rO = resNormO(xO);
   std::printf("[pcg] openness: %d iters, rel res %.3e\n", RO.iters, rO / bOnorm);
-  TPX_CHECK(rO < bOnorm * 1e-6);
+  PECLET_CORE_CHECK(rO < bOnorm * 1e-6);
 }
 
 }  // namespace
@@ -206,11 +206,11 @@ int main(int argc, char** argv) {
   Kokkos::initialize(argc, argv);
   run();
   Kokkos::finalize();
-  TPX_RETURN_TEST_RESULT();
+  PECLET_CORE_RETURN_TEST_RESULT();
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping device PCG test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping device PCG test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

@@ -8,22 +8,22 @@
 //       conservation since α is symmetric across each face) and is bit-exact WORLD==SELF.
 // np = 1,2,4,8.
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
 #include <vector>
 
-#include "tpx/amr/distributed_fv.hpp"
-#include "tpx/amr/distributed_octree.hpp"
-#include "tpx/amr/leaf_field.hpp"
-#include "tpx/amr/poisson.hpp"
-#include "tpx/common/mpi.hpp"
-#include "tpx/common/types.hpp"
+#include "peclet/core/amr/distributed_fv.hpp"
+#include "peclet/core/amr/distributed_octree.hpp"
+#include "peclet/core/amr/leaf_field.hpp"
+#include "peclet/core/amr/poisson.hpp"
+#include "peclet/core/common/mpi.hpp"
+#include "peclet/core/common/types.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -96,7 +96,7 @@ void run() {
     int mism = 0;
     for (Index i = 0; i < ns; ++i)
       if (opLu[(std::size_t)i] != hostLu[(std::size_t)i]) ++mism;
-    TPX_CHECK_EQ(mism, 0);
+    PECLET_CORE_CHECK_EQ(mism, 0);
   }
 
   // ===== (1a) apply: WORLD == SELF bit-for-bit =====
@@ -108,7 +108,7 @@ void run() {
     Index si = self.local().find(world.globalCode(i));
     if (si < 0 || luw[(std::size_t)i] != lus[(std::size_t)si]) ++amis;
   }
-  TPX_CHECK_EQ(amis, 0);
+  PECLET_CORE_CHECK_EQ(amis, 0);
 
   // ===== (2) graded MG with openness: converges + WORLD == SELF bit-for-bit =====
   GradedDistributedMultigrid<3, kBits> mgw;
@@ -129,8 +129,8 @@ void run() {
     Index si = self.local().find(world.globalCode(i));
     if (si < 0 || xw[(std::size_t)i] != xs[(std::size_t)si]) ++jmis;
   }
-  TPX_CHECK_EQ(jmis, 0);
-  TPX_CHECK(r1 < r0 * 1e-6);
+  PECLET_CORE_CHECK_EQ(jmis, 0);
+  PECLET_CORE_CHECK(r1 < r0 * 1e-6);
 }
 
 }  // namespace
@@ -140,7 +140,7 @@ int main(int argc, char** argv) {
   run();
   int rank = 0;
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-  int fails = tpx::test::g_failures, total = 0;
+  int fails = peclet::core::test::g_failures, total = 0;
   MPI_Reduce(&fails, &total, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
   MPI_Finalize();
   if (rank == 0) {
@@ -155,7 +155,7 @@ int main(int argc, char** argv) {
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping distributed openness test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping distributed openness test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

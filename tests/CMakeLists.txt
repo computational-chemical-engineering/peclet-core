@@ -4,14 +4,14 @@ target_link_libraries(test_decomposition PRIVATE tpx_core)
 target_include_directories(test_decomposition PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME decomposition COMMAND test_decomposition)
 
-# Morton/Z-order cell indexer (inert unless TPX_HAVE_MORTON — set on tpx_core when
+# Morton/Z-order cell indexer (inert unless PECLET_CORE_HAVE_MORTON — set on tpx_core when
 # the morton sibling checkout is present).
 add_executable(test_morton_indexer test_morton_indexer.cpp)
 target_link_libraries(test_morton_indexer PRIVATE tpx_core)
 target_include_directories(test_morton_indexer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME morton_indexer COMMAND test_morton_indexer)
 
-# Per-block adaptive octree (tpx::amr::BlockOctree). Inert unless TPX_HAVE_MORTON;
+# Per-block adaptive octree (peclet::core::amr::BlockOctree). Inert unless PECLET_CORE_HAVE_MORTON;
 # cross-checks against the morton_octree::Octree reference oracle when the sibling
 # octree project is present (its header is not on tpx_core's include path).
 add_executable(test_block_octree test_block_octree.cpp)
@@ -29,7 +29,7 @@ target_link_libraries(test_amr_vtu PRIVATE tpx_core)
 target_include_directories(test_amr_vtu PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME amr_vtu COMMAND test_amr_vtu)
 
-# SDF-driven refinement (refineToSdf) over the shared tpx::geom SDF.
+# SDF-driven refinement (refineToSdf) over the shared peclet::core::geom SDF.
 add_executable(test_amr_sdf test_amr_sdf.cpp)
 target_link_libraries(test_amr_sdf PRIVATE tpx_core)
 target_include_directories(test_amr_sdf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -107,7 +107,7 @@ add_test(NAME amr_transport COMMAND test_amr_transport)
 # Block-octree queries : device locate / face-neighbour
 # must match the host BlockOctree. No MPI needed; linking tpx_core pulls in Kokkos
 # + the morton include (+ MORTON_ENABLE_KOKKOS) under a Kokkos build.
-if(TPX_HAVE_KOKKOS)
+if(PECLET_CORE_HAVE_KOKKOS)
   add_executable(test_block_octree_view test_block_octree_view.cpp)
   target_link_libraries(test_block_octree_view PRIVATE tpx_core)
   target_include_directories(test_block_octree_view PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -245,8 +245,8 @@ if(MPI_FOUND)
   target_include_directories(test_amr_distributed_rebalance_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
   # Device-resident distributed AMR multigrid (C2): needs Kokkos + MPI. tpx_halo carries both when
-  # TPX_ENABLE_KOKKOS is on (same target the Kokkos grid-halo test links).
-  if(TPX_ENABLE_KOKKOS)
+  # PECLET_CORE_ENABLE_KOKKOS is on (same target the Kokkos grid-halo test links).
+  if(PECLET_CORE_ENABLE_KOKKOS)
     add_executable(test_amr_distributed_device_mpi test_amr_distributed_device_mpi.cpp)
     target_link_libraries(test_amr_distributed_device_mpi PRIVATE tpx_halo)
     target_include_directories(test_amr_distributed_device_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -317,7 +317,7 @@ if(MPI_FOUND)
   # Portable GPU-resident halo : device result must match the CPU path, on whatever backend
   # Kokkos was built for (CUDA / HIP / OpenMP). Compiled as CXX — Kokkos routes it to the device
   # compiler via its launch compiler (so this is a .cpp, not a .cu).
-  if(TPX_HAVE_KOKKOS)
+  if(PECLET_CORE_HAVE_KOKKOS)
     add_executable(test_grid_halo_exchange test_grid_halo_exchange.cpp)
     target_include_directories(test_grid_halo_exchange PRIVATE
       ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})

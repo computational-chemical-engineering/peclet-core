@@ -1,4 +1,4 @@
-// Quadratic coarse-fine flux + refluxing (tpx::amr::AmrPoisson / AmrMultigrid):
+// Quadratic coarse-fine flux + refluxing (peclet::core::amr::AmrPoisson / AmrMultigrid):
 // on a half-coarse/half-fine periodic mesh with a manufactured solution whose
 // tangential gradient is non-zero at the 2:1 interface,
 //   (1) the standard two-point C/F flux degrades the solution toward 1st order
@@ -7,20 +7,20 @@
 //   (2) the quadratic operator is still conservative (sum_i V_i (L_quad u)_i ~ 0),
 //       i.e. the coarse face flux equals the summed fine sub-face fluxes (reflux).
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
 #include <cstdint>
 #include <vector>
 
-#include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/poisson.hpp"
-#include "tpx/common/types.hpp"
+#include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/poisson.hpp"
+#include "peclet/core/common/types.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -109,24 +109,24 @@ void run() {
   // (1) order: quadratic ~2nd order (ratio ~4); standard degraded (< 2.6).
   double quadOrder = b.quadLinf / c.quadLinf;
   double stdOrder = b.stdLinf / c.stdLinf;
-  TPX_CHECK(quadOrder > 3.0);          // ~2nd order in L-infinity
-  TPX_CHECK(stdOrder < 2.6);           // standard two-point degraded near C/F
-  TPX_CHECK(c.quadLinf < c.stdLinf);   // quadratic is more accurate at the finest
+  PECLET_CORE_CHECK(quadOrder > 3.0);          // ~2nd order in L-infinity
+  PECLET_CORE_CHECK(stdOrder < 2.6);           // standard two-point degraded near C/F
+  PECLET_CORE_CHECK(c.quadLinf < c.stdLinf);   // quadratic is more accurate at the finest
 
   // (2) conservation / refluxing.
-  TPX_CHECK(b.conserv < 1e-9);
-  TPX_CHECK(c.conserv < 1e-9);
+  PECLET_CORE_CHECK(b.conserv < 1e-9);
+  PECLET_CORE_CHECK(c.conserv < 1e-9);
 }
 
 }  // namespace
 
 int main() {
   run();
-  TPX_RETURN_TEST_RESULT();
+  PECLET_CORE_RETURN_TEST_RESULT();
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping quadratic C/F test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping quadratic C/F test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

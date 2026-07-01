@@ -1,4 +1,4 @@
-// Serial correctness of the per-block adaptive octree (tpx::amr::BlockOctree):
+// Serial correctness of the per-block adaptive octree (peclet::core::amr::BlockOctree):
 //  - uniform construction tiles the block; bounds / point-location are correct,
 //  - refineIf keeps leaves sorted (Z-order) and conserves total fine volume,
 //  - the leaf set matches morton_octree::Octree (the std::map reference oracle)
@@ -6,21 +6,21 @@
 //  - balance2to1 produces a 2:1-graded mesh and is idempotent,
 //  - faceNeighbor agrees with point-location across faces.
 //
-// Guarded by TPX_HAVE_MORTON: without the morton sibling checkout this is a no-op
+// Guarded by PECLET_CORE_HAVE_MORTON: without the morton sibling checkout this is a no-op
 // pass (the octree header defines nothing).
 #include "test_util.hpp"
-#include "tpx/common/types.hpp"
+#include "peclet/core/common/types.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <array>
 #include <cstdint>
 
 #include "morton/morton.hpp"
 #include "morton_octree/octree.hpp"
-#include "tpx/amr/block_octree.hpp"
+#include "peclet/core/amr/block_octree.hpp"
 
-using namespace tpx;
-using tpx::amr::BlockOctree;
+using namespace peclet::core;
+using peclet::core::amr::BlockOctree;
 
 namespace {
 
@@ -78,14 +78,14 @@ void test_uniform_and_locate() {
   const IVec<3> brick{2, 3, 2};
   const unsigned lmax = 2;
   BO t(brick, lmax);
-  TPX_CHECK_EQ((long long)t.numLeaves(), (long long)(brick[0] * brick[1] * brick[2]));
-  TPX_CHECK(t.isBalanced());
+  PECLET_CORE_CHECK_EQ((long long)t.numLeaves(), (long long)(brick[0] * brick[1] * brick[2]));
+  PECLET_CORE_CHECK(t.isBalanced());
 
   const long total = (long)(brick[0] * brick[1] * brick[2]) * (1L << lmax) * (1L << lmax) * (1L << lmax);
-  TPX_CHECK_EQ((long long)fineVolume(t), (long long)total);
+  PECLET_CORE_CHECK_EQ((long long)fineVolume(t), (long long)total);
 
   // Sorted ascending by code.
-  for (Index i = 1; i < t.numLeaves(); ++i) TPX_CHECK(t.code(i - 1) < t.code(i));
+  for (Index i = 1; i < t.numLeaves(); ++i) PECLET_CORE_CHECK(t.code(i - 1) < t.code(i));
 
   // Point location lands in a leaf whose bounds contain the point.
   std::uint64_t st = 12345;
@@ -93,10 +93,10 @@ void test_uniform_and_locate() {
   for (int n = 0; n < 200; ++n) {
     auto p = randPoint(st, span);
     Index leaf = t.find(p);
-    TPX_CHECK(leaf >= 0);
+    PECLET_CORE_CHECK(leaf >= 0);
     if (leaf < 0) continue;
     auto b = t.bounds(leaf);
-    for (int d = 0; d < 3; ++d) TPX_CHECK(p[d] >= b[0][d] && p[d] <= b[1][d]);
+    for (int d = 0; d < 3; ++d) PECLET_CORE_CHECK(p[d] >= b[0][d] && p[d] <= b[1][d]);
   }
 }
 
@@ -105,7 +105,7 @@ void test_refine_matches_oracle() {
   const unsigned lmax = 3;
   BO t(brick, lmax);
   Oracle o = uniformOracle(brick, lmax);
-  TPX_CHECK(sameLeaves(t, o));
+  PECLET_CORE_CHECK(sameLeaves(t, o));
 
   std::uint64_t st = 99;
   const Coord span = Coord(Coord(1) << lmax) * 2;
@@ -121,11 +121,11 @@ void test_refine_matches_oracle() {
     auto it = o.find(BO::M::from_code(pc));
     if (it != o.end() && it->second.level > 0) o.refine(it, [](auto, unsigned) { return 0; });
 
-    TPX_CHECK(sameLeaves(t, o));
+    PECLET_CORE_CHECK(sameLeaves(t, o));
     // Volume is conserved by refinement.
     const long totalV =
         (long)(brick[0] * brick[1] * brick[2]) * (1L << lmax) * (1L << lmax) * (1L << lmax);
-    TPX_CHECK_EQ((long long)fineVolume(t), (long long)totalV);
+    PECLET_CORE_CHECK_EQ((long long)fineVolume(t), (long long)totalV);
   }
 }
 
@@ -147,17 +147,17 @@ void test_balance() {
   // size-1 cell at x=3 then sits next to the unrefined size-4 neighbour at x=4.
   refineLeafAt(t, {0, 0, 0});  // level 2 -> 1
   refineLeafAt(t, {3, 0, 0});  // level 1 -> 0
-  TPX_CHECK(!t.isBalanced());  // unbalanced before (level 0 adjacent to level 2)
+  PECLET_CORE_CHECK(!t.isBalanced());  // unbalanced before (level 0 adjacent to level 2)
 
   const long volBefore = fineVolume(t);
   Index nref = t.balance2to1();
-  TPX_CHECK(nref > 0);
-  TPX_CHECK(t.isBalanced());
-  TPX_CHECK_EQ((long long)fineVolume(t), (long long)volBefore);  // balance conserves volume
+  PECLET_CORE_CHECK(nref > 0);
+  PECLET_CORE_CHECK(t.isBalanced());
+  PECLET_CORE_CHECK_EQ((long long)fineVolume(t), (long long)volBefore);  // balance conserves volume
 
   // Idempotent: a balanced mesh needs no further refinement.
-  TPX_CHECK_EQ((long long)t.balance2to1(), 0LL);
-  TPX_CHECK(t.isBalanced());
+  PECLET_CORE_CHECK_EQ((long long)t.balance2to1(), 0LL);
+  PECLET_CORE_CHECK(t.isBalanced());
 }
 
 void test_face_neighbor() {
@@ -171,13 +171,13 @@ void test_face_neighbor() {
     Index up = t.faceNeighbor(i, 0, +1);
     bool atEdge = b[1][0] + 1 >= (Coord)(brick[0] * (1 << lmax));
     if (atEdge) {
-      TPX_CHECK(up < 0);
+      PECLET_CORE_CHECK(up < 0);
     } else {
-      TPX_CHECK(up >= 0);
+      PECLET_CORE_CHECK(up >= 0);
       auto bn = t.bounds(up);
-      TPX_CHECK_EQ((long long)bn[0][0], (long long)(b[1][0] + 1));
-      TPX_CHECK_EQ((long long)bn[0][1], (long long)b[0][1]);
-      TPX_CHECK_EQ((long long)bn[0][2], (long long)b[0][2]);
+      PECLET_CORE_CHECK_EQ((long long)bn[0][0], (long long)(b[1][0] + 1));
+      PECLET_CORE_CHECK_EQ((long long)bn[0][1], (long long)b[0][1]);
+      PECLET_CORE_CHECK_EQ((long long)bn[0][2], (long long)b[0][2]);
     }
   }
 }
@@ -189,11 +189,11 @@ int main() {
   test_refine_matches_oracle();
   test_balance();
   test_face_neighbor();
-  TPX_RETURN_TEST_RESULT();
+  PECLET_CORE_RETURN_TEST_RESULT();
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping block octree test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping block octree test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

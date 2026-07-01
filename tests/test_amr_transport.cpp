@@ -1,27 +1,27 @@
-// Explicit FV scalar transport on the octree (tpx::amr::ScalarTransport):
+// Explicit FV scalar transport on the octree (peclet::core::amr::ScalarTransport):
 //   (1) conservation — a divergence-free advection+diffusion update conserves the
 //       total scalar to round-off, on uniform AND 2:1-graded meshes;
 //   (2) diffusion — a sine mode decays at the analytic rate exp(-D k^2 t);
 //   (3) advection — upwind is monotone (no new extrema) and preserves a constant.
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <vector>
 
-#include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/leaf_field.hpp"
-#include "tpx/amr/refine.hpp"
-#include "tpx/amr/scalar_transport.hpp"
-#include "tpx/common/types.hpp"
-#include "tpx/geom/sdf.hpp"
+#include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/leaf_field.hpp"
+#include "peclet/core/amr/refine.hpp"
+#include "peclet/core/amr/scalar_transport.hpp"
+#include "peclet/core/common/types.hpp"
+#include "peclet/core/geom/sdf.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -62,7 +62,7 @@ void test_conservation(const BO& t, double h0) {
     c.swap(tmp);
   }
   double m1 = st.totalMass(c);
-  TPX_CHECK(std::fabs(m1 - m0) < 1e-10 * (std::fabs(m0) + 1e-30));
+  PECLET_CORE_CHECK(std::fabs(m1 - m0) < 1e-10 * (std::fabs(m0) + 1e-30));
 }
 
 void test_diffusion_rate() {
@@ -99,7 +99,7 @@ void test_diffusion_rate() {
   }
   double a1 = amplitude(c);
   double expect = std::exp(-D * k * k * t1);
-  TPX_CHECK(std::fabs(a1 / a0 - expect) < 0.05 * expect);
+  PECLET_CORE_CHECK(std::fabs(a1 / a0 - expect) < 0.05 * expect);
 }
 
 void test_advection_monotone() {
@@ -122,7 +122,7 @@ void test_advection_monotone() {
       c.swap(tmp);
     }
     for (double v : c) maxdev = std::max(maxdev, std::fabs(v - 2.5));
-    TPX_CHECK(maxdev < 1e-10);
+    PECLET_CORE_CHECK(maxdev < 1e-10);
   }
 
   // (b) upwind is monotone: a step profile in [0,1] develops no over/undershoot.
@@ -140,7 +140,7 @@ void test_advection_monotone() {
         hi = std::max(hi, v);
       }
     }
-    TPX_CHECK(lo > -1e-12 && hi < 1.0 + 1e-12);
+    PECLET_CORE_CHECK(lo > -1e-12 && hi < 1.0 + 1e-12);
   }
 }
 
@@ -151,7 +151,7 @@ void run() {
   BO g(IVec<3>{2, 2, 2}, 4);
   AmrGeometry<3> ggeo;
   ggeo.h0 = 1.0;
-  tpx::geom::Sphere sph{{16.0, 16.0, 16.0}, 8.0};
+  peclet::core::geom::Sphere sph{{16.0, 16.0, 16.0}, 8.0};
   refineToSdf(g, ggeo, [&](const Vec<3>& p) { return sph.eval(p); }, 1, 1.0, true);
   test_conservation(g, 1.0);
 
@@ -163,11 +163,11 @@ void run() {
 
 int main() {
   run();
-  TPX_RETURN_TEST_RESULT();
+  PECLET_CORE_RETURN_TEST_RESULT();
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping AMR scalar transport test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping AMR scalar transport test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

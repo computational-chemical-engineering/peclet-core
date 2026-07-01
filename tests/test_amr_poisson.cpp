@@ -1,4 +1,4 @@
-// Cell-centered FV Poisson on the octree + geometric multigrid (tpx::amr):
+// Cell-centered FV Poisson on the octree + geometric multigrid (peclet::core::amr):
 //   (1) conservation — the global volume-weighted integral of L u is ~0 on a
 //       periodic domain for arbitrary u, on uniform AND 2:1-graded meshes (proves
 //       the interface flux is conservative);
@@ -8,23 +8,23 @@
 //   (3) graded solvability — Gauss-Seidel reduces the residual on an adaptive mesh
 //       (the graded operator is a consistent, solvable system).
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
 #include <cstdint>
 #include <vector>
 
-#include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/leaf_field.hpp"
-#include "tpx/amr/poisson.hpp"
-#include "tpx/amr/refine.hpp"
-#include "tpx/common/types.hpp"
-#include "tpx/geom/sdf.hpp"
+#include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/leaf_field.hpp"
+#include "peclet/core/amr/poisson.hpp"
+#include "peclet/core/amr/refine.hpp"
+#include "peclet/core/common/types.hpp"
+#include "peclet/core/geom/sdf.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -57,7 +57,7 @@ void test_conservation(const BO& t, Real h0) {
     integral += P.cellVolume(i) * Lu[static_cast<std::size_t>(i)];
     scale += P.cellVolume(i) * std::fabs(Lu[static_cast<std::size_t>(i)]);
   }
-  TPX_CHECK(std::fabs(integral) < 1e-9 * (scale + 1e-30));
+  PECLET_CORE_CHECK(std::fabs(integral) < 1e-9 * (scale + 1e-30));
 
   // Anti-drift lock: the shared face_csr.hpp FV kernel over the assembled CSR (the same arithmetic
   // the device deviceApplyFv runs) must reproduce the geometric applyLaplacian. Validates the shared
@@ -70,7 +70,7 @@ void test_conservation(const BO& t, Real h0) {
     mg = std::max(mg, std::fabs(Lu[static_cast<std::size_t>(i)]));
   }
   std::printf("[poisson] shared-CSR vs geometric applyLaplacian: max|Δ| = %.3e (mag %.3e)\n", de, mg);
-  TPX_CHECK(de < 1e-12 * (1.0 + mg));
+  PECLET_CORE_CHECK(de < 1e-12 * (1.0 + mg));
 }
 
 // Manufactured solve on a uniform 2^L grid over [0,1)^3; returns the L2 error.
@@ -129,9 +129,9 @@ void test_graded_solvable() {
   BO t(IVec<3>{2, 2, 2}, 4);  // 32^3 fine available
   AmrGeometry<3> geo;
   geo.h0 = 1.0;
-  tpx::geom::Sphere sph{{16.0, 16.0, 16.0}, 8.0};
+  peclet::core::geom::Sphere sph{{16.0, 16.0, 16.0}, 8.0};
   refineToSdf(t, geo, [&](const Vec<3>& p) { return sph.eval(p); }, 1, 1.0, true);
-  TPX_CHECK(t.isBalanced());
+  PECLET_CORE_CHECK(t.isBalanced());
   test_conservation(t, geo.h0);  // conservation must hold on the graded mesh too
 
   AmrPoisson<3, kBits> P(t, geo.h0);
@@ -153,7 +153,7 @@ void test_graded_solvable() {
   P.gaussSeidel(u, rhs, 300);
   P.removeMean(u);
   double r = P.residual(u, rhs, res);
-  TPX_CHECK(r < r0 * 1e-2);  // GS makes clear progress -> operator is solvable
+  PECLET_CORE_CHECK(r < r0 * 1e-2);  // GS makes clear progress -> operator is solvable
 }
 
 void run() {
@@ -164,11 +164,11 @@ void run() {
   double d4 = 0, d5 = 0;
   double e4 = solveError(4, d4);
   double e5 = solveError(5, d5);
-  TPX_CHECK(d4 > 1e8);  // V-cycle drives residual down by >1e8
-  TPX_CHECK(d5 > 1e8);
+  PECLET_CORE_CHECK(d4 > 1e8);  // V-cycle drives residual down by >1e8
+  PECLET_CORE_CHECK(d5 > 1e8);
   double ratio = e4 / e5;
   // 2nd order => error quarters when h halves; allow slack.
-  TPX_CHECK(ratio > 3.3);
+  PECLET_CORE_CHECK(ratio > 3.3);
 
   // (3) graded operator: conservative + solvable.
   test_graded_solvable();
@@ -178,11 +178,11 @@ void run() {
 
 int main() {
   run();
-  TPX_RETURN_TEST_RESULT();
+  PECLET_CORE_RETURN_TEST_RESULT();
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping AMR Poisson test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping AMR Poisson test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

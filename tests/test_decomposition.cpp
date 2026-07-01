@@ -11,11 +11,11 @@
 #include <vector>
 
 #include "test_util.hpp"
-#include "tpx/common/types.hpp"
-#include "tpx/decomp/block_decomposer.hpp"
+#include "peclet/core/common/types.hpp"
+#include "peclet/core/decomp/block_decomposer.hpp"
 
-using namespace tpx;
-using tpx::decomp::BlockDecomposer;
+using namespace peclet::core;
+using peclet::core::decomp::BlockDecomposer;
 
 template <int Dim>
 Index volume(const IVec<Dim>& s) {
@@ -29,13 +29,13 @@ void checkCase(IVec<Dim> globalSize, std::size_t numBlocks) {
   BlockDecomposer<Dim> dec(numBlocks, globalSize);
 
   // Exactly numBlocks leaves.
-  TPX_CHECK_EQ(static_cast<Index>(dec.numBlocks()), static_cast<Index>(numBlocks));
+  PECLET_CORE_CHECK_EQ(static_cast<Index>(dec.numBlocks()), static_cast<Index>(numBlocks));
 
   // Block volumes sum to the global volume (no gaps, allowing for rounding distribution).
   Index total = volume<Dim>(globalSize);
   Index summed = 0;
   for (std::size_t b = 0; b < dec.numBlocks(); ++b) summed += volume<Dim>(dec.sizes()[b]);
-  TPX_CHECK_EQ(summed, total);
+  PECLET_CORE_CHECK_EQ(summed, total);
 
   // Every global cell is owned by exactly one block, and ownerOf agrees with that block's region.
   std::vector<Index> count(dec.numBlocks(), 0);
@@ -46,16 +46,16 @@ void checkCase(IVec<Dim> globalSize, std::size_t numBlocks) {
   }
   forEachInBox<Dim>(bgn, end, [&](const IVec<Dim>& g) {
     int owner = dec.ownerOf(g);
-    TPX_CHECK(owner >= 0 && owner < static_cast<int>(dec.numBlocks()));
+    PECLET_CORE_CHECK(owner >= 0 && owner < static_cast<int>(dec.numBlocks()));
     const auto& o = dec.origins()[owner];
     const auto& s = dec.sizes()[owner];
     for (int i = 0; i < Dim; ++i) {
-      TPX_CHECK(g[i] >= o[i] && g[i] < o[i] + s[i]);
+      PECLET_CORE_CHECK(g[i] >= o[i] && g[i] < o[i] + s[i]);
     }
     ++count[owner];
   });
   for (std::size_t b = 0; b < dec.numBlocks(); ++b) {
-    TPX_CHECK_EQ(count[b], volume<Dim>(dec.sizes()[b]));
+    PECLET_CORE_CHECK_EQ(count[b], volume<Dim>(dec.sizes()[b]));
   }
 }
 
@@ -93,18 +93,18 @@ void checkEqualWeightsBitExact(IVec<Dim> globalSize, std::size_t numBlocks) {
   BlockDecomposer<Dim> dec(numBlocks, globalSize);
   BlockDecomposer<Dim> decW(numBlocks, globalSize, uniform);
 
-  TPX_CHECK_EQ(static_cast<Index>(decW.numBlocks()), static_cast<Index>(dec.numBlocks()));
+  PECLET_CORE_CHECK_EQ(static_cast<Index>(decW.numBlocks()), static_cast<Index>(dec.numBlocks()));
   for (std::size_t b = 0; b < dec.numBlocks(); ++b) {
     for (int i = 0; i < Dim; ++i) {
-      TPX_CHECK_EQ(decW.origins()[b][i], dec.origins()[b][i]);
-      TPX_CHECK_EQ(decW.sizes()[b][i], dec.sizes()[b][i]);
+      PECLET_CORE_CHECK_EQ(decW.origins()[b][i], dec.origins()[b][i]);
+      PECLET_CORE_CHECK_EQ(decW.sizes()[b][i], dec.sizes()[b][i]);
     }
   }
   // ownerOf agrees at every cell too (covers the implicit tree, not just leaf order).
   IVec<Dim> bgn{}, end{};
   for (int i = 0; i < Dim; ++i) end[i] = globalSize[i];
   forEachInBox<Dim>(bgn, end,
-                    [&](const IVec<Dim>& g) { TPX_CHECK_EQ(decW.ownerOf(g), dec.ownerOf(g)); });
+                    [&](const IVec<Dim>& g) { PECLET_CORE_CHECK_EQ(decW.ownerOf(g), dec.ownerOf(g)); });
 }
 
 // A smooth, monotone weight gradient that equal-cell-count ORB balances poorly: the weighted ORB
@@ -131,23 +131,23 @@ void checkSkewedBalances(IVec<Dim> globalSize, std::size_t numBlocks) {
   Index summed = 0;
   std::vector<Index> count(decW.numBlocks(), 0);
   for (std::size_t b = 0; b < decW.numBlocks(); ++b) summed += volume<Dim>(decW.sizes()[b]);
-  TPX_CHECK_EQ(summed, total);
+  PECLET_CORE_CHECK_EQ(summed, total);
   forEachInBox<Dim>(bgn, end, [&](const IVec<Dim>& g) {
     int owner = decW.ownerOf(g);
-    TPX_CHECK(owner >= 0 && owner < static_cast<int>(decW.numBlocks()));
+    PECLET_CORE_CHECK(owner >= 0 && owner < static_cast<int>(decW.numBlocks()));
     const auto& o = decW.origins()[owner];
     const auto& s = decW.sizes()[owner];
-    for (int i = 0; i < Dim; ++i) TPX_CHECK(g[i] >= o[i] && g[i] < o[i] + s[i]);
+    for (int i = 0; i < Dim; ++i) PECLET_CORE_CHECK(g[i] >= o[i] && g[i] < o[i] + s[i]);
     ++count[owner];
   });
   for (std::size_t b = 0; b < decW.numBlocks(); ++b)
-    TPX_CHECK_EQ(count[b], volume<Dim>(decW.sizes()[b]));
+    PECLET_CORE_CHECK_EQ(count[b], volume<Dim>(decW.sizes()[b]));
 
   double ratioUW = maxOverMin<Dim>(blockWeights<Dim>(decUW, weights));
   double ratioW = maxOverMin<Dim>(blockWeights<Dim>(decW, weights));
   // The weighted split should be much more even, and meaningfully better than equal-cell ORB.
-  TPX_CHECK(ratioW < 1.25);
-  TPX_CHECK(ratioW < ratioUW);
+  PECLET_CORE_CHECK(ratioW < 1.25);
+  PECLET_CORE_CHECK(ratioW < ratioUW);
 }
 
 int main() {
@@ -177,5 +177,5 @@ int main() {
   checkSkewedBalances<3>({48, 48, 48}, 8);
   checkSkewedBalances<3>({64, 48, 40}, 16);
 
-  TPX_RETURN_TEST_RESULT();
+  PECLET_CORE_RETURN_TEST_RESULT();
 }

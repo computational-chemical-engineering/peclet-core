@@ -1,22 +1,22 @@
-// Serial correctness of the Morton/Z-order cell indexer (tpx::decomp::MortonIndexer):
+// Serial correctness of the Morton/Z-order cell indexer (peclet::core::decomp::MortonIndexer):
 //  - codeOf / multiIndex round-trip over a block (origin-relative),
 //  - codeOf agrees with a direct morton::Morton encode,
 //  - codes are a bijection over the block's cells (no collisions),
 //  - neighborCode steps exactly one cell along an axis in Morton space.
 //
-// Guarded by TPX_HAVE_MORTON: without the morton sibling checkout this is a no-op
+// Guarded by PECLET_CORE_HAVE_MORTON: without the morton sibling checkout this is a no-op
 // pass (the indexer header defines nothing).
 #include "test_util.hpp"
-#include "tpx/common/types.hpp"
-#include "tpx/decomp/morton_indexer.hpp"
+#include "peclet/core/common/types.hpp"
+#include "peclet/core/decomp/morton_indexer.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <set>
 
 #include "morton/morton.hpp"
 
-using namespace tpx;
-using tpx::decomp::MortonIndexer;
+using namespace peclet::core;
+using peclet::core::decomp::MortonIndexer;
 
 static void test3d() {
   const IVec<3> origin{4, 8, 16};
@@ -34,16 +34,16 @@ static void test3d() {
     auto ref = morton::Morton<3, 21>::encode(
         (std::uint32_t)(g[0] - origin[0]), (std::uint32_t)(g[1] - origin[1]),
         (std::uint32_t)(g[2] - origin[2]));
-    TPX_CHECK_EQ((long long)c, (long long)ref.code());
+    PECLET_CORE_CHECK_EQ((long long)c, (long long)ref.code());
 
     // Round-trips back to the same global multi-index.
     IVec<3> g2 = idx.multiIndex(c);
-    TPX_CHECK(g2[0] == g[0] && g2[1] == g[1] && g2[2] == g[2]);
+    PECLET_CORE_CHECK(g2[0] == g[0] && g2[1] == g[1] && g2[2] == g[2]);
 
     // Bijection: no two cells share a code.
-    TPX_CHECK(seen.insert(c).second);
+    PECLET_CORE_CHECK(seen.insert(c).second);
   });
-  TPX_CHECK_EQ((long long)seen.size(), (long long)(size[0] * size[1] * size[2]));
+  PECLET_CORE_CHECK_EQ((long long)seen.size(), (long long)(size[0] * size[1] * size[2]));
 
   // neighborCode steps exactly one cell along each axis (interior cell).
   IVec<3> g{origin[0] + 2, origin[1] + 2, origin[2] + 2};
@@ -52,8 +52,8 @@ static void test3d() {
     IVec<3> up = idx.multiIndex(idx.neighborCode(c, axis, +1));
     IVec<3> dn = idx.multiIndex(idx.neighborCode(c, axis, -1));
     for (int k = 0; k < 3; ++k) {
-      TPX_CHECK_EQ((long long)up[k], (long long)(g[k] + (k == axis ? 1 : 0)));
-      TPX_CHECK_EQ((long long)dn[k], (long long)(g[k] - (k == axis ? 1 : 0)));
+      PECLET_CORE_CHECK_EQ((long long)up[k], (long long)(g[k] + (k == axis ? 1 : 0)));
+      PECLET_CORE_CHECK_EQ((long long)dn[k], (long long)(g[k] - (k == axis ? 1 : 0)));
     }
   }
 }
@@ -67,20 +67,20 @@ static void test2d() {
   forEachInBox<2>(IVec<2>{0, 0}, IVec<2>{8, 8}, [&](const IVec<2>& g) {
     Code c = idx.codeOf(g);
     IVec<2> g2 = idx.multiIndex(c);
-    TPX_CHECK(g2[0] == g[0] && g2[1] == g[1]);
-    TPX_CHECK(seen.insert(c).second);
+    PECLET_CORE_CHECK(g2[0] == g[0] && g2[1] == g[1]);
+    PECLET_CORE_CHECK(seen.insert(c).second);
   });
-  TPX_CHECK_EQ((long long)seen.size(), 64LL);
+  PECLET_CORE_CHECK_EQ((long long)seen.size(), 64LL);
 }
 
 int main() {
   test3d();
   test2d();
-  TPX_RETURN_TEST_RESULT();
+  PECLET_CORE_RETURN_TEST_RESULT();
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping morton indexer test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping morton indexer test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

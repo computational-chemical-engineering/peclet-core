@@ -1,7 +1,7 @@
 // Composition capstone: distributed scalar diffusion AROUND an SDF-described solid obstacle.
 //
 // This exercises geometry + decomposition + halo together — the suite's actual purpose (transport of
-// a field through a domain containing solids). A sphere (tpx::geom, negative inside) sits in the
+// a field through a domain containing solids). A sphere (peclet::core::geom, negative inside) sits in the
 // middle of a periodic box; cells inside the solid are held at zero (a simple Dirichlet immersed
 // boundary), fluid cells diffuse with a 7-point stencil. The distributed run (block decomposition +
 // GridHaloTopology each step) must match an independent serial integration cell-for-cell.
@@ -11,16 +11,16 @@
 #include <cstdio>
 #include <vector>
 
-#include "tpx/common/types.hpp"
-#include "tpx/decomp/block_decomposer.hpp"
-#include "tpx/geom/sdf.hpp"
-#include "tpx/halo/grid_halo_topology.hpp"
+#include "peclet/core/common/types.hpp"
+#include "peclet/core/decomp/block_decomposer.hpp"
+#include "peclet/core/geom/sdf.hpp"
+#include "peclet/core/halo/grid_halo_topology.hpp"
 
-using namespace tpx;
-using tpx::decomp::BlockDecomposer;
-using tpx::geom::Sphere;
-using tpx::halo::GridFieldView;
-using tpx::halo::GridHaloTopology;
+using namespace peclet::core;
+using peclet::core::decomp::BlockDecomposer;
+using peclet::core::geom::Sphere;
+using peclet::core::halo::GridFieldView;
+using peclet::core::halo::GridHaloTopology;
 
 static constexpr int kDim = 3;
 static constexpr double kCoeff = 0.1;

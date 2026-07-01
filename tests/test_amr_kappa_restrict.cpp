@@ -1,5 +1,5 @@
 // Experiment: Galerkin κ-weighted restriction vs the default plain volume-average,
-// on the device cut-cell MG (tpx::amr::Multigrid::setKappaRestrict). κ-weighting
+// on the device cut-cell MG (peclet::core::amr::Multigrid::setKappaRestrict). κ-weighting
 // downweights nearly-solid fine cells at thin cut features (κ = mean face aperture),
 // which can sharpen the coarse residual — but, unlike the plain volume-average, it is
 // not exactly conservative, so the restricted residual of a mean-zero RHS need not stay
@@ -9,21 +9,21 @@
 // no stall), and it prints the per-cycle convergence factors so the trade-off is visible
 // before κ-weighting is considered as a default.
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
 #include <vector>
 
 #include <Kokkos_Core.hpp>
 
-#include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/multigrid.hpp"
-#include "tpx/amr/poisson.hpp"
+#include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/multigrid.hpp"
+#include "peclet/core/amr/poisson.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -124,10 +124,10 @@ void run() {
   // no longer ⊥ the operator's constant nullspace ⇒ slower convergence + a residual
   // floor. Conclusion: keep plain volume-average as the default; κ-restrict is a
   // documented opt-in only (e.g. for non-singular / Dirichlet configurations).
-  TPX_CHECK(plain.second < plain.first * 1e-6);  // baseline (plain) solves to round-off
-  TPX_CHECK(std::isfinite(kap.second));          // κ-weighting does not blow up
-  TPX_CHECK(kap.second < kap.first);             // κ-weighting still reduces the residual
-  TPX_CHECK(plain.second <= kap.second);         // plain is no worse than κ (the finding)
+  PECLET_CORE_CHECK(plain.second < plain.first * 1e-6);  // baseline (plain) solves to round-off
+  PECLET_CORE_CHECK(std::isfinite(kap.second));          // κ-weighting does not blow up
+  PECLET_CORE_CHECK(kap.second < kap.first);             // κ-weighting still reduces the residual
+  PECLET_CORE_CHECK(plain.second <= kap.second);         // plain is no worse than κ (the finding)
 }
 
 }  // namespace
@@ -136,11 +136,11 @@ int main(int argc, char** argv) {
   Kokkos::initialize(argc, argv);
   run();
   Kokkos::finalize();
-  TPX_RETURN_TEST_RESULT();
+  PECLET_CORE_RETURN_TEST_RESULT();
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping kappa-restrict test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping kappa-restrict test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

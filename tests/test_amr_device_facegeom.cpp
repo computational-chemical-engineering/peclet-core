@@ -1,24 +1,24 @@
-// Device collocated FACE-GEOMETRY assembly (tpx::amr::deviceAssembleFaceGeom) must reproduce host
+// Device collocated FACE-GEOMETRY assembly (peclet::core::amr::deviceAssembleFaceGeom) must reproduce host
 // buildFaceGeom bit-for-bit on OpenMP: same forEachFaceFull enumeration + per-face geometry
 // (nbr/axis/dir/α·area/raw area/dist/α/upstream probes) + per-cell invVol/fluid. The D4 anti-drift lock.
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
 #include <vector>
 
 #include <Kokkos_Core.hpp>
 
-#include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/block_octree_view.hpp"
-#include "tpx/amr/device_facegeom_assembly.hpp"
-#include "tpx/amr/flow.hpp"
-#include "tpx/amr/poisson.hpp"
+#include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/block_octree_view.hpp"
+#include "peclet/core/amr/device_facegeom_assembly.hpp"
+#include "peclet/core/amr/flow.hpp"
+#include "peclet/core/amr/poisson.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -88,18 +88,18 @@ void run() {
   std::printf("  n=%lld nFaces host=%lld dev=%lld\n", static_cast<long long>(n),
               static_cast<long long>(hg.nbr.extent(0)), static_cast<long long>(dg.nbr.extent(0)));
 
-  TPX_CHECK_EQ(mismatch(down(hg.start), down(dg.start)), 0);
-  TPX_CHECK_EQ(mismatch(down(hg.nbr), down(dg.nbr)), 0);
-  TPX_CHECK_EQ(mismatch(down(hg.axis), down(dg.axis)), 0);
-  TPX_CHECK_EQ(mismatch(down(hg.dir), down(dg.dir)), 0);
-  TPX_CHECK_EQ(mismatch(down(hg.alphaArea), down(dg.alphaArea)), 0);
-  TPX_CHECK_EQ(mismatch(down(hg.rawArea), down(dg.rawArea)), 0);
-  TPX_CHECK_EQ(mismatch(down(hg.dist), down(dg.dist)), 0);
-  TPX_CHECK_EQ(mismatch(down(hg.alpha), down(dg.alpha)), 0);
-  TPX_CHECK_EQ(mismatch(down(hg.upupI), down(dg.upupI)), 0);
-  TPX_CHECK_EQ(mismatch(down(hg.upupJ), down(dg.upupJ)), 0);
-  TPX_CHECK_EQ(mismatch(down(hg.invVol), down(dg.invVol)), 0);
-  TPX_CHECK_EQ(mismatch(down(hg.fluid), down(dg.fluid)), 0);
+  PECLET_CORE_CHECK_EQ(mismatch(down(hg.start), down(dg.start)), 0);
+  PECLET_CORE_CHECK_EQ(mismatch(down(hg.nbr), down(dg.nbr)), 0);
+  PECLET_CORE_CHECK_EQ(mismatch(down(hg.axis), down(dg.axis)), 0);
+  PECLET_CORE_CHECK_EQ(mismatch(down(hg.dir), down(dg.dir)), 0);
+  PECLET_CORE_CHECK_EQ(mismatch(down(hg.alphaArea), down(dg.alphaArea)), 0);
+  PECLET_CORE_CHECK_EQ(mismatch(down(hg.rawArea), down(dg.rawArea)), 0);
+  PECLET_CORE_CHECK_EQ(mismatch(down(hg.dist), down(dg.dist)), 0);
+  PECLET_CORE_CHECK_EQ(mismatch(down(hg.alpha), down(dg.alpha)), 0);
+  PECLET_CORE_CHECK_EQ(mismatch(down(hg.upupI), down(dg.upupI)), 0);
+  PECLET_CORE_CHECK_EQ(mismatch(down(hg.upupJ), down(dg.upupJ)), 0);
+  PECLET_CORE_CHECK_EQ(mismatch(down(hg.invVol), down(dg.invVol)), 0);
+  PECLET_CORE_CHECK_EQ(mismatch(down(hg.fluid), down(dg.fluid)), 0);
 }
 
 }  // namespace
@@ -108,11 +108,11 @@ int main(int argc, char** argv) {
   Kokkos::initialize(argc, argv);
   run();
   Kokkos::finalize();
-  TPX_RETURN_TEST_RESULT();
+  PECLET_CORE_RETURN_TEST_RESULT();
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping device face-geometry assembly test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping device face-geometry assembly test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

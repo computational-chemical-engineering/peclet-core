@@ -1,4 +1,4 @@
-// Field remap between octrees (tpx::amr::transferField), the core of dynamic AMR:
+// Field remap between octrees (peclet::core::amr::transferField), the core of dynamic AMR:
 //   (1) conservation — the volume-weighted integral Σ V·f is preserved when the mesh
 //       is refined (piecewise-constant prolong) and when it is coarsened (volume
 //       average);
@@ -9,20 +9,20 @@
 //   (4) linear > PC accuracy — minmod-limited linear prolongation beats PC injection
 //       on a smooth (quadratic) field, and is itself conservative.
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <array>
 #include <cmath>
 #include <vector>
 
-#include "tpx/amr/adapt.hpp"
-#include "tpx/amr/block_octree.hpp"
-#include "tpx/common/types.hpp"
+#include "peclet/core/amr/adapt.hpp"
+#include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/common/types.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -78,12 +78,12 @@ void run() {
     BO tr = t;
     tr.refineIf([](Code, unsigned l) { return l > 0; });  // refine all eligible one level
     auto fr = transferField(t, f, tr, /*linear=*/false);  // PC prolong
-    TPX_CHECK(std::fabs(relIntegral(tr, fr) - I0) < 1e-9 * (std::fabs(I0) + 1e-30));
+    PECLET_CORE_CHECK(std::fabs(relIntegral(tr, fr) - I0) < 1e-9 * (std::fabs(I0) + 1e-30));
 
     BO tc = t;
     tc.coarsenIf([](Code, unsigned) { return true; });  // coarsen all full groups
     auto fc = transferField(t, f, tc, false);
-    TPX_CHECK(std::fabs(relIntegral(tc, fc) - I0) < 1e-9 * (std::fabs(I0) + 1e-30));
+    PECLET_CORE_CHECK(std::fabs(relIntegral(tc, fc) - I0) < 1e-9 * (std::fabs(I0) + 1e-30));
   }
 
   // (2) round-trip identity on a uniform mesh: refine-all then coarsen-all
@@ -99,13 +99,13 @@ void run() {
     tc.coarsenIf([](Code, unsigned) { return true; });
     auto fc = transferField(tr, fr, tc, false);
 
-    TPX_CHECK(tc.numLeaves() == t.numLeaves());
+    PECLET_CORE_CHECK(tc.numLeaves() == t.numLeaves());
     double maxd = 0.0;
     for (Index i = 0; i < t.numLeaves(); ++i) {
       Index k = tc.find(t.code(i));
       maxd = std::max(maxd, std::fabs(fc[(std::size_t)k] - f[(std::size_t)i]));
     }
-    TPX_CHECK(maxd < 1e-12);
+    PECLET_CORE_CHECK(maxd < 1e-12);
   }
 
   // (3) restrict of a linear field is exact (volume avg = centroid value)
@@ -121,7 +121,7 @@ void run() {
     double maxd = 0.0;
     for (Index i = 0; i < coarse.numLeaves(); ++i)
       maxd = std::max(maxd, std::fabs(fc[(std::size_t)i] - exact[(std::size_t)i]));
-    TPX_CHECK(maxd < 1e-9);
+    PECLET_CORE_CHECK(maxd < 1e-9);
   }
 
   // (4) minmod-linear prolong beats PC on a smooth quadratic, and conserves
@@ -147,8 +147,8 @@ void run() {
       ePC += std::fabs(fpc[(std::size_t)i] - exact[(std::size_t)i]);
       eLIN += std::fabs(flin[(std::size_t)i] - exact[(std::size_t)i]);
     }
-    TPX_CHECK(eLIN < ePC);                                                    // more accurate
-    TPX_CHECK(std::fabs(relIntegral(fine, flin) - I0) < 1e-9 * std::fabs(I0)); // still conservative
+    PECLET_CORE_CHECK(eLIN < ePC);                                                    // more accurate
+    PECLET_CORE_CHECK(std::fabs(relIntegral(fine, flin) - I0) < 1e-9 * std::fabs(I0)); // still conservative
   }
 }
 
@@ -156,11 +156,11 @@ void run() {
 
 int main() {
   run();
-  TPX_RETURN_TEST_RESULT();
+  PECLET_CORE_RETURN_TEST_RESULT();
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping transfer test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping transfer test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

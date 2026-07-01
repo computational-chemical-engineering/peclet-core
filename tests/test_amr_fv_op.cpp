@@ -1,24 +1,24 @@
-// Device (Kokkos) Poisson operator/smoother (tpx::amr::deviceLaplacian /
+// Device (Kokkos) Poisson operator/smoother (peclet::core::amr::deviceLaplacian /
 // deviceJacobiSweep) must match the host BlockOctree operator bit-for-bit, on
 // whatever backend Kokkos was built for (CUDA / HIP / OpenMP). Same face-neighbour
 // walk + arithmetic, just run as parallel_for over the leaf Views.
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
 #include <cstdint>
 #include <vector>
 
 #include <Kokkos_Core.hpp>
 
-#include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/block_octree_view.hpp"
-#include "tpx/amr/fv_op.hpp"
+#include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/block_octree_view.hpp"
+#include "peclet/core/amr/fv_op.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -72,7 +72,7 @@ void run() {
   int mism = 0;
   for (Index i = 0; i < n; ++i)
     if (hy(i) != hostLap(t, x, i, inv)) ++mism;
-  TPX_CHECK_EQ(mism, 0);
+  PECLET_CORE_CHECK_EQ(mism, 0);
 
   // ---- a few Jacobi sweeps: device == host ----
   std::vector<double> b(static_cast<std::size_t>(n));
@@ -98,7 +98,7 @@ void run() {
   int jmis = 0;
   for (Index i = 0; i < n; ++i)
     if (hu(i) != u[static_cast<std::size_t>(i)]) ++jmis;
-  TPX_CHECK_EQ(jmis, 0);
+  PECLET_CORE_CHECK_EQ(jmis, 0);
 }
 
 }  // namespace
@@ -107,11 +107,11 @@ int main(int argc, char** argv) {
   Kokkos::initialize(argc, argv);
   run();
   Kokkos::finalize();
-  TPX_RETURN_TEST_RESULT();
+  PECLET_CORE_RETURN_TEST_RESULT();
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping device Poisson test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping device Poisson test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

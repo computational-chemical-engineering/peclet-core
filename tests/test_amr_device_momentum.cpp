@@ -1,27 +1,27 @@
-// Device cut-cell MOMENTUM operator ASSEMBLY (tpx::amr::deviceAssembleMomentum, on the S1 CSR
+// Device cut-cell MOMENTUM operator ASSEMBLY (peclet::core::amr::deviceAssembleMomentum, on the S1 CSR
 // primitive) must reproduce host AmrCutCell::build (Pass 2 buildCutStencil) + assembleOperator
 // bit-for-bit on the OpenMP backend: the ξ-overlay stencil rebuild (AC/off/cut/rscale), and the merged
 // diag + face-CSR over the three per-cell branches (solid identity / ξ-overlay / regular ∇²·μ). This is
 // the D3 anti-drift lock.
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
 #include <cstdint>
 #include <vector>
 
 #include <Kokkos_Core.hpp>
 
-#include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/block_octree_view.hpp"
-#include "tpx/amr/cut_cell.hpp"
-#include "tpx/amr/device_momentum_assembly.hpp"
-#include "tpx/amr/momentum.hpp"
+#include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/block_octree_view.hpp"
+#include "peclet/core/amr/cut_cell.hpp"
+#include "peclet/core/amr/device_momentum_assembly.hpp"
+#include "peclet/core/amr/momentum.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -88,26 +88,26 @@ void run() {
         rscale("rs", static_cast<std::size_t>(n));
     View<char> cut("cut", static_cast<std::size_t>(n));
     deviceRebuildCutStencil<kBits>(n, beta, AC0, sdfC, nb, fluid, AC, off, cut, rscale);
-    TPX_CHECK_EQ(mismatch(cc.acRaw(), down(AC)), 0);
-    TPX_CHECK_EQ(mismatch(cc.offRaw(), down(off)), 0);
-    TPX_CHECK_EQ(mismatch(cc.cutRaw(), down(cut)), 0);
-    TPX_CHECK_EQ(mismatch(cc.rscaleRaw(), down(rscale)), 0);
+    PECLET_CORE_CHECK_EQ(mismatch(cc.acRaw(), down(AC)), 0);
+    PECLET_CORE_CHECK_EQ(mismatch(cc.offRaw(), down(off)), 0);
+    PECLET_CORE_CHECK_EQ(mismatch(cc.cutRaw(), down(cut)), 0);
+    PECLET_CORE_CHECK_EQ(mismatch(cc.rscaleRaw(), down(rscale)), 0);
   }
 
   // ---- (2) device assembled MomentumOp == host assembleOperator (diag/start/nbr/coef) ----
   const auto H = cc.assembleOperator(/*scaleAdvByRscale=*/false);
   MomentumOp op = deviceAssembleMomentum<kBits>(cc, dev, /*scaleAdvByRscale=*/false);
-  TPX_CHECK_EQ(static_cast<Index>(op.n), n);
+  PECLET_CORE_CHECK_EQ(static_cast<Index>(op.n), n);
   std::vector<double> ddiag = down(op.diag);
   std::vector<Index> dstart = down(op.faceStart);
   std::vector<Index> dnbr = down(op.faceNbr);
   std::vector<double> dcoef = down(op.faceCoef);
   std::printf("  n=%lld nnz host=%lld dev=%lld\n", static_cast<long long>(n),
               static_cast<long long>(H.nbr.size()), static_cast<long long>(dnbr.size()));
-  TPX_CHECK_EQ(mismatch(H.diag, ddiag), 0);
-  TPX_CHECK_EQ(mismatch(H.start, dstart), 0);
-  TPX_CHECK_EQ(mismatch(H.nbr, dnbr), 0);
-  TPX_CHECK_EQ(mismatch(H.coef, dcoef), 0);
+  PECLET_CORE_CHECK_EQ(mismatch(H.diag, ddiag), 0);
+  PECLET_CORE_CHECK_EQ(mismatch(H.start, dstart), 0);
+  PECLET_CORE_CHECK_EQ(mismatch(H.nbr, dnbr), 0);
+  PECLET_CORE_CHECK_EQ(mismatch(H.coef, dcoef), 0);
 
   // ---- (3) deviceApplyMom == host applyOp over the assembled operator ----
   std::vector<double> x(static_cast<std::size_t>(n));
@@ -121,7 +121,7 @@ void run() {
   View<const double> dx = toDevice(x, "x");
   View<double> dAu("Au", static_cast<std::size_t>(n));
   deviceApplyMom(op, dx, dAu);
-  TPX_CHECK_EQ(mismatch(hout, down(dAu)), 0);
+  PECLET_CORE_CHECK_EQ(mismatch(hout, down(dAu)), 0);
 }
 
 }  // namespace
@@ -130,11 +130,11 @@ int main(int argc, char** argv) {
   Kokkos::initialize(argc, argv);
   run();
   Kokkos::finalize();
-  TPX_RETURN_TEST_RESULT();
+  PECLET_CORE_RETURN_TEST_RESULT();
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping device momentum assembly test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping device momentum assembly test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

@@ -1,5 +1,5 @@
 // Geometric-multigrid V-cycle on a *graded* distributed octree
-// (tpx::amr::GradedDistributedMultigrid). On a genuinely graded, cross-block
+// (peclet::core::amr::GradedDistributedMultigrid). On a genuinely graded, cross-block
 // 2:1-balanced octree it validates:
 //   (1) the full V-cycle distributed over ORB blocks (MPI_COMM_WORLD) == the same on
 //       the whole domain as one block (MPI_COMM_SELF) bit-for-bit (consistent per-level
@@ -8,20 +8,20 @@
 //   (2) the V-cycle actually solves — the residual drops well past plain Jacobi.
 // np = 1,2,4,8.
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
 #include <vector>
 
-#include "tpx/amr/distributed_fv.hpp"
-#include "tpx/amr/distributed_octree.hpp"
-#include "tpx/amr/leaf_field.hpp"
-#include "tpx/common/mpi.hpp"
+#include "peclet/core/amr/distributed_fv.hpp"
+#include "peclet/core/amr/distributed_octree.hpp"
+#include "peclet/core/amr/leaf_field.hpp"
+#include "peclet/core/common/mpi.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -100,12 +100,12 @@ void run() {
     }
     if (xw[(std::size_t)i] != xs[(std::size_t)si]) ++mism;
   }
-  TPX_CHECK_EQ(mism, 0);
-  TPX_CHECK(mgw.numLevels() >= 3);
+  PECLET_CORE_CHECK_EQ(mism, 0);
+  PECLET_CORE_CHECK(mgw.numLevels() >= 3);
 
   // (2) the V-cycle solves: residual converges to ~round-off (≥8 orders) on the
   // manufactured RHS — the graded distributed MG is a genuine solver.
-  TPX_CHECK(r1 < r0 * 1e-8);
+  PECLET_CORE_CHECK(r1 < r0 * 1e-8);
 }
 
 }  // namespace
@@ -115,7 +115,7 @@ int main(int argc, char** argv) {
   run();
   int rank = 0;
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-  int fails = tpx::test::g_failures, total = 0;
+  int fails = peclet::core::test::g_failures, total = 0;
   MPI_Reduce(&fails, &total, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
   MPI_Finalize();
   if (rank == 0) {
@@ -130,7 +130,7 @@ int main(int argc, char** argv) {
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping graded distributed MG test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping graded distributed MG test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

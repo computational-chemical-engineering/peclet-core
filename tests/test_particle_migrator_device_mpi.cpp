@@ -1,11 +1,11 @@
-// Device-resident particle migration (tpx::halo::ParticleMigratorDevice, D1): particles live in device
+// Device-resident particle migration (peclet::core::halo::ParticleMigratorDevice, D1): particles live in device
 // Views; the periodic wrap + ORB owner lookup run on device, departing particles are device-packed into
 // compact buffers, only those cross MPI (NBX), arrivals unpack back on device. Same correctness contract
 // as the host migrator (test_particle_migration): over random-walk + migrate steps, globally and every
 // step — count is conserved (== N), every local particle is owned by this rank, and the id multiset is
 // exactly {0..N-1} (SUM + XOR reductions). np = 1,2,4,8.
 //
-// Guarded by TPX_HAVE_MORTON (for the Kokkos-on-MPI build wiring); a no-op otherwise.
+// Guarded by PECLET_CORE_HAVE_MORTON (for the Kokkos-on-MPI build wiring); a no-op otherwise.
 #include "test_util.hpp"
 
 #include <cstdint>
@@ -13,13 +13,13 @@
 
 #include <Kokkos_Core.hpp>
 
-#include "tpx/common/mpi.hpp"
-#include "tpx/decomp/block_decomposer.hpp"
-#include "tpx/halo/particle_migrator.hpp"
-#include "tpx/halo/particle_migrator_device.hpp"
+#include "peclet/core/common/mpi.hpp"
+#include "peclet/core/decomp/block_decomposer.hpp"
+#include "peclet/core/halo/particle_migrator.hpp"
+#include "peclet/core/halo/particle_migrator_device.hpp"
 
-using namespace tpx;
-using namespace tpx::halo;
+using namespace peclet::core;
+using namespace peclet::core::halo;
 
 namespace {
 
@@ -100,7 +100,7 @@ void run() {
     // (a) count conserved.
     long ln = static_cast<long>(n), gtot = 0;
     MPI_Allreduce(&ln, &gtot, 1, MPI_LONG, MPI_SUM, MPI_COMM_WORLD);
-    TPX_CHECK_EQ(gtot, static_cast<long>(N));
+    PECLET_CORE_CHECK_EQ(gtot, static_cast<long>(N));
 
     // download for the per-particle checks.
     std::vector<double> hp(static_cast<std::size_t>(n) * Dim);
@@ -125,13 +125,13 @@ void run() {
       localSum += hid[static_cast<std::size_t>(i)];
       localXor ^= hid[static_cast<std::size_t>(i)];
     }
-    TPX_CHECK_EQ(fail, 0);
+    PECLET_CORE_CHECK_EQ(fail, 0);
     // (c) id multiset == {0..N-1}.
     std::int64_t gSum = 0, gXor = 0;
     MPI_Allreduce(&localSum, &gSum, 1, MPI_INT64_T, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(&localXor, &gXor, 1, MPI_INT64_T, MPI_BXOR, MPI_COMM_WORLD);
-    TPX_CHECK_EQ(gSum, expSum);
-    TPX_CHECK_EQ(gXor, expXor);
+    PECLET_CORE_CHECK_EQ(gSum, expSum);
+    PECLET_CORE_CHECK_EQ(gXor, expXor);
   }
 }
 
@@ -144,7 +144,7 @@ int main(int argc, char** argv) {
   Kokkos::finalize();
   int rank = 0;
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-  int fails = tpx::test::g_failures, total = 0;
+  int fails = peclet::core::test::g_failures, total = 0;
   MPI_Reduce(&fails, &total, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
   MPI_Finalize();
   if (rank == 0) {

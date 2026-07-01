@@ -1,5 +1,5 @@
 // Consistent graded FV operator on a *distributed* octree
-// (tpx::amr::DistributedFvOperator). On a genuinely graded, cross-block 2:1-balanced
+// (peclet::core::amr::DistributedFvOperator). On a genuinely graded, cross-block 2:1-balanced
 // octree it validates:
 //   (1) the operator distributed over ORB blocks (MPI_COMM_WORLD) == the same on the
 //       whole domain as one block (MPI_COMM_SELF) bit-for-bit — apply AND a Jacobi
@@ -10,21 +10,21 @@
 //   (3) the distributed Jacobi smoother reduces the residual.
 // np = 1,2,4,8.
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
 #include <vector>
 
-#include "tpx/amr/distributed_fv.hpp"
-#include "tpx/amr/distributed_octree.hpp"
-#include "tpx/amr/leaf_field.hpp"
-#include "tpx/amr/poisson.hpp"
-#include "tpx/common/mpi.hpp"
+#include "peclet/core/amr/distributed_fv.hpp"
+#include "peclet/core/amr/distributed_octree.hpp"
+#include "peclet/core/amr/leaf_field.hpp"
+#include "peclet/core/amr/poisson.hpp"
+#include "peclet/core/common/mpi.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -83,7 +83,7 @@ void run() {
   // global leaf count matches (sanity that the graded octree is the same one)
   long lw = (long)nw, gw = 0;
   MPI_Allreduce(&lw, &gw, 1, MPI_LONG, MPI_SUM, MPI_COMM_WORLD);
-  TPX_CHECK(gw == (long)ns);
+  PECLET_CORE_CHECK(gw == (long)ns);
 
   // fields
   std::vector<double> fw((std::size_t)nw), fs((std::size_t)ns);
@@ -100,7 +100,7 @@ void run() {
     int mism = 0;
     for (Index i = 0; i < ns; ++i)
       if (opLu[(std::size_t)i] != hostLu[(std::size_t)i]) ++mism;
-    TPX_CHECK_EQ(mism, 0);
+    PECLET_CORE_CHECK_EQ(mism, 0);
   }
 
   // ===== (1a) apply: WORLD == SELF bit-for-bit =====
@@ -116,7 +116,7 @@ void run() {
     }
     if (luw[(std::size_t)i] != lus[(std::size_t)si]) ++amis;
   }
-  TPX_CHECK_EQ(amis, 0);
+  PECLET_CORE_CHECK_EQ(amis, 0);
 
   // ===== (1b) Jacobi solve: WORLD == SELF bit-for-bit, and (3) residual drops =====
   std::vector<double> bw((std::size_t)nw), bs((std::size_t)ns), xw((std::size_t)nw, 0.0), xs((std::size_t)ns, 0.0);
@@ -137,8 +137,8 @@ void run() {
     }
     if (xw[(std::size_t)i] != xs[(std::size_t)si]) ++jmis;
   }
-  TPX_CHECK_EQ(jmis, 0);
-  TPX_CHECK(r1 < 0.5 * r0);  // the smoother reduces the residual
+  PECLET_CORE_CHECK_EQ(jmis, 0);
+  PECLET_CORE_CHECK(r1 < 0.5 * r0);  // the smoother reduces the residual
 }
 
 }  // namespace
@@ -148,7 +148,7 @@ int main(int argc, char** argv) {
   run();
   int rank = 0;
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-  int fails = tpx::test::g_failures, total = 0;
+  int fails = peclet::core::test::g_failures, total = 0;
   MPI_Reduce(&fails, &total, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
   MPI_Finalize();
   if (rank == 0) {
@@ -163,7 +163,7 @@ int main(int argc, char** argv) {
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping distributed FV test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping distributed FV test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

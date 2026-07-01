@@ -1,4 +1,4 @@
-// Distributed adaptive octree (tpx::amr::DistributedOctree) vs an independent
+// Distributed adaptive octree (peclet::core::amr::DistributedOctree) vs an independent
 // serial reference (the whole domain as one block), at np = 1,2,4:
 //   (1) after per-block SDF refinement + cross-block balance(), the global leaf
 //       set (code, level) is identical to the serially refined+balanced octree —
@@ -7,23 +7,23 @@
 //       a serial faceNeighbor lookup would — i.e. the owner-based ghost exchange
 //       is correct (local + cross-rank).
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <algorithm>
 #include <cmath>
 #include <vector>
 
-#include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/distributed_octree.hpp"
-#include "tpx/amr/leaf_field.hpp"
-#include "tpx/amr/refine.hpp"
-#include "tpx/common/mpi.hpp"
-#include "tpx/geom/sdf.hpp"
+#include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/distributed_octree.hpp"
+#include "peclet/core/amr/leaf_field.hpp"
+#include "peclet/core/amr/refine.hpp"
+#include "peclet/core/common/mpi.hpp"
+#include "peclet/core/geom/sdf.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -36,7 +36,7 @@ struct Problem {
   IVec<3> rootSize{4, 4, 4};
   unsigned lmax = 3;  // 32^3 fine domain
   unsigned target = 1;
-  tpx::geom::Sphere sph{{16.0, 16.0, 16.0}, 8.0};
+  peclet::core::geom::Sphere sph{{16.0, 16.0, 16.0}, 8.0};
 };
 
 BO serialReference(const Problem& pr) {
@@ -97,7 +97,7 @@ void run(MPI_Comm comm) {
               comm);
 
   if (rank == 0) {
-    TPX_CHECK_EQ((long long)totalLeaves, (long long)ref.numLeaves());
+    PECLET_CORE_CHECK_EQ((long long)totalLeaves, (long long)ref.numLeaves());
     std::vector<std::pair<unsigned long long, int>> got(static_cast<std::size_t>(totalLeaves));
     for (int i = 0; i < totalLeaves; ++i)
       got[static_cast<std::size_t>(i)] = {allCodes[static_cast<std::size_t>(i)],
@@ -109,7 +109,7 @@ void run(MPI_Comm comm) {
           got[static_cast<std::size_t>(i)].second != static_cast<int>(ref.level(i)))
         match = false;
     }
-    TPX_CHECK(match);
+    PECLET_CORE_CHECK(match);
   }
 
   // ---- (2) face-neighbour gather matches serial faceNeighbor ----
@@ -138,7 +138,7 @@ void run(MPI_Comm comm) {
         if (gathered[static_cast<std::size_t>(slot)] != expect) ++mism;
       }
   }
-  TPX_CHECK_EQ(mism, 0);
+  PECLET_CORE_CHECK_EQ(mism, 0);
 }
 
 }  // namespace
@@ -148,7 +148,7 @@ int main(int argc, char** argv) {
   run(MPI_COMM_WORLD);
   int rank = 0;
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-  int fails = tpx::test::g_failures;
+  int fails = peclet::core::test::g_failures;
   int total = 0;
   MPI_Reduce(&fails, &total, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
   MPI_Finalize();
@@ -164,7 +164,7 @@ int main(int argc, char** argv) {
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping distributed AMR test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping distributed AMR test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

@@ -5,24 +5,24 @@
 //
 //   ./bench_amr_flow [Lmax=5] [steps=10]
 //
-// Guarded by TPX_HAVE_MORTON; prints a notice and exits otherwise.
+// Guarded by PECLET_CORE_HAVE_MORTON; prints a notice and exits otherwise.
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <Kokkos_Core.hpp>
 
-#include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/flow.hpp"
-#include "tpx/amr/multigrid.hpp"
-#include "tpx/amr/pcg.hpp"
-#include "tpx/amr/flow_oracle.hpp"
-#include "tpx/amr/poisson.hpp"
+#include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/flow.hpp"
+#include "peclet/core/amr/multigrid.hpp"
+#include "peclet/core/amr/pcg.hpp"
+#include "peclet/core/amr/flow_oracle.hpp"
+#include "peclet/core/amr/poisson.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 using Clock = std::chrono::steady_clock;
 using BO = BlockOctree<3, 21>;
 using Code = BO::Code;
@@ -348,7 +348,7 @@ int main(int argc, char** argv) {
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping AMR flow benchmark\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping AMR flow benchmark\n");
   return 0;
 }
 #endif

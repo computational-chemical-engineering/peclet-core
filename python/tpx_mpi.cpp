@@ -1,6 +1,6 @@
 // transport-core — minimal Python surface for the Lagrangian halo (migration + ghosts).
 //
-// A nanobind module exposing tpx::halo::ParticleMigrator so an mpi4py driver can decompose a periodic
+// A nanobind module exposing peclet::core::halo::ParticleMigrator so an mpi4py driver can decompose a periodic
 // domain and migrate/ghost particles between ranks. Particles are passed as numpy arrays: positions
 // (N,3) float64 and an arbitrary per-particle payload (N,K) float64 (pack velocity, orientation, id,
 // etc. into the K columns). MPI is assumed already initialized by the host (import mpi4py.MPI first);
@@ -19,14 +19,14 @@
 #include <cstring>
 #include <vector>
 
-#include "tpx/common/types.hpp"
-#include "tpx/decomp/block_decomposer.hpp"
-#include "tpx/halo/particle_halo_topology.hpp"
-#include "tpx/halo/particle_migrator.hpp"
-#include "tpx/halo/particle_rebalance.hpp"
+#include "peclet/core/common/types.hpp"
+#include "peclet/core/decomp/block_decomposer.hpp"
+#include "peclet/core/halo/particle_halo_topology.hpp"
+#include "peclet/core/halo/particle_migrator.hpp"
+#include "peclet/core/halo/particle_rebalance.hpp"
 
 namespace nb = nanobind;
-using namespace tpx;
+using namespace peclet::core;
 
 namespace {
 
@@ -50,7 +50,7 @@ class Migrator {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank_);
     MPI_Comm_size(MPI_COMM_WORLD, &sz);
     dec_.init(static_cast<std::size_t>(sz), IVec<3>{gsize[0], gsize[1], gsize[2]});
-    tpx::halo::DomainMap<3> map;
+    peclet::core::halo::DomainMap<3> map;
     for (int i = 0; i < 3; ++i) {
       map.origin[i] = origin[i];
       map.cellSize[i] = size[i] / static_cast<double>(gsize[i]);
@@ -79,7 +79,7 @@ class Migrator {
     std::vector<Vec<3>> pv;
     std::vector<char> payload;
     std::size_t K = unpack(pos, pay, pv, payload);
-    tpx::halo::rebalanceByParticleCount(dec_, mig_, pv, payload, K * sizeof(double), MPI_COMM_WORLD);
+    peclet::core::halo::rebalanceByParticleCount(dec_, mig_, pv, payload, K * sizeof(double), MPI_COMM_WORLD);
     return pack(pv, payload, K);
   }
 
@@ -123,13 +123,13 @@ class Migrator {
   }
 
   int rank_ = 0;
-  tpx::decomp::BlockDecomposer<3> dec_;
-  tpx::halo::ParticleMigrator<3> mig_;
+  peclet::core::decomp::BlockDecomposer<3> dec_;
+  peclet::core::halo::ParticleMigrator<3> mig_;
 };
 
 // Persistent owner<->ghost halo: build the correspondence once, then do cheap forward/reverse over
 // the fixed topology each step (scheme C / conservative-flux exchange) instead of re-gathering full
-// ghost state. Vec3 fields only (positions, velocities, forces). Wraps tpx::halo::ParticleHaloTopology.
+// ghost state. Vec3 fields only (positions, velocities, forces). Wraps peclet::core::halo::ParticleHaloTopology.
 struct V3 {
   double v[3];
   V3& operator+=(const V3& o) {
@@ -146,7 +146,7 @@ class Halo {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank_);
     MPI_Comm_size(MPI_COMM_WORLD, &sz);
     dec_.init(static_cast<std::size_t>(sz), IVec<3>{gsize[0], gsize[1], gsize[2]});
-    tpx::halo::DomainMap<3> map;
+    peclet::core::halo::DomainMap<3> map;
     for (int i = 0; i < 3; ++i) {
       map.origin[i] = origin[i];
       map.cellSize[i] = size[i] / static_cast<double>(gsize[i]);
@@ -210,9 +210,9 @@ class Halo {
   }
   int rank_ = 0;
   std::size_t n_owned_ = 0, n_ghost_ = 0;
-  tpx::decomp::BlockDecomposer<3> dec_;
-  tpx::halo::ParticleMigrator<3> mig_;
-  tpx::halo::ParticleHaloTopology<3> halo_;
+  peclet::core::decomp::BlockDecomposer<3> dec_;
+  peclet::core::halo::ParticleMigrator<3> mig_;
+  peclet::core::halo::ParticleHaloTopology<3> halo_;
 };
 
 NB_MODULE(mpi, m) {

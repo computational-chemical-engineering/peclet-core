@@ -1,5 +1,5 @@
 // Device (Kokkos) geometric-multigrid V-cycle with the CONSISTENT graded operator
-// (tpx::amr::Multigrid). Validates, on a genuinely graded octree:
+// (peclet::core::amr::Multigrid). Validates, on a genuinely graded octree:
 //   (1) the device consistent FV operator (deviceApplyFv over the face CSR) ==
 //       host AmrPoisson::applyLaplacian bit-for-bit (same coeffs, same 2:1 sub-faces);
 //   (2) the full standard V-cycle == a host Jacobi-MG mirror bit-for-bit, AND it now
@@ -10,22 +10,22 @@
 //       correction) drives the 2nd-order graded residual down.
 // Runs on whatever backend Kokkos was built for (CUDA / HIP / OpenMP).
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <algorithm>
 #include <cmath>
 #include <vector>
 
 #include <Kokkos_Core.hpp>
 
-#include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/multigrid.hpp"
-#include "tpx/amr/poisson.hpp"
+#include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/multigrid.hpp"
+#include "peclet/core/amr/poisson.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -169,8 +169,8 @@ void run() {
 
   Multigrid<3, kBits> mg;
   mg.build(t, h0);
-  TPX_CHECK_EQ(mg.numLeaves(0), n);
-  TPX_CHECK(mg.numLevels() >= 3);
+  PECLET_CORE_CHECK_EQ(mg.numLeaves(0), n);
+  PECLET_CORE_CHECK(mg.numLevels() >= 3);
 
   AP ap0;
   ap0.init(t, h0);
@@ -188,7 +188,7 @@ void run() {
     int mism = 0;
     for (Index i = 0; i < n; ++i)
       if (dLh[(std::size_t)i] != hLu[(std::size_t)i]) ++mism;
-    TPX_CHECK_EQ(mism, 0);
+    PECLET_CORE_CHECK_EQ(mism, 0);
   }
 
   // ===== (2) standard V-cycle: device == host bit-for-bit + converges on graded mesh =====
@@ -207,7 +207,7 @@ void run() {
   int vmis = 0;
   for (Index i = 0; i < n; ++i)
     if (dx[(std::size_t)i] != hr.x[0][(std::size_t)i]) ++vmis;
-  TPX_CHECK_EQ(vmis, 0);
+  PECLET_CORE_CHECK_EQ(vmis, 0);
   // converges on the graded mesh (plain operator stalled here ~0.03)
   std::vector<double> lu;
   ap0.applyLaplacian(dx, lu);
@@ -217,7 +217,7 @@ void run() {
     double rr = b[(std::size_t)i] - lu[(std::size_t)i];
     r1 += rr * rr;
   }
-  TPX_CHECK(std::sqrt(r1) < std::sqrt(r0) * 1e-3);
+  PECLET_CORE_CHECK(std::sqrt(r1) < std::sqrt(r0) * 1e-3);
 
   // ===== (3) quadratic coarse-fine correction =====
   // deviceQuadDelta(xr) ≈ host (applyLaplacianQuad − applyLaplacian)(xr)
@@ -236,14 +236,14 @@ void run() {
       maxabs = std::max(maxabs, std::fabs(ref));
       maxerr = std::max(maxerr, std::fabs(dqh[(std::size_t)i] - ref));
     }
-    TPX_CHECK(maxabs > 0.0);          // the correction is actually exercised
-    TPX_CHECK(maxerr < 1e-9 * (1.0 + maxabs));
+    PECLET_CORE_CHECK(maxabs > 0.0);          // the correction is actually exercised
+    PECLET_CORE_CHECK(maxerr < 1e-9 * (1.0 + maxabs));
   }
   // solveQuad drives the 2nd-order graded residual down
   setDev(mg.b(0), b);
   Kokkos::deep_copy(mg.x(0), 0.0);
   double rq = mg.solveQuad(40, 1, 2, 2, 40, 0.8);
-  TPX_CHECK(rq < std::sqrt(r0) * 1e-2);
+  PECLET_CORE_CHECK(rq < std::sqrt(r0) * 1e-2);
 }
 
 }  // namespace
@@ -252,11 +252,11 @@ int main(int argc, char** argv) {
   Kokkos::initialize(argc, argv);
   run();
   Kokkos::finalize();
-  TPX_RETURN_TEST_RESULT();
+  PECLET_CORE_RETURN_TEST_RESULT();
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping device multigrid test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping device multigrid test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

@@ -7,20 +7,20 @@
 
 #include <Kokkos_Core.hpp>
 
-#include "tpx/python/ndarray_interop.hpp"
+#include "peclet/core/python/ndarray_interop.hpp"
 
 namespace nb = nanobind;
-using namespace tpx::python;
+using namespace peclet::core::python;
 
 // Kernels live in their own (non-auto-returning) functions: nvcc forbids a KOKKOS_LAMBDA inside a
 // function with a deduced return type, and the wrappers below return `auto` (the bridge's return type
 // differs host vs device). Real bindings already keep kernels in solver headers, so this only matters
 // for these inline test kernels.
-static void scale2(tpx::View<double> v) {
+static void scale2(peclet::core::View<double> v) {
   Kokkos::parallel_for("x2", v.extent(0), KOKKOS_LAMBDA(int i) { v(i) *= 2.0; });
   Kokkos::fence();
 }
-static void fillLinear(tpx::Field3D<double> f, int nx, int ny, int nz) {
+static void fillLinear(peclet::core::Field3D<double> f, int nx, int ny, int nz) {
   Kokkos::parallel_for(
       "fill", Kokkos::MDRangePolicy<Kokkos::Rank<3>>({0, 0, 0}, {nx, ny, nz}),
       KOKKOS_LAMBDA(int x, int y, int z) { f(x, y, z) = double(x + y * nx + z * nx * ny); });
@@ -38,7 +38,7 @@ static auto double_it(nb::ndarray<double, nb::c_contig> a) {
 // Build an x-fastest LayoutLeft field of logical shape (nx,ny,nz), fill with the linear index
 // I = x + y*nx + z*nx*ny, and export zero-copy. Verifies shape/stride/value round-trip.
 static auto make_field(int nx, int ny, int nz) {
-  tpx::Field3D<double> f("f", nx, ny, nz);
+  peclet::core::Field3D<double> f("f", nx, ny, nz);
   fillLinear(f, nx, ny, nz);
   return view_to_ndarray(f);
 }

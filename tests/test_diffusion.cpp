@@ -12,14 +12,14 @@
 #include <cstdio>
 #include <vector>
 
-#include "tpx/common/types.hpp"
-#include "tpx/decomp/block_decomposer.hpp"
-#include "tpx/halo/grid_halo_topology.hpp"
+#include "peclet/core/common/types.hpp"
+#include "peclet/core/decomp/block_decomposer.hpp"
+#include "peclet/core/halo/grid_halo_topology.hpp"
 
-using namespace tpx;
-using tpx::decomp::BlockDecomposer;
-using tpx::halo::GridFieldView;
-using tpx::halo::GridHaloTopology;
+using namespace peclet::core;
+using peclet::core::decomp::BlockDecomposer;
+using peclet::core::halo::GridFieldView;
+using peclet::core::halo::GridHaloTopology;
 
 static constexpr int kDim = 3;
 static constexpr double kCoeff = 0.1;  // alpha*dt/dx^2; stability: kCoeff*2*Dim = 0.6 < 1

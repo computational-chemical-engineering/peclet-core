@@ -13,14 +13,14 @@
 #include <cstring>
 #include <vector>
 
-#include "tpx/common/types.hpp"
-#include "tpx/decomp/block_decomposer.hpp"
-#include "tpx/halo/particle_migrator.hpp"
+#include "peclet/core/common/types.hpp"
+#include "peclet/core/decomp/block_decomposer.hpp"
+#include "peclet/core/halo/particle_migrator.hpp"
 
-using namespace tpx;
-using tpx::decomp::BlockDecomposer;
-using tpx::halo::DomainMap;
-using tpx::halo::ParticleMigrator;
+using namespace peclet::core;
+using peclet::core::decomp::BlockDecomposer;
+using peclet::core::halo::DomainMap;
+using peclet::core::halo::ParticleMigrator;
 
 static double frac(std::uint64_t x, int s) {
   x ^= (std::uint64_t)s * 2654435761u;

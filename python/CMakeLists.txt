@@ -39,8 +39,8 @@ if(DEFINED SKBUILD)
           DESTINATION peclet/core RENAME __init__.py COMPONENT python)
 endif()
 
-# AMR octree bindings (tpx_amr): requires the morton sibling checkout, since tpx::amr is guarded by
-# TPX_HAVE_MORTON. Built only when ../../morton/include/morton/morton.hpp is present (a local/opt-in
+# AMR octree bindings (tpx_amr): requires the morton sibling checkout, since peclet::core::amr is guarded by
+# PECLET_CORE_HAVE_MORTON. Built only when ../../morton/include/morton/morton.hpp is present (a local/opt-in
 # target — CI builds transport-core without morton). C++20 (the AMR headers are C++20 host).
 #   PYTHONPATH=python/build mpirun -np 4 python3 python/test_tpx_amr.py
 # tpx_amr exposes the device (Kokkos) AMR flow, so it needs both the morton sibling and a Kokkos
@@ -56,7 +56,7 @@ if(EXISTS "${_morton_inc}/morton/morton.hpp" AND Kokkos_FOUND)
   set_target_properties(tpx_amr PROPERTIES OUTPUT_NAME amr   # -> peclet.core.amr (NB_MODULE(amr, ...))
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/peclet/core")
   target_include_directories(tpx_amr PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include ${_morton_inc})
-  target_compile_definitions(tpx_amr PRIVATE TPX_HAVE_MORTON=1 MORTON_ENABLE_KOKKOS=1)
+  target_compile_definitions(tpx_amr PRIVATE PECLET_CORE_HAVE_MORTON=1 MORTON_ENABLE_KOKKOS=1)
   target_compile_features(tpx_amr PRIVATE cxx_std_20)
   target_link_libraries(tpx_amr PRIVATE MPI::MPI_CXX Kokkos::kokkos)
   if(DEFINED SKBUILD)

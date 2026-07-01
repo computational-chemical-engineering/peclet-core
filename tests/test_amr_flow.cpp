@@ -1,4 +1,4 @@
-// Collocated incompressible Stokes step on the octree (tpx::amr::oracle::AmrFlow) — wires
+// Collocated incompressible Stokes step on the octree (peclet::core::amr::oracle::AmrFlow) — wires
 // the cut-cell Dirichlet momentum operator (no-slip IBM) and the openness pressure
 // projection into one sdflow-style step:
 //   (1) Poiseuille — body-force-driven Stokes flow between immersed no-slip walls
@@ -8,23 +8,23 @@
 //   (2) projection — on a periodic all-fluid box a pure-gradient (fully divergent)
 //       velocity is reduced by the projection (divergence and |u| drop sharply).
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
 #include <limits>
 #include <vector>
 
-#include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/flow_oracle.hpp"
-#include "tpx/amr/leaf_field.hpp"
-#include "tpx/amr/refine.hpp"
-#include "tpx/common/types.hpp"
-#include "tpx/geom/sdf.hpp"
+#include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/flow_oracle.hpp"
+#include "peclet/core/amr/leaf_field.hpp"
+#include "peclet/core/amr/refine.hpp"
+#include "peclet/core/common/types.hpp"
+#include "peclet/core/geom/sdf.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -73,9 +73,9 @@ void test_poiseuille() {
     }
   }
   double l2 = std::sqrt(e / nf);
-  TPX_CHECK(l2 < 1e-6);      // matches the analytic parabola (~round-off here)
-  TPX_CHECK(solidsZero);     // no-slip: immersed solid held at 0
-  TPX_CHECK(fluidPositive);  // flow actually develops
+  PECLET_CORE_CHECK(l2 < 1e-6);      // matches the analytic parabola (~round-off here)
+  PECLET_CORE_CHECK(solidsZero);     // no-slip: immersed solid held at 0
+  PECLET_CORE_CHECK(fluidPositive);  // flow actually develops
 }
 
 void test_projection() {
@@ -111,8 +111,8 @@ void test_projection() {
   fl.project(200, 4);
   double d1 = fl.divNormL2(U), u1 = unorm();
   // pure-gradient field: exact projection -> 0; approximate collocated -> sharp drop.
-  TPX_CHECK(d0 / d1 > 10.0);
-  TPX_CHECK(u0 / u1 > 10.0);
+  PECLET_CORE_CHECK(d0 / d1 > 10.0);
+  PECLET_CORE_CHECK(u0 / u1 > 10.0);
 }
 
 // Advection operator: ∇·(u u_x) on a divergence-free field has the exact value
@@ -155,14 +155,14 @@ void test_advection() {
   double c5 = 0, c6 = 0;
   double e5 = advectErr(5, c5, /*SOU*/ 0);
   double e6 = advectErr(6, c6, /*SOU*/ 0);
-  TPX_CHECK(e5 / e6 > 3.3);              // ~2nd order (vs TVD ~2.8 — limiter clips extrema)
-  TPX_CHECK(c5 < 1e-12 && c6 < 1e-12);  // Galilean: constant advects to 0
+  PECLET_CORE_CHECK(e5 / e6 > 3.3);              // ~2nd order (vs TVD ~2.8 — limiter clips extrema)
+  PECLET_CORE_CHECK(c5 < 1e-12 && c6 < 1e-12);  // Galilean: constant advects to 0
   // TVD (option): also converges, above 1st order (limiter -> ~1.5 order at extrema).
   double t5 = 0, t6 = 0;
   double et5 = advectErr(5, t5, /*TVD*/ 1);
   double et6 = advectErr(6, t6, /*TVD*/ 1);
-  TPX_CHECK(et5 / et6 > 2.3);
-  TPX_CHECK(e6 < et6);  // SOU is more accurate than TVD on this smooth field
+  PECLET_CORE_CHECK(et5 / et6 > 2.3);
+  PECLET_CORE_CHECK(e6 < et6);  // SOU is more accurate than TVD on this smooth field
 
   // Poiseuille with advection ON: for unidirectional flow ∇·(u u)=0, so the
   // advection term must vanish and the parabola is recovered unchanged.
@@ -191,7 +191,7 @@ void test_advection() {
       err += d * d;
       ++nf;
     }
-  TPX_CHECK(std::sqrt(err / nf) < 1e-6);
+  PECLET_CORE_CHECK(std::sqrt(err / nf) < 1e-6);
 }
 
 // Implicit-FOU deferred correction is unconditionally stable for advection: at a
@@ -244,8 +244,8 @@ void test_implicit_advection() {
   for (int it = 0; it < 25; ++it) exp_.step(40, 5, 2);
   double me = maxU(exp_);
 
-  TPX_CHECK(std::isfinite(mi) && mi < 5.0 * A);   // implicit stays bounded (stable)
-  TPX_CHECK(!(std::isfinite(me) && me < 5.0 * A)); // explicit blows up at this CFL
+  PECLET_CORE_CHECK(std::isfinite(mi) && mi < 5.0 * A);   // implicit stays bounded (stable)
+  PECLET_CORE_CHECK(!(std::isfinite(me) && me < 5.0 * A)); // explicit blows up at this CFL
 }
 
 // Graded-interface advection: on a graded mesh (sphere band finest, far field
@@ -259,9 +259,9 @@ void test_graded_advection() {
   BO t(IVec<3>{brick, brick, brick}, lmax);
   AmrGeometry<3> geo;
   geo.h0 = 1.0;
-  tpx::geom::Sphere sph{{c, c, c}, 0.30 * N};
+  peclet::core::geom::Sphere sph{{c, c, c}, 0.30 * N};
   refineToSdf(t, geo, [&](const Vec<3>& p) { return -sph.eval(p); }, 0, 1.5, true);
-  TPX_CHECK(t.numLeaves() < N * N * N);  // genuinely graded
+  PECLET_CORE_CHECK(t.numLeaves() < N * N * N);  // genuinely graded
 
   oracle::AmrFlow<21> fl;
   fl.init(t, 1.0, Vec<3>{0, 0, 0});
@@ -287,7 +287,7 @@ void test_graded_advection() {
       if (!std::isfinite(v)) finite = false;
       m = std::max(m, std::fabs(v));
     }
-  TPX_CHECK(finite && m < 4.0);  // stable across 2:1 interfaces (bounded, no blow-up)
+  PECLET_CORE_CHECK(finite && m < 4.0);  // stable across 2:1 interfaces (bounded, no blow-up)
 }
 
 void run() {
@@ -302,11 +302,11 @@ void run() {
 
 int main() {
   run();
-  TPX_RETURN_TEST_RESULT();
+  PECLET_CORE_RETURN_TEST_RESULT();
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping AMR flow test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping AMR flow test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON

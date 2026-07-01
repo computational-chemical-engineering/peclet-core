@@ -1,4 +1,4 @@
-// MPI correctness of particle-count load re-balancing (tpx::halo::rebalanceByParticleCount).
+// MPI correctness of particle-count load re-balancing (peclet::core::halo::rebalanceByParticleCount).
 //
 // N particles are scattered with positions concentrated in one corner of the domain, so the
 // equal-cell-count ORB leaves the corner-owning ranks heavily overloaded. After one rebalance —
@@ -17,15 +17,15 @@
 #include <cstring>
 #include <vector>
 
-#include "tpx/common/types.hpp"
-#include "tpx/decomp/block_decomposer.hpp"
-#include "tpx/halo/particle_migrator.hpp"
-#include "tpx/halo/particle_rebalance.hpp"
+#include "peclet/core/common/types.hpp"
+#include "peclet/core/decomp/block_decomposer.hpp"
+#include "peclet/core/halo/particle_migrator.hpp"
+#include "peclet/core/halo/particle_rebalance.hpp"
 
-using namespace tpx;
-using tpx::decomp::BlockDecomposer;
-using tpx::halo::DomainMap;
-using tpx::halo::ParticleMigrator;
+using namespace peclet::core;
+using peclet::core::decomp::BlockDecomposer;
+using peclet::core::halo::DomainMap;
+using peclet::core::halo::ParticleMigrator;
 
 static constexpr int kDim = 3;
 
@@ -122,7 +122,7 @@ int main(int argc, char** argv) {
 
   // Rebalance: weighted re-decompose by particle count + migrate.
   std::vector<double> weight;
-  tpx::halo::rebalanceByParticleCount(dec, mig, pos, payload, stride, MPI_COMM_WORLD, &weight);
+  peclet::core::halo::rebalanceByParticleCount(dec, mig, pos, payload, stride, MPI_COMM_WORLD, &weight);
   checkInvariants("post-rebalance");
   double imb1 = imbalance(pos.size(), N, size, MPI_COMM_WORLD);
 
@@ -138,7 +138,7 @@ int main(int argc, char** argv) {
   }
 
   // A second rebalance stays correct and does not worsen the balance.
-  tpx::halo::rebalanceByParticleCount(dec, mig, pos, payload, stride, MPI_COMM_WORLD);
+  peclet::core::halo::rebalanceByParticleCount(dec, mig, pos, payload, stride, MPI_COMM_WORLD);
   checkInvariants("second-rebalance");
   double imb2 = imbalance(pos.size(), N, size, MPI_COMM_WORLD);
   if (size > 1 && !(imb2 < 1.5)) ++fail;

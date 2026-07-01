@@ -1,4 +1,4 @@
-// transport-core — Python surface for the AMR octree (tpx::amr).
+// transport-core — Python surface for the AMR octree (peclet::core::amr).
 //
 // A nanobind module exposing the host adaptive-mesh-refinement path: the per-block BlockOctree
 // (serial) and the MPI DistributedOctree (ORB over root cells), so an mpi4py driver can build a
@@ -12,10 +12,10 @@
 //   * Geometry: a leaf's world centre = origin + h0 * fine_centre; a leaf at refinement `level`
 //     is h0 * 2**level wide. Root cells sit at level=lmax; level decreases toward 0 (finest).
 //
-// Per-leaf arrays are returned via the shared tpx::python::vector_to_ndarray (capsule-backed, no
-// extra copy); the Flow path returns host fields the same way. AMR is guarded by TPX_HAVE_MORTON, so
+// Per-leaf arrays are returned via the shared peclet::core::python::vector_to_ndarray (capsule-backed, no
+// extra copy); the Flow path returns host fields the same way. AMR is guarded by PECLET_CORE_HAVE_MORTON, so
 // this module REQUIRES the morton sibling checkout — its CMake points the include path at
-// ../../morton/include and defines TPX_HAVE_MORTON. MPI is assumed already initialized by the host
+// ../../morton/include and defines PECLET_CORE_HAVE_MORTON. MPI is assumed already initialized by the host
 // (import mpi4py.MPI first); the distributed class uses MPI_COMM_WORLD and never calls Init/Finalize.
 //
 // Build: see python/CMakeLists.txt (the tpx_amr target).
@@ -38,23 +38,23 @@
 
 #include <Kokkos_Core.hpp>
 
-#include "tpx/amr/adapt.hpp"
-#include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/flow.hpp"  // the canonical (device) AmrFlow exposed to Python
-#include "tpx/amr/distributed_adapt.hpp"
-#include "tpx/amr/distributed_octree.hpp"
-#include "tpx/amr/flow_oracle.hpp"  // oracle::AmrFlow (dev-only reference; not exposed)
-#include "tpx/amr/indicators.hpp"
-#include "tpx/amr/leaf_field.hpp"
-#include "tpx/amr/poisson.hpp"
-#include "tpx/amr/refine.hpp"
-#include "tpx/amr/vtu_io.hpp"
-#include "tpx/common/types.hpp"
-#include "tpx/geom/sdf.hpp"
-#include "tpx/python/ndarray_interop.hpp"
+#include "peclet/core/amr/adapt.hpp"
+#include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/flow.hpp"  // the canonical (device) AmrFlow exposed to Python
+#include "peclet/core/amr/distributed_adapt.hpp"
+#include "peclet/core/amr/distributed_octree.hpp"
+#include "peclet/core/amr/flow_oracle.hpp"  // oracle::AmrFlow (dev-only reference; not exposed)
+#include "peclet/core/amr/indicators.hpp"
+#include "peclet/core/amr/leaf_field.hpp"
+#include "peclet/core/amr/poisson.hpp"
+#include "peclet/core/amr/refine.hpp"
+#include "peclet/core/amr/vtu_io.hpp"
+#include "peclet/core/common/types.hpp"
+#include "peclet/core/geom/sdf.hpp"
+#include "peclet/core/python/ndarray_interop.hpp"
 
 namespace nb = nanobind;
-using namespace tpx;
+using namespace peclet::core;
 
 namespace {
 
@@ -69,12 +69,12 @@ using DArray = nb::ndarray<double, nb::c_contig>;
 template <class T>
 nb::ndarray<nb::numpy, T> vec1(std::vector<T> v) {
   const std::size_t n = v.size();
-  return tpx::python::vector_to_ndarray<T>(std::move(v), {n}, {1});
+  return peclet::core::python::vector_to_ndarray<T>(std::move(v), {n}, {1});
 }
 template <class T>
 nb::ndarray<nb::numpy, T> vec2(std::vector<T> v, std::size_t cols) {
   const std::size_t n = v.size() / cols;
-  return tpx::python::vector_to_ndarray<T>(std::move(v), {n, cols},
+  return peclet::core::python::vector_to_ndarray<T>(std::move(v), {n, cols},
                                            {static_cast<std::int64_t>(cols), 1});
 }
 
@@ -147,7 +147,7 @@ struct Releasable {
 // ---- serial single-block octree ----------------------------------------------------------------
 
 // A per-block adaptive octree with its world placement (origin + uniform finest spacing h0).
-// Wraps tpx::amr::BlockOctree<3> + AmrGeometry<3>: build a uniform brick, refine toward a surface,
+// Wraps peclet::core::amr::BlockOctree<3> + AmrGeometry<3>: build a uniform brick, refine toward a surface,
 // query leaves, and read leaf geometry / fields as numpy. The serial / single-rank form; for the
 // distributed (MPI) octree use DistributedOctree below.
 class Octree : public Releasable {
@@ -243,7 +243,7 @@ class Octree : public Releasable {
 // ---- geometric-multigrid Poisson solver --------------------------------------------------------
 
 // Cell-centered finite-volume Poisson solver (Lu = rhs) on an Octree, via a geometric multigrid
-// V-cycle (tpx::amr::AmrMultigrid). The operator L is the conservative two-point FV Laplacian
+// V-cycle (peclet::core::amr::AmrMultigrid). The operator L is the conservative two-point FV Laplacian
 // (negative-definite, suite sign convention); on a graded octree it is consistent and second-order
 // in the bulk (first-order at coarse/fine faces). `periodic=True` solves the singular periodic
 // problem (the constant null space is removed each cycle); the manufactured RHS b = apply(u_exact)
@@ -307,7 +307,7 @@ class Poisson : public Releasable {
 // ---- collocated incompressible flow ------------------------------------------------------------
 
 // Collocated (cell-centered) incompressible Stokes / Navier-Stokes step on an Octree with a cut-cell
-// immersed boundary (tpx::amr::AmrFlow). Each step() is: an implicit backward-Euler viscous momentum
+// immersed boundary (peclet::core::amr::AmrFlow). Each step() is: an implicit backward-Euler viscous momentum
 // predictor with no-slip (u=0) Dirichlet cut-cell IBM on the SDF solid, then the Almgren-Bell-Colella
 // approximate projection in incremental-rotational form (openness-weighted pressure Poisson). Stokes
 // by default; set_advection(True) adds explicit high-order (SOU / Koren-TVD) momentum advection.

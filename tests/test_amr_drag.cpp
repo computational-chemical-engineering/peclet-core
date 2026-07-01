@@ -11,22 +11,22 @@
 //   O(dt) splitting error -> ~ -11% at N=32; the rotational term fixed it.)
 // This test runs the cheapest resolved point and asserts a tight match.
 //
-// Guarded by TPX_HAVE_MORTON; a no-op pass without the morton sibling checkout.
+// Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
-#ifdef TPX_HAVE_MORTON
+#ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
 #include <vector>
 
-#include "tpx/amr/block_octree.hpp"
-#include "tpx/amr/flow_oracle.hpp"
-#include "tpx/amr/leaf_field.hpp"
-#include "tpx/amr/refine.hpp"
-#include "tpx/common/types.hpp"
-#include "tpx/geom/sdf.hpp"
+#include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/flow_oracle.hpp"
+#include "peclet/core/amr/leaf_field.hpp"
+#include "peclet/core/amr/refine.hpp"
+#include "peclet/core/common/types.hpp"
+#include "peclet/core/geom/sdf.hpp"
 
-using namespace tpx;
-using namespace tpx::amr;
+using namespace peclet::core;
+using namespace peclet::core::amr;
 
 namespace {
 
@@ -65,8 +65,8 @@ void run() {
   const double kZH = 4.292;  // Zick & Homsy (1982), SC, phi=0.125
   double k = dragK(3, phi);  // N=8 (cheapest); finer N tightens further (see header)
   double err = std::fabs(k - kZH) / kZH;
-  TPX_CHECK(k > 0);
-  TPX_CHECK(err < 0.03);  // tight match to Z&H (== sdflow); N=8 is ~ -0.8%
+  PECLET_CORE_CHECK(k > 0);
+  PECLET_CORE_CHECK(err < 0.03);  // tight match to Z&H (== sdflow); N=8 is ~ -0.8%
 
   // --- GRADED mesh: sphere band refined to the finest level, far field coarse ---
   // With the C/F-consistent momentum diffusion + FV divergence/ABC gradient, the
@@ -81,9 +81,9 @@ void run() {
   BO t(IVec<3>{brick, brick, brick}, lmax);
   AmrGeometry<3> geo;
   geo.h0 = 1.0;
-  tpx::geom::Sphere sph{{c, c, c}, R};
+  peclet::core::geom::Sphere sph{{c, c, c}, R};
   refineToSdf(t, geo, [&](const Vec<3>& p) { return -sph.eval(p); }, /*target*/ 0, /*band*/ 2.5, true);
-  TPX_CHECK(t.numLeaves() < Nf * Nf * Nf);  // genuinely coarsened (graded)
+  PECLET_CORE_CHECK(t.numLeaves() < Nf * Nf * Nf);  // genuinely coarsened (graded)
 
   oracle::AmrFlow<21> fl;
   fl.init(t, 1.0, Vec<3>{0, 0, 0});
@@ -105,20 +105,20 @@ void run() {
     usup += u[static_cast<std::size_t>(i)] * w * w * w;  // volume-weighted over the cell
   }
   usup /= nuni;
-  TPX_CHECK(std::isfinite(usup) && std::fabs(usup) < 1.0);  // STABLE (no blow-up)
+  PECLET_CORE_CHECK(std::isfinite(usup) && std::fabs(usup) < 1.0);  // STABLE (no blow-up)
   double kg = f * nuni / (6.0 * M_PI * mu * R * usup);
-  TPX_CHECK(std::fabs(kg - kZH) / kZH < 0.10);  // graded drag within ~10% of Z&H
+  PECLET_CORE_CHECK(std::fabs(kg - kZH) / kZH < 0.10);  // graded drag within ~10% of Z&H
 }
 
 }  // namespace
 
 int main() {
   run();
-  TPX_RETURN_TEST_RESULT();
+  PECLET_CORE_RETURN_TEST_RESULT();
 }
 #else
 int main() {
-  std::printf("TPX_HAVE_MORTON not set — skipping Stokes drag test\n");
+  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping Stokes drag test\n");
   return 0;
 }
-#endif  // TPX_HAVE_MORTON
+#endif  // PECLET_CORE_HAVE_MORTON
