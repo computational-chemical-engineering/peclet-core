@@ -1,4 +1,4 @@
-// transport-core — device-resident Lagrangian particle migration (D1).
+// core — device-resident Lagrangian particle migration (D1).
 //
 // ParticleMigrator::migrate (particle_migrator.hpp) is 100% host: a consumer holding its particle SoA
 // on the device must download it, migrate on the host, and re-upload — every migration. This class

@@ -1,4 +1,4 @@
-// transport-core — shared types and conventions (see suite/docs/CONVENTIONS.md).
+// core — shared types and conventions (see suite/docs/CONVENTIONS.md).
 //
 // Pillars: axis order is x-fastest (linear index I = x + y*nx + z*nx*ny), and SDF sign is
 // negative-inside-solid (enforced in peclet::core::geom, not here). This header is C++17-clean so it can be

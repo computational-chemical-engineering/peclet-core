@@ -1,4 +1,4 @@
-// transport-core — persistent Lagrangian ghost halo with forward + reverse(accumulate) exchange.
+// core — persistent Lagrangian ghost halo with forward + reverse(accumulate) exchange.
 //
 // The generic communication machinery behind the standard parallel particle schemes (and the
 // Voronoi conservative-flux scheme). Same topology/exchange split as GridHaloTopology: build() establishes a

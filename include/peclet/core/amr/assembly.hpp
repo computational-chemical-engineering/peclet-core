@@ -1,4 +1,4 @@
-// transport-core — device assembly of the FV (pressure) operator (D2), built on the S1 CSR primitive.
+// core — device assembly of the FV (pressure) operator (D2), built on the S1 CSR primitive.
 //
 // AmrPoisson::assembleFv walks `forEachFaceNeighbor` on the host (serial) to produce the weight-CSR
 // (invVol / start / nbr / coef=openness·A_f/d_f / bcDiag) that the device MG then applies. For a STATIC

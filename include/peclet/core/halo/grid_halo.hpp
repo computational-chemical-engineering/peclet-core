@@ -1,4 +1,4 @@
-// transport-core — portable (Kokkos) GPU-resident ghost-layer exchange.
+// core — portable (Kokkos) GPU-resident ghost-layer exchange.
 //
 // Portable (Kokkos) GPU-resident grid halo: the field lives on the device as a
 // peclet::core::View<T>; pack (gather send cells), unpack (scatter into ghost cells) and the periodic

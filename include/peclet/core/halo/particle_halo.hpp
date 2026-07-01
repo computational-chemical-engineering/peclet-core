@@ -1,4 +1,4 @@
-// transport-core — portable (Kokkos) device driver for the persistent Lagrangian ghost halo.
+// core — portable (Kokkos) device driver for the persistent Lagrangian ghost halo.
 //
 // Kokkos counterpart of the device-resident particle gather that packing-gpu hand-rolls
 // (gatherFloat4 / device-pointer MPI): it drives ParticleHaloTopology<Dim>'s forward/reverse exchanges with

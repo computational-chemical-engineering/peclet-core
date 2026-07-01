@@ -1,4 +1,4 @@
-// transport-core — signed-distance geometry for solids (see suite/docs/CONVENTIONS.md §2).
+// core — signed-distance geometry for solids (see suite/docs/CONVENTIONS.md §2).
 //
 // Sign convention (load-bearing, shared across the suite): sdf < 0 inside solid, > 0 in fluid/void,
 // 0 on the surface; the gradient points outward (into the fluid). Analytic primitives mirror the

@@ -1,4 +1,4 @@
-// transport-core — device (Kokkos) Poisson operator + smoother on a BlockOctreeView.
+// core — device (Kokkos) Poisson operator + smoother on a BlockOctreeView.
 //
 // The device compute path for the AMR octree: the Laplacian matvec and a weighted-
 // Jacobi smoother run as Kokkos::parallel_for over the leaf Views, using the
@@ -144,7 +144,7 @@ inline void jacobiFv(const FvOp& op, View<double> u, View<const double> rhs,
 /// Project `u` to volume-weighted-mean-zero over the ACTIVE (fluid) cells of the operator —
 /// the constant-nullspace removal for the singular periodic (pure-Neumann) operator. A cell is
 /// active when its diagonal (Σw + bc) > 0; fully-closed (solid) cells are excluded. Mirrors
-/// sdflow CutcellMG::removeMean (sum over cells with AC > 1e-30). Applied at every V-cycle level
+/// flow CutcellMG::removeMean (sum over cells with AC > 1e-30). Applied at every V-cycle level
 /// so the multigrid preconditioner does not drift / amplify the nullspace.
 inline void removeMeanFv(const FvOp& op, View<double> u) {
   auto invVol = op.invVol;

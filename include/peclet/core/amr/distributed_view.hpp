@@ -1,4 +1,4 @@
-// transport-core — device-resident distributed AMR Poisson + multigrid (C2).
+// core — device-resident distributed AMR Poisson + multigrid (C2).
 //
 // The host DistributedPoisson / DistributedMultigrid (distributed_poisson.hpp) run every per-cell
 // apply / jacobi / residual / restrict / prolong on host std::vector, gathering cross-block ghosts by

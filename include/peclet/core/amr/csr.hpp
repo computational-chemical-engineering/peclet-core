@@ -1,4 +1,4 @@
-// transport-core — device CSR-fill primitive (S1 / D1): the reusable count → scan → fill backbone
+// core — device CSR-fill primitive (S1 / D1): the reusable count → scan → fill backbone
 // for assembling a face-CSR sparse operator on the device.
 //
 // Every AMR operator (the FV pressure Laplacian, the cut-cell momentum operator, the face-geometry

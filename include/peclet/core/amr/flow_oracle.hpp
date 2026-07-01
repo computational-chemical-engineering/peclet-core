@@ -1,11 +1,11 @@
-// transport-core — collocated incompressible Stokes step on a BlockOctree.
+// core — collocated incompressible Stokes step on a BlockOctree.
 //
-// Wires the two cut-cell IBM halves into one sdflow-style projection step:
+// Wires the two cut-cell IBM halves into one flow-style projection step:
 //   * momentum  — implicit (backward-Euler) viscous solve per component with the
 //                 Dirichlet ξ-polynomial cut-cell operator (AmrCutCell): no-slip
 //                 u = 0 on the immersed boundary. Operator (ρ/dt)I − μ∇².
 //   * pressure  — the **Almgren–Bell–Colella (ABC) approximate projection** in an
-//                 **incremental rotational** form (sdflow's collocated coupling,
+//                 **incremental rotational** form (flow's collocated coupling,
 //                 src/mac_approx_projection.hpp). The predictor carries the old
 //                 pressure gradient −∇p^n; the openness-weighted (Neumann) Poisson
 //                 (AmrPoisson) solves ∇²φ = ∇·u*; the cell velocities are corrected
@@ -15,7 +15,7 @@
 //                 boundary-layer splitting error, so the steady drag is dt-INDEPENDENT
 //                 (plain non-incremental Chorin gives an O(dt) drag error — the
 //                 reason an earlier version missed Zick & Homsy; see docs/AMR.md).
-//                 The openness/aperture is sdflow's gradient-normalised ccFractionCore.
+//                 The openness/aperture is flow's gradient-normalised ccFractionCore.
 //
 // This collocated coupling is a deliberate choice. Do NOT replace it with a
 // Rhie–Chow face-velocity interpolation: the small residual *cell* divergence is
@@ -249,7 +249,7 @@ class AmrFlow {
   const std::vector<Index>& faceStart() const { return faceStart_; }
 
  private:
-  // ---- Koren TVD advection (faithful port of sdflow sadv::koren/tvd + cadv::advect) ----
+  // ---- Koren TVD advection (faithful port of flow sadv::koren/tvd + cadv::advect) ----
   static double koren(double up_m1, double up, double down, double vel) {
     const double num = up - up_m1, den = down - up;
     double r = (std::fabs(den) < 1e-10) ? 0.0 : num / den;
@@ -299,7 +299,7 @@ class AmrFlow {
   // ABC (Almgren-Bell-Colella) cell-velocity correction gradient in direction `c`:
   // ½·(g⁻ + g⁺) of the two adjacent FACE pressure-gradients, where a CLOSED face
   // (openness 0 — solid neighbour) contributes a ZERO gradient (it does NOT read
-  // the solid neighbour's φ). Verbatim form of sdflow's projectCorrectCenter
+  // the solid neighbour's φ). Verbatim form of flow's projectCorrectCenter
   // (src/mac_approx_projection.hpp) — the collocated approximate projection. This
   // is the chosen collocated coupling; do NOT substitute a Rhie–Chow face-velocity
   // interpolation (see docs/AMR.md and the amr-octree memory).
@@ -320,7 +320,7 @@ class AmrFlow {
   }
 
   // Fluid area fraction of a face, the gradient-normalised aperture (a faithful
-  // port of sdflow's ccFractionCore, src/mac_cutcell.hpp): frac = 0.5 + sd/denom,
+  // port of flow's ccFractionCore, src/mac_cutcell.hpp): frac = 0.5 + sd/denom,
   // sd = SDF at the face centre, denom = (|n_t1| + |n_t2|)·h0 over the two
   // tangential axes (n = unit SDF gradient). This is a linear interface
   // reconstruction within the face — 2nd-order accurate, unlike indicator

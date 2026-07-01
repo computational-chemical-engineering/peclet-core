@@ -1,7 +1,7 @@
-// transport-core — Robust-Scaled cut-cell Dirichlet operator on a BlockOctree.
+// core — Robust-Scaled cut-cell Dirichlet operator on a BlockOctree.
 //
-// A faithful port of sdflow's ξ-polynomial sub-cell boundary scheme
-// (sdflow/src/cut_cell_ibm.hpp: poly_*, ibmFillEntry, ibmModifyStencil) onto the
+// A faithful port of flow's ξ-polynomial sub-cell boundary scheme
+// (flow/src/cut_cell_ibm.hpp: poly_*, ibmFillEntry, ibmModifyStencil) onto the
 // cell-centered octree. Where the openness/aperture scheme (poisson.hpp) imposes a
 // *Neumann* wall (no flux through solid faces), this imposes a *Dirichlet* value
 // u = u_bc on the immersed boundary located at the true sub-cell distance ξ·h
@@ -13,7 +13,7 @@
 //
 // Cut cells are assumed to have same-level face neighbours (the suite contract:
 // resolve the immersed boundary in a uniformly-finest band, so cut cells never sit
-// on a 2:1 interface — see docs/AMR.md). 3D (sdflow's 6-direction scheme).
+// on a 2:1 interface — see docs/AMR.md). 3D (flow's 6-direction scheme).
 // Header-only, guarded by PECLET_CORE_HAVE_MORTON. Serial/host first.
 #ifndef PECLET_CORE_AMR_CUT_CELL_HPP
 #define PECLET_CORE_AMR_CUT_CELL_HPP
@@ -33,7 +33,7 @@
 
 namespace peclet::core::amr {
 
-// ---- boundary-distance polynomials (port of sdflow cut_cell_ibm.hpp, SCHEME 0,
+// ---- boundary-distance polynomials (port of flow cut_cell_ibm.hpp, SCHEME 0,
 //      double precision) ----
 namespace cc {
 // MORTON_HD (from face_csr.hpp): KOKKOS_FUNCTION on a Kokkos build, empty otherwise — so buildCutStencil
@@ -61,7 +61,7 @@ class AmrCutCell {
   using Code = typename Octree::Code;
   using Coord = typename Octree::Coord;
 
-  // direction k: 0=+x,1=-x,2=+y,3=-y,4=+z,5=-z (sdflow order); OPP swaps sides.
+  // direction k: 0=+x,1=-x,2=+y,3=-y,4=+z,5=-z (flow order); OPP swaps sides.
   static constexpr int OPP[6] = {1, 0, 3, 2, 5, 4};
 
   void init(const Octree& t, Real h0, Vec<3> origin = Vec<3>{}) {
@@ -82,7 +82,7 @@ class AmrCutCell {
   double kappa(Index i) const { return kappa_[static_cast<std::size_t>(i)]; }
   double rhsScale(Index i) const { return rscale_[static_cast<std::size_t>(i)]; }
 
-  // ---- read-only views of the built geometry, for the device assembler (device_momentum_assembly.hpp)
+  // ---- read-only views of the built geometry, for the device assembler (momentum_assembly.hpp)
   // to stage to the device and reproduce build()/assembleOperator there. Mirrors how AmrPoisson exposes
   // its openness to the device FV assembler.
   const AmrPoisson<3, Bits>& lap() const { return lap_; }        ///< α=1 C/F ∇² geometry for regular cells
@@ -472,7 +472,7 @@ class AmrCutCell {
 
  public:
   // Port of ibmFillEntry<0> + ibmModifyStencil for one cut cell (Dirichlet). Public + MORTON_HD so the
-  // device assembler (device_momentum_assembly.hpp) runs the SAME per-cell stencil build on device.
+  // device assembler (momentum_assembly.hpp) runs the SAME per-cell stencil build on device.
   MORTON_HD static void buildCutStencil(double sdf_c, const double sdf_n[6], double beta, double AC0,
                                         double& ACout, double off[6], double& rscaleOut,
                                         double& inhomOut) {

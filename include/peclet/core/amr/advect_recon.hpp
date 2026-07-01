@@ -1,4 +1,4 @@
-// transport-core — shared, backend-agnostic high-order advection face reconstruction.
+// core — shared, backend-agnostic high-order advection face reconstruction.
 //
 // The SOU / Koren-TVD reconstruction of the advected face value from the two upwind cells (upup, up)
 // and the downwind cell (down) is the numerically delicate part of the advection scheme — exactly the

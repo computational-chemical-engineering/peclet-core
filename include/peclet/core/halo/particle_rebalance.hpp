@@ -1,4 +1,4 @@
-// transport-core — particle-count load re-balancing for the Lagrangian path.
+// core — particle-count load re-balancing for the Lagrangian path.
 //
 // The Eulerian/AMR side rebalances by re-decomposing on a per-cell *work* weight and migrating the
 // owned data (see peclet::core::amr::DistributedOctree::rebalance). This is the Lagrangian counterpart: when

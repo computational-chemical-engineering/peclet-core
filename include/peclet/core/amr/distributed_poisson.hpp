@@ -1,4 +1,4 @@
-// transport-core — distributed Poisson operator + smoother on a DistributedOctree.
+// core — distributed Poisson operator + smoother on a DistributedOctree.
 //
 // The distributed compute path for the AMR octree: the operator (Laplacian matvec
 // and a weighted-Jacobi smoother) runs per rank on the local block, with the
@@ -6,7 +6,7 @@
 // ghost exchange (faceNeighborGather) — the same NBX halo used for cross-block
 // balance. Jacobi uses only the previous iterate, so a distributed sweep is
 // bit-identical to the serial one (the halo carries exactly the cells a serial
-// single-block solve would read). This is the analog of sdflow's MPI-folded
+// single-block solve would read). This is the analog of flow's MPI-folded
 // CutcellMG, at the operator/smoother level.
 //
 // Scope: the plain (uniform, openness-free) Laplacian L = ∇² in grid spacing h0,
@@ -122,7 +122,7 @@ class DistributedPoisson {
 };
 
 /// Distributed geometric-multigrid V-cycle for the plain Laplacian on a uniform
-/// (lmax==0) octree, the distributed analog of the host AmrMultigrid + sdflow's
+/// (lmax==0) octree, the distributed analog of the host AmrMultigrid + flow's
 /// MPI-folded CutcellMG. The hierarchy is a stack of DistributedOctrees on the
 /// successively halved global root grid, each ORB-decomposed over the *same* comm.
 ///

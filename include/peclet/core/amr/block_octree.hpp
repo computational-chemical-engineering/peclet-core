@@ -1,4 +1,4 @@
-// transport-core — per-block adaptive octree with block-local Morton codes.
+// core — per-block adaptive octree with block-local Morton codes.
 //
 // The suite's AMR primitive. Unlike the textbook linear octree (one global
 // space-filling curve, partitioned by index ranges à la p4est/Dendro), the suite

@@ -1,4 +1,4 @@
-// transport-core — Barnes–Hut tree over a BlockOctree (particle-tree mode).
+// core — Barnes–Hut tree over a BlockOctree (particle-tree mode).
 //
 // The same per-block octree that carries an AMR grid doubles as a general
 // adaptive spatial tree. Here it is built top-down by particle insertion (refine

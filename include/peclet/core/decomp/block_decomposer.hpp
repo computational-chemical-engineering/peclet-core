@@ -1,4 +1,4 @@
-// transport-core — orthogonal recursive bisection (ORB) domain decomposition.
+// core — orthogonal recursive bisection (ORB) domain decomposition.
 //
 // Ported from block_decomposer/src/BlockDecomposer.hpp (pbs::BlockDecomposer), modernized into the
 // tpx namespace. The global cell grid is split recursively along its largest axis into `numBlocks`

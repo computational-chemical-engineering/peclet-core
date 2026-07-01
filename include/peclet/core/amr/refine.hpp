@@ -1,4 +1,4 @@
-// transport-core — refinement criteria for a BlockOctree.
+// core — refinement criteria for a BlockOctree.
 //
 // Topology-mutation helpers that drive BlockOctree::refineIf from a geometric
 // criterion. The headline one is SDF-driven: refine leaves the solid surface

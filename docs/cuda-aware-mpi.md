@@ -4,7 +4,7 @@
 > Kokkos device path was canonical. The **UCX/OpenMPI build recipe below remains valid and current**;
 > the integration/swap-in sections refer to retired native-CUDA code (`grid_halo_cuda.cuh`,
 > `DeviceGridExchange`) — the live equivalent is the Kokkos `GridHalo<T>` device path in
-> `include/tpx/halo/grid_halo.hpp`, gated on the env flag `PECLET_CORE_GPU_AWARE_MPI`.
+> `include/peclet/core/halo/grid_halo.hpp`, gated on the env flag `PECLET_CORE_GPU_AWARE_MPI`.
 
 Direct **device-pointer** MPI (CUDA-aware MPI) now works on this box via a **user-space** OpenMPI+UCX
 built against CUDA 13.2 — no root, no sysadmin. `tools/cuda_aware_mpi_check.cpp` passes:
@@ -60,9 +60,9 @@ honoured) — or probe UCX. This is exactly what the Kokkos `GridHalo<T>` device
 
 ## Swap-in: device-pointer path (historical — now the Kokkos `GridHalo<T>` path)
 
-This section described the swap-in for the retired native-CUDA `include/tpx/halo/grid_halo_cuda.cuh`
+This section described the swap-in for the retired native-CUDA `include/peclet/core/halo/grid_halo_cuda.cuh`
 (`DeviceGridExchange`), which host-staged `d_sendBuf_`->host->MPI->host->`d_recvBuf_`. The idea now
-lives in the canonical Kokkos device halo, `include/tpx/halo/grid_halo.hpp` (`GridHalo<T>`): by default
+lives in the canonical Kokkos device halo, `include/peclet/core/halo/grid_halo.hpp` (`GridHalo<T>`): by default
 it host-stages only the compact halo buffers (the field stays on the device); when
 `PECLET_CORE_GPU_AWARE_MPI` is set it hands the device pointers straight to `MPI_Isend`/`MPI_Irecv`, dropping
 the two staging copies — a runtime-gated branch in one function. Build the Kokkos GPU tests against

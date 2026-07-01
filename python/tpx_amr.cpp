@@ -1,4 +1,4 @@
-// transport-core — Python surface for the AMR octree (peclet::core::amr).
+// core — Python surface for the AMR octree (peclet::core::amr).
 //
 // A nanobind module exposing the host adaptive-mesh-refinement path: the per-block BlockOctree
 // (serial) and the MPI DistributedOctree (ORB over root cells), so an mpi4py driver can build a
@@ -130,7 +130,7 @@ std::vector<double> asField(const BO& t, const DArray& field, const char* who) {
 // On CUDA, Kokkos::finalize() MUST run at exit (else cudaErrorCudartUnloading), but any wrapper that
 // still holds device Views at that point aborts ("deallocated after Kokkos::finalize"). Test/driver
 // scripts routinely keep an Octree/Flow at module scope, so we track live wrappers and drop their
-// Views (release()) BEFORE finalize, in the atexit hook. Mirrors dem/vorflow's releaseAll().
+// Views (release()) BEFORE finalize, in the atexit hook. Mirrors dem/voro's releaseAll().
 struct Releasable {
   Releasable() { registry().insert(this); }
   virtual ~Releasable() { registry().erase(this); }
@@ -520,7 +520,7 @@ NB_MODULE(amr, m) {
     if (Kokkos::is_initialized() && !Kokkos::is_finalized()) Kokkos::finalize();
   }));
   m.attr("__doc__") =
-      "transport-core adaptive-mesh-refinement: per-block BlockOctree (serial) and DistributedOctree "
+      "core adaptive-mesh-refinement: per-block BlockOctree (serial) and DistributedOctree "
       "(MPI ORB) for the mesh, plus the device (Kokkos) AmrFlow cut-cell Stokes/Navier-Stokes solver. "
       "Build a graded octree, refine to an SDF surface, read leaf geometry + per-leaf fields as numpy, "
       "load-rebalance, gather face neighbours, export VTU, and run the flow step on device.";
@@ -627,7 +627,7 @@ NB_MODULE(amr, m) {
            "Use the rediscretised staircase velocity-MG instead of Galerkin (default off).")
       .def("set_momentum_mg_solver", &Flow::set_momentum_mg_solver, nb::arg("on"),
            "Solve the momentum predictor with the velocity-MG as the solver (no Krylov), mirroring "
-           "sdflow's velocity solve (default off = BiCgStab with the MG as preconditioner).")
+           "flow's velocity solve (default off = BiCgStab with the MG as preconditioner).")
       .def("set_outer_iterations", &Flow::set_outer_iterations, nb::arg("n"), nb::arg("tol") = 1e-6,
            "Picard outer iterations over the lagged advection per step (default 1).")
       .def("step", &Flow::step, nb::arg("mom_iters") = 100, nb::arg("pres_iters") = 60,

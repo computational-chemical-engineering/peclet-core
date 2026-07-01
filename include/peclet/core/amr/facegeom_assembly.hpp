@@ -1,4 +1,4 @@
-// transport-core — device assembly of the collocated-projection FACE-GEOMETRY tables (D4).
+// core — device assembly of the collocated-projection FACE-GEOMETRY tables (D4).
 //
 // buildFaceGeom (flow.hpp) walks AmrPoisson::forEachFaceFull on the host to produce the per-(sub)face
 // geometry CSR the collocated divergence / gradient / ABC face-field / FOU advection kernels consume:

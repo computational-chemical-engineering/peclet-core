@@ -2,7 +2,7 @@
 /// @brief Sampled (grid) signed-distance field with trilinear interpolation.
 ///
 /// This is how real geometry enters the Eulerian/Lagrangian solvers: an SDF sampled on a regular grid
-/// (x-fastest, matching the suite indexing and `sdflow`/`dem`'s VTI fields). Values keep the suite
+/// (x-fastest, matching the suite indexing and `flow`/`dem`'s VTI fields). Values keep the suite
 /// sign convention (negative inside solid). Out-of-domain queries clamp to the nearest in-domain
 /// sample. Satisfies the same `peclet::core::geom::Sdf` concept as the analytic primitives, so solvers consume
 /// analytic and sampled geometry through one interface.
@@ -19,7 +19,7 @@ namespace peclet::core::geom {
 /// A signed-distance field sampled on a regular axis-aligned grid (negative inside solid).
 ///
 /// Models the `peclet::core::geom::Sdf` concept via `eval()`. Storage is x-fastest, matching the suite
-/// indexing convention and the VTI fields produced by `sdflow`/`dem`.
+/// indexing convention and the VTI fields produced by `flow`/`dem`.
 struct GridSdf {
   std::vector<float> values;  ///< Sample values, x-fastest: idx = i + j*nx + k*nx*ny.
   IVec<3> dims{};             ///< Sample count per axis (nx, ny, nz).

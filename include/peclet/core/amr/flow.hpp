@@ -1,4 +1,4 @@
-// transport-core — device (Kokkos) collocated incompressible Stokes step on a BlockOctree.
+// core — device (Kokkos) collocated incompressible Stokes step on a BlockOctree.
 //
 // The device counterpart of oracle::AmrFlow (flow.hpp): the whole cut-cell IBM projection step
 // runs in Kokkos kernels instead of the host-serial gaussSeidel + host projection the drag
@@ -414,7 +414,7 @@ class AmrFlow {
   /// second-order upwind (SOU) by default; the first-order-upwind part is solved *implicitly*
   /// (folded into the momentum operator) and the (SOU−FOU) difference is the explicit deferred
   /// correction — unconditionally stable for the FOU part, exact-SOU at steady state. This is
-  /// the same implicit-FOU + deferred-SOU scheme as the host oracle::AmrFlow and sdflow's collocated
+  /// the same implicit-FOU + deferred-SOU scheme as the host oracle::AmrFlow and flow's collocated
   /// grid (`set_implicit_advection`).
   void setAdvection(bool on) { advect_ = on; }
   /// Implicit-FOU deferred correction (default ON). OFF ⇒ the whole high-order advection is
@@ -443,7 +443,7 @@ class AmrFlow {
 
   /// Choose the momentum-MG coarse-operator strategy: false (default) = Galerkin
   /// (MomentumMG, A_c = R·A·P of the exact cut-cell operator); true = rediscretized
-  /// staircase (VelocityMG, mirroring sdflow's VelocityMG). Call before setSolid. Both are
+  /// staircase (VelocityMG, mirroring flow's VelocityMG). Call before setSolid. Both are
   /// device-resident BiCGStab preconditioners; this lets the two be benchmarked head-to-head.
   void setVelocityMGStaircase(bool on) { useStaircaseMG_ = on; }
   /// Pore-scale cap for the staircase velocity-MG: the coarsest level keeps ≥ this many cells, so
@@ -458,18 +458,18 @@ class AmrFlow {
 
   /// Opt-in (P4): solve the momentum predictor with the velocity multigrid used **as the solver**
   /// — MG-preconditioned defect correction `u ← u + M⁻¹(b − A u)` iterated to tolerance — instead of
-  /// BiCGStab with the same MG as a preconditioner. This is the faithful mirror of sdflow's velocity
+  /// BiCGStab with the same MG as a preconditioner. This is the faithful mirror of flow's velocity
   /// solve, which uses no Krylov method at all (RB-GS smoother / velocity-MG directly): the momentum
   /// operator is diagonally dominant and invertible, so the stationary iteration converges, and
   /// unlike BiCGStab it cannot break down on the strongly non-symmetric (D_rescale + FOU) operator
   /// (no bi-orthogonal recurrence to lose — the failure mode P5 had to symmetrise the smoother to
   /// avoid). With the GS smoother (setMomentumGS) and a velocity-MG (setMomentumMG, default on) this
-  /// is the full RB-GS/MG sdflow path; with MG off it degrades to plain damped-Jacobi sweeps
-  /// (sdflow's smoothComp). Default off (BiCGStab stays the validated default). Requires setMomentumMG
+  /// is the full RB-GS/MG flow path; with MG off it degrades to plain damped-Jacobi sweeps
+  /// (flow's smoothComp). Default off (BiCGStab stays the validated default). Requires setMomentumMG
   /// to actually be multigrid-accelerated; otherwise the Richardson iteration converges only slowly.
   void setMomentumMGSolver(bool on) { momMGSolver_ = on; }
 
-  /// Optional Picard outer loop over the lagged advection (mirror of sdflow's outerIters_): each
+  /// Optional Picard outer loop over the lagged advection (mirror of flow's outerIters_): each
   /// outer iteration re-freezes the advecting velocity at the latest u and re-solves the predictor,
   /// stopping early when the max |Δu| between successive outer iterates falls below `tol`. `n = 1`
   /// (default) is the single lagged step used until now (no extra cost). Only meaningful with
@@ -604,7 +604,7 @@ class AmrFlow {
     // this is just a copy of uⁿ ⇒ bit-identical to the single lagged step.
     for (int c = 0; c < 3; ++c) Kokkos::deep_copy(u0_[c], View<const double>(u_[c]));
     // −∇p^n is constant across the outer iterations (pressure is projected once, after the loop, like
-    // sdflow's single per-step projection) ⇒ hoist it out.
+    // flow's single per-step projection) ⇒ hoist it out.
     grad3(geom_, View<const double>(p_), gx_[0], gx_[1], gx_[2]);
     // Picard outer loop over the lagged advection only (the momentum nonlinearity); for outerIters_==1
     // this is the single lagged predictor, then one projection — bit-identical to before.
@@ -643,7 +643,7 @@ class AmrFlow {
                      View<const double>(defc_[c]), View<const double>(rscale_),
                      View<const char>(fluid_), idiag, f_[c], bmom_, n);
         // P4 (opt-in): the velocity-MG used as the *solver* — MG-preconditioned defect correction,
-        // no Krylov (the sdflow RB-GS/velocity-MG mirror; cannot break down on the non-symmetric
+        // no Krylov (the flow RB-GS/velocity-MG mirror; cannot break down on the non-symmetric
         // operator) — vs the default MG-preconditioned BiCGStab. Both reach the same solution (the
         // matvec is the exact operator); the choice only trades robustness for convergence rate.
         lastMomIters_ +=
@@ -666,7 +666,7 @@ class AmrFlow {
         for (int c = 0; c < 3; ++c) Kokkos::deep_copy(uprev_[c], View<const double>(u_[c]));
       }
     }
-    project(presIters);  // single pressure projection per step (sdflow structure)
+    project(presIters);  // single pressure projection per step (flow structure)
   }
 
   /// Pressure projection of the current velocity in place.
@@ -675,12 +675,12 @@ class AmrFlow {
     divergence(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
                      View<const double>(u_[2]), div_);
     Kokkos::deep_copy(phi_, 0.0);
-    // Two selectable pressure drivers, like sdflow's CutcellMG (MG-PCG single-rank default,
+    // Two selectable pressure drivers, like flow's CutcellMG (MG-PCG single-rank default,
     // standalone V-cycle the robust multi-rank default): MG-PCG for the near-steady, divergence-
     // compatible Stokes case (faster), and the stationary V-cycle for the large transient
     // divergence of advection, which excites near-nullspace modes of the cut-cell openness Poisson
     // (near-isolated fluid cells) that CG amplifies — the V-cycle is bounded. (Per-level mean
-    // removal is on for both; making MG-PCG robust enough to also cover advection needs sdflow's
+    // removal is on for both; making MG-PCG robust enough to also cover advection needs flow's
     // near-isolated-cell pinning/classification — a follow-up.)
     if (presPCG_ && !advect_) {
       lastPresIters_ = pcg_.solve(presMG_, phi_, View<const double>(div_), presIters, 1e-10).iters;
@@ -789,7 +789,7 @@ class AmrFlow {
   int lastOuterIters() const { return lastOuterIters_; }
 
  private:
-  // sdflow ccFractionCore aperture (verbatim from oracle::AmrFlow::faceFrac).
+  // flow ccFractionCore aperture (verbatim from oracle::AmrFlow::faceFrac).
   template <class SdfFn>
   double faceFrac(SdfFn&& sdfFn, const Vec<3>& fc, int axis) const {
     double sd = sdfFn(fc);

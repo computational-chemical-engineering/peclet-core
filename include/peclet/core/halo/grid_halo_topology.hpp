@@ -1,4 +1,4 @@
-// transport-core — asynchronous ghost-layer exchange for a block-decomposed structured grid.
+// core — asynchronous ghost-layer exchange for a block-decomposed structured grid.
 //
 // Design (see suite/docs/INTERFACES.md): TOPOLOGY is separated from EXCHANGE.
 //   * buildTopology() (done once, or on re-decomposition) figures out, for every ghost cell of this

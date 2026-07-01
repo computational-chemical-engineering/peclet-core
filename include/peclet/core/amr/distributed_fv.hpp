@@ -1,4 +1,4 @@
-// transport-core — consistent graded FV Laplacian on a *distributed* octree.
+// core — consistent graded FV Laplacian on a *distributed* octree.
 //
 // The distributed analog of AmrPoisson / Multigrid's consistent operator:
 // the conservative two-point FV Laplacian

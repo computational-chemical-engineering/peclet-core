@@ -1,9 +1,9 @@
-// transport-core — shared Kokkos device-memory abstraction for the suite's portable path.
+// core — shared Kokkos device-memory abstraction for the suite's portable path.
 //
 // One place defines the execution/memory spaces, the 1D device array the halo exchange operates on
 // (it gathers/scatters by flat x-fastest local index, so a contiguous per-cell field is a View<T>),
 // and the 3D structured field (x-fastest => Kokkos::LayoutLeft). Including this header requires
-// Kokkos (build with -DTPX_ENABLE_KOKKOS=ON); the CPU and legacy-CUDA paths do NOT pull it in.
+// Kokkos (build with -DPECLET_CORE_ENABLE_KOKKOS=ON); the CPU and legacy-CUDA paths do NOT pull it in.
 #ifndef PECLET_CORE_COMMON_VIEW_HPP
 #define PECLET_CORE_COMMON_VIEW_HPP
 

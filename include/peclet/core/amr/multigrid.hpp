@@ -1,4 +1,4 @@
-// transport-core — device (Kokkos) geometric-multigrid V-cycle on a BlockOctree,
+// core — device (Kokkos) geometric-multigrid V-cycle on a BlockOctree,
 // with the *consistent* graded (cut-cell-ready) operator.
 //
 // The device compute path's capstone: a full MG V-cycle running entirely in device
@@ -87,7 +87,7 @@ inline void prolongAdd(View<const Index> c2p, View<const double> coarse, View<do
 }
 
 /// Masked piecewise-constant prolong + correct: fine(i) += coarse(c2p(i)) only on non-excluded fine
-/// cells (mirrors sdflow VelocityMG::prolongMasked — no correction into a cut/solid cell). Generic.
+/// cells (mirrors flow VelocityMG::prolongMasked — no correction into a cut/solid cell). Generic.
 inline void prolongAddMasked(View<const Index> c2p, View<const double> coarse,
                                    View<const char> excl, View<double> fine, Index nFine) {
   Kokkos::parallel_for(
@@ -98,7 +98,7 @@ inline void prolongAddMasked(View<const Index> c2p, View<const double> coarse,
       });
 }
 
-/// Zero `v` at excluded cells (excl != 0). Mirrors sdflow's mg_mul_mask: applied to the fine
+/// Zero `v` at excluded cells (excl != 0). Mirrors flow's mg_mul_mask: applied to the fine
 /// residual before restriction so the inconsistent cut-cell + solid residuals never reach the
 /// coarse grid (the clean-fluid exclude). Generic.
 inline void zeroMasked(View<double> v, View<const char> excl, Index n) {
@@ -143,7 +143,7 @@ class Multigrid {
   void setKappaRestrict(bool on) { kappaRestrict_ = on; }
 
   /// Opt-in (default off): project the correction to mean-zero over fluid cells at every V-cycle
-  /// level — the singular (periodic pure-Neumann) nullspace removal, mirroring sdflow
+  /// level — the singular (periodic pure-Neumann) nullspace removal, mirroring flow
   /// CutcellMG::vcycle. Needed when the V-cycle is the MG-PCG preconditioner for a singular
   /// operator (otherwise the cycle drifts / amplifies a near-nullspace mode and the projection
   /// blows up under large transient divergence). The bit-exact-vs-host MG test keeps this OFF.

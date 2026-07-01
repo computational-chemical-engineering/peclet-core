@@ -1,4 +1,4 @@
-// transport-core — device-resident view of a BlockOctree (portable Kokkos).
+// core — device-resident view of a BlockOctree (portable Kokkos).
 //
 // BlockOctree (block_octree.hpp) owns the topology on the host: refine / coarsen /
 // 2:1 balance rebuild its sorted leaf arrays. BlockOctreeView mirrors those
@@ -9,7 +9,7 @@
 // halo already uses (grid_halo.hpp vs grid_halo_kokkos.hpp): topology on host,
 // the per-leaf hot path on device, bit-for-bit identical results.
 //
-// Including this header requires Kokkos (build with -DTPX_ENABLE_KOKKOS=ON) and
+// Including this header requires Kokkos (build with -DPECLET_CORE_ENABLE_KOKKOS=ON) and
 // the morton sibling checkout (PECLET_CORE_HAVE_MORTON, with MORTON_ENABLE_KOKKOS so
 // MORTON_HD == KOKKOS_FUNCTION).
 #ifndef PECLET_CORE_AMR_BLOCK_OCTREE_VIEW_HPP

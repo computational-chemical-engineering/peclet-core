@@ -1,10 +1,10 @@
-// transport-core — device (Kokkos) multigrid-preconditioned CG for the AMR FV Poisson.
+// core — device (Kokkos) multigrid-preconditioned CG for the AMR FV Poisson.
 //
 // A Krylov accelerator on top of the existing device machinery: the matvec is the
 // consistent conservative FV Laplacian `applyFv` (poisson.hpp), the
 // preconditioner is one (or a few) Multigrid V-cycle(s) (multigrid.hpp),
 // and the inner products / vector updates are Kokkos reductions / parallel_fors. This
-// is exactly sdflow's structured MG-PCG, ported onto the AMR octree CSR: CG accelerates
+// is exactly flow's structured MG-PCG, ported onto the AMR octree CSR: CG accelerates
 // the geometric MG so a given residual is reached in far fewer fine-grid matvecs than
 // stationary V-cycling, on whatever backend Kokkos targets (CUDA / HIP / OpenMP).
 //
@@ -52,7 +52,7 @@ inline double dotVol(View<const double> u, View<const double> v, View<const doub
 /// 0 for a solid cell (every face closed by the cut-cell openness ⇒ Σ w_f = 0). These solid cells
 /// carry their own (per connected solid region) constant null modes; left in the Krylov space CG
 /// amplifies them (the cut-cell-openness near-nullspace blow-up). We project them out — same role as
-/// sdflow's mg_mask_solid_k. Geometry-fixed, so it is rebuilt once per solve.
+/// flow's mg_mask_solid_k. Geometry-fixed, so it is rebuilt once per solve.
 inline void buildFluidMask(const FvOp& op, View<double> mask, Index n) {
   auto start = op.faceStart;
   auto w = op.faceW;
@@ -149,7 +149,7 @@ class PCG {
     Result R;
     // Project onto the fluid range: always zero the solid cells (their per-region null modes); for the
     // singular (periodic/all-Neumann) operator also remove the fluid constant. Applied to every Krylov
-    // quantity so the iteration stays in the well-posed fluid range (mirrors sdflow removeMean∘maskSolid).
+    // quantity so the iteration stays in the well-posed fluid range (mirrors flow removeMean∘maskSolid).
     auto project = [&](View<double> u) {
       if (singular_)
         removeMeanVol(u, invVol, mask, n);

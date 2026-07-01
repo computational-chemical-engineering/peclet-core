@@ -1,4 +1,4 @@
-// transport-core — minimal Python surface for the Lagrangian halo (migration + ghosts).
+// core — minimal Python surface for the Lagrangian halo (migration + ghosts).
 //
 // A nanobind module exposing peclet::core::halo::ParticleMigrator so an mpi4py driver can decompose a periodic
 // domain and migrate/ghost particles between ranks. Particles are passed as numpy arrays: positions
@@ -7,8 +7,8 @@
 // this module uses MPI_COMM_WORLD and never calls MPI_Init/Finalize.
 //
 // Host-only (no Kokkos): arrays are returned via a capsule-backed nanobind ndarray (the same
-// owner-capsule idea as transport-core's Kokkos bridge, minus the device path).
-// Reusable by dem and vorflow. Build: see python/CMakeLists.txt.
+// owner-capsule idea as core's Kokkos bridge, minus the device path).
+// Reusable by dem and voro. Build: see python/CMakeLists.txt.
 #include <mpi.h>
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -216,7 +216,7 @@ class Halo {
 };
 
 NB_MODULE(mpi, m) {
-  m.attr("__doc__") = "transport-core Lagrangian halo (block decomposition + particle migration/ghosts)";
+  m.attr("__doc__") = "core Lagrangian halo (block decomposition + particle migration/ghosts)";
   nb::class_<Migrator>(m, "Migrator")
       .def(nb::init<std::array<double, 3>, std::array<double, 3>, std::array<long, 3>,
                     std::array<bool, 3>>(),

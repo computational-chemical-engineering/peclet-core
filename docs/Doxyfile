@@ -1,10 +1,10 @@
-# Doxygen configuration for transport-core.
+# Doxygen configuration for core.
 # Generate docs with:   doxygen docs/Doxyfile
 # Output:               docs/html/index.html
 # The Documentation CI workflow (.github/workflows/docs.yml) publishes docs/html to GitHub Pages.
 
 DOXYFILE_ENCODING      = UTF-8
-PROJECT_NAME           = "transport-core"
+PROJECT_NAME           = "core"
 PROJECT_BRIEF          = "Shared MPI block decomposition + asynchronous ghost-layer exchange (header-only C++20)"
 OUTPUT_DIRECTORY       = docs
 HTML_OUTPUT            = html

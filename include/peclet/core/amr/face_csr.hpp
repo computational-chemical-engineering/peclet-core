@@ -1,4 +1,4 @@
-// transport-core — shared, backend-agnostic kernels for an assembled face-CSR operator.
+// core — shared, backend-agnostic kernels for an assembled face-CSR operator.
 //
 // The "host" serial reference solver (peclet::core::amr::AmrCutCell / oracle::AmrFlow, pure C++20) and the "device"
 // Kokkos solver (peclet::core::amr::MomentumOp + momentum.hpp) used to carry two independent

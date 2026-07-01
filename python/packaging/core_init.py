@@ -1,4 +1,4 @@
-"""peclet.core — Python surface for the transport-core shared infrastructure.
+"""peclet.core — Python surface for the core shared infrastructure.
 
 Submodules (compiled nanobind extensions, built by python/CMakeLists.txt):
 

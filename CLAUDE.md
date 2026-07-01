@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 `core` is the shared infrastructure library for the transport-phenomena simulation suite
-(sibling repos under `../`: `sdflow`, `dem`, `vorflow`, `morton`). The suite-wide design contract lives in `../docs/` — read
+(sibling repos under `../`: `flow`, `dem`, `voro`, `morton`). The suite-wide design contract lives in `../docs/` — read
 `../docs/ARCHITECTURE.md`, `CONVENTIONS.md`, `STYLE.md`, `INTERFACES.md`, `ROADMAP.md` before
 cross-cutting changes. Header-only C++20; the device side is compiled through Kokkos (CUDA / HIP /
 OpenMP) and is also C++20 — only the `morton` dependency pins C++17 (see `../docs/STYLE.md`). CUDA is
@@ -20,7 +20,7 @@ ctest --test-dir build --output-on-failure   # serial + MPI halo + particle migr
 
 # Portable Kokkos device halo (CUDA / HIP / OpenMP) -- opt-in, find_package(Kokkos):
 export PATH=/usr/local/cuda-13.2/bin:$PATH    # if the Kokkos install targets the CUDA backend
-cmake -S . -B build_kokkos -DTPX_ENABLE_KOKKOS=ON \
+cmake -S . -B build_kokkos -DPECLET_CORE_ENABLE_KOKKOS=ON \
   -DCMAKE_PREFIX_PATH=../extern/install/nvidia-cuda
 cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure  # + GPU halo np=1,2,4
 mpirun -np 4 ./build/benchmarks/bench_halo 48 1 300
@@ -31,11 +31,11 @@ suite's local install prefix (`../tools/bootstrap_deps.sh`). The legacy native-C
 
 ## Architecture
 
-Header-only under `include/tpx/`:
+Header-only under `include/peclet/core/`:
 
 - `common/types.hpp` — `Index` (int64), `Real` (double), `IVec<Dim>`/`Vec<Dim>`, `wrap()`,
   compile-time `forEachInBox`. **Convention: x-fastest linear index** `I = x + y*nx + z*nx*ny`
-  (matches sdflow and `../docs/CONVENTIONS.md`). Keep this header C++17-clean (shared with `morton`,
+  (matches flow and `../docs/CONVENTIONS.md`). Keep this header C++17-clean (shared with `morton`,
   which pins C++17).
 - `decomp/block_decomposer.hpp` — ORB decomposition (ported & modernized from
   `../block_decomposer/src/BlockDecomposer.hpp`). `ownerOf()` walks the implicit binary tree
@@ -68,7 +68,7 @@ Header-only under `include/tpx/`:
   migrator/halo holding a pointer to it sees the new partition), and migrates. Pure redistribution
   (count/payload preserved). The dem distributed step is the consumer; also bound in `python/tpx_mpi.cpp`.
 - `halo/grid_halo.hpp` — `GridHalo<T>`: portable GPU-resident halo (Kokkos; CUDA / HIP / OpenMP
-  backends). pack/unpack/self-copy run as `parallel_for` over the device `tpx::View<T>` field; only the
+  backends). pack/unpack/self-copy run as `parallel_for` over the device `peclet::core::View<T>` field; only the
   compact halo buffers are host-staged for MPI by default (the field stays on the device), with an
   opt-in GPU-aware path (env `PECLET_CORE_GPU_AWARE_MPI`, legacy `PECLET_CORE_CUDA_AWARE_MPI` still honoured). Built
   from a host `GridHaloTopology<Dim>::flatten()` via `init()`. Bit-for-bit matches the CPU exchange.
@@ -85,8 +85,8 @@ Header-only under `include/tpx/`:
   GPU-aware MPI). Built from `ParticleHaloTopology::flatten()`; consumed by dem's distributed step.
 - `geom/` — shared SDF solids. `geom/sdf.hpp` is the `Sdf` concept + analytic primitives;
   `geom/grid_sdf.hpp` is the trilinearly-sampled `GridSdf`; `geom/vti_io.hpp` reads/writes scalar &
-  vector VTI (`.vti`). The shared geometry representation behind sdflow's and dem's cut-cell IBM.
-- `amr/` — block-local-Morton **AMR octree** flow subsystem (`tpx::amr`, guarded by `PECLET_CORE_HAVE_MORTON`).
+  vector VTI (`.vti`). The shared geometry representation behind flow's and dem's cut-cell IBM.
+- `amr/` — block-local-Morton **AMR octree** flow subsystem (`peclet::core::amr`, guarded by `PECLET_CORE_HAVE_MORTON`).
   `amr/block_octree.hpp` is the per-block octree; `amr/flow.hpp` is the canonical device `AmrFlow`
   (collocated-projection Navier–Stokes with `maskSolid` and a div-free face field), with
   `amr/flow_oracle.hpp` an unexposed serial host reference. Device + distributed multigrid live in
@@ -95,8 +95,8 @@ Header-only under `include/tpx/`:
   balancer). Cut-cell openness is `amr/cut_cell.hpp`; solution-adaptive refinement is `amr/adapt.hpp` /
   `amr/indicators.hpp` / `amr/refine.hpp`. Design notes: `docs/amr_collocated_projection.md`,
   `docs/amr_device_assembly_plan.md`.
-- `python/` + `python/include/tpx/python/ndarray_interop.hpp` — **nanobind** Python bindings over a
-  shared **zero-copy `tpx::View`↔ndarray bridge** (`include/tpx/python/ndarray_interop.hpp`).
+- `python/` + `python/include/peclet/core/python/ndarray_interop.hpp` — **nanobind** Python bindings over a
+  shared **zero-copy `peclet::core::View`↔ndarray bridge** (`include/peclet/core/python/ndarray_interop.hpp`).
   `python/tpx_mpi.cpp` is host-only (no Kokkos): exposes `ParticleMigrator` / `ParticleHaloTopology` /
   `rebalanceByParticleCount` for an mpi4py driver. `python/tpx_amr.cpp` exposes the device `AmrFlow`
   (needs the `morton` sibling + a Kokkos backend). Both are built via `include(SuiteNanobind)` +

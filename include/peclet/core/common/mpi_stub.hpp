@@ -1,11 +1,11 @@
-// transport-core -- single-rank no-MPI stub. When the library is built without MPI (PECLET_CORE_NO_MPI), the
+// core -- single-rank no-MPI stub. When the library is built without MPI (PECLET_CORE_NO_MPI), the
 // grid solver runs as ONE block: every ghost cell is a periodic self-copy onto the same block, so there
 // are no remote neighbours. The only collectives ever EXECUTED at size 1 are the trivial ones --
 // rank=0, size=1, Allreduce/Bcast are local identities. The point-to-point and neighbourhood-collective
 // calls exist only so the single code path compiles and links; they are never reached at size 1.
 //
 // This keeps "one code": the same GridHaloTopology / GridHalo / NbxEngine run, with MPI replaced by
-// these stubs. Build WITH MPI (the default) and this header is never included -- see tpx/common/mpi.hpp.
+// these stubs. Build WITH MPI (the default) and this header is never included -- see peclet/core/common/mpi.hpp.
 #pragma once
 
 #include <cstdlib>

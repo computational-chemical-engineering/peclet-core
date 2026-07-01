@@ -1,4 +1,4 @@
-// transport-core — cell-centered finite-volume Poisson on a BlockOctree, with a
+// core — cell-centered finite-volume Poisson on a BlockOctree, with a
 // geometric multigrid built from the octree's own levels.
 //
 // This is the "grid + multigrid" use of the AMR octree (serial, host; the device
@@ -601,7 +601,7 @@ class AmrMultigrid {
 
   /// Set cut-cell face openness on the finest level from a geometry callable
   /// openFn(faceCentreWorld, axis) -> [0,1], then coarsen it to every coarser
-  /// level by **area-averaging** the fine sub-faces (sdflow's coarsenOpenAvg). The
+  /// level by **area-averaging** the fine sub-faces (flow's coarsenOpenAvg). The
   /// per-level operators are thereby rediscretized with consistent openness, and
   /// the openness-weighted quadratic C/F flux applies on every level. Call after
   /// build().

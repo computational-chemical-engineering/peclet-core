@@ -1,4 +1,4 @@
-// transport-core — local<->global indexing for a block with a ghost layer.
+// core — local<->global indexing for a block with a ghost layer.
 //
 // Ported from block_decomposer/src/BlockIndexer.hpp. A block stores an extended array =
 // inner cells + a ghost layer of width `ghostWidth` on every face. Local linear indexing is

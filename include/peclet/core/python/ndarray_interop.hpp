@@ -1,7 +1,7 @@
-// transport-core — shared zero-copy bridge between Kokkos Views and Python arrays (nanobind).
+// core — shared zero-copy bridge between Kokkos Views and Python arrays (nanobind).
 //
-// One place defines how every Kokkos-backed Python binding in the suite (sdflow, dem, vorflow,
-// transport-core's own tpx_amr) moves arrays across the C++/Python boundary, so the array
+// One place defines how every Kokkos-backed Python binding in the suite (flow, dem, voro,
+// core's own tpx_amr) moves arrays across the C++/Python boundary, so the array
 // contract — shapes, strides, dtype, host-vs-device — is identical everywhere instead of being
 // re-hand-rolled (the old per-module `to_xyz`/`to_vec`/`upload` helpers).
 //

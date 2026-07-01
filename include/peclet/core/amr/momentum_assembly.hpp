@@ -1,4 +1,4 @@
-// transport-core — device assembly of the cut-cell MOMENTUM operator (D3), on the S1 CSR primitive.
+// core — device assembly of the cut-cell MOMENTUM operator (D3), on the S1 CSR primitive.
 //
 // AmrCutCell::build (host) samples the SDF per cell and runs buildCutStencil to produce the ξ-overlay
 // stencil (AC_/off_/cut_/rscale_); assembleOperator (host) then merges that stencil, the regular-fluid

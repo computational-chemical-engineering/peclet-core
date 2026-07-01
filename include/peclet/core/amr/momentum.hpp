@@ -1,4 +1,4 @@
-// transport-core — device (Kokkos) momentum operator + smoother/solver for the AMR
+// core — device (Kokkos) momentum operator + smoother/solver for the AMR
 // collocated flow step.
 //
 // The cut-cell momentum operator A = (ρ/dt)I − μ∇² (+ implicit-FOU advection + the
@@ -124,7 +124,7 @@ inline void bicgPUpdate(View<double> p, View<const double> r, View<const double>
 }
 
 // ===========================================================================
-// Multicolour Gauss–Seidel smoother + graph colouring (the RB-GS mirror of sdflow's
+// Multicolour Gauss–Seidel smoother + graph colouring (the RB-GS mirror of flow's
 // ibmRbgsStencilColor on the AMR). On a 2:1-graded octree (or a Voronoi-cell mesh) the
 // face-adjacency graph needs a general greedy colouring (~6–8 colours); a colour is a set of
 // cells with no shared face, so all of one colour update in parallel reading the already-updated
@@ -213,7 +213,7 @@ inline Coloring greedyColoring(const std::vector<Index>& start, const std::vecto
 /// used as a *preconditioner* for BiCGStab (the momentum path): a forward-only GS V-cycle is a
 /// non-symmetric, non-normal operator that breaks BiCGStab's bi-orthogonal recurrence on the larger
 /// non-symmetric 64³ system (false convergence to NaN), whereas the symmetric (SGS) V-cycle keeps it
-/// robust — the textbook remedy, and the behaviour sdflow gets from its RB-GS / MG-as-solver path.
+/// robust — the textbook remedy, and the behaviour flow gets from its RB-GS / MG-as-solver path.
 inline void multicolorGSMom(const MomentumOp& op, View<double> u, View<const double> b,
                                   const Coloring& col, double omega) {
   const auto A = momView(op);

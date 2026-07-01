@@ -1,7 +1,7 @@
-// transport-core — explicit finite-volume scalar transport on a BlockOctree.
+// core — explicit finite-volume scalar transport on a BlockOctree.
 //
 // Solves  dc/dt + div(u c) = D lap(c)  on the adaptive octree (periodic), the
-// canonical "AMR for scalar transport" target. Reusable shared infra: sdflow (or
+// canonical "AMR for scalar transport" target. Reusable shared infra: flow (or
 // any consumer) can advect a species/level-set on an AMR grid through this, and
 // later couple it to a structured hydro solver via leaf point-location.
 //

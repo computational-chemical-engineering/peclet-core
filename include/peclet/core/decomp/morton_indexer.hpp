@@ -1,10 +1,10 @@
-// transport-core — Morton / Z-order cell indexing (via the suite `morton` primitive).
+// core — Morton / Z-order cell indexing (via the suite `morton` primitive).
 //
 // The complement to BlockIndexer's x-fastest linear order: MortonIndexer maps a
 // block's cells onto a Z-order (Morton) space-filling curve, so a cell's spatial
 // neighbourhood is near it in memory. This is the "morton/Z-order cell indexing
 // (via morton)" piece of the decomposition module described in
-// ../../../docs/ARCHITECTURE.md. The x-fastest convention in tpx/common/types.hpp
+// ../../../docs/ARCHITECTURE.md. The x-fastest convention in peclet/core/common/types.hpp
 // is unchanged — this is an *alternative* ordering for cache-friendly traversal /
 // spatial sorting, not a replacement.
 //

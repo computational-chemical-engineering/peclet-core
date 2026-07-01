@@ -1,4 +1,4 @@
-// transport-core — FaceGeom: the static (sub)face geometry CSR of the collocated AMR projection.
+// core — FaceGeom: the static (sub)face geometry CSR of the collocated AMR projection.
 //
 // Factored out of flow.hpp into its own header so the device face-geometry assembler
 // (facegeom_assembly.hpp) and the flow driver (flow.hpp) can both name the type without a

@@ -1,4 +1,4 @@
-// transport-core — leaf-indexed fields and world geometry for a BlockOctree.
+// core — leaf-indexed fields and world geometry for a BlockOctree.
 //
 // A BlockOctree addresses leaves in integer *fine units* relative to the block
 // origin. AmrGeometry maps those to world coordinates (origin + h0 * fine), and

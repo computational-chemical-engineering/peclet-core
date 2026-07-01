@@ -1,4 +1,4 @@
-// transport-core — dynamic (solution-adaptive) AMR for a BlockOctree: flag from an
+// core — dynamic (solution-adaptive) AMR for a BlockOctree: flag from an
 // error indicator, refine/coarsen + 2:1 balance, and remap the field onto the new
 // mesh.
 //

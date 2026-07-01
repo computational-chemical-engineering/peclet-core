@@ -1,6 +1,6 @@
-// transport-core — device (Kokkos) REDISCRETIZED velocity multigrid for the AMR momentum solve.
+// core — device (Kokkos) REDISCRETIZED velocity multigrid for the AMR momentum solve.
 //
-// The rediscretized counterpart of the Galerkin MomentumMG, mirroring sdflow's VelocityMG
+// The rediscretized counterpart of the Galerkin MomentumMG, mirroring flow's VelocityMG
 // (mac_velocity_mg.hpp) on the octree. The fine level is the *sharp* cut-cell operator (the
 // assembled FaceCsrOp = MomentumOp the BiCGStab matvec uses); the coarse levels are a
 // **staircase rediscretization** of the geometry rather than a Galerkin R·A·P of the fine
@@ -10,7 +10,7 @@
 //   * a fluid cell is the per-axis const-coeff Helmholtz  diag = ρ/dt + 6μ/H²,  off = −μ/H²  to
 //     each of its 6 (periodic) face neighbours (H = level cell width) — a face into a classified
 //     solid cell is a no-slip wall implicitly (the neighbour is pinned to 0). This is
-//     ε-solid-on-coarse for free, exactly as sdflow's buildVelocityStaircase.
+//     ε-solid-on-coarse for free, exactly as flow's buildVelocityStaircase.
 // Transfers: average restriction + masked piecewise-constant prolongation (no correction into a
 // solid fine cell). Smoother: weighted Jacobi (jacobiMom) — P5 swaps in multicolor-GS.
 //
@@ -49,7 +49,7 @@ class VelocityMG {
   /// ρ/dt, `mu` = μ. The fine octree is coarsened uniformly (one local octree per level), as in
   /// AmrMultigrid. The fine operator is referenced (not copied); rebuild it (e.g. with the FOU)
   /// before each solve and the V-cycle picks it up.
-  /// `minCoarse` clamps the coarsening depth (sdflow's pore-scale cap): levels are dropped once a
+  /// `minCoarse` clamps the coarsening depth (flow's pore-scale cap): levels are dropped once a
   /// level would have fewer than `minCoarse` cells, so the coarsest grid still resolves the
   /// immersed feature. Coarsening below the feature scale makes a small object vanish from the
   /// staircase classification, leaving an inconsistent coarse operator that diverges (deep
@@ -86,7 +86,7 @@ class VelocityMG {
     }
 
     // Level 0: the sharp fine operator + the clean-fluid EXCLUDE mask (= cut OR solid). This is
-    // sdflow VelocityMG's Phase-3 fix (doc/velocity_mg_plan.md): the cut cells' D_rescale-scaled
+    // flow VelocityMG's Phase-3 fix (doc/velocity_mg_plan.md): the cut cells' D_rescale-scaled
     // residuals and the solid cells are excluded from the coarse defect (zeroed before restriction
     // + skipped in prolongation), so the inconsistent sharp-IBM rows never reach the coarse grid —
     // the fine smoother owns the cut band, the coarse grid solves the clean interior. Without it the
@@ -122,7 +122,7 @@ class VelocityMG {
   /// Re-point level 0 at the (possibly FOU-updated) fine operator before a solve.
   void setFineOp(const MomentumOp& fineOp) { levels_[0].op = fineOp; }
   /// Opt-in: use multicolour Gauss–Seidel as the smoother (per-level colouring) instead of Jacobi —
-  /// the strong fine smoother that "owns the cut band" (sdflow uses RB-GS), markedly improving the
+  /// the strong fine smoother that "owns the cut band" (flow uses RB-GS), markedly improving the
   /// staircase at high resolution. Default off (Jacobi).
   void setGaussSeidel(bool on) { useGS_ = on; }
 
@@ -139,7 +139,7 @@ class VelocityMG {
     residualMom(lv.op, View<const double>(lv.x), bc, lv.res);
     // Clean-fluid exclude: zero the residual at cut/solid cells before restriction so the
     // inconsistent sharp-IBM cut-cell residuals never pollute the coarse defect (the fix for the
-    // large-dt staircase divergence — sdflow VelocityMG mg_mul_mask).
+    // large-dt staircase divergence — flow VelocityMG mg_mul_mask).
     zeroMasked(lv.res, View<const char>(lv.solid), lv.op.n);
     Level& cl = levels_[L + 1];
     restrictField(lv.childStart, lv.childIdx, View<const double>(lv.res), cl.b, cl.op.n);

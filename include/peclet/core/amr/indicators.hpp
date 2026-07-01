@@ -1,4 +1,4 @@
-// transport-core — solution-adaptive refinement indicators for a BlockOctree.
+// core — solution-adaptive refinement indicators for a BlockOctree.
 //
 // Geometry-based refinement lives in refine.hpp (refineToSdf). This header adds
 // *solution*-based error indicators: per-leaf scalars derived from a leaf field

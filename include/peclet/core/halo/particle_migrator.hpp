@@ -1,4 +1,4 @@
-// transport-core — Lagrangian particle migration over the same block decomposition.
+// core — Lagrangian particle migration over the same block decomposition.
 //
 // After particles move, each one may now belong to a different rank's block. migrate() reassigns
 // every particle to the rank that owns the block containing its (periodically wrapped) position,

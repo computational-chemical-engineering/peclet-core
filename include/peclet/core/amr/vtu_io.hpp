@@ -1,4 +1,4 @@
-// transport-core — VTK UnstructuredGrid (.vtu) output for an adaptive octree.
+// core — VTK UnstructuredGrid (.vtu) output for an adaptive octree.
 //
 // A graded octree can't be a single VTK ImageData (vti_io.hpp), so each leaf is
 // emitted as one cell — a hexahedron (3D) or quad (2D) — carrying a per-leaf

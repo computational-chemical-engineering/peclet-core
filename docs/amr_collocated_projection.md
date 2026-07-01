@@ -6,7 +6,7 @@ umbrella `peclet` pointer bumped each step). This doc is the resume point — re
 ## TL;DR
 
 The AMR `AmrFlow` (cell-centred / collocated cut-cell Stokes–NS on a `BlockOctree`) now has the three
-pieces sdflow's collocated solver already had, so it is robust and conservative:
+pieces flow's collocated solver already had, so it is robust and conservative:
 
 1. **`maskSolid`** in the pressure PCG — projects out the per-solid-region pressure null modes. Fixes
    the cut-cell Stokes blow-up. (commit `3aff1ab`)
@@ -15,8 +15,8 @@ pieces sdflow's collocated solver already had, so it is robust and conservative:
 3. **`uf` as the NS advecting velocity** — conservative advection (Bell–Colella–Glaz), consistent across
    implicit-FOU + explicit-FOU + SOU. Host + device `9faf5d8`.
 
-Canonical engine = device `tpx::amr::AmrFlow` (`include/tpx/amr/flow.hpp`), Python-exposed as
-`tpx_amr.Flow`. The serial host driver is `tpx::amr::oracle::AmrFlow` (`flow_oracle.hpp`) — dev-only
+Canonical engine = device `peclet::core::amr::AmrFlow` (`include/peclet/core/amr/flow.hpp`), Python-exposed as
+`peclet.core.amr.Flow`. The serial host driver is `peclet::core::amr::oracle::AmrFlow` (`flow_oracle.hpp`) — dev-only
 validation oracle, **not** exposed.
 
 ## The physics that drove this (Frank's framing — keep)
@@ -27,10 +27,10 @@ The cut-cell **openness** `α` (per-face fluid fraction; a face whose centroid i
   mean), and
 - **inert solid cells**, each connected solid region carrying **its own constant null mode**.
 
-The solid pressure is **not solved** — it is **pinned to 0 and projected out**. sdflow does this with
+The solid pressure is **not solved** — it is **pinned to 0 and projected out**. flow does this with
 `mg_mask_solid_k` (`maskSolid`): zero every `AC ≤ 1e-30` (solid, all faces closed) cell, applied
 **together with `removeMean` after every matvec / seed / residual**, so the Krylov iteration lives
-strictly in the fluid range with both null modes deflated. This machinery is **shared by sdflow
+strictly in the fluid range with both null modes deflated. This machinery is **shared by flow
 staggered AND collocated** (`buildCutcellOp` + `cutcellSmoothColor` + `maskSolid` + `removeMean`); only
 the velocity divergence/correction differs (faces vs cells).
 
@@ -41,7 +41,7 @@ the Krylov path needed the explicit projection.)
 
 ## What each piece is
 
-### 1. maskSolid (`include/tpx/amr/pcg.hpp`)
+### 1. maskSolid (`include/peclet/core/amr/pcg.hpp`)
 `buildFluidMask(op, mask, n)` sets `mask(i)=1` where the operator diagonal `Σ_f w_f + bcDiag > 1e-30`,
 else 0. `project(u)` = `maskSolid` (zero solid) + (singular only) fluid-only `removeMeanVol`. The mean is
 taken **over fluid cells only** — the old `removeMeanVol` averaged over ALL cells incl. the pinned solid,
@@ -83,33 +83,33 @@ There is **no Rhie–Chow update of the cell centres**. Cells get the plain cell
 (`gradOf` = ½(g⁻+g⁺), already there). Rhie–Chow is purely the FACE term — the compact `(φ_j−φ_i)/d` vs
 the averaged `½(g_i+g_j)` — and is automatic once `uf` is kept separate from `interp(u)`.
 
-## The comparison: sdflow collocated vs uniform AMR (the "where do we stand" run)
+## The comparison: flow collocated vs uniform AMR (the "where do we stand" run)
 
 Z&H SC sphere, φ=0.125, K_exact = 4.292, **RTX 5080 (CUDA)**. AMR = device `AmrFlow` with `uf` +
 `maskSolid`, staircase velocity-MG + multicolour-GS (Galerkin gives the same converged k).
 
-| N   | sdflow collocated | AMR (uf, staircase/Galerkin MG) | gap   |
+| N   | flow collocated | AMR (uf, staircase/Galerkin MG) | gap   |
 |-----|-------------------|----------------------------------|-------|
 | 32  | 4.3313 (+0.92%)   | 4.3048 (+0.30%)                  | 0.62% |
 | 64  | 4.3148 (+0.53%)   | 4.2977 (+0.13%)                  | 0.40% |
 | 128 | 4.3070 (+0.35%)   | 4.2943 (**+0.05%**)              | 0.30% |
 
 Findings:
-- **AMR is closer to Z&H at every N and converges faster** (~order 1.3 vs sdflow ~0.7). At 128³ AMR is
-  essentially exact (+0.05%) vs sdflow +0.35%.
+- **AMR is closer to Z&H at every N and converges faster** (~order 1.3 vs flow ~0.7). At 128³ AMR is
+  essentially exact (+0.05%) vs flow +0.35%.
 - The gap **shrinks with N** (0.62→0.40→0.30%) — both → the same continuum; the difference is the
-  projection STRUCTURE (AMR genuinely cell-centred FV vs sdflow's staggered-MAC-heritage ABC
+  projection STRUCTURE (AMR genuinely cell-centred FV vs flow's staggered-MAC-heritage ABC
   projection), now seen across resolution. **NOT yet isolated to a single line of code.**
 - **Staircase velocity-MG is fixed at scale**: no longer diverges at 64³ (that was the pre-maskSolid
   limit recorded in [[amr-gpu-smoother-flow-port]]); runs at 128³ too, just slowly (bounded to the
   sphere's feature depth → many momentum iterations).
-- **Perf caveat:** sdflow is faster in wall-clock at 128³ (~121 s to converge vs ~704 s for AMR's 150
+- **Perf caveat:** flow is faster in wall-clock at 128³ (~121 s to converge vs ~704 s for AMR's 150
   steps). The AMR velocity-MG + GS momentum solve is the cost — the obvious thing to profile if making
   AMR competitive at scale matters.
 
 ## How to reproduce (GPU) — and the gotchas (these cost time)
 
-Build the CUDA `tpx_amr` Python module:
+Build the CUDA `peclet.core.amr` Python module:
 ```bash
 export PATH=/usr/local/cuda-13.2/bin:$PATH
 cd core/python
@@ -129,22 +129,22 @@ cmake --build build_cuda --target tpx_amr -j
   flush every line + read the file before exit) avoids it.
 - **`pkill -9` a CUDA python can wedge nothing** (GPU frees fine — checked with `nvidia-smi`), but don't
   rely on background runs; prefer foreground with line-buffered prints.
-- sdflow and tpx_amr **cannot share one process** (sdflow finalizes Kokkos out from under tpx_amr's
+- flow and peclet.core.amr **cannot share one process** (flow finalizes Kokkos out from under peclet.core.amr's
   Views → abort). Run each engine in its own process.
 - AMR N=128 staircase is genuinely slow (hundreds of seconds); use Galerkin for the converged k (same
   answer) and a short run only to confirm staircase stability.
 
-Driver knobs (Python `tpx_amr.Flow`): `set_momentum_mg(True)`, `set_velocity_mg_staircase(True/False)`,
+Driver knobs (Python `peclet.core.amr.Flow`): `set_momentum_mg(True)`, `set_velocity_mg_staircase(True/False)`,
 `set_momentum_gs(True)`, `set_momentum_mg_solver`, `set_outer_iterations`. Diagnostics:
 `divergence_norm()` (cell), `divergence_norm_face()` (uf), `faceField()`.
 
-sdflow collocated reference run lived at `/tmp/sdflow_coloc_gpu.py` (single SC sphere, tol 1e-6,
+flow collocated reference run lived at `/tmp/sdflow_coloc_gpu.py` (single SC sphere, tol 1e-6,
 `SolverColocated`, `set_pressure_pcg(True,200,1e-8)`); the field-localisation harness is
-`sdflow/scripts/compare_amr_sdflow_field.py` (subprocess-isolated).
+`flow/scripts/compare_amr_sdflow_field.py` (subprocess-isolated).
 
 ## Open / next (pick up here)
 
-1. **Profile the AMR momentum solve at 128³** — it's the wall-clock gap vs sdflow. The velocity-MG + GS
+1. **Profile the AMR momentum solve at 128³** — it's the wall-clock gap vs flow. The velocity-MG + GS
    momentum solve dominates; the staircase is bounded to the feature scale (slow), Galerkin scales
    better. See `bench_amr_flow mgstrat` and [[amr-gpu-smoother-flow-port]].
 2. **Unsteady NS test** — the ONLY thing that would actually exercise the `uf` conservation benefit (all
@@ -158,4 +158,4 @@ sdflow collocated reference run lived at `/tmp/sdflow_coloc_gpu.py` (single SC s
    synthetic field on the SAME cut geometry, diff cell-by-cell. Neither exposes that yet.
 
 Related memories: [[device-naming-retirement]] (the umbrella record of this whole arc),
-[[amr-gpu-smoother-flow-port]], [[sdflow-collocated-solver]], [[amr-octree-status]].
+[[amr-gpu-smoother-flow-port]], [[flow-collocated-solver]], [[amr-octree-status]].

@@ -1,4 +1,4 @@
-// transport-core — distributed adaptive octree over the ORB block decomposition.
+// core — distributed adaptive octree over the ORB block decomposition.
 //
 // The suite keeps the ORB *block* decomposition and gives each block its own
 // local octree (block_octree.hpp). DistributedOctree ties the per-rank blocks
@@ -23,7 +23,7 @@
 // coordinates — the same owner-based, no-Cartesian-assumption pattern GridHaloTopology
 // uses. Self-addressed messages are handled locally (no MPI send-to-self).
 //
-// Header-only, guarded by PECLET_CORE_HAVE_MORTON; uses the MPI shim (tpx/common/mpi.hpp,
+// Header-only, guarded by PECLET_CORE_HAVE_MORTON; uses the MPI shim (peclet/core/common/mpi.hpp,
 // real MPI or the single-rank stub) and the NBX engine.
 #ifndef PECLET_CORE_AMR_DISTRIBUTED_OCTREE_HPP
 #define PECLET_CORE_AMR_DISTRIBUTED_OCTREE_HPP

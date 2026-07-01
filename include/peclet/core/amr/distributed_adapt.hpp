@@ -1,4 +1,4 @@
-// transport-core — distributed dynamic (solution-adaptive) AMR on a DistributedOctree.
+// core — distributed dynamic (solution-adaptive) AMR on a DistributedOctree.
 //
 // The distributed counterpart of adapt.hpp, keeping the existing ORB block ownership.
 // (Adaptation can leave the per-rank leaf counts uneven; DistributedOctree::rebalance()

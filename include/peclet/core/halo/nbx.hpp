@@ -1,4 +1,4 @@
-// transport-core — NBX nonblocking-consensus sparse data exchange.
+// core — NBX nonblocking-consensus sparse data exchange.
 //
 // A clean reimplementation of the async engine in block_decomposer/src/MPISync.hpp
 // (pbs::MPISync::communicateParticleData) using the canonical NBX protocol of Hoefler et al.,
