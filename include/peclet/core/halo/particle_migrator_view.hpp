@@ -15,8 +15,8 @@
 // only the resulting set is well-defined (as for the host migrator).
 //
 // Requires a Kokkos build + MPI.
-#ifndef PECLET_CORE_HALO_PARTICLE_MIGRATOR_DEVICE_HPP
-#define PECLET_CORE_HALO_PARTICLE_MIGRATOR_DEVICE_HPP
+#ifndef PECLET_CORE_HALO_PARTICLE_MIGRATOR_VIEW_HPP
+#define PECLET_CORE_HALO_PARTICLE_MIGRATOR_VIEW_HPP
 
 #include "peclet/core/common/mpi.hpp"
 
@@ -35,7 +35,7 @@ namespace peclet::core::halo {
 /// (capacity·Dim) particle-major (pos(i·Dim+d)), `payload` is (capacity·stride) opaque bytes. migrate()
 /// rewrites [0, newCount) in place and returns the new local count.
 template <int Dim>
-class ParticleMigratorDevice {
+class ParticleMigratorView {
  public:
   void init(const decomp::BlockDecomposer<Dim>& dec, int rank, DomainMap<Dim> map,
             MPI_Comm comm = MPI_COMM_WORLD) {
@@ -265,4 +265,4 @@ class ParticleMigratorDevice {
 
 }  // namespace peclet::core::halo
 
-#endif  // PECLET_CORE_HALO_PARTICLE_MIGRATOR_DEVICE_HPP
+#endif  // PECLET_CORE_HALO_PARTICLE_MIGRATOR_VIEW_HPP

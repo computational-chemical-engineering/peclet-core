@@ -85,7 +85,7 @@ void run() {
     }
     View<double> dx("x", (std::size_t)n), dLu("Lu", (std::size_t)n);
     setDev(dx, x);
-    deviceApplyFv(mg.op(L), View<const double>(dx), dLu);
+    applyFv(mg.op(L), View<const double>(dx), dLu);
     auto dLh = getDev(dLu, n);
     std::vector<double> hLu;
     hmg.op(L).applyLaplacian(x, hLu);
@@ -106,7 +106,7 @@ void run() {
   // b = L·u_exact (exactly mean-zero by conservation; α symmetric across each face)
   View<double> duex("uex", (std::size_t)n0), db("b", (std::size_t)n0);
   setDev(duex, uex);
-  deviceApplyFv(mg.op(0), View<const double>(duex), db);
+  applyFv(mg.op(0), View<const double>(duex), db);
   std::vector<double> b = getDev(db, n0);
   setDev(mg.b(0), b);
   Kokkos::deep_copy(mg.x(0), 0.0);

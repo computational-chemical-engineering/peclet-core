@@ -1,4 +1,4 @@
-// Device-resident particle migration (peclet::core::halo::ParticleMigratorDevice, D1): particles live in device
+// Device-resident particle migration (peclet::core::halo::ParticleMigratorView, D1): particles live in device
 // Views; the periodic wrap + ORB owner lookup run on device, departing particles are device-packed into
 // compact buffers, only those cross MPI (NBX), arrivals unpack back on device. Same correctness contract
 // as the host migrator (test_particle_migration): over random-walk + migrate steps, globally and every
@@ -16,7 +16,7 @@
 #include "peclet/core/common/mpi.hpp"
 #include "peclet/core/decomp/block_decomposer.hpp"
 #include "peclet/core/halo/particle_migrator.hpp"
-#include "peclet/core/halo/particle_migrator_device.hpp"
+#include "peclet/core/halo/particle_migrator_view.hpp"
 
 using namespace peclet::core;
 using namespace peclet::core::halo;
@@ -49,7 +49,7 @@ void run() {
     map.cellSize[d] = 1.0;
     map.periodic[d] = true;
   }
-  ParticleMigratorDevice<Dim> mig;
+  ParticleMigratorView<Dim> mig;
   mig.init(dec, rank, map, MPI_COMM_WORLD);
   ParticleMigrator<Dim> hmig;  // host reference for the ownerOf check
   hmig.init(dec, rank, map, MPI_COMM_WORLD);

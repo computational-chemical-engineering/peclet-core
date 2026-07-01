@@ -12,7 +12,7 @@
 //     solid cell is a no-slip wall implicitly (the neighbour is pinned to 0). This is
 //     ε-solid-on-coarse for free, exactly as sdflow's buildVelocityStaircase.
 // Transfers: average restriction + masked piecewise-constant prolongation (no correction into a
-// solid fine cell). Smoother: weighted Jacobi (deviceJacobiMom) — P5 swaps in multicolor-GS.
+// solid fine cell). Smoother: weighted Jacobi (jacobiMom) — P5 swaps in multicolor-GS.
 //
 // Used as the momentum BiCGStab preconditioner exactly like MomentumMG; selectable so the
 // two coarse-operator strategies can be benchmarked head-to-head on the AMR. The implicit-FOU
@@ -136,16 +136,16 @@ class VelocityMG {
       return;
     }
     smooth(lv, pre, omega);
-    deviceResidualMom(lv.op, View<const double>(lv.x), bc, lv.res);
+    residualMom(lv.op, View<const double>(lv.x), bc, lv.res);
     // Clean-fluid exclude: zero the residual at cut/solid cells before restriction so the
     // inconsistent sharp-IBM cut-cell residuals never pollute the coarse defect (the fix for the
     // large-dt staircase divergence — sdflow VelocityMG mg_mul_mask).
-    deviceZeroMasked(lv.res, View<const char>(lv.solid), lv.op.n);
+    zeroMasked(lv.res, View<const char>(lv.solid), lv.op.n);
     Level& cl = levels_[L + 1];
-    deviceRestrict(lv.childStart, lv.childIdx, View<const double>(lv.res), cl.b, cl.op.n);
+    restrictField(lv.childStart, lv.childIdx, View<const double>(lv.res), cl.b, cl.op.n);
     Kokkos::deep_copy(cl.x, 0.0);
     vcycle(pre, post, bottom, omega, L + 1);
-    deviceProlongAddMasked(lv.c2p, View<const double>(cl.x), View<const char>(lv.solid), lv.x, lv.op.n);
+    prolongAddMasked(lv.c2p, View<const double>(cl.x), View<const char>(lv.solid), lv.x, lv.op.n);
     smooth(lv, post, omega);
   }
 
@@ -162,9 +162,9 @@ class VelocityMG {
     if (useGS_)
       // Undamped GS (omega=1.0): stable on the staircase Helmholtz diagonal, and the passed omega is
       // Jacobi's damping limit (~0.7) which would needlessly weaken the GS smoothing.
-      for (int s = 0; s < sweeps; ++s) deviceMulticolorGSMom(lv.op, lv.x, bc, lv.col, 1.0);
+      for (int s = 0; s < sweeps; ++s) multicolorGSMom(lv.op, lv.x, bc, lv.col, 1.0);
     else
-      for (int s = 0; s < sweeps; ++s) deviceJacobiMom(lv.op, lv.x, bc, lv.tmp, omega);
+      for (int s = 0; s < sweeps; ++s) jacobiMom(lv.op, lv.x, bc, lv.tmp, omega);
   }
 
   void allocScratch(Level& lv, Index n) {

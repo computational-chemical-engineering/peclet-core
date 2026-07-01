@@ -30,7 +30,7 @@ module: it currently lives inside the AMR flow solver (`tpx::amr`) and in `sdflo
   CUDA / HIP / OpenMP). Built once from a host `GridHaloTopology<Dim>::flatten()`; pack / unpack /
   periodic self-copy run as `Kokkos::parallel_for` over the device `tpx::View<T>` field, so the full
   field never crosses the bus — only the compact halo buffers are host-staged for MPI by default, with
-  an opt-in GPU-aware path (env `TPX_GPU_AWARE_MPI`). Bit-for-bit identical to the CPU exchange.
+  an opt-in GPU-aware path (env `PECLET_CORE_GPU_AWARE_MPI`). Bit-for-bit identical to the CPU exchange.
 - `tpx::halo::ParticleMigrator<Dim>` — Lagrangian particle migration to owning ranks (NBX), the
   dynamic counterpart to the Eulerian grid halo.
 - `tpx::halo::ParticleHaloTopology<Dim>` (`particle_halo_topology.hpp`) — persistent Lagrangian ghost
@@ -67,7 +67,7 @@ mpirun -np 4 ./build/benchmarks/bench_halo 48 1 300  # cells/rank/axis, ghost, i
 ```
 
 Requires MPI (OpenMPI/MPICH) and a C++20 compiler. `morton` is picked up automatically if
-checked out as a sibling directory (enables `TPX_HAVE_MORTON`).
+checked out as a sibling directory (enables `PECLET_CORE_HAVE_MORTON`).
 
 ## Status
 

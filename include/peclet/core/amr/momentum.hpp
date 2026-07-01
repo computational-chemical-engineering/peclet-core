@@ -29,7 +29,7 @@
 #include <vector>
 
 #include "peclet/core/amr/block_octree.hpp"
-#include "peclet/core/amr/multigrid.hpp"  // deviceRestrict / deviceProlongAdd transfer kernels
+#include "peclet/core/amr/multigrid.hpp"  // restrictField / prolongAdd transfer kernels
 #include "peclet/core/amr/pcg.hpp"        // dotPlain-style primitives: axpy, zpby, negate
 #include "peclet/core/amr/face_csr.hpp"          // shared host+device assembled-operator row kernels
 #include "peclet/core/common/view.hpp"
@@ -74,7 +74,7 @@ inline FaceCsrOpT<View<const double>, View<const Index>> momView(const MomentumO
 }
 
 /// Au = A u (cut-cell operator + optional implicit-FOU advection).
-inline void deviceApplyMom(const MomentumOp& op, View<const double> u, View<double> Au) {
+inline void applyMom(const MomentumOp& op, View<const double> u, View<double> Au) {
   const auto A = momView(op);
   Kokkos::parallel_for(
       "amr::mom_apply", op.n,
@@ -82,7 +82,7 @@ inline void deviceApplyMom(const MomentumOp& op, View<const double> u, View<doub
 }
 
 /// res = b − A u.
-inline void deviceResidualMom(const MomentumOp& op, View<const double> u,
+inline void residualMom(const MomentumOp& op, View<const double> u,
                               View<const double> b, View<double> res) {
   const auto A = momView(op);
   Kokkos::parallel_for(
@@ -92,7 +92,7 @@ inline void deviceResidualMom(const MomentumOp& op, View<const double> u,
 
 /// One weighted-Jacobi sweep of A u = b (in place). `tmp` is scratch (size n). Pass 1
 /// reads only the previous iterate, pass 2 updates ⇒ order-independent / deterministic.
-inline void deviceJacobiMom(const MomentumOp& op, View<double> u, View<const double> b,
+inline void jacobiMom(const MomentumOp& op, View<double> u, View<const double> b,
                             View<double> tmp, double omega) {
   const auto A = momView(op);
   Kokkos::parallel_for(
@@ -214,7 +214,7 @@ inline Coloring greedyColoring(const std::vector<Index>& start, const std::vecto
 /// non-symmetric, non-normal operator that breaks BiCGStab's bi-orthogonal recurrence on the larger
 /// non-symmetric 64³ system (false convergence to NaN), whereas the symmetric (SGS) V-cycle keeps it
 /// robust — the textbook remedy, and the behaviour sdflow gets from its RB-GS / MG-as-solver path.
-inline void deviceMulticolorGSMom(const MomentumOp& op, View<double> u, View<const double> b,
+inline void multicolorGSMom(const MomentumOp& op, View<double> u, View<const double> b,
                                   const Coloring& col, double omega) {
   const auto A = momView(op);
   auto idx = col.idx;
@@ -244,8 +244,8 @@ inline void deviceMulticolorGSMom(const MomentumOp& op, View<double> u, View<con
 // pair the pressure MG uses). This is consistent with the fine operator by construction — it
 // inherits the cut-cell stencil and row scaling, and a coarse cell whose children are all
 // solid (identity rows) stays an identity row (ε-solid-on-coarse emerges for free). The
-// hierarchy is the uniformly-coarsened octree; the smoother is deviceJacobiMom, the residual
-// restriction / correction prolongation are the shared deviceRestrict / deviceProlongAdd.
+// hierarchy is the uniformly-coarsened octree; the smoother is jacobiMom, the residual
+// restriction / correction prolongation are the shared restrictField / prolongAdd.
 // Used as the momentum BiCGStab preconditioner ⇒ the iteration count stays ~flat with N.
 // ===========================================================================
 template <unsigned Bits = 21u>
@@ -365,12 +365,12 @@ class MomentumMG {
       return;
     }
     smooth(lv, pre, omega);
-    deviceResidualMom(lv.op, View<const double>(lv.x), bc, lv.res);
+    residualMom(lv.op, View<const double>(lv.x), bc, lv.res);
     Level& cl = levels_[L + 1];
-    deviceRestrict(lv.childStart, lv.childIdx, View<const double>(lv.res), cl.b, cl.op.n);
+    restrictField(lv.childStart, lv.childIdx, View<const double>(lv.res), cl.b, cl.op.n);
     Kokkos::deep_copy(cl.x, 0.0);
     vcycle(pre, post, bottom, omega, L + 1);
-    deviceProlongAdd(lv.c2p, View<const double>(cl.x), lv.x, lv.op.n);
+    prolongAdd(lv.c2p, View<const double>(cl.x), lv.x, lv.op.n);
     smooth(lv, post, omega);
   }
 
@@ -392,9 +392,9 @@ class MomentumMG {
     if (useGS_)
       // Multicolour GS is stable undamped on this diagonally-dominant operator (ρ/dt + 6μ + FOU > 0);
       // the passed omega is Jacobi's damping limit (~0.7) and would needlessly weaken GS, so use 1.0.
-      for (int s = 0; s < sweeps; ++s) deviceMulticolorGSMom(lv.op, lv.x, bc, lv.col, 1.0);
+      for (int s = 0; s < sweeps; ++s) multicolorGSMom(lv.op, lv.x, bc, lv.col, 1.0);
     else
-      for (int s = 0; s < sweeps; ++s) deviceJacobiMom(lv.op, lv.x, bc, lv.tmp, omega);
+      for (int s = 0; s < sweeps; ++s) jacobiMom(lv.op, lv.x, bc, lv.tmp, omega);
   }
   void uploadLevel(std::size_t L, const std::vector<double>& diag, const std::vector<Index>& start,
                    const std::vector<Index>& nbr, const std::vector<double>& coef) {
@@ -440,8 +440,8 @@ class MomentumSolver {
   double solveJacobi(const MomentumOp& op, View<double> u, View<const double> b,
                      int sweeps) {
     ensure(op.n);
-    for (int s = 0; s < sweeps; ++s) deviceJacobiMom(op, u, b, tmp_, omega_);
-    deviceResidualMom(op, View<const double>(u), b, r_);
+    for (int s = 0; s < sweeps; ++s) jacobiMom(op, u, b, tmp_, omega_);
+    residualMom(op, View<const double>(u), b, r_);
     return std::sqrt(dotPlain(View<const double>(r_), View<const double>(r_), op.n));
   }
 
@@ -463,7 +463,7 @@ class MomentumSolver {
     const Index n = op.n;
     ensure(n);
     Result R;
-    deviceResidualMom(op, View<const double>(u), b, r_);
+    residualMom(op, View<const double>(u), b, r_);
     R.res0 = std::sqrt(dotPlain(View<const double>(r_), View<const double>(r_), n));
     if (R.res0 == 0.0) return R;
     double rnorm = R.res0;
@@ -471,7 +471,7 @@ class MomentumSolver {
     for (; it < maxIters; ++it) {
       applyPrec(op, r_, phat_);                       // phat = M⁻¹ r
       axpy(u, 1.0, View<const double>(phat_), n);     // u += phat
-      deviceResidualMom(op, View<const double>(u), b, r_);
+      residualMom(op, View<const double>(u), b, r_);
       rnorm = std::sqrt(dotPlain(View<const double>(r_), View<const double>(r_), n));
       if (rnorm <= tol * R.res0) {
         ++it;
@@ -491,7 +491,7 @@ class MomentumSolver {
     ensure(n);
     Result R;
     // r = b − A u
-    deviceResidualMom(op, View<const double>(u), b, r_);
+    residualMom(op, View<const double>(u), b, r_);
     Kokkos::deep_copy(rhat_, r_);  // shadow residual
     R.res0 = std::sqrt(dotPlain(View<const double>(r_), View<const double>(r_), n));
     if (R.res0 == 0.0) return R;
@@ -507,7 +507,7 @@ class MomentumSolver {
       // p = r + beta (p − omega v)
       bicgPUpdate(p_, View<const double>(r_), View<const double>(v_), beta, omega, n);
       applyPrec(op, p_, phat_);  // phat = M^{-1} p
-      deviceApplyMom(op, View<const double>(phat_), v_);
+      applyMom(op, View<const double>(phat_), v_);
       double rhatV = dotPlain(View<const double>(rhat_), View<const double>(v_), n);
       alpha = rhoNew / rhatV;
       // s = r − alpha v
@@ -521,7 +521,7 @@ class MomentumSolver {
         break;
       }
       applyPrec(op, s_, shat_);  // shat = M^{-1} s
-      deviceApplyMom(op, View<const double>(shat_), t_);
+      applyMom(op, View<const double>(shat_), t_);
       double tt = dotPlain(View<const double>(t_), View<const double>(t_), n);
       omega = (tt != 0.0) ? dotPlain(View<const double>(t_), View<const double>(s_), n) / tt : 0.0;
       // u += alpha phat + omega shat
@@ -556,7 +556,7 @@ class MomentumSolver {
       Kokkos::deep_copy(z, v);
       return;
     }
-    for (int s = 0; s < jacPre_; ++s) deviceJacobiMom(op, z, View<const double>(v), tmp_, omega_);
+    for (int s = 0; s < jacPre_; ++s) jacobiMom(op, z, View<const double>(v), tmp_, omega_);
   }
   void ensure(Index n) {
     if (r_.extent(0) == static_cast<std::size_t>(n)) return;

@@ -1,7 +1,7 @@
 // transport-core — shared, backend-agnostic kernels for an assembled face-CSR operator.
 //
 // The "host" serial reference solver (peclet::core::amr::AmrCutCell / oracle::AmrFlow, pure C++20) and the "device"
-// Kokkos solver (peclet::core::amr::MomentumOp + device_momentum.hpp) used to carry two independent
+// Kokkos solver (peclet::core::amr::MomentumOp + momentum.hpp) used to carry two independent
 // encodings of the SAME per-cell arithmetic — a real drift risk. This header is the single source of
 // that arithmetic: the assembled operator
 //
@@ -120,7 +120,7 @@ MORTON_HD inline double fvApplyRow(const Op& op, Index i, const U& u) {
 }
 
 /// The point solve of H u = rhs for one row (raw value, before damping), matching the host point
-/// solve and device deviceJacobiFv: the pure-L path (c0=0,cD=1) keeps the exact original expression.
+/// solve and device jacobiFv: the pure-L path (c0=0,cD=1) keeps the exact original expression.
 template <class Op, class U>
 MORTON_HD inline double fvPointSolve(const Op& op, Index i, const U& u, double rhs_i, double uOld) {
   double sumOff = 0.0, sw = 0.0;

@@ -81,7 +81,7 @@ void run() {
   }
   View<double> duex("uex", (std::size_t)n0), db("b", (std::size_t)n0);
   setDev(duex, uex);
-  deviceApplyFv(mg.op(0), View<const double>(duex), db);
+  applyFv(mg.op(0), View<const double>(duex), db);
   std::vector<double> b = getDev(db, n0);
 
   auto resNorm = [&]() {

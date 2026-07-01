@@ -19,7 +19,7 @@
 //
 // 2nd-order at 2:1 interfaces: solveQuad() wraps the V-cycle in deferred correction
 // with the quadratic coarse-fine flux (AmrPoisson::coarseStar), evaluated on device
-// as a second precomputed CSR (deviceQuadDelta). Openness (cut-cell) flows in for
+// as a second precomputed CSR (quadDelta). Openness (cut-cell) flows in for
 // free: build with an AmrPoisson that has openness set and w_f carries it.
 //
 // Requires a Kokkos build + the morton checkout (PECLET_CORE_HAVE_MORTON).
@@ -34,7 +34,7 @@
 #include <vector>
 
 #include "peclet/core/amr/block_octree.hpp"
-#include "peclet/core/amr/device_assembly.hpp"  // deviceAssembleFv (device per-level operator rebuild, D5)
+#include "peclet/core/amr/assembly.hpp"  // assembleFv (device per-level operator rebuild, D5)
 #include "peclet/core/amr/fv_op.hpp"
 #include "peclet/core/amr/poisson.hpp"
 #include "peclet/core/common/view.hpp"
@@ -42,7 +42,7 @@
 namespace peclet::core::amr {
 
 /// Restrict: coarse(p) = mean over p's children (CSR fixed order ⇒ deterministic).
-inline void deviceRestrict(View<const Index> childStart, View<const Index> childIdx,
+inline void restrictField(View<const Index> childStart, View<const Index> childIdx,
                            View<const double> fine, View<double> coarse, Index nCoarse) {
   Kokkos::parallel_for(
       "amr::device_restrict", nCoarse, KOKKOS_LAMBDA(const Index p) {
@@ -55,11 +55,11 @@ inline void deviceRestrict(View<const Index> childStart, View<const Index> child
 
 /// Restrict, κ-weighted: coarse(p) = Σ_child κ_c·fine_c / Σ_child κ_c, with κ the fine
 /// cell's fluid-fraction weight (mean face aperture). Downweights nearly-solid children
-/// at thin cut features. Reduces to deviceRestrict when all κ are equal (openness-free).
+/// at thin cut features. Reduces to restrictField when all κ are equal (openness-free).
 /// (Experimental — opt-in via Multigrid::setKappaRestrict; see the comparison test.
 /// NOTE: unlike the plain volume-average, this is *not* exactly conservative, so the
 /// restricted residual of a mean-zero RHS need not stay mean-zero.)
-inline void deviceRestrictKappa(View<const Index> childStart, View<const Index> childIdx,
+inline void restrictKappa(View<const Index> childStart, View<const Index> childIdx,
                                 View<const double> fine, View<const double> kappa,
                                 View<double> coarse, Index nCoarse) {
   Kokkos::parallel_for(
@@ -77,7 +77,7 @@ inline void deviceRestrictKappa(View<const Index> childStart, View<const Index> 
 }
 
 /// Prolong (piecewise-constant) + correct: fine(i) += coarse(c2p(i)).
-inline void deviceProlongAdd(View<const Index> c2p, View<const double> coarse, View<double> fine,
+inline void prolongAdd(View<const Index> c2p, View<const double> coarse, View<double> fine,
                              Index nFine) {
   Kokkos::parallel_for(
       "amr::device_prolong", nFine, KOKKOS_LAMBDA(const Index i) {
@@ -88,7 +88,7 @@ inline void deviceProlongAdd(View<const Index> c2p, View<const double> coarse, V
 
 /// Masked piecewise-constant prolong + correct: fine(i) += coarse(c2p(i)) only on non-excluded fine
 /// cells (mirrors sdflow VelocityMG::prolongMasked — no correction into a cut/solid cell). Generic.
-inline void deviceProlongAddMasked(View<const Index> c2p, View<const double> coarse,
+inline void prolongAddMasked(View<const Index> c2p, View<const double> coarse,
                                    View<const char> excl, View<double> fine, Index nFine) {
   Kokkos::parallel_for(
       "amr::device_prolong_masked", nFine, KOKKOS_LAMBDA(const Index i) {
@@ -101,7 +101,7 @@ inline void deviceProlongAddMasked(View<const Index> c2p, View<const double> coa
 /// Zero `v` at excluded cells (excl != 0). Mirrors sdflow's mg_mul_mask: applied to the fine
 /// residual before restriction so the inconsistent cut-cell + solid residuals never reach the
 /// coarse grid (the clean-fluid exclude). Generic.
-inline void deviceZeroMasked(View<double> v, View<const char> excl, Index n) {
+inline void zeroMasked(View<double> v, View<const char> excl, Index n) {
   Kokkos::parallel_for(
       "amr::device_zero_masked", n, KOKKOS_LAMBDA(const Index i) { if (excl(i)) v(i) = 0.0; });
 }
@@ -177,23 +177,23 @@ class Multigrid {
     Level& lv = levels_[L];
     View<const double> bc(lv.b);
     if (L + 1 == levels_.size()) {
-      for (int s = 0; s < bottom; ++s) deviceJacobiFv(lv.op, lv.x, bc, lv.tmp, omega);
-      if (removeMean_) deviceRemoveMeanFv(lv.op, lv.x);
+      for (int s = 0; s < bottom; ++s) jacobiFv(lv.op, lv.x, bc, lv.tmp, omega);
+      if (removeMean_) removeMeanFv(lv.op, lv.x);
       return;
     }
-    for (int s = 0; s < pre; ++s) deviceJacobiFv(lv.op, lv.x, bc, lv.tmp, omega);
-    deviceResidualFv(lv.op, View<const double>(lv.x), bc, lv.res);
+    for (int s = 0; s < pre; ++s) jacobiFv(lv.op, lv.x, bc, lv.tmp, omega);
+    residualFv(lv.op, View<const double>(lv.x), bc, lv.res);
     Level& cl = levels_[L + 1];
     if (kappaRestrict_)
-      deviceRestrictKappa(lv.childStart, lv.childIdx, View<const double>(lv.res),
+      restrictKappa(lv.childStart, lv.childIdx, View<const double>(lv.res),
                           View<const double>(lv.kappa), cl.b, cl.n);
     else
-      deviceRestrict(lv.childStart, lv.childIdx, View<const double>(lv.res), cl.b, cl.n);
+      restrictField(lv.childStart, lv.childIdx, View<const double>(lv.res), cl.b, cl.n);
     Kokkos::deep_copy(cl.x, 0.0);
     vcycle(pre, post, bottom, omega, L + 1);
-    deviceProlongAdd(lv.c2p, View<const double>(cl.x), lv.x, lv.n);
-    for (int s = 0; s < post; ++s) deviceJacobiFv(lv.op, lv.x, bc, lv.tmp, omega);
-    if (removeMean_) deviceRemoveMeanFv(lv.op, lv.x);
+    prolongAdd(lv.c2p, View<const double>(cl.x), lv.x, lv.n);
+    for (int s = 0; s < post; ++s) jacobiFv(lv.op, lv.x, bc, lv.tmp, omega);
+    if (removeMean_) removeMeanFv(lv.op, lv.x);
   }
 
   /// Solve L_quad u = rhs (the 2nd-order graded operator) by deferred correction:
@@ -210,15 +210,15 @@ class Multigrid {
     auto bb = lv.b;
     double r = 0.0;
     for (int o = 0; o < outer; ++o) {
-      deviceQuadDelta(View<const Index>(qStart_), View<const Index>(qSlot_),
+      quadDelta(View<const Index>(qStart_), View<const Index>(qSlot_),
                       View<const double>(qCoef_), View<const double>(lv.x), dq_, lv.n);
       Kokkos::parallel_for(
           "amr::quad_rhsp", lv.n, KOKKOS_LAMBDA(const Index i) { bb(i) = b0(i) - dq(i); });
       for (int c = 0; c < cyclesPerOuter; ++c) vcycle(pre, post, bottom, omega, 0);
     }
     // r = || b0true − (L_std + quad) x ||
-    deviceResidualFv(lv.op, View<const double>(lv.x), View<const double>(b0true_), lv.res);
-    deviceQuadDelta(View<const Index>(qStart_), View<const Index>(qSlot_),
+    residualFv(lv.op, View<const double>(lv.x), View<const double>(b0true_), lv.res);
+    quadDelta(View<const Index>(qStart_), View<const Index>(qSlot_),
                     View<const double>(qCoef_), View<const double>(lv.x), dq_, lv.n);
     auto res = lv.res;
     double s = 0.0;
@@ -306,17 +306,17 @@ class Multigrid {
   }
 
   // Build the consistent face CSR (+ invVol/bcDiag) for one level by assembling it ON THE DEVICE
-  // (D5/D2): upload this level's leaf set, then deviceAssembleFv reproduces AmrPoisson's exact
+  // (D5/D2): upload this level's leaf set, then assembleFv reproduces AmrPoisson's exact
   // forEachFaceNeighbor enumeration + openness·A_f/d_f weights — bit-for-bit identical to the host
-  // walk on OpenMP (validated in test_amr_device_assembly), but with no host CSR build / no
-  // re-upload. The Helmholtz c0/cD of this level are preserved (deviceAssembleFv returns the pure-L
+  // walk on OpenMP (validated in test_amr_assembly), but with no host CSR build / no
+  // re-upload. The Helmholtz c0/cD of this level are preserved (assembleFv returns the pure-L
   // defaults; setHelmholtz / a prior value is re-applied), so a reassemble after the geometry moves
   // keeps the momentum-preconditioner form.
   void buildFaceCsr(const Poisson& ap, const Octree& t, Level& lv) {
     const double c0 = lv.op.c0, cD = lv.op.cD;
     BlockOctreeView<Dim, Bits> ov;
     ov.upload(t);
-    lv.op = deviceAssembleFv<Dim, Bits>(ap, ov);
+    lv.op = assembleFv<Dim, Bits>(ap, ov);
     lv.op.c0 = c0;
     lv.op.cD = cD;
   }

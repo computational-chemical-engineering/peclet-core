@@ -1,7 +1,7 @@
 // Device (Kokkos) momentum operator + solver for the AMR collocated flow step
 // (peclet::core::amr::MomentumOp / MomentumSolver). Validates, against the host
 // AmrCutCell on a uniform-fine sphere geometry:
-//   (1) the assembled device matvec deviceApplyMom == host AmrCutCell::applyOp (to FP
+//   (1) the assembled device matvec applyMom == host AmrCutCell::applyOp (to FP
 //       tolerance — same coefficients; GPU differs only in the last bit by FMA);
 //   (2) device weighted-Jacobi and Jacobi-preconditioned BiCGStab both solve A u = b to
 //       the same solution the host serial gaussSeidel converges to;
@@ -98,7 +98,7 @@ void run() {
     MomentumOp op = upload(A);
     View<double> du("u", (std::size_t)n), dAu("Au", (std::size_t)n);
     setDev(du, u);
-    deviceApplyMom(op, View<const double>(du), dAu);
+    applyMom(op, View<const double>(du), dAu);
     auto devAu = getDev(dAu, n);
     std::vector<double> hostAu;
     cc.applyOpGeometric(u, hostAu);  // INDEPENDENT geometric reference (not the shared CSR path)
@@ -167,7 +167,7 @@ void run() {
     MomentumOp opa = upload(Aa);
     View<double> dua("u", (std::size_t)n), dAu("Au", (std::size_t)n);
     setDev(dua, u);
-    deviceApplyMom(opa, View<const double>(dua), dAu);
+    applyMom(opa, View<const double>(dua), dAu);
     auto devAu = getDev(dAu, n);
     std::vector<double> hostAu;
     cc.applyOp(u, hostAu);  // now includes advection

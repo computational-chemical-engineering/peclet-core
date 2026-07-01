@@ -60,7 +60,7 @@ void test_conservation(const BO& t, Real h0) {
   PECLET_CORE_CHECK(std::fabs(integral) < 1e-9 * (scale + 1e-30));
 
   // Anti-drift lock: the shared face_csr.hpp FV kernel over the assembled CSR (the same arithmetic
-  // the device deviceApplyFv runs) must reproduce the geometric applyLaplacian. Validates the shared
+  // the device applyFv runs) must reproduce the geometric applyLaplacian. Validates the shared
   // FV kernel in the pure-C++ (no-Kokkos) build.
   std::vector<double> LuShared;
   P.applyFvShared(u, LuShared);

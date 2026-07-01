@@ -75,11 +75,11 @@ void run() {
   }
   View<double> duex("uex", (std::size_t)n0), db("b", (std::size_t)n0), dlu("lu", (std::size_t)n0);
   setDev(duex, uex);
-  deviceApplyFv(mg.op(0), View<const double>(duex), db);
+  applyFv(mg.op(0), View<const double>(duex), db);
   std::vector<double> b = getDev(db, n0);
 
   auto resNorm = [&]() {
-    deviceApplyFv(mg.op(0), View<const double>(mg.x(0)), dlu);
+    applyFv(mg.op(0), View<const double>(mg.x(0)), dlu);
     std::vector<double> lu = getDev(dlu, n0);
     double s2 = 0.0;
     for (Index i = 0; i < n0; ++i) {

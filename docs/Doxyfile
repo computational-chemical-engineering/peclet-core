@@ -35,8 +35,8 @@ DISTRIBUTE_GROUP_DOC   = YES
 ENABLE_PREPROCESSING   = YES
 MACRO_EXPANSION        = YES
 EXPAND_ONLY_PREDEF     = YES
-PREDEFINED             = TPX_HAVE_MORTON=1 \
-                         TPX_HAVE_KOKKOS=1 \
+PREDEFINED             = PECLET_CORE_HAVE_MORTON=1 \
+                         PECLET_CORE_HAVE_KOKKOS=1 \
                          KOKKOS_INLINE_FUNCTION= \
                          KOKKOS_FUNCTION=
 

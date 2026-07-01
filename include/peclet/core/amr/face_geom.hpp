@@ -1,7 +1,7 @@
 // transport-core — FaceGeom: the static (sub)face geometry CSR of the collocated AMR projection.
 //
 // Factored out of flow.hpp into its own header so the device face-geometry assembler
-// (device_facegeom_assembly.hpp) and the flow driver (flow.hpp) can both name the type without a
+// (facegeom_assembly.hpp) and the flow driver (flow.hpp) can both name the type without a
 // circular include (flow.hpp consumes the assembler, the assembler produces a FaceGeom).
 //
 // Per (sub)face (matching AmrPoisson::forEachFaceFull, 2:1 sub-faces): neighbour, axis, dir, α·area

@@ -1,11 +1,11 @@
 // Device (Kokkos) geometric-multigrid V-cycle with the CONSISTENT graded operator
 // (peclet::core::amr::Multigrid). Validates, on a genuinely graded octree:
-//   (1) the device consistent FV operator (deviceApplyFv over the face CSR) ==
+//   (1) the device consistent FV operator (applyFv over the face CSR) ==
 //       host AmrPoisson::applyLaplacian bit-for-bit (same coeffs, same 2:1 sub-faces);
 //   (2) the full standard V-cycle == a host Jacobi-MG mirror bit-for-bit, AND it now
 //       *converges on the graded mesh* (the plain operator stalled there — this is the
 //       point of folding in the consistent operator);
-//   (3) the quadratic coarse-fine correction: deviceQuadDelta == host
+//   (3) the quadratic coarse-fine correction: quadDelta == host
 //       (applyLaplacianQuad − applyLaplacian) to round-off, and solveQuad (deferred
 //       correction) drives the 2nd-order graded residual down.
 // Runs on whatever backend Kokkos was built for (CUDA / HIP / OpenMP).
@@ -175,13 +175,13 @@ void run() {
   AP ap0;
   ap0.init(t, h0);
 
-  // ===== (1) consistent operator: deviceApplyFv == host applyLaplacian (bit-exact) =====
+  // ===== (1) consistent operator: applyFv == host applyLaplacian (bit-exact) =====
   std::vector<double> xr((std::size_t)n);
   for (Index i = 0; i < n; ++i) xr[(std::size_t)i] = std::sin(0.3 * i) - 0.2 * std::cos(0.13 * i);
   {
     View<double> dxr("xr", (std::size_t)n), dLu("Lu", (std::size_t)n);
     setDev(dxr, xr);
-    deviceApplyFv(mg.op(0), View<const double>(dxr), dLu);
+    applyFv(mg.op(0), View<const double>(dxr), dLu);
     std::vector<double> hLu;
     ap0.applyLaplacian(xr, hLu);
     auto dLh = getDev(dLu, n);
@@ -220,11 +220,11 @@ void run() {
   PECLET_CORE_CHECK(std::sqrt(r1) < std::sqrt(r0) * 1e-3);
 
   // ===== (3) quadratic coarse-fine correction =====
-  // deviceQuadDelta(xr) ≈ host (applyLaplacianQuad − applyLaplacian)(xr)
+  // quadDelta(xr) ≈ host (applyLaplacianQuad − applyLaplacian)(xr)
   {
     View<double> dxr("xr2", (std::size_t)n), ddq("dq", (std::size_t)n);
     setDev(dxr, xr);
-    deviceQuadDelta(View<const Index>(mg.quadStart()), View<const Index>(mg.quadSlot()),
+    quadDelta(View<const Index>(mg.quadStart()), View<const Index>(mg.quadSlot()),
                     View<const double>(mg.quadCoef()), View<const double>(dxr), ddq, n);
     std::vector<double> lq, ls;
     ap0.applyLaplacianQuad(xr, lq);

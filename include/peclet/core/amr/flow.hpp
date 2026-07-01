@@ -6,7 +6,7 @@
 // the operators (geometry, openness, cut stencils — done once), then drives the time step
 // entirely on the device:
 //   * momentum predictor — MomentumOp (assembled cut-cell operator) solved with the
-//     parallel BiCGStab of device_momentum.hpp;
+//     parallel BiCGStab of momentum.hpp;
 //   * pressure projection — the openness Poisson on Multigrid / PCG;
 //   * divergence, ABC gradient correction, rotational pressure update — face-CSR kernels
 //     (FaceGeom) that mirror AmrPoisson::forEachFaceFull (same 2:1 sub-faces +
@@ -31,8 +31,8 @@
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/cut_cell.hpp"
 #include "peclet/core/amr/face_geom.hpp"                   // FaceGeom (shared with the device assembler)
-#include "peclet/core/amr/device_facegeom_assembly.hpp"   // deviceAssembleFaceGeom (D4/D6)
-#include "peclet/core/amr/device_momentum_assembly.hpp"   // deviceAssembleMomentum (D3/D6)
+#include "peclet/core/amr/facegeom_assembly.hpp"   // assembleFaceGeom (D4/D6)
+#include "peclet/core/amr/momentum_assembly.hpp"   // assembleMomentum (D3/D6)
 #include "peclet/core/amr/momentum.hpp"
 #include "peclet/core/amr/multigrid.hpp"
 #include "peclet/core/amr/pcg.hpp"
@@ -103,7 +103,7 @@ FaceGeom buildFaceGeom(const AmrPoisson<Dim, Bits>& ap, FluidFn&& isFluid) {
 /// Openness-weighted FV divergence: div_i = invVol_i Σ_faces α·area·dir·½(u^axis_i+u^axis_j),
 /// on fluid cells (0 elsewhere). u[0..2] are the three velocity component Views (solid cells
 /// must hold 0). Mirrors oracle::AmrFlow::divergence.
-inline void deviceDivergence(const FaceGeom& g, View<const double> u0, View<const double> u1,
+inline void divergence(const FaceGeom& g, View<const double> u0, View<const double> u1,
                              View<const double> u2, View<double> div) {
   auto st = g.start;
   auto nb = g.nbr;
@@ -135,7 +135,7 @@ inline void deviceDivergence(const FaceGeom& g, View<const double> u0, View<cons
 /// correction). Because L = D·G_face on the SAME (sub)faces, D(uf) = D u* − Lφ = 0 (to the φ residual).
 /// Each (sub)face is written from both incident cells; the +axis-orientation build makes the two copies
 /// identical, including across 2:1 interfaces (fine area + (φ_fine−φ_coarse)/dist on each sub-face).
-inline void deviceBuildFaceField(const FaceGeom& g, View<const double> u0, View<const double> u1,
+inline void buildFaceField(const FaceGeom& g, View<const double> u0, View<const double> u1,
                                  View<const double> u2, View<const double> phi, View<double> uf) {
   auto st = g.start;
   auto nb = g.nbr;
@@ -156,7 +156,7 @@ inline void deviceBuildFaceField(const FaceGeom& g, View<const double> u0, View<
 }
 
 /// L2 norm of the divergence of the FACE field uf (the div-free flux diagnostic / host-parity check).
-inline double deviceDivFaceNorm(const FaceGeom& g, View<const double> uf) {
+inline double divFaceNorm(const FaceGeom& g, View<const double> uf) {
   auto st = g.start;
   auto dr = g.dir;
   auto aA = g.alphaArea;
@@ -179,7 +179,7 @@ inline double deviceDivFaceNorm(const FaceGeom& g, View<const double> uf) {
 /// ABC cell-gradient of a scalar field `f`: gx/gy/gz = ½(g⁻+g⁺) of the adjacent face
 /// gradients along each axis, a closed face (α≤1e-12) contributing nothing (and not
 /// counted). On fluid cells only. Mirrors oracle::AmrFlow::gradOf for all three components.
-inline void deviceGrad3(const FaceGeom& g, View<const double> f, View<double> gx,
+inline void grad3(const FaceGeom& g, View<const double> f, View<double> gx,
                         View<double> gy, View<double> gz) {
   auto st = g.start;
   auto nb = g.nbr;
@@ -225,7 +225,7 @@ inline void deviceGrad3(const FaceGeom& g, View<const double> f, View<double> gx
 /// Momentum RHS for one component: b_i = fluid ? (idiag·u_i + f_c − gradP_i − adv_i)·rscale_i : 0
 /// (== AmrCutCell::makeRhs of the oracle::AmrFlow predictor source, u_bc = 0). `adv` is the explicit
 /// deferred-correction advection term ρ(SOU−FOU) (zero for Stokes / fully-implicit at steady).
-inline void deviceMomRhs(View<const double> uc, View<const double> gradP, View<const double> adv,
+inline void momRhs(View<const double> uc, View<const double> gradP, View<const double> adv,
                          View<const double> rscale, View<const char> fluid, double idiag, double fc,
                          View<double> b, Index n) {
   Kokkos::parallel_for(
@@ -242,7 +242,7 @@ inline void deviceMomRhs(View<const double> uc, View<const double> gradP, View<c
 /// consistent with the rscale-scaled RHS — equivalent to AmrCutCell::assembleOperator(scaleAdv=
 /// true) added to the static Stokes operator (the AMR reference adds advection after the cut-cell
 /// bake, so no K/M/X redistribution). Replaces the per-step HOST rebuild ⇒ no host round-trip.
-inline void deviceBuildFou(const FaceGeom& g, View<const double> u0, View<const double> u1,
+inline void buildFou(const FaceGeom& g, View<const double> u0, View<const double> u1,
                            View<const double> u2, double rho, View<const double> rscale,
                            View<double> advDiag, View<double> advCoef, View<const double> uf,
                            bool useFace) {
@@ -291,7 +291,7 @@ inline void deviceBuildFou(const FaceGeom& g, View<const double> u0, View<const 
 /// reconstruction 1.5·up−0.5·upup (advScheme 0) or Koren TVD (1), upstream point-probed
 /// (upupI/upupJ); the FOU flux is velOut·upwind. The implicit FOU is baked into the momentum
 /// operator (AmrCutCell::buildAdvectionFou + assembleOperator) so the two cancel at steady state.
-inline void deviceDeferredSou(const FaceGeom& g, View<const double> u0, View<const double> u1,
+inline void deferredSou(const FaceGeom& g, View<const double> u0, View<const double> u1,
                               View<const double> u2, int comp, double rho, int advScheme,
                               View<double> defc, View<const double> uf, bool useFace) {
   auto st = g.start;
@@ -333,8 +333,8 @@ inline void deviceDeferredSou(const FaceGeom& g, View<const double> u0, View<con
 }
 
 /// Fully-explicit high-order advection for component `comp`: defc = ρ·SOU (no implicit FOU; the
-/// `setImplicitAdvection(false)` fallback). Same SOU/TVD reconstruction as deviceDeferredSou.
-inline void deviceAdvectExplicit(const FaceGeom& g, View<const double> u0,
+/// `setImplicitAdvection(false)` fallback). Same SOU/TVD reconstruction as deferredSou.
+inline void advectExplicit(const FaceGeom& g, View<const double> u0,
                                  View<const double> u1, View<const double> u2, int comp, double rho,
                                  int advScheme, View<double> defc, View<const double> uf, bool useFace) {
   auto st = g.start;
@@ -375,7 +375,7 @@ inline void deviceAdvectExplicit(const FaceGeom& g, View<const double> u0,
 }
 
 /// u_c -= gradPhi_c on fluid cells (the projection velocity correction).
-inline void deviceCorrect(View<double> uc, View<const double> gphi, View<const char> fluid,
+inline void correct(View<double> uc, View<const double> gphi, View<const char> fluid,
                           Index n) {
   Kokkos::parallel_for(
       "amr::flow_correct", n,
@@ -383,7 +383,7 @@ inline void deviceCorrect(View<double> uc, View<const double> gphi, View<const c
 }
 
 /// Rotational incremental pressure update: p += (ρ/dt)φ − μ·div, on fluid cells.
-inline void devicePresUpdate(View<double> p, View<const double> phi, View<const double> div,
+inline void presUpdate(View<double> p, View<const double> phi, View<const double> div,
                              View<const char> fluid, double rho_dt, double mu, Index n) {
   Kokkos::parallel_for(
       "amr::flow_presupd", n, KOKKOS_LAMBDA(const Index i) {
@@ -495,14 +495,14 @@ class AmrFlow {
     presMG_.setRemoveMean(true);  // singular periodic pressure: per-level nullspace projection
 
     // Device assembly (D6): the static cut-cell momentum operator CSR and the collocated face
-    // geometry are assembled ON THE DEVICE (deviceAssembleMomentum / deviceAssembleFaceGeom), and the
+    // geometry are assembled ON THE DEVICE (assembleMomentum / assembleFaceGeom), and the
     // pressure MG operators are device-assembled per level (Multigrid D5) — so no host CSR walk and no
     // operator round-trip. Each is bit-for-bit identical to the host assembler on OpenMP (locked in
-    // test_amr_device_momentum / test_amr_device_facegeom), so the flow result is unchanged. A shared
+    // test_amr_momentum / test_amr_facegeom), so the flow result is unchanged. A shared
     // device octree view backs both assemblers.
     BlockOctreeView<3, Bits> ov;
     ov.upload(*t_);
-    momOp_ = deviceAssembleMomentum<Bits>(mom_, ov);  // static Stokes operator (hasAdv stays false)
+    momOp_ = assembleMomentum<Bits>(mom_, ov);  // static Stokes operator (hasAdv stays false)
     // Velocity multigrid (momentum preconditioner): the Galerkin hierarchy A_c = R·A·P built
     // directly from the exact assembled momentum CSR. Consistent with the fine cut-cell
     // operator by construction (inherits the ξ-overlay + D_rescale row scaling; a coarse cell
@@ -532,7 +532,7 @@ class AmrFlow {
     }
     std::vector<char> fluidVec(static_cast<std::size_t>(n));
     for (Index i = 0; i < n; ++i) fluidVec[static_cast<std::size_t>(i)] = mom_.isFluid(i) ? 1 : 0;
-    geom_ = deviceAssembleFaceGeom<Bits>(pres_, fluidVec, ov);
+    geom_ = assembleFaceGeom<Bits>(pres_, fluidVec, ov);
     std::vector<double> rs(static_cast<std::size_t>(n));
     for (Index i = 0; i < n; ++i) rs[static_cast<std::size_t>(i)] = mom_.rhsScale(i);
     rscale_ = toDevice(rs, "df_rscale");
@@ -605,7 +605,7 @@ class AmrFlow {
     for (int c = 0; c < 3; ++c) Kokkos::deep_copy(u0_[c], View<const double>(u_[c]));
     // −∇p^n is constant across the outer iterations (pressure is projected once, after the loop, like
     // sdflow's single per-step projection) ⇒ hoist it out.
-    deviceGrad3(geom_, View<const double>(p_), gx_[0], gx_[1], gx_[2]);
+    grad3(geom_, View<const double>(p_), gx_[0], gx_[1], gx_[2]);
     // Picard outer loop over the lagged advection only (the momentum nonlinearity); for outerIters_==1
     // this is the single lagged predictor, then one projection — bit-identical to before.
     for (int outer = 0; outer < outerIters_; ++outer) {
@@ -620,15 +620,15 @@ class AmrFlow {
         // deferred correction use the SAME velocity ⇒ the FOU cancels at steady state (host-parity).
         const View<const double> ufv(uf_);
         if (implicitFou_)
-          deviceBuildFou(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
+          buildFou(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
                          View<const double>(u_[2]), rho_, View<const double>(rscale_), advDiag_,
                          advCoef_, ufv, faceFieldBuilt_);
         for (int c = 0; c < 3; ++c) {
           if (implicitFou_)
-            deviceDeferredSou(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
+            deferredSou(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
                               View<const double>(u_[2]), c, rho_, advScheme_, defc_[c], ufv, faceFieldBuilt_);
           else
-            deviceAdvectExplicit(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
+            advectExplicit(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
                                  View<const double>(u_[2]), c, rho_, advScheme_, defc_[c], ufv, faceFieldBuilt_);
         }
         // The staircase MG's fine level mirrors the sharp operator; refresh it so it picks up the
@@ -639,7 +639,7 @@ class AmrFlow {
       // and −ρ(SOU−FOU); the mass term is anchored at uⁿ (u0_), the solve warm-starts at the current
       // iterate. ---
       for (int c = 0; c < 3; ++c) {
-        deviceMomRhs(View<const double>(u0_[c]), View<const double>(gx_[c]),
+        momRhs(View<const double>(u0_[c]), View<const double>(gx_[c]),
                      View<const double>(defc_[c]), View<const double>(rscale_),
                      View<const char>(fluid_), idiag, f_[c], bmom_, n);
         // P4 (opt-in): the velocity-MG used as the *solver* — MG-preconditioned defect correction,
@@ -672,7 +672,7 @@ class AmrFlow {
   /// Pressure projection of the current velocity in place.
   void project(int presIters = 60) {
     const Index n = n_;
-    deviceDivergence(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
+    divergence(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
                      View<const double>(u_[2]), div_);
     Kokkos::deep_copy(phi_, 0.0);
     // Two selectable pressure drivers, like sdflow's CutcellMG (MG-PCG single-rank default,
@@ -692,12 +692,12 @@ class AmrFlow {
       lastPresIters_ = presIters;
     }
     // Build the divergence-free FACE field from u* (still in u_) + φ, before the cell correction.
-    deviceBuildFaceField(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
+    buildFaceField(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
                          View<const double>(u_[2]), View<const double>(phi_), uf_);
     faceFieldBuilt_ = true;
-    deviceGrad3(geom_, View<const double>(phi_), gx_[0], gx_[1], gx_[2]);
-    for (int c = 0; c < 3; ++c) deviceCorrect(u_[c], View<const double>(gx_[c]), View<const char>(fluid_), n);
-    devicePresUpdate(p_, View<const double>(phi_), View<const double>(div_),
+    grad3(geom_, View<const double>(phi_), gx_[0], gx_[1], gx_[2]);
+    for (int c = 0; c < 3; ++c) correct(u_[c], View<const double>(gx_[c]), View<const char>(fluid_), n);
+    presUpdate(p_, View<const double>(phi_), View<const double>(div_),
                      View<const char>(fluid_), rho_ / dt_, mu_, n);
   }
 
@@ -705,7 +705,7 @@ class AmrFlow {
   /// (== host oracle::AmrFlow::advectTerm). Isolates the SOU kernel from the solve.
   std::vector<double> debugSou(int comp) {
     View<double> s("dbg_sou", static_cast<std::size_t>(n_));
-    deviceAdvectExplicit(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
+    advectExplicit(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
                          View<const double>(u_[2]), comp, 1.0, advScheme_, s, View<const double>(uf_), false);
     std::vector<double> h(static_cast<std::size_t>(n_));
     auto m = Kokkos::create_mirror_view(s);
@@ -769,13 +769,13 @@ class AmrFlow {
   }
   /// L2 norm of the (openness-weighted) divergence of the current velocity.
   double divNormL2() {
-    deviceDivergence(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
+    divergence(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
                      View<const double>(u_[2]), div_);
     return std::sqrt(dotPlain(View<const double>(div_), View<const double>(div_), n_));
   }
   /// L2 norm of the divergence of the ABC face field uf_ (built each project()): the φ-solve residual,
   /// far below the cell field's O(h²) divNormL2 — including across 2:1 interfaces.
-  double divNormFace() { return deviceDivFaceNorm(geom_, View<const double>(uf_)); }
+  double divNormFace() { return divFaceNorm(geom_, View<const double>(uf_)); }
   /// Copy the divergence-free face field to host (one value per CSR (sub)face, forEachFaceFull order).
   std::vector<double> faceField() const { return peclet::core::toVector(uf_); }
   Index numLeaves() const { return n_; }

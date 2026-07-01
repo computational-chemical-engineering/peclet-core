@@ -3,7 +3,7 @@
 // The SOU / Koren-TVD reconstruction of the advected face value from the two upwind cells (upup, up)
 // and the downwind cell (down) is the numerically delicate part of the advection scheme — exactly the
 // kind of formula that must not drift between the serial host solver (AmrFlow::hoFace, flow.hpp) and
-// the Kokkos device solver (deviceDeferredSou / deviceAdvectExplicit, device_flow.hpp). This is that
+// the Kokkos device solver (deferredSou / advectExplicit, device_flow.hpp). This is that
 // formula, written ONCE as a MORTON_HD function (host- and device-callable; empty MORTON_HD in the
 // pure-C++ build). min/max/abs are expressed with branches rather than std::/Kokkos:: math so the body
 // is identical on both backends (and bit-identical to the previous std::fmin/fmax form for the finite

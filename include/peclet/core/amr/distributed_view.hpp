@@ -10,8 +10,8 @@
 //   DistributedGatherHalo — value-only face-neighbour gather over a topology established ONCE
 //     (DistributedOctree::buildGatherHaloTopology): device pack/scatter kernels + a host-staged compact
 //     MPI values exchange. No per-matvec coord exchange / locateGlobal.
-//   DistributedPoissonDevice — apply / jacobi / residual as parallel_for over the device field.
-//   DistributedMultigridDevice — the V-cycle: device jacobi + the (local) child-CSR restrict /
+//   DistributedPoissonView — apply / jacobi / residual as parallel_for over the device field.
+//   DistributedMultigridView — the V-cycle: device jacobi + the (local) child-CSR restrict /
 //     piecewise-constant prolong reused from multigrid.hpp (bit-exact, deterministic).
 //
 // Bit-exactness contract (the suite's distributed lock): the SOLUTION is bit-for-bit identical across
@@ -21,8 +21,8 @@
 // solution.) GPU is tolerance-not-bit-exact (FMA) by the documented convention.
 //
 // Requires a Kokkos build + MPI + the morton checkout (PECLET_CORE_HAVE_MORTON).
-#ifndef PECLET_CORE_AMR_DISTRIBUTED_DEVICE_HPP
-#define PECLET_CORE_AMR_DISTRIBUTED_DEVICE_HPP
+#ifndef PECLET_CORE_AMR_DISTRIBUTED_VIEW_HPP
+#define PECLET_CORE_AMR_DISTRIBUTED_VIEW_HPP
 
 #ifdef PECLET_CORE_HAVE_MORTON
 
@@ -31,7 +31,7 @@
 #include <vector>
 
 #include "peclet/core/amr/distributed_poisson.hpp"  // DistributedOctree, AmrGeometry, DistributedMultigrid (ref)
-#include "peclet/core/amr/multigrid.hpp"            // deviceRestrict / deviceProlongAdd (bit-exact, reused)
+#include "peclet/core/amr/multigrid.hpp"            // restrictField / prolongAdd (bit-exact, reused)
 #include "peclet/core/common/mpi.hpp"
 #include "peclet/core/common/view.hpp"
 #include "peclet/core/halo/grid_halo.hpp"  // detail::gpuAwareMpi() (PECLET_CORE_GPU_AWARE_MPI opt-in, H1)
@@ -138,7 +138,7 @@ class DistributedGatherHalo {
 /// Device-resident distributed plain-Laplacian Poisson operator: y = ∇²x with cross-block neighbours
 /// from the device gather halo. apply / jacobi / residual run as Kokkos kernels over the device field.
 template <int Dim, unsigned Bits = (Dim == 2 ? 32u : (Dim == 3 ? 21u : 16u))>
-class DistributedPoissonDevice {
+class DistributedPoissonView {
  public:
   void init(DistributedOctree<Dim, Bits>& d, double h0) {
     d_ = &d;
@@ -229,7 +229,7 @@ class DistributedPoissonDevice {
 /// distributed Jacobi; restriction (child-CSR gather) and prolongation (piecewise-constant) are the
 /// local, bit-exact device kernels from multigrid.hpp.
 template <int Dim, unsigned Bits = (Dim == 2 ? 32u : (Dim == 3 ? 21u : 16u))>
-class DistributedMultigridDevice {
+class DistributedMultigridView {
  public:
   using Octree = DistributedOctree<Dim, Bits>;
 
@@ -296,7 +296,7 @@ class DistributedMultigridDevice {
 
   std::size_t numLevels() const { return levels_.size(); }
   Index numLeaves(std::size_t L = 0) const { return levels_[L]->n; }
-  DistributedPoissonDevice<Dim, Bits>& op(std::size_t L = 0) { return levels_[L]->op; }
+  DistributedPoissonView<Dim, Bits>& op(std::size_t L = 0) { return levels_[L]->op; }
   Octree& octree(std::size_t L = 0) { return levels_[L]->d; }
   View<double> x(std::size_t L = 0) { return levels_[L]->x; }
   View<double> b(std::size_t L = 0) { return levels_[L]->b; }
@@ -313,18 +313,18 @@ class DistributedMultigridDevice {
     lv.op.jacobi(x, b, pre);
     lv.op.residual(View<const double>(x), b, lv.res);
     Level& cl = *levels_[L + 1];
-    deviceRestrict(View<const Index>(lv.childStart), View<const Index>(lv.childIdx),
+    restrictField(View<const Index>(lv.childStart), View<const Index>(lv.childIdx),
                    View<const double>(lv.res), cl.b, cl.n);
     Kokkos::deep_copy(cl.x, 0.0);
     vcycle(cl.x, View<const double>(cl.b), pre, post, bottom, L + 1);
-    deviceProlongAdd(View<const Index>(lv.c2p), View<const double>(cl.x), x, lv.n);
+    prolongAdd(View<const Index>(lv.c2p), View<const double>(cl.x), x, lv.n);
     lv.op.jacobi(x, b, post);
   }
 
  private:
   struct Level {
     Octree d;
-    DistributedPoissonDevice<Dim, Bits> op;
+    DistributedPoissonView<Dim, Bits> op;
     Index n = 0;
     View<double> x, b, res;
     View<Index> c2p, childStart, childIdx;
@@ -335,4 +335,4 @@ class DistributedMultigridDevice {
 }  // namespace peclet::core::amr
 
 #endif  // PECLET_CORE_HAVE_MORTON
-#endif  // PECLET_CORE_AMR_DISTRIBUTED_DEVICE_HPP
+#endif  // PECLET_CORE_AMR_DISTRIBUTED_VIEW_HPP

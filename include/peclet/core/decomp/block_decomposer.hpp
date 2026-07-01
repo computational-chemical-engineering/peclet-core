@@ -68,7 +68,7 @@ class BlockDecomposer {
 
   /// Flatten the implicit ORB tree into two parallel arrays for a device-callable ownerOf: for node
   /// `i`, `splitDim[i]` is the split axis (−1 ⇒ leaf), `splitVal[i]` the split coordinate (internal) or
-  /// the block index (leaf); children sit at 2i+1 / 2i+2. Uploaded once by ParticleMigratorDevice so
+  /// the block index (leaf); children sit at 2i+1 / 2i+2. Uploaded once by ParticleMigratorView so
   /// the per-particle owner lookup runs on the device (D1). Mirrors `ownerOf` exactly.
   void flattenTree(std::vector<int>& splitDim, std::vector<Index>& splitVal) const {
     splitDim.resize(tree_.size());

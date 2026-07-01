@@ -1,4 +1,4 @@
-// Device FV (pressure) operator ASSEMBLY (peclet::core::amr::deviceAssembleFv, built on the S1 device CSR-fill
+// Device FV (pressure) operator ASSEMBLY (peclet::core::amr::assembleFv, built on the S1 device CSR-fill
 // primitive) must reproduce the host AmrPoisson::assembleFv weight-CSR bit-for-bit on the OpenMP
 // backend: same face enumeration (forEachFaceNeighbor order, 2:1 sub-faces), same openness·A_f/d_f
 // weights, same invVol/bcDiag. This is the D1+D2 anti-drift lock — the device assembler replaces the
@@ -16,7 +16,7 @@
 
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/block_octree_view.hpp"
-#include "peclet/core/amr/device_assembly.hpp"
+#include "peclet/core/amr/assembly.hpp"
 #include "peclet/core/amr/fv_op.hpp"
 #include "peclet/core/amr/poisson.hpp"
 
@@ -48,7 +48,7 @@ int countMismatch(const std::vector<T>& a, const std::vector<T>& b) {
   return m;
 }
 
-// Assemble FvOp host-side (AmrPoisson::assembleFv) and device-side (deviceAssembleFv) and assert every
+// Assemble FvOp host-side (AmrPoisson::assembleFv) and device-side (assembleFv) and assert every
 // CSR array is bit-identical.
 void checkCase(const char* name, const BO& t, double h0, bool periodic, bool wall, bool withOpen) {
   AmrPoisson<3, kBits> ap;
@@ -66,7 +66,7 @@ void checkCase(const char* name, const BO& t, double h0, bool periodic, bool wal
 
   BlockOctreeView<3, kBits> dev;
   dev.upload(t);
-  FvOp op = deviceAssembleFv(ap, dev);
+  FvOp op = assembleFv(ap, dev);
 
   // Sizes
   PECLET_CORE_CHECK_EQ(static_cast<Index>(op.n), t.numLeaves());
@@ -86,7 +86,7 @@ void checkCase(const char* name, const BO& t, double h0, bool periodic, bool wal
   PECLET_CORE_CHECK_EQ(countMismatch(H.invVol, dinv), 0);
   PECLET_CORE_CHECK_EQ(countMismatch(H.bcDiag, dbc), 0);
 
-  // And the assembled operator APPLIES identically: deviceApplyFv == host shared-FV apply.
+  // And the assembled operator APPLIES identically: applyFv == host shared-FV apply.
   const Index n = t.numLeaves();
   std::vector<double> x(static_cast<std::size_t>(n));
   std::uint64_t s = 0x9e3779b97f4a7c15ULL;
@@ -98,7 +98,7 @@ void checkCase(const char* name, const BO& t, double h0, bool periodic, bool wal
   ap.applyFvShared(x, hout);
   View<const double> dx = toDevice(x, "x");
   View<double> dLu("Lu", static_cast<std::size_t>(n));
-  deviceApplyFv(op, dx, dLu);
+  applyFv(op, dx, dLu);
   std::vector<double> dout = down(dLu);
   PECLET_CORE_CHECK_EQ(countMismatch(hout, dout), 0);
 }

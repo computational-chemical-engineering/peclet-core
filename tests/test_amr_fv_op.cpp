@@ -1,5 +1,5 @@
-// Device (Kokkos) Poisson operator/smoother (peclet::core::amr::deviceLaplacian /
-// deviceJacobiSweep) must match the host BlockOctree operator bit-for-bit, on
+// Device (Kokkos) Poisson operator/smoother (peclet::core::amr::laplacian /
+// jacobiSweep) must match the host BlockOctree operator bit-for-bit, on
 // whatever backend Kokkos was built for (CUDA / HIP / OpenMP). Same face-neighbour
 // walk + arithmetic, just run as parallel_for over the leaf Views.
 //
@@ -66,7 +66,7 @@ void run() {
   View<double> dy("y", static_cast<std::size_t>(n));
 
   // ---- matvec: device == host ----
-  deviceLaplacian<3, kBits>(dev, dx, dy, inv);
+  laplacian<3, kBits>(dev, dx, dy, inv);
   auto hy = Kokkos::create_mirror_view(dy);
   Kokkos::deep_copy(hy, dy);
   int mism = 0;
@@ -83,7 +83,7 @@ void run() {
   View<double> du("u", static_cast<std::size_t>(n));   // starts 0
   View<const double> db = toDevice(b, "b");
   View<double> dax("ax", static_cast<std::size_t>(n));
-  for (int it = 0; it < 5; ++it) deviceJacobiSweep<3, kBits>(dev, du, db, dax, inv, omega);
+  for (int it = 0; it < 5; ++it) jacobiSweep<3, kBits>(dev, du, db, dax, inv, omega);
   auto hu = Kokkos::create_mirror_view(du);
   Kokkos::deep_copy(hu, du);
 

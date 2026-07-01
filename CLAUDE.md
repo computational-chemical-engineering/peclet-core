@@ -46,7 +46,7 @@ Header-only under `include/tpx/`:
   equal weights reduce to the unweighted `init()` bit-for-bit.
 - `decomp/block_indexer.hpp` — local↔global indexing for an extended (inner+ghost) block.
 - `decomp/morton_indexer.hpp` — `MortonIndexer<Dim>`: Z-order (Morton) cell indexing via the `morton`
-  primitive (`morton::Morton<Dim,Bits>`), guarded by `TPX_HAVE_MORTON`. The cache-friendly alternative
+  primitive (`morton::Morton<Dim,Bits>`), guarded by `PECLET_CORE_HAVE_MORTON`. The cache-friendly alternative
   to the x-fastest order (which stays the convention): `codeOf`/`multiIndex` map global multi-index ↔
   Z-order code, `neighborCode` steps one cell along an axis directly in Morton space. Methods carry
   morton's `MORTON_HD`, so they are device-callable under a Kokkos build (the Kokkos build defines
@@ -70,7 +70,7 @@ Header-only under `include/tpx/`:
 - `halo/grid_halo.hpp` — `GridHalo<T>`: portable GPU-resident halo (Kokkos; CUDA / HIP / OpenMP
   backends). pack/unpack/self-copy run as `parallel_for` over the device `tpx::View<T>` field; only the
   compact halo buffers are host-staged for MPI by default (the field stays on the device), with an
-  opt-in GPU-aware path (env `TPX_GPU_AWARE_MPI`, legacy `TPX_CUDA_AWARE_MPI` still honoured). Built
+  opt-in GPU-aware path (env `PECLET_CORE_GPU_AWARE_MPI`, legacy `PECLET_CORE_CUDA_AWARE_MPI` still honoured). Built
   from a host `GridHaloTopology<Dim>::flatten()` via `init()`. Bit-for-bit matches the CPU exchange.
   (The legacy native-CUDA `grid_halo_cuda.cuh` / `DeviceGridExchange<T>` was retired when Kokkos became
   the canonical device path; see `docs/cuda-aware-mpi.md` for the historical
@@ -86,7 +86,7 @@ Header-only under `include/tpx/`:
 - `geom/` — shared SDF solids. `geom/sdf.hpp` is the `Sdf` concept + analytic primitives;
   `geom/grid_sdf.hpp` is the trilinearly-sampled `GridSdf`; `geom/vti_io.hpp` reads/writes scalar &
   vector VTI (`.vti`). The shared geometry representation behind sdflow's and dem's cut-cell IBM.
-- `amr/` — block-local-Morton **AMR octree** flow subsystem (`tpx::amr`, guarded by `TPX_HAVE_MORTON`).
+- `amr/` — block-local-Morton **AMR octree** flow subsystem (`tpx::amr`, guarded by `PECLET_CORE_HAVE_MORTON`).
   `amr/block_octree.hpp` is the per-block octree; `amr/flow.hpp` is the canonical device `AmrFlow`
   (collocated-projection Navier–Stokes with `maskSolid` and a div-free face field), with
   `amr/flow_oracle.hpp` an unexposed serial host reference. Device + distributed multigrid live in

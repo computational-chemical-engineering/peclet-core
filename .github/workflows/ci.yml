@@ -40,7 +40,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libopenmpi-dev openmpi-bin
-          # morton is an optional sibling (enables TPX_HAVE_MORTON); it is a private repo, so CI
+          # morton is an optional sibling (enables PECLET_CORE_HAVE_MORTON); it is a private repo, so CI
           # builds without it — the halo/decomp tests do not depend on it.
 
       - name: Configure

@@ -118,20 +118,20 @@ if(PECLET_CORE_HAVE_KOKKOS)
   target_include_directories(test_amr_fv_op PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   add_test(NAME amr_fv_op COMMAND test_amr_fv_op)
 
-  add_executable(test_amr_device_assembly test_amr_device_assembly.cpp)
-  target_link_libraries(test_amr_device_assembly PRIVATE tpx_core)
-  target_include_directories(test_amr_device_assembly PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME amr_device_assembly COMMAND test_amr_device_assembly)
+  add_executable(test_amr_assembly test_amr_assembly.cpp)
+  target_link_libraries(test_amr_assembly PRIVATE tpx_core)
+  target_include_directories(test_amr_assembly PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME amr_assembly COMMAND test_amr_assembly)
 
-  add_executable(test_amr_device_momentum test_amr_device_momentum.cpp)
-  target_link_libraries(test_amr_device_momentum PRIVATE tpx_core)
-  target_include_directories(test_amr_device_momentum PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME amr_device_momentum COMMAND test_amr_device_momentum)
+  add_executable(test_amr_momentum_assembly test_amr_momentum_assembly.cpp)
+  target_link_libraries(test_amr_momentum_assembly PRIVATE tpx_core)
+  target_include_directories(test_amr_momentum_assembly PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME amr_momentum_assembly COMMAND test_amr_momentum_assembly)
 
-  add_executable(test_amr_device_facegeom test_amr_device_facegeom.cpp)
-  target_link_libraries(test_amr_device_facegeom PRIVATE tpx_core)
-  target_include_directories(test_amr_device_facegeom PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME amr_device_facegeom COMMAND test_amr_device_facegeom)
+  add_executable(test_amr_facegeom test_amr_facegeom.cpp)
+  target_link_libraries(test_amr_facegeom PRIVATE tpx_core)
+  target_include_directories(test_amr_facegeom PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME amr_facegeom COMMAND test_amr_facegeom)
 
   add_executable(test_amr_multigrid test_amr_multigrid.cpp)
   target_link_libraries(test_amr_multigrid PRIVATE tpx_core)
@@ -247,25 +247,25 @@ if(MPI_FOUND)
   # Device-resident distributed AMR multigrid (C2): needs Kokkos + MPI. tpx_halo carries both when
   # PECLET_CORE_ENABLE_KOKKOS is on (same target the Kokkos grid-halo test links).
   if(PECLET_CORE_ENABLE_KOKKOS)
-    add_executable(test_amr_distributed_device_mpi test_amr_distributed_device_mpi.cpp)
-    target_link_libraries(test_amr_distributed_device_mpi PRIVATE tpx_halo)
-    target_include_directories(test_amr_distributed_device_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_executable(test_amr_distributed_view_mpi test_amr_distributed_view_mpi.cpp)
+    target_link_libraries(test_amr_distributed_view_mpi PRIVATE tpx_halo)
+    target_include_directories(test_amr_distributed_view_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
-    add_executable(test_particle_migrator_device_mpi test_particle_migrator_device_mpi.cpp)
-    target_link_libraries(test_particle_migrator_device_mpi PRIVATE tpx_halo)
-    target_include_directories(test_particle_migrator_device_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_executable(test_particle_migrator_view_mpi test_particle_migrator_view_mpi.cpp)
+    target_link_libraries(test_particle_migrator_view_mpi PRIVATE tpx_halo)
+    target_include_directories(test_particle_migrator_view_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   endif()
 
   foreach(np IN ITEMS 1 2 4 8)
-    if(TARGET test_amr_distributed_device_mpi)
-      add_test(NAME amr_distributed_device_np${np}
+    if(TARGET test_amr_distributed_view_mpi)
+      add_test(NAME amr_distributed_view_np${np}
                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_device_mpi> ${MPIEXEC_POSTFLAGS})
+                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_view_mpi> ${MPIEXEC_POSTFLAGS})
     endif()
-    if(TARGET test_particle_migrator_device_mpi)
-      add_test(NAME particle_migrator_device_np${np}
+    if(TARGET test_particle_migrator_view_mpi)
+      add_test(NAME particle_migrator_view_np${np}
                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_particle_migrator_device_mpi> ${MPIEXEC_POSTFLAGS})
+                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_particle_migrator_view_mpi> ${MPIEXEC_POSTFLAGS})
     endif()
     add_test(NAME grid_halo_np${np}
              COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}

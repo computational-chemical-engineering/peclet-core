@@ -382,7 +382,7 @@ class AmrPoisson {
     return v;
   }
   /// out = L u via the SHARED face_csr.hpp FV kernel over the assembled CSR — the same arithmetic the
-  /// device deviceApplyFv runs, executed serially. The geometric applyLaplacian below is the oracle;
+  /// device applyFv runs, executed serially. The geometric applyLaplacian below is the oracle;
   /// test_amr_poisson asserts the two agree (anti-drift lock, no-Kokkos build).
   void applyFvShared(const std::vector<double>& u, std::vector<double>& out) const {
     const FvAssembled A = assembleFv();

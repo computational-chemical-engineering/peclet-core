@@ -9,19 +9,19 @@
 //
 // Bit-exactness: same forEachFaceFull enumeration (axis-major, dir −1/+1, 2:1 sub-faces), same per-face
 // formulas, each cell fills its own slice — so on OpenMP the device FaceGeom == host buildFaceGeom
-// bit-for-bit (test_amr_device_facegeom). GPU is tolerance-not-bit-exact (FMA), per the convention.
+// bit-for-bit (test_amr_facegeom). GPU is tolerance-not-bit-exact (FMA), per the convention.
 //
 // Requires a Kokkos build + the morton checkout (PECLET_CORE_HAVE_MORTON).
-#ifndef PECLET_CORE_AMR_DEVICE_FACEGEOM_ASSEMBLY_HPP
-#define PECLET_CORE_AMR_DEVICE_FACEGEOM_ASSEMBLY_HPP
+#ifndef PECLET_CORE_AMR_FACEGEOM_ASSEMBLY_HPP
+#define PECLET_CORE_AMR_FACEGEOM_ASSEMBLY_HPP
 
 #ifdef PECLET_CORE_HAVE_MORTON
 
 #include <array>
 
 #include "peclet/core/amr/block_octree_view.hpp"
-#include "peclet/core/amr/device_assembly.hpp"  // FvFaceEmit (shared geometry traversal helpers)
-#include "peclet/core/amr/csr.hpp"       // deviceScanOffsets
+#include "peclet/core/amr/assembly.hpp"  // FvFaceEmit (shared geometry traversal helpers)
+#include "peclet/core/amr/csr.hpp"       // scanOffsets
 #include "peclet/core/amr/face_geom.hpp"        // FaceGeom (the produced type)
 #include "peclet/core/amr/poisson.hpp"
 #include "peclet/core/common/view.hpp"
@@ -102,7 +102,7 @@ struct FaceGeomEmit {
 /// Assemble the collocated FaceGeom entirely on device from a built AmrPoisson (openness set) + a
 /// per-cell fluid flag + the device octree view. Equals host buildFaceGeom bit-for-bit on OpenMP.
 template <unsigned Bits>
-FaceGeom deviceAssembleFaceGeom(const AmrPoisson<3, Bits>& ap, const std::vector<char>& fluidHost,
+FaceGeom assembleFaceGeom(const AmrPoisson<3, Bits>& ap, const std::vector<char>& fluidHost,
                                 const BlockOctreeView<3, Bits>& ov) {
   FaceGeomEmit<Bits> emit;
   emit.g.ov = ov;
@@ -115,7 +115,7 @@ FaceGeom deviceAssembleFaceGeom(const AmrPoisson<3, Bits>& ap, const std::vector
   const Index n = ov.numLeaves();
   Index nf = 0;
   View<Index> start =
-      deviceScanOffsets(n, KOKKOS_LAMBDA(const Index i) { return emit.count(i); }, nf);
+      scanOffsets(n, KOKKOS_LAMBDA(const Index i) { return emit.count(i); }, nf);
 
   FaceGeom fg;
   fg.n = n;
@@ -177,4 +177,4 @@ FaceGeom deviceAssembleFaceGeom(const AmrPoisson<3, Bits>& ap, const std::vector
 }  // namespace peclet::core::amr
 
 #endif  // PECLET_CORE_HAVE_MORTON
-#endif  // PECLET_CORE_AMR_DEVICE_FACEGEOM_ASSEMBLY_HPP
+#endif  // PECLET_CORE_AMR_FACEGEOM_ASSEMBLY_HPP

@@ -50,7 +50,7 @@ struct CsrFillSink {
 /// richer than (nbr, coef) (e.g. the face-geometry tables), which then run their own own-slice fill
 /// over these offsets. `CountFn` is device-callable: KOKKOS Index operator()(Index i) const.
 template <class CountFn>
-View<Index> deviceScanOffsets(Index n, const CountFn& countFn, Index& nTotal) {
+View<Index> scanOffsets(Index n, const CountFn& countFn, Index& nTotal) {
   View<Index> start(Kokkos::view_alloc("peclet::core::amr::csr_off", Kokkos::WithoutInitializing),
                     static_cast<std::size_t>(n) + 1);
   Kokkos::parallel_scan(
@@ -82,7 +82,7 @@ struct Csr {
 /// once in the fill — the same two traversals the host assembler does). Offsets are written by the
 /// scan's `final` pass; the fill writes each cell's own slice with no atomics.
 template <class Emit>
-Csr deviceBuildFaceCsr(Index n, const Emit& emit) {
+Csr buildFaceCsr(Index n, const Emit& emit) {
   Csr csr;
   View<Index> start(Kokkos::view_alloc("peclet::core::amr::csr_start", Kokkos::WithoutInitializing),
                     static_cast<std::size_t>(n) + 1);

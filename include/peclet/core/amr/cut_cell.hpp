@@ -37,7 +37,7 @@ namespace peclet::core::amr {
 //      double precision) ----
 namespace cc {
 // MORTON_HD (from face_csr.hpp): KOKKOS_FUNCTION on a Kokkos build, empty otherwise — so buildCutStencil
-// and these polynomials are device-callable under the AMR device assembler (device_assembly.hpp) yet
+// and these polynomials are device-callable under the AMR device assembler (assembly.hpp) yet
 // compile unchanged in the pure-C++ host oracle build. poly_abs replaces std::fabs (host-only under a
 // CUDA device pass); it is bit-identical to std::fabs for every value buildCutStencil feeds it (the
 // only difference, fabs(-0.0)=+0.0 vs −0.0, never occurs and would not change the |·|< comparisons).
@@ -169,7 +169,7 @@ class AmrCutCell {
   /// idiag·I − μ∇² on regular fluid cells; the ξ-overlay 6-stencil on cut cells; plus the
   /// implicit-FOU advection coupling when buildAdvectionFou has been called. This is the
   /// device-portable form of the host operator — upload it once and run a parallel
-  /// smoother / Krylov over it (device_momentum.hpp), instead of the serial gaussSeidel.
+  /// smoother / Krylov over it (momentum.hpp), instead of the serial gaussSeidel.
   struct Assembled {
     std::vector<double> diag;   ///< size n
     std::vector<Index> start;   ///< CSR row offsets, size n+1
@@ -240,7 +240,7 @@ class AmrCutCell {
   }
 
   // ---- Runtime operator: the assembled CSR applied with the SHARED face_csr.hpp row kernels — the
-  // exact same arithmetic the device runs (device_momentum.hpp), executed serially here. assembleOperator
+  // exact same arithmetic the device runs (momentum.hpp), executed serially here. assembleOperator
   // folds the implicit-FOU advection into the single CSR, so the FaceCsrOpT view sets hasAdv=false. The
   // *Geometric variants above are the independent reference the oracle tests check this against.
 
@@ -256,7 +256,7 @@ class AmrCutCell {
     return v;
   }
 
-  /// out = A u, via the shared kernel over the assembled CSR (== device deviceApplyMom arithmetic).
+  /// out = A u, via the shared kernel over the assembled CSR (== device applyMom arithmetic).
   void applyOp(const std::vector<double>& u, std::vector<double>& out) const {
     const Assembled A = assembleOperator();
     const auto op = hostOp(A);

@@ -1,4 +1,4 @@
-// Device collocated FACE-GEOMETRY assembly (peclet::core::amr::deviceAssembleFaceGeom) must reproduce host
+// Device collocated FACE-GEOMETRY assembly (peclet::core::amr::assembleFaceGeom) must reproduce host
 // buildFaceGeom bit-for-bit on OpenMP: same forEachFaceFull enumeration + per-face geometry
 // (nbr/axis/dir/α·area/raw area/dist/α/upstream probes) + per-cell invVol/fluid. The D4 anti-drift lock.
 //
@@ -13,7 +13,7 @@
 
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/block_octree_view.hpp"
-#include "peclet/core/amr/device_facegeom_assembly.hpp"
+#include "peclet/core/amr/facegeom_assembly.hpp"
 #include "peclet/core/amr/flow.hpp"
 #include "peclet/core/amr/poisson.hpp"
 
@@ -83,7 +83,7 @@ void run() {
   FaceGeom hg = buildFaceGeom<3, kBits>(ap, [&](Index i) { return fluid[static_cast<std::size_t>(i)] != 0; });
   BlockOctreeView<3, kBits> dev;
   dev.upload(t);
-  FaceGeom dg = deviceAssembleFaceGeom<kBits>(ap, fluid, dev);
+  FaceGeom dg = assembleFaceGeom<kBits>(ap, fluid, dev);
 
   std::printf("  n=%lld nFaces host=%lld dev=%lld\n", static_cast<long long>(n),
               static_cast<long long>(hg.nbr.extent(0)), static_cast<long long>(dg.nbr.extent(0)));

@@ -232,7 +232,7 @@ void mgStrategyCompare(unsigned L) {
 }
 
 // Device-only flow-step throughput scaling (host too slow at these sizes).
-void benchFlowDevice(unsigned L, int steps) {
+void benchFlow(unsigned L, int steps) {
   BO t = uniformFine(L);
   const long N = 1L << L;
   const double h0 = 1.0 / (double)N;
@@ -287,7 +287,7 @@ void benchPoisson(unsigned L) {
   // Device-side residual norm (no host round-trip — fair to the V-cycle loop).
   View<double> dres("res", (std::size_t)n);
   auto resDev = [&](View<double> x) {
-    deviceResidualFv(mg.op(0), View<const double>(x), View<const double>(db), dres);
+    residualFv(mg.op(0), View<const double>(x), View<const double>(db), dres);
     return std::sqrt(dotPlain(View<const double>(dres), View<const double>(dres), n));
   };
 
@@ -333,7 +333,7 @@ int main(int argc, char** argv) {
     std::printf("# --- Flow: host (serial) vs device, where host is affordable ---\n");
     for (unsigned L = 4; L <= Lhost; ++L) benchFlowCompare(L, steps);
     std::printf("# --- Flow: device-only throughput scaling ---\n");
-    for (unsigned L = 4; L <= Ldev; ++L) benchFlowDevice(L, steps);
+    for (unsigned L = 4; L <= Ldev; ++L) benchFlow(L, steps);
     std::printf("# --- Flow: momentum-vs-pressure profile ---\n");
     for (unsigned L = 5; L <= Ldev; ++L) profileFlow(L, steps);
     std::printf("# --- Diagnostic: momentum/pressure solver effort vs dt ---\n");

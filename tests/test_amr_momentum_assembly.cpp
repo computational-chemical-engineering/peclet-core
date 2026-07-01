@@ -1,4 +1,4 @@
-// Device cut-cell MOMENTUM operator ASSEMBLY (peclet::core::amr::deviceAssembleMomentum, on the S1 CSR
+// Device cut-cell MOMENTUM operator ASSEMBLY (peclet::core::amr::assembleMomentum, on the S1 CSR
 // primitive) must reproduce host AmrCutCell::build (Pass 2 buildCutStencil) + assembleOperator
 // bit-for-bit on the OpenMP backend: the ξ-overlay stencil rebuild (AC/off/cut/rscale), and the merged
 // diag + face-CSR over the three per-cell branches (solid identity / ξ-overlay / regular ∇²·μ). This is
@@ -17,7 +17,7 @@
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/block_octree_view.hpp"
 #include "peclet/core/amr/cut_cell.hpp"
-#include "peclet/core/amr/device_momentum_assembly.hpp"
+#include "peclet/core/amr/momentum_assembly.hpp"
 #include "peclet/core/amr/momentum.hpp"
 
 using namespace peclet::core;
@@ -87,7 +87,7 @@ void run() {
     View<double> AC("AC", static_cast<std::size_t>(n)), off("off", static_cast<std::size_t>(n) * 6),
         rscale("rs", static_cast<std::size_t>(n));
     View<char> cut("cut", static_cast<std::size_t>(n));
-    deviceRebuildCutStencil<kBits>(n, beta, AC0, sdfC, nb, fluid, AC, off, cut, rscale);
+    rebuildCutStencil<kBits>(n, beta, AC0, sdfC, nb, fluid, AC, off, cut, rscale);
     PECLET_CORE_CHECK_EQ(mismatch(cc.acRaw(), down(AC)), 0);
     PECLET_CORE_CHECK_EQ(mismatch(cc.offRaw(), down(off)), 0);
     PECLET_CORE_CHECK_EQ(mismatch(cc.cutRaw(), down(cut)), 0);
@@ -96,7 +96,7 @@ void run() {
 
   // ---- (2) device assembled MomentumOp == host assembleOperator (diag/start/nbr/coef) ----
   const auto H = cc.assembleOperator(/*scaleAdvByRscale=*/false);
-  MomentumOp op = deviceAssembleMomentum<kBits>(cc, dev, /*scaleAdvByRscale=*/false);
+  MomentumOp op = assembleMomentum<kBits>(cc, dev, /*scaleAdvByRscale=*/false);
   PECLET_CORE_CHECK_EQ(static_cast<Index>(op.n), n);
   std::vector<double> ddiag = down(op.diag);
   std::vector<Index> dstart = down(op.faceStart);
@@ -109,7 +109,7 @@ void run() {
   PECLET_CORE_CHECK_EQ(mismatch(H.nbr, dnbr), 0);
   PECLET_CORE_CHECK_EQ(mismatch(H.coef, dcoef), 0);
 
-  // ---- (3) deviceApplyMom == host applyOp over the assembled operator ----
+  // ---- (3) applyMom == host applyOp over the assembled operator ----
   std::vector<double> x(static_cast<std::size_t>(n));
   std::uint64_t s = 0xda3e39cb94b95bdbULL;
   for (auto& v : x) {
@@ -120,7 +120,7 @@ void run() {
   cc.applyOp(x, hout);
   View<const double> dx = toDevice(x, "x");
   View<double> dAu("Au", static_cast<std::size_t>(n));
-  deviceApplyMom(op, dx, dAu);
+  applyMom(op, dx, dAu);
   PECLET_CORE_CHECK_EQ(mismatch(hout, down(dAu)), 0);
 }
 

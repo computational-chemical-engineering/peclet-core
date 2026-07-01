@@ -25,7 +25,7 @@ namespace peclet::core::amr {
 
 /// y = inv · Σ_faces (x_nb − x_i)  (= ∇² in spacing h0 with inv = 1/h0²), on device.
 template <int Dim, unsigned Bits>
-void deviceLaplacian(BlockOctreeView<Dim, Bits> dev, View<double> x, View<double> y, double inv) {
+void laplacian(BlockOctreeView<Dim, Bits> dev, View<double> x, View<double> y, double inv) {
   const Index n = dev.numLeaves();
   Kokkos::parallel_for(
       "amr::device_laplacian", n, KOKKOS_LAMBDA(const Index i) {
@@ -43,7 +43,7 @@ void deviceLaplacian(BlockOctreeView<Dim, Bits> dev, View<double> x, View<double
 /// −2·Dim·inv), on device. The update u_i += ω (L u_i − b_i)/diag, diag = 2·Dim·inv
 /// (= −L_ii), has the right sign for the negative-definite L. `lx` is scratch (L x).
 template <int Dim, unsigned Bits>
-void deviceJacobiSweep(BlockOctreeView<Dim, Bits> dev, View<double> x, View<const double> b,
+void jacobiSweep(BlockOctreeView<Dim, Bits> dev, View<double> x, View<const double> b,
                        View<double> lx, double inv, double omega) {
   const Index n = dev.numLeaves();
   const double diag = 2.0 * Dim * inv;
@@ -109,14 +109,14 @@ inline FvCsrOpT<View<const double>, View<const Index>> fvView(const FvOp& op) {
 
 /// Hu = (c0·I + cD·L) u (consistent conservative FV Laplacian, c0=0/cD=1 ⇒ pure L). A
 /// non-zero bcDiag adds the homogeneous-Dirichlet boundary term −bcDiag·u_i to L.
-inline void deviceApplyFv(const FvOp& op, View<const double> u, View<double> Lu) {
+inline void applyFv(const FvOp& op, View<const double> u, View<double> Lu) {
   const auto A = fvView(op);
   Kokkos::parallel_for(
       "amr::fv_apply", op.n, KOKKOS_LAMBDA(const Index i) { Lu(i) = fvApplyRow(A, i, u); });
 }
 
 /// res = rhs − H u.
-inline void deviceResidualFv(const FvOp& op, View<const double> u, View<const double> rhs,
+inline void residualFv(const FvOp& op, View<const double> u, View<const double> rhs,
                              View<double> res) {
   const auto A = fvView(op);
   Kokkos::parallel_for(
@@ -130,7 +130,7 @@ inline void deviceResidualFv(const FvOp& op, View<const double> u, View<const do
 /// sweep is order-independent / bit-reproducible. The pure-L path (c0=0, cD=1)
 /// keeps the exact original expression (bit-exact); the Helmholtz path uses the
 /// point solve of (c0·I + cD·L) u = rhs.
-inline void deviceJacobiFv(const FvOp& op, View<double> u, View<const double> rhs,
+inline void jacobiFv(const FvOp& op, View<double> u, View<const double> rhs,
                            View<double> tmp, double omega) {
   const auto A = fvView(op);
   Kokkos::parallel_for(
@@ -146,7 +146,7 @@ inline void deviceJacobiFv(const FvOp& op, View<double> u, View<const double> rh
 /// active when its diagonal (Σw + bc) > 0; fully-closed (solid) cells are excluded. Mirrors
 /// sdflow CutcellMG::removeMean (sum over cells with AC > 1e-30). Applied at every V-cycle level
 /// so the multigrid preconditioner does not drift / amplify the nullspace.
-inline void deviceRemoveMeanFv(const FvOp& op, View<double> u) {
+inline void removeMeanFv(const FvOp& op, View<double> u) {
   auto invVol = op.invVol;
   auto fs = op.faceStart;
   auto fw = op.faceW;
@@ -181,7 +181,7 @@ inline void deviceRemoveMeanFv(const FvOp& op, View<double> u) {
 /// dq = (L_quad − L_std) u, the quadratic coarse-fine correction as its own SpMV
 /// over a precomputed CSR (built from AmrPoisson::coarseStar). Used for deferred
 /// correction: solve L_std u = rhs − dq with dq lagged ⇒ 2nd-order at 2:1 faces.
-inline void deviceQuadDelta(View<const Index> qStart, View<const Index> qSlot,
+inline void quadDelta(View<const Index> qStart, View<const Index> qSlot,
                             View<const double> qCoef, View<const double> u, View<double> dq,
                             Index n) {
   Kokkos::parallel_for(

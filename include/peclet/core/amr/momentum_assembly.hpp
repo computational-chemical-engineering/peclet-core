@@ -10,23 +10,23 @@
 //     neighbour SDF samples (staged like D2 stages openness; the SDF *sampling* itself, like openness
 //     sampling, stays host until a device SDF exists); and
 //   * the operator merge — the three per-cell branches (solid identity / ξ-overlay / regular ∇²·μ) plus
-//     the advection fold, emitted as a face-CSR through deviceBuildFaceCsr (S1) + a per-cell diagonal.
+//     the advection fold, emitted as a face-CSR through buildFaceCsr (S1) + a per-cell diagonal.
 // The regular-fluid faces reuse the D2 FvFaceEmit traversal (α=1) via a scaling sink adapter, so the
 // 2:1 enumeration and coeff are shared, not re-derived.
 //
 // Bit-exactness: emit order, branch logic and arithmetic mirror assembleOperator exactly, each cell
 // fills its own CSR slice (S1, atomic-free), so on OpenMP the device MomentumOp == host assembleOperator
-// bit-for-bit (test_amr_device_momentum). GPU is tolerance-not-bit-exact (FMA), per the convention.
+// bit-for-bit (test_amr_momentum). GPU is tolerance-not-bit-exact (FMA), per the convention.
 //
 // Requires a Kokkos build + the morton checkout (PECLET_CORE_HAVE_MORTON).
-#ifndef PECLET_CORE_AMR_DEVICE_MOMENTUM_ASSEMBLY_HPP
-#define PECLET_CORE_AMR_DEVICE_MOMENTUM_ASSEMBLY_HPP
+#ifndef PECLET_CORE_AMR_MOMENTUM_ASSEMBLY_HPP
+#define PECLET_CORE_AMR_MOMENTUM_ASSEMBLY_HPP
 
 #ifdef PECLET_CORE_HAVE_MORTON
 
 #include "peclet/core/amr/block_octree_view.hpp"
 #include "peclet/core/amr/cut_cell.hpp"
-#include "peclet/core/amr/device_assembly.hpp"  // FvFaceEmit (the α=1 ∇² geometry traversal)
+#include "peclet/core/amr/assembly.hpp"  // FvFaceEmit (the α=1 ∇² geometry traversal)
 #include "peclet/core/amr/csr.hpp"
 #include "peclet/core/amr/momentum.hpp"
 #include "peclet/core/common/view.hpp"
@@ -111,7 +111,7 @@ struct MomFaceEmit {
 /// indices + fluid flag, recompute AC/off/cut/rscale exactly as the host build does. The expensive part
 /// of a moving-boundary re-assembly, now device-resident; bit-exact vs the host AC_/off_/cut_/rscale_.
 template <unsigned Bits>
-void deviceRebuildCutStencil(Index n, double beta, double AC0, const View<double>& sdfC,
+void rebuildCutStencil(Index n, double beta, double AC0, const View<double>& sdfC,
                              const View<Index>& nbr6, const View<char>& fluid, View<double> AC,
                              View<double> off, View<char> cut, View<double> rscale) {
   Kokkos::parallel_for(
@@ -148,7 +148,7 @@ void deviceRebuildCutStencil(Index n, double beta, double AC0, const View<double
 /// sampling stays host, like D2's openness); the stencil rebuild + operator merge run on device. The
 /// advection is folded into the single CSR (op.hasAdv = false), matching host assembleOperator + hostOp.
 template <unsigned Bits>
-MomentumOp deviceAssembleMomentum(const AmrCutCell<Bits>& ccop, const BlockOctreeView<3, Bits>& ov,
+MomentumOp assembleMomentum(const AmrCutCell<Bits>& ccop, const BlockOctreeView<3, Bits>& ov,
                                   bool scaleAdvByRscale = false) {
   const Index n = ov.numLeaves();
   const double beta = ccop.beta();
@@ -164,7 +164,7 @@ MomentumOp deviceAssembleMomentum(const AmrCutCell<Bits>& ccop, const BlockOctre
   View<char> cut(Kokkos::view_alloc("mom::cut", Kokkos::WithoutInitializing), static_cast<std::size_t>(n));
   View<double> rscale(Kokkos::view_alloc("mom::rscale", Kokkos::WithoutInitializing),
                       static_cast<std::size_t>(n));
-  deviceRebuildCutStencil<Bits>(n, beta, AC0, sdfC, nbr6, fluid, AC, off, cut, rscale);
+  rebuildCutStencil<Bits>(n, beta, AC0, sdfC, nbr6, fluid, AC, off, cut, rscale);
 
   // The α=1 ∇² geometry for regular fluid cells (reuses the D2 traversal with openness off).
   FvFaceEmit<3, Bits> geom;
@@ -193,7 +193,7 @@ MomentumOp deviceAssembleMomentum(const AmrCutCell<Bits>& ccop, const BlockOctre
     emit.advNbr = toDevice(ccop.advNbrRaw(), "mom::advNbr");
   }
 
-  Csr csr = deviceBuildFaceCsr(n, emit);
+  Csr csr = buildFaceCsr(n, emit);
 
   MomentumOp op;
   op.n = n;
@@ -213,4 +213,4 @@ MomentumOp deviceAssembleMomentum(const AmrCutCell<Bits>& ccop, const BlockOctre
 }  // namespace peclet::core::amr
 
 #endif  // PECLET_CORE_HAVE_MORTON
-#endif  // PECLET_CORE_AMR_DEVICE_MOMENTUM_ASSEMBLY_HPP
+#endif  // PECLET_CORE_AMR_MOMENTUM_ASSEMBLY_HPP

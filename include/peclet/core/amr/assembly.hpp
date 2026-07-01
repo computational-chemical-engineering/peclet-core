@@ -11,11 +11,11 @@
 // `forEachFaceNeighbor`, each cell fills its own CSR slice (S1, atomic-free), and every coefficient
 // uses the identical double arithmetic. So on the OpenMP backend the device-assembled FvOp is
 // bit-for-bit equal to the host `assembleFv` / `buildFaceCsr` (the cross-backend anti-drift lock in
-// tests/test_amr_device_assembly_kokkos). GPU is tolerance-not-bit-exact (FMA), per the convention.
+// tests/test_amr_assembly_kokkos). GPU is tolerance-not-bit-exact (FMA), per the convention.
 //
 // Requires a Kokkos build + the morton checkout (PECLET_CORE_HAVE_MORTON ⇒ MORTON_HD == KOKKOS_FUNCTION).
-#ifndef PECLET_CORE_AMR_DEVICE_ASSEMBLY_HPP
-#define PECLET_CORE_AMR_DEVICE_ASSEMBLY_HPP
+#ifndef PECLET_CORE_AMR_ASSEMBLY_HPP
+#define PECLET_CORE_AMR_ASSEMBLY_HPP
 
 #ifdef PECLET_CORE_HAVE_MORTON
 
@@ -141,7 +141,7 @@ struct FvFaceEmit {
 /// staged to the device once (it is the only host input — the expensive face walk + weight build runs
 /// on device). Result equals the host AmrPoisson::assembleFv CSR bit-for-bit on OpenMP.
 template <int Dim, unsigned Bits>
-FvOp deviceAssembleFv(const AmrPoisson<Dim, Bits>& ap, const BlockOctreeView<Dim, Bits>& ov) {
+FvOp assembleFv(const AmrPoisson<Dim, Bits>& ap, const BlockOctreeView<Dim, Bits>& ov) {
   FvFaceEmit<Dim, Bits> emit;
   emit.ov = ov;
   emit.h0 = ap.h0();
@@ -151,7 +151,7 @@ FvOp deviceAssembleFv(const AmrPoisson<Dim, Bits>& ap, const BlockOctreeView<Dim
   for (int d = 0; d < Dim; ++d) emit.fineExt[d] = ap.fineExt()[d];
   if (ap.hasOpenness()) emit.alpha = toDevice(ap.opennessRaw(), "amr::alpha");
 
-  Csr csr = deviceBuildFaceCsr(ov.numLeaves(), emit);
+  Csr csr = buildFaceCsr(ov.numLeaves(), emit);
 
   FvOp op;
   op.n = ov.numLeaves();
@@ -176,4 +176,4 @@ FvOp deviceAssembleFv(const AmrPoisson<Dim, Bits>& ap, const BlockOctreeView<Dim
 }  // namespace peclet::core::amr
 
 #endif  // PECLET_CORE_HAVE_MORTON
-#endif  // PECLET_CORE_AMR_DEVICE_ASSEMBLY_HPP
+#endif  // PECLET_CORE_AMR_ASSEMBLY_HPP

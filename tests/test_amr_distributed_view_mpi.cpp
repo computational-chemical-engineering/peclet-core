@@ -1,4 +1,4 @@
-// Device-resident distributed AMR multigrid (peclet::core::amr::DistributedMultigridDevice, C2): the V-cycle
+// Device-resident distributed AMR multigrid (peclet::core::amr::DistributedMultigridView, C2): the V-cycle
 // runs entirely in Kokkos kernels over the device field, mirroring only the compact gather buffer
 // across MPI. It must (1) reproduce the HOST DistributedMultigrid on the same decomposition bit-for-bit
 // (the device port is exact), (2) match the single-block MPI_COMM_SELF reference bit-for-bit (consistent
@@ -13,7 +13,7 @@
 
 #include <Kokkos_Core.hpp>
 
-#include "peclet/core/amr/distributed_device.hpp"
+#include "peclet/core/amr/distributed_view.hpp"
 #include "peclet/core/amr/distributed_octree.hpp"
 #include "peclet/core/amr/distributed_poisson.hpp"
 #include "peclet/core/common/mpi.hpp"
@@ -54,7 +54,7 @@ void run() {
   const int cycles = 8;
 
   // --- device, distributed over MPI_COMM_WORLD ---
-  DistributedMultigridDevice<3, kBits> dmg;
+  DistributedMultigridView<3, kBits> dmg;
   dmg.build(IVec<3>{N, N, N}, geo, per, MPI_COMM_WORLD);
   const Index nw = dmg.numLeaves();
   std::vector<double> bwh(static_cast<std::size_t>(nw));
@@ -76,7 +76,7 @@ void run() {
   for (int c = 0; c < cycles; ++c) hmg.vcycle(xh, bh);
 
   // --- device, single block on MPI_COMM_SELF (consistency across rank counts) ---
-  DistributedMultigridDevice<3, kBits> dms;
+  DistributedMultigridView<3, kBits> dms;
   dms.build(IVec<3>{N, N, N}, geo, per, MPI_COMM_SELF);
   const Index ns = dms.numLeaves();
   std::vector<double> bsh(static_cast<std::size_t>(ns));
