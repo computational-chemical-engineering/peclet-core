@@ -374,6 +374,21 @@ class Flow : public Releasable {
   // far below divergence_norm — including across 2:1 interfaces).
   double divergence_norm_face() { return flow_.divNormFace(); }
 
+  // Per-leaf pressure (incremental-rotational p) -> (num_leaves,) float64.
+  nb::ndarray<nb::numpy, double> pressure() const { return vec1<double>(flow_.pressure()); }
+  // ABC divergence-free FACE velocity, one value per CSR (sub)face -> (num_faces,) float64.
+  nb::ndarray<nb::numpy, double> face_field() const { return vec1<double>(flow_.faceField()); }
+  // Write velocity component c (0=x,1=y,2=z) from a (num_leaves,) array — ICs / restart / warm-start.
+  void set_velocity(int c, nb::ndarray<double, nb::c_contig> h) {
+    flow_.setVelocity(c, std::vector<double>(h.data(), h.data() + h.shape(0)));
+  }
+  // Pressure projection only (no momentum) — project an externally-set velocity to divergence-free.
+  void project(int pres_iters) { flow_.project(pres_iters); }
+  // Solver iteration counts from the last step (convergence / perf diagnostics).
+  int last_mom_iters() const { return flow_.lastMomIters(); }
+  int last_pres_iters() const { return flow_.lastPresIters(); }
+  int last_outer_iters() const { return flow_.lastOuterIters(); }
+
  private:
   amr::AmrFlow<> flow_;  // the canonical device (Kokkos) AMR flow
   Index n_;
@@ -432,6 +447,19 @@ class DistributedOctree : public Releasable {
     auto lgeo = d_.localGeometry();
     Index n = amr::refineToSdf(d_.local(), lgeo, [&](const Vec<3>& p) { return s.eval(p); },
                                target_level, band, /*balance=*/false);
+    if (balance) d_.balance();
+    return n;
+  }
+
+  // Refine the local octree toward an arbitrary GLOBAL surface given as a Python SDF callable
+  // f(x,y,z) (suite sign: <0 inside solid), then (if balance) restore cross-block 2:1 balance
+  // collectively. The distributed analogue of the serial Octree.refine_to_sdf. Collective when balance.
+  Index refine_to_sdf(std::function<double(double, double, double)> sdf, unsigned target_level,
+                      double band, bool balance) {
+    auto lgeo = d_.localGeometry();
+    Index n = amr::refineToSdf(d_.local(), lgeo,
+                               [&](const Vec<3>& p) { return sdf(p[0], p[1], p[2]); }, target_level,
+                               band, /*balance=*/false);
     if (balance) d_.balance();
     return n;
   }
@@ -642,7 +670,22 @@ NB_MODULE(amr, m) {
            "Volume-weighted L2 norm of the residual cell divergence (projection-quality diagnostic).")
       .def("divergence_norm_face", &Flow::divergence_norm_face,
            "L2 norm of the divergence of the ABC divergence-free FACE field (≈ pressure-solve "
-           "residual, far below divergence_norm — including across 2:1 interfaces).");
+           "residual, far below divergence_norm — including across 2:1 interfaces).")
+      .def("pressure", &Flow::pressure, "Per-leaf pressure (incremental-rotational p), (num_leaves,) float64.")
+      .def("face_field", &Flow::face_field,
+           "ABC divergence-free FACE velocity, one value per CSR (sub)face (conservative flux / "
+           "streamline post-processing).")
+      .def("set_velocity", &Flow::set_velocity, nb::arg("component"), nb::arg("values"),
+           "Write velocity component c (0=x,1=y,2=z) from a (num_leaves,) array — initial conditions, "
+           "restart, or warm-start. Call before step()/project().")
+      .def("project", &Flow::project, nb::arg("pres_iters") = 60,
+           "Pressure projection only (no momentum solve) — project an externally-set velocity field to "
+           "divergence-free. Returns nothing; read the result via velocity()/velocities().")
+      .def("last_mom_iters", &Flow::last_mom_iters,
+           "Total momentum BiCGStab iterations (summed over the 3 components) of the last step.")
+      .def("last_pres_iters", &Flow::last_pres_iters, "Pressure PCG iterations of the last step.")
+      .def("last_outer_iters", &Flow::last_outer_iters,
+           "Picard outer iterations actually run in the last step (1 unless set_outer_iterations(>1)).");
 
   nb::class_<DistributedOctree>(
       m, "DistributedOctree",
@@ -678,6 +721,11 @@ NB_MODULE(amr, m) {
            nb::arg("balance") = true,
            "Refine the local block toward a GLOBAL sphere surface down to target_level, then (if "
            "balance) restore cross-block 2:1 balance collectively. Returns the local count.")
+      .def("refine_to_sdf", &DistributedOctree::refine_to_sdf, nb::arg("sdf"),
+           nb::arg("target_level") = 0u, nb::arg("band") = 1.0, nb::arg("balance") = true,
+           "Refine the local block toward an arbitrary GLOBAL surface given as a callable f(x,y,z)->"
+           "distance (suite sign: <0 inside solid) — the distributed analogue of Octree.refine_to_sdf, "
+           "for rings / packed beds / any non-sphere geometry. Collective when balance=True.")
       .def("balance", &DistributedOctree::balance,
            "Restore cross-block 2:1 graded balance (collective). Returns this rank's refinements.")
       .def("rebalance", &DistributedOctree::rebalance, nb::arg("fields"),

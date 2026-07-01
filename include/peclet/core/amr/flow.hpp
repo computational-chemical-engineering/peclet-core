@@ -750,6 +750,8 @@ class AmrFlow {
   }
   /// Copy a velocity component back to host (single D2H, no host loop — S2a).
   std::vector<double> velocity(int c) const { return peclet::core::toVector(u_[c]); }
+  /// Copy the pressure field back to host (single D2H), (num_leaves,) — the incremental-rotational p.
+  std::vector<double> pressure() const { return peclet::core::toVector(p_); }
 
   /// All three velocity components interleaved as a flat (n,3) row-major host buffer
   /// (out[i*3+c]) with a single device→host transfer (G6): the three independent component

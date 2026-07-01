@@ -62,6 +62,20 @@ class Migrator {
   int rank() const { return rank_; }
   int owner_of(std::array<double, 3> x) const { return mig_.ownerOf(Vec<3>{x[0], x[1], x[2]}); }
 
+  // Periodic-wrapped / boundary-clamped position for x (the canonical image used by migrate/owner_of).
+  std::array<double, 3> wrap_position(std::array<double, 3> x) const {
+    Vec<3> w = mig_.wrapPosition(Vec<3>{x[0], x[1], x[2]});
+    return {w[0], w[1], w[2]};
+  }
+  // Global decomposition cell index containing x (after wrap); owner_of == decomposer.ownerOf(cell_of).
+  std::array<long, 3> cell_of(std::array<double, 3> x) const {
+    IVec<3> c = mig_.cellOf(Vec<3>{x[0], x[1], x[2]});
+    return {static_cast<long>(c[0]), static_cast<long>(c[1]), static_cast<long>(c[2])};
+  }
+  // Particles shipped / absorbed by this rank in the last migrate() — communication-volume diagnostics.
+  long last_sent() const { return static_cast<long>(mig_.lastSent()); }
+  long last_received() const { return static_cast<long>(mig_.lastReceived()); }
+
   // (pos (N,3), pay (N,K)) -> (pos2 (M,3), pay2 (M,K)) after reassigning ownership.
   nb::tuple migrate(DArray pos, DArray pay) {
     std::vector<Vec<3>> pv;
@@ -160,12 +174,14 @@ class Halo {
   int owner_of(std::array<double, 3> x) const { return mig_.ownerOf(Vec<3>{x[0], x[1], x[2]}); }
 
   // (re)establish the correspondence from this rank's owned positions (N,3); returns ghost count.
-  int build(DArray pos, double rcut) {
+  // include_periodic_self emits local periodic self-ghosts — needed on an undecomposed periodic axis
+  // / at np=1, where a particle's periodic image is owned by the same rank.
+  int build(DArray pos, double rcut, bool include_periodic_self) {
     n_owned_ = static_cast<std::size_t>(pos.shape(0));
     const double* P = pos.data();
     std::vector<Vec<3>> pv(n_owned_);
     for (std::size_t i = 0; i < n_owned_; ++i) pv[i] = {P[i * 3 + 0], P[i * 3 + 1], P[i * 3 + 2]};
-    halo_.build(pv, rcut);
+    halo_.build(pv, rcut, include_periodic_self);
     n_ghost_ = halo_.numGhost();
     return static_cast<int>(n_ghost_);
   }
@@ -232,6 +248,13 @@ NB_MODULE(mpi, m) {
            nb::arg("rcut"),
            "Copies of particles within rcut of this rank's block (periodic images handled); returns the "
            "(ghost positions (G,3), ghost payload (G,K)).")
+      .def("wrap_position", &Migrator::wrap_position, nb::arg("x"),
+           "Periodic-wrapped / boundary-clamped position for x (the canonical image).")
+      .def("cell_of", &Migrator::cell_of, nb::arg("x"),
+           "Global decomposition cell index (i,j,k) containing x (after wrap).")
+      .def("last_sent", &Migrator::last_sent, "Particles shipped by this rank in the last migrate().")
+      .def("last_received", &Migrator::last_received,
+           "Particles absorbed by this rank in the last migrate().")
       .def("owner_of", &Migrator::owner_of, nb::arg("x"),
            "Rank that owns the block containing position x (after periodic wrap / boundary clamp).")
       .def_prop_ro("rank", &Migrator::rank, "This process's MPI rank.");
@@ -241,6 +264,7 @@ NB_MODULE(mpi, m) {
                     std::array<bool, 3>>(),
            nb::arg("origin"), nb::arg("size"), nb::arg("gsize"), nb::arg("periodic"))
       .def("build", &Halo::build, nb::arg("positions"), nb::arg("rcut"),
+           nb::arg("include_periodic_self") = false,
            "Establish the owner<->ghost correspondence over this rank's owned positions")
       .def("forward_positions", &Halo::forward_positions, nb::arg("owned"),
            "owned (N,3) -> ghost (G,3) with the periodic image shift (positions)")
