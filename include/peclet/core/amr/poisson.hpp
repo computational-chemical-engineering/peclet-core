@@ -335,7 +335,7 @@ class AmrPoisson {
 
   /// The assembled FV (weight-CSR) operator: per-face conductance w = A_f/d_f·openness, per-cell
   /// invVol and Dirichlet boundary diagonal, in the exact face order forEachFaceNeighbor emits. This
-  /// is the single host assembler the device MG build (device_multigrid.hpp) and the host shared-FV
+  /// is the single host assembler the device MG build (multigrid.hpp) and the host shared-FV
   /// apply both consume — and the form the shared face_csr.hpp kernels run.
   struct FvAssembled {
     std::vector<double> invVol;  ///< 1/V_i, size n

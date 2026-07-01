@@ -20,11 +20,11 @@ mostly **embarrassingly parallel per cell/face**, so it belongs on the device.
 | Producer (host, serial) | What it builds | When (static) | When (dynamic) | Already on device? |
 |---|---|---|---|---|
 | `AmrCutCell::build` (`cut_cell.hpp`) | per-cell κ, cut flags, ξ-overlay stencil (`AC_/off_/nb_`), `D_rescale`, openness sampling from the SDF | once | **per geometry change** | no |
-| `AmrCutCell::buildAdvectionFou` | implicit-FOU operator (`advDiag_/advStart_/advNbr_/advCoef_`) from the lagged velocity | — | **per step** | **yes** — `deviceBuildFou` (device_flow.hpp) |
+| `AmrCutCell::buildAdvectionFou` | implicit-FOU operator (`advDiag_/advStart_/advNbr_/advCoef_`) from the lagged velocity | — | **per step** | **yes** — `deviceBuildFou` (flow.hpp) |
 | `AmrCutCell::assembleOperator` | the momentum `diag + face CSR` (folds viscous + cut + FOU) | once (device path) / per call (host) | **per step** | partial — device applies the static CSR + device FOU; full re-assembly is host |
 | `AmrPoisson::buildOpenness` / `assembleFv` | pressure FV weight-CSR (`invVol/start/nbr/w/bcDiag`) | once | **per geometry change** | host only (device MG `buildFaceCsr` calls the host walk) |
 | `AmrMultigrid` hierarchy build | coarsened octrees + per-level openness/κ + per-level CSRs | once | **per adapt** | no (host coarsening + per-level host assembly) |
-| `buildFaceGeom` (device_flow.hpp) | `DeviceFaceGeom` (area/openness/dist/upstream-probe face tables) | once | **per geometry change** | host-side build, then upload |
+| `buildFaceGeom` (flow.hpp) | `DeviceFaceGeom` (area/openness/dist/upstream-probe face tables) | once | **per geometry change** | host-side build, then upload |
 | `BlockOctree::adapt` / coarsen | the leaf set + Z-order ordering itself | — | **per adapt** | no (inherently host topology) |
 
 The single most important dynamic-path cost is the **re-assembly of the cut-cell stencils + operator CSR

@@ -1,8 +1,8 @@
 // transport-core — device (Kokkos) multigrid-preconditioned CG for the AMR FV Poisson.
 //
 // A Krylov accelerator on top of the existing device machinery: the matvec is the
-// consistent conservative FV Laplacian `applyFv` (device_poisson.hpp), the
-// preconditioner is one (or a few) Multigrid V-cycle(s) (device_multigrid.hpp),
+// consistent conservative FV Laplacian `applyFv` (poisson.hpp), the
+// preconditioner is one (or a few) Multigrid V-cycle(s) (multigrid.hpp),
 // and the inner products / vector updates are Kokkos reductions / parallel_fors. This
 // is exactly sdflow's structured MG-PCG, ported onto the AMR octree CSR: CG accelerates
 // the geometric MG so a given residual is reached in far fewer fine-grid matvecs than

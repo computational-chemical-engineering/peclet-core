@@ -97,7 +97,7 @@ MORTON_HD inline double faceCsrPointUpdate(double b_i, double off, double d, dou
 // diagonal *derived* (the symmetric Laplacian Σ w·(u_nbr − u_i)); a Helmholtz generalisation
 //   H u = c0·u + cD·( invVol·( Σ w·(u_nbr − u_i) − bcDiag·u ) )
 // (c0=0, cD=1 ⇒ the pure FV Laplacian L) keeps the L path bit-exact. Same body for host (AmrPoisson)
-// and device (device_poisson.hpp FvOp).
+// and device (poisson.hpp FvOp).
 // ---------------------------------------------------------------------------
 
 /// A backend-agnostic view of an assembled FV (weight-CSR) operator.
