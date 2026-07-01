@@ -30,7 +30,7 @@ dependencies = ["numpy>=1.20"]
 [project.urls]
 Homepage = "https://github.com/computational-chemical-engineering/peclet"
 Documentation = "https://github.com/computational-chemical-engineering/peclet"
-Source = "https://github.com/computational-chemical-engineering/transport-core"
+Source = "https://github.com/computational-chemical-engineering/peclet-core"
 
 [tool.scikit-build]
 minimum-version = "0.8"
