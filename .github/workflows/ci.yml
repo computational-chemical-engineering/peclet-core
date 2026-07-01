@@ -1,7 +1,7 @@
 name: CI
 
 # Build the header-only library and run the full ctest suite (serial + MPI, np = 1,2,4).
-# transport-core is CPU-testable end-to-end: header-only C++20 + MPI, no GPU required. The optional
+# core is CPU-testable end-to-end: header-only C++20 + MPI, no GPU required. The optional
 # Kokkos GPU-resident halo path is NOT exercised here (no GPU on the runners) — it is covered by the
 # consumer codes' own CI.
 

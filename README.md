@@ -1,4 +1,4 @@
-# transport-core
+# core
 
 Shared infrastructure for the transport-phenomena simulation suite (see `../docs/` for the suite-wide
 [architecture](../docs/ARCHITECTURE.md), [conventions](../docs/CONVENTIONS.md),

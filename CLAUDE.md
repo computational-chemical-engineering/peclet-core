@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`transport-core` is the shared infrastructure library for the transport-phenomena simulation suite
+`core` is the shared infrastructure library for the transport-phenomena simulation suite
 (sibling repos under `../`: `sdflow`, `dem`, `vorflow`, `morton`). The suite-wide design contract lives in `../docs/` — read
 `../docs/ARCHITECTURE.md`, `CONVENTIONS.md`, `STYLE.md`, `INTERFACES.md`, `ROADMAP.md` before
 cross-cutting changes. Header-only C++20; the device side is compiled through Kokkos (CUDA / HIP /

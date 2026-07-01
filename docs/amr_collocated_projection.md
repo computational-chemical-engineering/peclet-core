@@ -1,6 +1,6 @@
 # AMR collocated projection: solid-pressure handling, divergence-free face field, `uf` advection
 
-Status as of 2026-06-28. All work below is **done, validated, and pushed** (transport-core `main`;
+Status as of 2026-06-28. All work below is **done, validated, and pushed** (core `main`;
 umbrella `peclet` pointer bumped each step). This doc is the resume point — read it before continuing.
 
 ## TL;DR
@@ -112,9 +112,9 @@ Findings:
 Build the CUDA `tpx_amr` Python module:
 ```bash
 export PATH=/usr/local/cuda-13.2/bin:$PATH
-cd transport-core/python
-PYBIND=$(cd ../../sdflow && .venv/bin/python -m pybind11 --cmakedir)
-PYEXE=$(cd ../../sdflow && .venv/bin/python -c "import sys;print(sys.executable)")
+cd core/python
+PYBIND=$(cd ../../flow && .venv/bin/python -m pybind11 --cmakedir)
+PYEXE=$(cd ../../flow && .venv/bin/python -c "import sys;print(sys.executable)")
 cmake -S . -B build_cuda -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH="$PWD/../../extern/install/nvidia-cuda;$PYBIND" \
   -DPython_EXECUTABLE="$PYEXE" \

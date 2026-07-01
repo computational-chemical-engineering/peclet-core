@@ -45,7 +45,7 @@ UCX pml -- which carries `cuda_ipc`/`cuda_copy` -- must be forced. Verify with:
 
 ```bash
 source ~/opt/cudampi-env.sh
-mpic++ transport-core/tools/cuda_aware_mpi_check.cpp -I/usr/local/cuda-13.2/include \
+mpic++ core/tools/cuda_aware_mpi_check.cpp -I/usr/local/cuda-13.2/include \
        -L/usr/local/cuda-13.2/lib64 -lcudart -o /tmp/check && mpirun -np 2 /tmp/check
 ```
 
