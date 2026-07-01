@@ -16,7 +16,7 @@ adapt — see python/test_tpx_amr.py, which drives it under mpi4py.
 """
 import numpy as np
 
-import tpx_amr
+from peclet.core import amr as tpx_amr
 
 
 def example_refine_and_export() -> None:

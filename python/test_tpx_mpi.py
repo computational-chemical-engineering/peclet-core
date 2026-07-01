@@ -8,7 +8,7 @@ conserving them — mirroring the C++ tests, through the binding.
 import sys
 import numpy as np
 from mpi4py import MPI
-import tpx_mpi
+from peclet.core import mpi as tpx_mpi
 
 comm = MPI.COMM_WORLD
 rank, size = comm.rank, comm.size

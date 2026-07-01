@@ -17,7 +17,7 @@ import os
 import sys
 import numpy as np
 from mpi4py import MPI
-import tpx_amr
+from peclet.core import amr as tpx_amr
 
 comm = MPI.COMM_WORLD
 rank, size = comm.rank, comm.size

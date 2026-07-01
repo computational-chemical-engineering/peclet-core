@@ -215,7 +215,7 @@ class Halo {
   tpx::halo::ParticleHaloTopology<3> halo_;
 };
 
-NB_MODULE(tpx_mpi, m) {
+NB_MODULE(mpi, m) {
   m.attr("__doc__") = "transport-core Lagrangian halo (block decomposition + particle migration/ghosts)";
   nb::class_<Migrator>(m, "Migrator")
       .def(nb::init<std::array<double, 3>, std::array<double, 3>, std::array<long, 3>,

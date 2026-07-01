@@ -17,14 +17,26 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../cmake")
 include(SuiteNanobind)
 suite_require_nanobind()
 
-# tpx_mpi: host-only Lagrangian halo (no Kokkos).
+# tpx_mpi: host-only Lagrangian halo (no Kokkos). Exposed as the `peclet.core.mpi` submodule (the
+# nanobind module leaf name is `mpi`; NB_MODULE(mpi, ...) in tpx_mpi.cpp), so the CMake target keeps its
+# descriptive name but the built extension is `mpi.*.so` installed under peclet/core/.
 nanobind_add_module(tpx_mpi NB_STATIC tpx_mpi.cpp)
+# -> peclet.core.mpi (NB_MODULE(mpi)). The peclet/core package __init__.py is kept as a plain file under
+# packaging/ (OUTSIDE any importable peclet/ dir, so an incomplete source package can never shadow the
+# installed one) and staged into <build>/peclet/core so `PYTHONPATH=<build> python …` works in dev too.
+set_target_properties(tpx_mpi PROPERTIES OUTPUT_NAME mpi
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/peclet/core")
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/packaging/core_init.py
+               ${CMAKE_CURRENT_BINARY_DIR}/peclet/core/__init__.py COPYONLY)
 target_include_directories(tpx_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 target_link_libraries(tpx_mpi PRIVATE MPI::MPI_CXX)
 # `pip install .` (scikit-build-core, via ../pyproject.toml with cmake.source-dir=python) installs the
-# built modules. Inert for a plain `cmake --build`, so the developer workflow is unchanged.
+# built modules into the `peclet.core` package. Inert for a plain `cmake --build`, so the developer
+# workflow is unchanged.
 if(DEFINED SKBUILD)
-  install(TARGETS tpx_mpi LIBRARY DESTINATION . COMPONENT python)
+  install(TARGETS tpx_mpi LIBRARY DESTINATION peclet/core COMPONENT python)
+  install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/packaging/core_init.py
+          DESTINATION peclet/core RENAME __init__.py COMPONENT python)
 endif()
 
 # AMR octree bindings (tpx_amr): requires the morton sibling checkout, since tpx::amr is guarded by
@@ -41,12 +53,14 @@ if(EXISTS "${_morton_inc}/morton/morton.hpp" AND Kokkos_FOUND)
   # NOMINSIZE: nanobind's default -Os is rejected by nvcc ("'s': expected a number") since the Kokkos
   # AMR device sources compile as CXX through the launch compiler.
   nanobind_add_module(tpx_amr NB_STATIC NOMINSIZE tpx_amr.cpp)
+  set_target_properties(tpx_amr PROPERTIES OUTPUT_NAME amr   # -> peclet.core.amr (NB_MODULE(amr, ...))
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/peclet/core")
   target_include_directories(tpx_amr PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include ${_morton_inc})
   target_compile_definitions(tpx_amr PRIVATE TPX_HAVE_MORTON=1 MORTON_ENABLE_KOKKOS=1)
   target_compile_features(tpx_amr PRIVATE cxx_std_20)
   target_link_libraries(tpx_amr PRIVATE MPI::MPI_CXX Kokkos::kokkos)
   if(DEFINED SKBUILD)
-    install(TARGETS tpx_amr LIBRARY DESTINATION . COMPONENT python)
+    install(TARGETS tpx_amr LIBRARY DESTINATION peclet/core COMPONENT python)
   endif()
   message(STATUS "tpx_amr: morton + Kokkos ${Kokkos_VERSION} (${Kokkos_DEVICES}) — building device AMR bindings")
 elseif(NOT Kokkos_FOUND)

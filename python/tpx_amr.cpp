@@ -507,7 +507,7 @@ class DistributedOctree : public Releasable {
 
 }  // namespace
 
-NB_MODULE(tpx_amr, m) {
+NB_MODULE(amr, m) {
   // The Flow path runs Kokkos kernels — initialise the device runtime on import (the backend/arch is
   // fixed by the prefix the module was built against), and finalize via a Python atexit hook. The
   // atexit hook is REQUIRED on CUDA: without it, Kokkos's internal device state is torn down by static
