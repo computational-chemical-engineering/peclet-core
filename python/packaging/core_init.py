@@ -11,5 +11,5 @@ Submodules (compiled nanobind extensions, built by python/CMakeLists.txt):
 so it deliberately has no top-level ``__init__.py``.
 """
 
-__version__ = "0.1.0"
-__all__ = ["mpi", "amr"]
+__version__ = "0.2.0"
+__all__ = ["mpi", "amr"]  # noqa: F822 — compiled nanobind submodules, resolved lazily (amr optional)
