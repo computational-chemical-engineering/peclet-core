@@ -16,9 +16,8 @@
 #ifdef PECLET_CORE_HAVE_MORTON
 #include <algorithm>
 #include <cmath>
-#include <vector>
-
 #include <Kokkos_Core.hpp>
+#include <vector>
 
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/multigrid.hpp"
@@ -45,12 +44,14 @@ std::vector<double> smoothRhs(const BO& t, double h0) {
   for (Index i = 0; i < n; ++i) {
     auto o = M::from_code(t.code(i)).decode();
     double half = 0.5 * (double)(Index(1) << t.level(i));
-    double cx = ((double)o[0] + half) * h0, cy = ((double)o[1] + half) * h0, cz = ((double)o[2] + half) * h0;
+    double cx = ((double)o[0] + half) * h0, cy = ((double)o[1] + half) * h0,
+           cz = ((double)o[2] + half) * h0;
     b[(std::size_t)i] = std::sin(k * cx) * std::cos(k * cy) + std::cos(k * cz);
     mean += b[(std::size_t)i];
   }
   mean /= (double)n;
-  for (auto& v : b) v -= mean;
+  for (auto& v : b)
+    v -= mean;
   return b;
 }
 
@@ -66,9 +67,11 @@ struct HRef {
     for (;;) {
       BO c = lvl.back();
       Index m = c.coarsenIf([](Code, unsigned) { return true; });
-      if (m == 0 || c.numLeaves() == lvl.back().numLeaves()) break;
+      if (m == 0 || c.numLeaves() == lvl.back().numLeaves())
+        break;
       lvl.push_back(c);
-      if (c.numLeaves() == 1) break;
+      if (c.numLeaves() == 1)
+        break;
     }
     ap.resize(lvl.size());
     for (std::size_t L = 0; L < lvl.size(); ++L) {
@@ -103,14 +106,16 @@ struct HRef {
         });
         tmp[L][(std::size_t)i] = (so - b[L][(std::size_t)i] * P.cellVolume(i)) / dg;
       }
-      for (Index i = 0; i < n; ++i) x[L][(std::size_t)i] = (1 - om) * x[L][(std::size_t)i] + om * tmp[L][(std::size_t)i];
+      for (Index i = 0; i < n; ++i)
+        x[L][(std::size_t)i] = (1 - om) * x[L][(std::size_t)i] + om * tmp[L][(std::size_t)i];
     }
   }
   void resid(std::size_t L) {
     std::vector<double> lu;
     ap[L].applyLaplacian(x[L], lu);
     Index n = lvl[L].numLeaves();
-    for (Index i = 0; i < n; ++i) res[L][(std::size_t)i] = b[L][(std::size_t)i] - lu[(std::size_t)i];
+    for (Index i = 0; i < n; ++i)
+      res[L][(std::size_t)i] = b[L][(std::size_t)i] - lu[(std::size_t)i];
   }
   void vcyc(std::size_t L, int pre, int post, int bot, double om) {
     if (L + 1 == lvl.size()) {
@@ -129,13 +134,15 @@ struct HRef {
       }
     }
     for (Index p = 0; p < nc; ++p)
-      if (cn[(std::size_t)p] > 0) cb[(std::size_t)p] /= cn[(std::size_t)p];
+      if (cn[(std::size_t)p] > 0)
+        cb[(std::size_t)p] /= cn[(std::size_t)p];
     std::fill(x[L + 1].begin(), x[L + 1].end(), 0.0);
     b[L + 1] = cb;
     vcyc(L + 1, pre, post, bot, om);
     for (Index i = 0; i < nf; ++i) {
       Index p = c2p[L][(std::size_t)i];
-      if (p >= 0) x[L][(std::size_t)i] += x[L + 1][(std::size_t)p];
+      if (p >= 0)
+        x[L][(std::size_t)i] += x[L + 1][(std::size_t)p];
     }
     jac(L, post, om);
   }
@@ -143,14 +150,16 @@ struct HRef {
 
 void setDev(View<double> v, const std::vector<double>& h) {
   auto m = Kokkos::create_mirror_view(v);
-  for (std::size_t i = 0; i < h.size(); ++i) m((Index)i) = h[i];
+  for (std::size_t i = 0; i < h.size(); ++i)
+    m((Index)i) = h[i];
   Kokkos::deep_copy(v, m);
 }
 std::vector<double> getDev(View<double> v, Index n) {
   std::vector<double> h((std::size_t)n);
   auto m = Kokkos::create_mirror_view(v);
   Kokkos::deep_copy(m, v);
-  for (Index i = 0; i < n; ++i) h[(std::size_t)i] = m(i);
+  for (Index i = 0; i < n; ++i)
+    h[(std::size_t)i] = m(i);
   return h;
 }
 
@@ -158,7 +167,8 @@ void run() {
   // Graded multilevel octree: 2×2×2 brick (level 3, domain 16^3), refined uniformly
   // to level 1 then the lower octant to level 0, 2:1-balanced.
   BO t(IVec<3>{2, 2, 2}, 3);
-  for (int kk = 0; kk < 2; ++kk) t.refineIf([](Code, unsigned l) { return l > 0; });
+  for (int kk = 0; kk < 2; ++kk)
+    t.refineIf([](Code, unsigned l) { return l > 0; });
   t.refineIf([&](Code c, unsigned) {
     auto o = M::from_code(c).decode();
     return o[0] < 8 && o[1] < 8 && o[2] < 8;
@@ -177,7 +187,8 @@ void run() {
 
   // ===== (1) consistent operator: applyFv == host applyLaplacian (bit-exact) =====
   std::vector<double> xr((std::size_t)n);
-  for (Index i = 0; i < n; ++i) xr[(std::size_t)i] = std::sin(0.3 * i) - 0.2 * std::cos(0.13 * i);
+  for (Index i = 0; i < n; ++i)
+    xr[(std::size_t)i] = std::sin(0.3 * i) - 0.2 * std::cos(0.13 * i);
   {
     View<double> dxr("xr", (std::size_t)n), dLu("Lu", (std::size_t)n);
     setDev(dxr, xr);
@@ -187,7 +198,8 @@ void run() {
     auto dLh = getDev(dLu, n);
     int mism = 0;
     for (Index i = 0; i < n; ++i)
-      if (dLh[(std::size_t)i] != hLu[(std::size_t)i]) ++mism;
+      if (dLh[(std::size_t)i] != hLu[(std::size_t)i])
+        ++mism;
     PECLET_CORE_CHECK_EQ(mism, 0);
   }
 
@@ -206,7 +218,8 @@ void run() {
   auto dx = getDev(mg.x(0), n);
   int vmis = 0;
   for (Index i = 0; i < n; ++i)
-    if (dx[(std::size_t)i] != hr.x[0][(std::size_t)i]) ++vmis;
+    if (dx[(std::size_t)i] != hr.x[0][(std::size_t)i])
+      ++vmis;
   PECLET_CORE_CHECK_EQ(vmis, 0);
   // converges on the graded mesh (plain operator stalled here ~0.03)
   std::vector<double> lu;
@@ -225,7 +238,7 @@ void run() {
     View<double> dxr("xr2", (std::size_t)n), ddq("dq", (std::size_t)n);
     setDev(dxr, xr);
     quadDelta(View<const Index>(mg.quadStart()), View<const Index>(mg.quadSlot()),
-                    View<const double>(mg.quadCoef()), View<const double>(dxr), ddq, n);
+              View<const double>(mg.quadCoef()), View<const double>(dxr), ddq, n);
     std::vector<double> lq, ls;
     ap0.applyLaplacianQuad(xr, lq);
     ap0.applyLaplacian(xr, ls);
@@ -236,7 +249,7 @@ void run() {
       maxabs = std::max(maxabs, std::fabs(ref));
       maxerr = std::max(maxerr, std::fabs(dqh[(std::size_t)i] - ref));
     }
-    PECLET_CORE_CHECK(maxabs > 0.0);          // the correction is actually exercised
+    PECLET_CORE_CHECK(maxabs > 0.0);  // the correction is actually exercised
     PECLET_CORE_CHECK(maxerr < 1e-9 * (1.0 + maxabs));
   }
   // solveQuad drives the 2nd-order graded residual down

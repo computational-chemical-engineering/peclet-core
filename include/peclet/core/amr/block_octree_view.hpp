@@ -32,8 +32,8 @@ struct BlockOctreeView {
   using Code = typename Host::Code;
   using Coord = typename Host::Coord;
 
-  View<Code> codes;            // leaf origin codes, ascending (Z-order)
-  View<std::uint8_t> levels;   // parallel to codes
+  View<Code> codes;           // leaf origin codes, ascending (Z-order)
+  View<std::uint8_t> levels;  // parallel to codes
   Index n = 0;
 
   /// (Re)upload the host octree's current leaf set to the device.
@@ -56,9 +56,11 @@ struct BlockOctreeView {
     M probe = M::from_code(codes(i));
     const Coord step = Coord(Coord(1) << levels(i));
     if (dir >= 0) {
-      if (!probe.try_add(static_cast<unsigned>(axis), step)) return -1;
+      if (!probe.try_add(static_cast<unsigned>(axis), step))
+        return -1;
     } else {
-      if (!probe.try_sub(static_cast<unsigned>(axis), 1)) return -1;
+      if (!probe.try_sub(static_cast<unsigned>(axis), 1))
+        return -1;
     }
     return locate(probe.code());
   }

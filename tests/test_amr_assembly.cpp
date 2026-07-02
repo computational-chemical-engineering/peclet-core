@@ -1,8 +1,8 @@
-// Device FV (pressure) operator ASSEMBLY (peclet::core::amr::assembleFv, built on the S1 device CSR-fill
-// primitive) must reproduce the host AmrPoisson::assembleFv weight-CSR bit-for-bit on the OpenMP
-// backend: same face enumeration (forEachFaceNeighbor order, 2:1 sub-faces), same openness·A_f/d_f
-// weights, same invVol/bcDiag. This is the D1+D2 anti-drift lock — the device assembler replaces the
-// host walk + upload in the dynamic-geometry path.
+// Device FV (pressure) operator ASSEMBLY (peclet::core::amr::assembleFv, built on the S1 device
+// CSR-fill primitive) must reproduce the host AmrPoisson::assembleFv weight-CSR bit-for-bit on the
+// OpenMP backend: same face enumeration (forEachFaceNeighbor order, 2:1 sub-faces), same
+// openness·A_f/d_f weights, same invVol/bcDiag. This is the D1+D2 anti-drift lock — the device
+// assembler replaces the host walk + upload in the dynamic-geometry path.
 //
 // Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
@@ -10,13 +10,12 @@
 #ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
 #include <cstdint>
+#include <Kokkos_Core.hpp>
 #include <vector>
 
-#include <Kokkos_Core.hpp>
-
+#include "peclet/core/amr/assembly.hpp"
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/block_octree_view.hpp"
-#include "peclet/core/amr/assembly.hpp"
 #include "peclet/core/amr/fv_op.hpp"
 #include "peclet/core/amr/poisson.hpp"
 
@@ -35,16 +34,19 @@ std::vector<T> down(const View<T>& d) {
   std::vector<T> h(d.extent(0));
   auto m = Kokkos::create_mirror_view(d);
   Kokkos::deep_copy(m, d);
-  for (std::size_t i = 0; i < h.size(); ++i) h[i] = m(i);
+  for (std::size_t i = 0; i < h.size(); ++i)
+    h[i] = m(i);
   return h;
 }
 
 template <class T>
 int countMismatch(const std::vector<T>& a, const std::vector<T>& b) {
-  if (a.size() != b.size()) return -1;
+  if (a.size() != b.size())
+    return -1;
   int m = 0;
   for (std::size_t i = 0; i < a.size(); ++i)
-    if (a[i] != b[i]) ++m;
+    if (a[i] != b[i])
+      ++m;
   return m;
 }
 
@@ -76,9 +78,8 @@ void checkCase(const char* name, const BO& t, double h0, bool periodic, bool wal
   std::vector<double> dinv = down(op.invVol);
   std::vector<double> dbc = down(op.bcDiag);
 
-  std::printf("  [%s] n=%lld nFaces host=%lld dev=%lld\n", name,
-              static_cast<long long>(op.n), static_cast<long long>(H.nbr.size()),
-              static_cast<long long>(dnbr.size()));
+  std::printf("  [%s] n=%lld nFaces host=%lld dev=%lld\n", name, static_cast<long long>(op.n),
+              static_cast<long long>(H.nbr.size()), static_cast<long long>(dnbr.size()));
 
   PECLET_CORE_CHECK_EQ(countMismatch(H.start, dstart), 0);
   PECLET_CORE_CHECK_EQ(countMismatch(H.nbr, dnbr), 0);

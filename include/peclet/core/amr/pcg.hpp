@@ -31,8 +31,8 @@
 
 #include <cmath>
 
-#include "peclet/core/amr/multigrid.hpp"
 #include "peclet/core/amr/fv_op.hpp"
+#include "peclet/core/amr/multigrid.hpp"
 #include "peclet/core/common/view.hpp"
 
 namespace peclet::core::amr {
@@ -40,7 +40,8 @@ namespace peclet::core::amr {
 // ---- small device vector primitives (volume-weighted where the FV operator needs it) ----
 
 /// Volume-weighted dot <u,v>_D = Σ_i V_i u_i v_i, V_i = 1/invVol_i.
-inline double dotVol(View<const double> u, View<const double> v, View<const double> invVol, Index n) {
+inline double dotVol(View<const double> u, View<const double> v, View<const double> invVol,
+                     Index n) {
   double s = 0.0;
   Kokkos::parallel_reduce(
       "amr::pcg_dotvol", n,
@@ -51,8 +52,8 @@ inline double dotVol(View<const double> u, View<const double> v, View<const doub
 /// Build the fluid mask: mask(i)=1 where the operator diagonal Σ_f w_f (+ bcDiag) is non-trivial,
 /// 0 for a solid cell (every face closed by the cut-cell openness ⇒ Σ w_f = 0). These solid cells
 /// carry their own (per connected solid region) constant null modes; left in the Krylov space CG
-/// amplifies them (the cut-cell-openness near-nullspace blow-up). We project them out — same role as
-/// flow's mg_mask_solid_k. Geometry-fixed, so it is rebuilt once per solve.
+/// amplifies them (the cut-cell-openness near-nullspace blow-up). We project them out — same role
+/// as flow's mg_mask_solid_k. Geometry-fixed, so it is rebuilt once per solve.
 inline void buildFluidMask(const FvOp& op, View<double> mask, Index n) {
   auto start = op.faceStart;
   auto w = op.faceW;
@@ -60,29 +61,30 @@ inline void buildFluidMask(const FvOp& op, View<double> mask, Index n) {
   Kokkos::parallel_for(
       "amr::pcg_fluidmask", n, KOKKOS_LAMBDA(const Index i) {
         double d = bc(i);
-        for (Index k = start(i); k < start(i + 1); ++k) d += w(k);
+        for (Index k = start(i); k < start(i + 1); ++k)
+          d += w(k);
         mask(i) = (d > 1e-30) ? 1.0 : 0.0;
       });
 }
 
 /// Zero the solid cells (project out the solid null modes).
 inline void maskSolid(View<double> u, View<const double> mask, Index n) {
-  Kokkos::parallel_for(
-      "amr::pcg_masksolid", n, KOKKOS_LAMBDA(const Index i) { u(i) *= mask(i); });
+  Kokkos::parallel_for("amr::pcg_masksolid", n, KOKKOS_LAMBDA(const Index i) { u(i) *= mask(i); });
 }
 
-/// Project u onto the FLUID range: zero solid cells, then subtract the volume-weighted mean over the
-/// fluid cells only (the constant null mode of the connected fluid region). The mean must exclude the
-/// pinned solid cells — including them dilutes it and lets the solid drift.
-inline void removeMeanVol(View<double> u, View<const double> invVol, View<const double> mask, Index n) {
-  Kokkos::parallel_for(
-      "amr::pcg_masksolid", n, KOKKOS_LAMBDA(const Index i) { u(i) *= mask(i); });
+/// Project u onto the FLUID range: zero solid cells, then subtract the volume-weighted mean over
+/// the fluid cells only (the constant null mode of the connected fluid region). The mean must
+/// exclude the pinned solid cells — including them dilutes it and lets the solid drift.
+inline void removeMeanVol(View<double> u, View<const double> invVol, View<const double> mask,
+                          Index n) {
+  Kokkos::parallel_for("amr::pcg_masksolid", n, KOKKOS_LAMBDA(const Index i) { u(i) *= mask(i); });
   double su = 0.0, sv = 0.0;
   Kokkos::parallel_reduce(
       "amr::pcg_meannum", n,
       KOKKOS_LAMBDA(const Index i, double& a) { a += mask(i) * u(i) / invVol(i); }, su);
   Kokkos::parallel_reduce(
-      "amr::pcg_meanden", n, KOKKOS_LAMBDA(const Index i, double& a) { a += mask(i) / invVol(i); }, sv);
+      "amr::pcg_meanden", n, KOKKOS_LAMBDA(const Index i, double& a) { a += mask(i) / invVol(i); },
+      sv);
   const double m = (sv > 0.0) ? su / sv : 0.0;
   Kokkos::parallel_for(
       "amr::pcg_meansub", n, KOKKOS_LAMBDA(const Index i) { u(i) -= mask(i) * m; });
@@ -90,8 +92,7 @@ inline void removeMeanVol(View<double> u, View<const double> invVol, View<const 
 
 /// y += a·x
 inline void axpy(View<double> y, double a, View<const double> x, Index n) {
-  Kokkos::parallel_for(
-      "amr::pcg_axpy", n, KOKKOS_LAMBDA(const Index i) { y(i) += a * x(i); });
+  Kokkos::parallel_for("amr::pcg_axpy", n, KOKKOS_LAMBDA(const Index i) { y(i) += a * x(i); });
 }
 
 /// p = z + b·p  (CG direction update)
@@ -102,8 +103,7 @@ inline void zpby(View<double> p, View<const double> z, double b, Index n) {
 
 /// y = −x  (negate in place)
 inline void negate(View<double> x, Index n) {
-  Kokkos::parallel_for(
-      "amr::pcg_negate", n, KOKKOS_LAMBDA(const Index i) { x(i) = -x(i); });
+  Kokkos::parallel_for("amr::pcg_negate", n, KOKKOS_LAMBDA(const Index i) { x(i) = -x(i); });
 }
 
 // ---------------------------------------------------------------------------
@@ -147,9 +147,10 @@ class PCG {
     buildFluidMask(op, mask_, n);
     View<const double> mask(mask_);
     Result R;
-    // Project onto the fluid range: always zero the solid cells (their per-region null modes); for the
-    // singular (periodic/all-Neumann) operator also remove the fluid constant. Applied to every Krylov
-    // quantity so the iteration stays in the well-posed fluid range (mirrors flow removeMean∘maskSolid).
+    // Project onto the fluid range: always zero the solid cells (their per-region null modes); for
+    // the singular (periodic/all-Neumann) operator also remove the fluid constant. Applied to every
+    // Krylov quantity so the iteration stays in the well-posed fluid range (mirrors flow
+    // removeMean∘maskSolid).
     auto project = [&](View<double> u) {
       if (singular_)
         removeMeanVol(u, invVol, mask, n);
@@ -163,9 +164,10 @@ class PCG {
     negate(r_, n);
     project(r_);
     R.res0 = std::sqrt(dotVol(View<const double>(r_), View<const double>(r_), invVol, n));
-    if (R.res0 == 0.0) return R;
+    if (R.res0 == 0.0)
+      return R;
 
-    applyPrec(mg, r_, z_, n);                  // z = M^{-1} r ≈ A^{-1} r
+    applyPrec(mg, r_, z_, n);  // z = M^{-1} r ≈ A^{-1} r
     project(z_);
     Kokkos::deep_copy(p_, z_);
     double rz = dotVol(View<const double>(r_), View<const double>(z_), invVol, n);
@@ -178,9 +180,10 @@ class PCG {
       negate(Ap_, n);
       project(Ap_);
       double pAp = dotVol(View<const double>(p_), View<const double>(Ap_), invVol, n);
-      if (pAp == 0.0) break;
+      if (pAp == 0.0)
+        break;
       double alpha = rz / pAp;
-      axpy(x, alpha, View<const double>(p_), n);    // x += α p
+      axpy(x, alpha, View<const double>(p_), n);     // x += α p
       axpy(r_, -alpha, View<const double>(Ap_), n);  // r −= α Ap
       project(r_);
       rnorm = std::sqrt(dotVol(View<const double>(r_), View<const double>(r_), invVol, n));
@@ -208,12 +211,14 @@ class PCG {
     Kokkos::deep_copy(mg.b(0), r);
     negate(mg.b(0), n);
     Kokkos::deep_copy(mg.x(0), 0.0);
-    for (int k = 0; k < cyclesPerPrec_; ++k) mg.vcycle(pre_, post_, bottom_, omega_);
+    for (int k = 0; k < cyclesPerPrec_; ++k)
+      mg.vcycle(pre_, post_, bottom_, omega_);
     Kokkos::deep_copy(z, mg.x(0));
   }
 
   void ensure(Index n) {
-    if (r_.extent(0) == static_cast<std::size_t>(n)) return;
+    if (r_.extent(0) == static_cast<std::size_t>(n))
+      return;
     r_ = View<double>("pcg_r", static_cast<std::size_t>(n));
     z_ = View<double>("pcg_z", static_cast<std::size_t>(n));
     p_ = View<double>("pcg_p", static_cast<std::size_t>(n));

@@ -6,8 +6,8 @@
 //     single NBX round so each owner learns which of its inner cells to send. The result is matched
 //     send/recv index lists plus a local self-copy list (for periodic wrap onto one's own block).
 //   * exchange*(field) (done every step) just moves payload. It is FIELD-AGNOSTIC: any type with
-//     bytesPerElem()/pack(localIdx,dst)/unpack(localIdx,src) works, so a scalar grid field, a vector
-//     grid field, or (later) a particle attribute array all flow through one path.
+//     bytesPerElem()/pack(localIdx,dst)/unpack(localIdx,src) works, so a scalar grid field, a
+//     vector grid field, or (later) a particle attribute array all flow through one path.
 //
 // Two interchangeable engines, identical results:
 //   exchangeNbx(field)        — nonblocking-consensus; robust for dynamic/sparse patterns.
@@ -17,12 +17,11 @@
 #ifndef PECLET_CORE_HALO_GRID_HALO_TOPOLOGY_HPP
 #define PECLET_CORE_HALO_GRID_HALO_TOPOLOGY_HPP
 
-#include "peclet/core/common/mpi.hpp"
-
 #include <cstring>
 #include <map>
 #include <vector>
 
+#include "peclet/core/common/mpi.hpp"
 #include "peclet/core/common/types.hpp"
 #include "peclet/core/decomp/block_decomposer.hpp"
 #include "peclet/core/decomp/block_indexer.hpp"
@@ -59,7 +58,8 @@ class GridHaloTopology {
     const IVec<Dim>& gsize = dec.globalSize();
 
     indexer_.forEachAll([&](const IVec<Dim>& lmd) {
-      if (indexer_.isInner(lmd)) return;
+      if (indexer_.isInner(lmd))
+        return;
       IVec<Dim> g{}, gw{};
       bool skip = false;
       for (int i = 0; i < Dim; ++i) {
@@ -75,7 +75,8 @@ class GridHaloTopology {
         }
         gw[i] = c;
       }
-      if (skip) return;  // non-periodic physical boundary: BC fills these, no comm
+      if (skip)
+        return;  // non-periodic physical boundary: BC fills these, no comm
       int owner = dec.ownerOf(gw);
       Index ghostLocal = indexer_.localMdToLocal(lmd);
       if (owner == rank_) {
@@ -98,7 +99,8 @@ class GridHaloTopology {
     NbxEngine nbx(comm_);
     std::size_t k = 0;
     auto packNext = [&](std::vector<char>& out) -> int {
-      if (k >= recvRanks_.size()) return -1;
+      if (k >= recvRanks_.size())
+        return -1;
       int dest = recvRanks_[k];
       const auto& g = recvGlob_[k];
       ++k;
@@ -122,7 +124,8 @@ class GridHaloTopology {
     persistentReady_ = false;
   }
 
-  // --- Field-agnostic exchange (NBX engine, with overlap support) ---------------------------------
+  // --- Field-agnostic exchange (NBX engine, with overlap support)
+  // ---------------------------------
 
   /// Post all sends/recvs; returns immediately so the caller can compute the block interior.
   template <typename Field>
@@ -161,7 +164,8 @@ class GridHaloTopology {
     for (std::size_t done = 0; done < recvReqs_.size(); ++done) {
       int k = 0;
       MPI_Waitany(static_cast<int>(recvReqs_.size()), recvReqs_.data(), &k, MPI_STATUS_IGNORE);
-      if (k == MPI_UNDEFINED) break;
+      if (k == MPI_UNDEFINED)
+        break;
       for (std::size_t i = 0; i < recvIdx_[k].size(); ++i) {
         field.unpack(recvIdx_[k][i], recvBufs_[k].data() + i * es);
       }
@@ -178,7 +182,8 @@ class GridHaloTopology {
     wait(field);
   }
 
-  // --- Field-agnostic exchange (persistent neighborhood collective) -------------------------------
+  // --- Field-agnostic exchange (persistent neighborhood collective)
+  // -------------------------------
 
   /// Full exchange via MPI_Neighbor_alltoallv on a cached distributed-graph communicator. Fastest
   /// for the fixed neighbour pattern of a static grid. Identical result to exchangeNbx.
@@ -210,10 +215,10 @@ class GridHaloTopology {
   // --- Flattened topology (contiguous, device-friendly; consumed by the CUDA exchange) ---
   struct FlatTopology {
     MPI_Comm comm = MPI_COMM_NULL;
-    std::vector<int> sendRanks, recvRanks;     // neighbour ranks
-    std::vector<int> sendCounts, recvCounts;   // elements per neighbour (same order)
-    std::vector<Index> sendIdx, recvIdx;       // flattened local indices, grouped by neighbour
-    std::vector<Index> selfSrc, selfDst;       // local periodic self-copy (inner -> ghost)
+    std::vector<int> sendRanks, recvRanks;    // neighbour ranks
+    std::vector<int> sendCounts, recvCounts;  // elements per neighbour (same order)
+    std::vector<Index> sendIdx, recvIdx;      // flattened local indices, grouped by neighbour
+    std::vector<Index> selfSrc, selfDst;      // local periodic self-copy (inner -> ghost)
   };
 
   FlatTopology flatten() const {
@@ -239,7 +244,8 @@ class GridHaloTopology {
   std::size_t numNeighbors() const { return recvRanks_.size(); }
   std::size_t numGhostRecv() const {
     std::size_t n = 0;
-    for (auto& v : recvIdx_) n += v.size();
+    for (auto& v : recvIdx_)
+      n += v.size();
     return n;
   }
 
@@ -252,10 +258,12 @@ class GridHaloTopology {
   // Free the cached graph communicator, but never after MPI_Finalize (e.g. if this object outlives
   // finalize on the stack of main()). Calling MPI_Comm_free post-finalize aborts the job.
   void freeGraphComm() {
-    if (graphComm_ == MPI_COMM_NULL) return;
+    if (graphComm_ == MPI_COMM_NULL)
+      return;
     int finalized = 0;
     MPI_Finalized(&finalized);
-    if (!finalized) MPI_Comm_free(&graphComm_);
+    if (!finalized)
+      MPI_Comm_free(&graphComm_);
     graphComm_ = MPI_COMM_NULL;
   }
 
@@ -273,14 +281,16 @@ class GridHaloTopology {
 
   void buildRecvLookup() {
     recvRankPos_.clear();
-    for (std::size_t k = 0; k < recvRanks_.size(); ++k) recvRankPos_[recvRanks_[k]] = k;
+    for (std::size_t k = 0; k < recvRanks_.size(); ++k)
+      recvRankPos_[recvRanks_[k]] = k;
   }
 
   template <typename Field>
   void applySelfCopy(Field& field) {
     // Periodic copy within our own block: read inner cell, write ghost cell. We go through the
     // field's pack/unpack so it works for any payload type.
-    if (selfSrc_.empty()) return;
+    if (selfSrc_.empty())
+      return;
     std::vector<char> tmp(field.bytesPerElem());
     for (std::size_t i = 0; i < selfSrc_.size(); ++i) {
       field.pack(selfSrc_[i], tmp.data());
@@ -289,15 +299,17 @@ class GridHaloTopology {
   }
 
   void ensureGraphComm(std::size_t es) {
-    if (persistentReady_ && graphElemSize_ == es) return;
-    if (graphComm_ != MPI_COMM_NULL) MPI_Comm_free(&graphComm_);
+    if (persistentReady_ && graphElemSize_ == es)
+      return;
+    if (graphComm_ != MPI_COMM_NULL)
+      MPI_Comm_free(&graphComm_);
 
     // Distributed graph: sources = ranks we receive from, destinations = ranks we send to.
     std::vector<int> sources(recvRanks_.begin(), recvRanks_.end());
     std::vector<int> dests(sendRanks_.begin(), sendRanks_.end());
     MPI_Dist_graph_create_adjacent(comm_, static_cast<int>(sources.size()), sources.data(),
-                                    MPI_UNWEIGHTED, static_cast<int>(dests.size()), dests.data(),
-                                    MPI_UNWEIGHTED, MPI_INFO_NULL, /*reorder=*/0, &graphComm_);
+                                   MPI_UNWEIGHTED, static_cast<int>(dests.size()), dests.data(),
+                                   MPI_UNWEIGHTED, MPI_INFO_NULL, /*reorder=*/0, &graphComm_);
 
     // Counts/displacements (in bytes) in the graph's neighbour ordering, which for
     // create_adjacent matches the order we passed sources/dests.

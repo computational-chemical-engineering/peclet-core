@@ -36,7 +36,8 @@ struct AmrGeometry {
   template <class Coord>
   Vec<Dim> lowerCorner(const std::array<Coord, Dim>& lo) const {
     Vec<Dim> p{};
-    for (int d = 0; d < Dim; ++d) p[d] = origin[d] + static_cast<Real>(lo[d]) * h0;
+    for (int d = 0; d < Dim; ++d)
+      p[d] = origin[d] + static_cast<Real>(lo[d]) * h0;
     return p;
   }
 
@@ -45,7 +46,8 @@ struct AmrGeometry {
   Vec<Dim> center(const std::array<std::array<Coord, Dim>, 2>& b) const {
     Vec<Dim> p{};
     for (int d = 0; d < Dim; ++d)
-      p[d] = origin[d] + (static_cast<Real>(b[0][d]) + 0.5 * (static_cast<Real>(b[1][d] - b[0][d]) + 1.0)) * h0;
+      p[d] = origin[d] +
+             (static_cast<Real>(b[0][d]) + 0.5 * (static_cast<Real>(b[1][d] - b[0][d]) + 1.0)) * h0;
     return p;
   }
 };

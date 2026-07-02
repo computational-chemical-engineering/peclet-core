@@ -1,10 +1,10 @@
 // MPI correctness of the grid ghost-layer exchange.
 //
 // Rank r owns block r of an ORB decomposition. Each inner cell is initialised to a value unique to
-// its GLOBAL coordinate (its global linear index). After a halo exchange, every ghost cell must hold
-// the value of the (periodically wrapped) global cell it shadows; ghost cells outside a non-periodic
-// boundary must remain untouched. We check this for both engines (NBX and persistent) and several
-// periodicity settings, across whatever rank count ctest launches.
+// its GLOBAL coordinate (its global linear index). After a halo exchange, every ghost cell must
+// hold the value of the (periodically wrapped) global cell it shadows; ghost cells outside a
+// non-periodic boundary must remain untouched. We check this for both engines (NBX and persistent)
+// and several periodicity settings, across whatever rank count ctest launches.
 #include <mpi.h>
 
 #include <array>
@@ -33,7 +33,8 @@ static int runCase(const BlockDecomposer<kDim>& dec, int rank, int ghost,
   std::vector<double> a(idx.numCellsInclGhost(), kSentinel);
   idx.forEachInner([&](const IVec<kDim>& lmd) {
     IVec<kDim> g{};
-    for (int i = 0; i < kDim; ++i) g[i] = lmd[i] + idx.originInclGhost()[i];
+    for (int i = 0; i < kDim; ++i)
+      g[i] = lmd[i] + idx.originInclGhost()[i];
     a[idx.localMdToLocal(lmd)] = static_cast<double>(dec.linearGlobal(g));
   });
 
@@ -47,7 +48,8 @@ static int runCase(const BlockDecomposer<kDim>& dec, int rank, int ghost,
   const IVec<kDim>& gsize = dec.globalSize();
   int fail = 0;
   idx.forEachAll([&](const IVec<kDim>& lmd) {
-    if (idx.isInner(lmd)) return;
+    if (idx.isInner(lmd))
+      return;
     IVec<kDim> gw{};
     bool skip = false;
     for (int i = 0; i < kDim; ++i) {
@@ -64,11 +66,13 @@ static int runCase(const BlockDecomposer<kDim>& dec, int rank, int ghost,
     }
     double got = a[idx.localMdToLocal(lmd)];
     if (skip) {
-      if (got != kSentinel) ++fail;  // boundary ghost must stay untouched
+      if (got != kSentinel)
+        ++fail;  // boundary ghost must stay untouched
       return;
     }
     double expect = static_cast<double>(dec.linearGlobal(gw));
-    if (got != expect) ++fail;
+    if (got != expect)
+      ++fail;
   });
   return fail;
 }

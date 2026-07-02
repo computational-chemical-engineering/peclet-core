@@ -30,14 +30,14 @@
 #include "peclet/core/amr/advect_recon.hpp"  // shared high-order face reconstruction (host+device)
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/cut_cell.hpp"
-#include "peclet/core/amr/face_geom.hpp"                   // FaceGeom (shared with the device assembler)
-#include "peclet/core/amr/facegeom_assembly.hpp"   // assembleFaceGeom (D4/D6)
-#include "peclet/core/amr/momentum_assembly.hpp"   // assembleMomentum (D3/D6)
+#include "peclet/core/amr/face_geom.hpp"          // FaceGeom (shared with the device assembler)
+#include "peclet/core/amr/facegeom_assembly.hpp"  // assembleFaceGeom (D4/D6)
 #include "peclet/core/amr/momentum.hpp"
+#include "peclet/core/amr/momentum_assembly.hpp"  // assembleMomentum (D3/D6)
 #include "peclet/core/amr/multigrid.hpp"
 #include "peclet/core/amr/pcg.hpp"
-#include "peclet/core/amr/velocity_mg.hpp"
 #include "peclet/core/amr/poisson.hpp"
+#include "peclet/core/amr/velocity_mg.hpp"
 #include "peclet/core/common/types.hpp"
 #include "peclet/core/common/view.hpp"
 
@@ -104,7 +104,7 @@ FaceGeom buildFaceGeom(const AmrPoisson<Dim, Bits>& ap, FluidFn&& isFluid) {
 /// on fluid cells (0 elsewhere). u[0..2] are the three velocity component Views (solid cells
 /// must hold 0). Mirrors oracle::AmrFlow::divergence.
 inline void divergence(const FaceGeom& g, View<const double> u0, View<const double> u1,
-                             View<const double> u2, View<double> div) {
+                       View<const double> u2, View<double> div) {
   auto st = g.start;
   auto nb = g.nbr;
   auto ax = g.axis;
@@ -130,13 +130,14 @@ inline void divergence(const FaceGeom& g, View<const double> u0, View<const doub
       });
 }
 
-/// Build the ABC/Basilisk divergence-free FACE field: uf(k) = ½(u^axis_i+u^axis_j) − (φ₊−φ₋)/dist for
-/// face k of cell i (+axis velocity), from u* (call after the pressure solve, before the cell gradient
-/// correction). Because L = D·G_face on the SAME (sub)faces, D(uf) = D u* − Lφ = 0 (to the φ residual).
-/// Each (sub)face is written from both incident cells; the +axis-orientation build makes the two copies
-/// identical, including across 2:1 interfaces (fine area + (φ_fine−φ_coarse)/dist on each sub-face).
+/// Build the ABC/Basilisk divergence-free FACE field: uf(k) = ½(u^axis_i+u^axis_j) − (φ₊−φ₋)/dist
+/// for face k of cell i (+axis velocity), from u* (call after the pressure solve, before the cell
+/// gradient correction). Because L = D·G_face on the SAME (sub)faces, D(uf) = D u* − Lφ = 0 (to the
+/// φ residual). Each (sub)face is written from both incident cells; the +axis-orientation build
+/// makes the two copies identical, including across 2:1 interfaces (fine area +
+/// (φ_fine−φ_coarse)/dist on each sub-face).
 inline void buildFaceField(const FaceGeom& g, View<const double> u0, View<const double> u1,
-                                 View<const double> u2, View<const double> phi, View<double> uf) {
+                           View<const double> u2, View<const double> phi, View<double> uf) {
   auto st = g.start;
   auto nb = g.nbr;
   auto ax = g.axis;
@@ -155,7 +156,8 @@ inline void buildFaceField(const FaceGeom& g, View<const double> u0, View<const 
       });
 }
 
-/// L2 norm of the divergence of the FACE field uf (the div-free flux diagnostic / host-parity check).
+/// L2 norm of the divergence of the FACE field uf (the div-free flux diagnostic / host-parity
+/// check).
 inline double divFaceNorm(const FaceGeom& g, View<const double> uf) {
   auto st = g.start;
   auto dr = g.dir;
@@ -166,9 +168,11 @@ inline double divFaceNorm(const FaceGeom& g, View<const double> uf) {
   Kokkos::parallel_reduce(
       "amr::flow_divface", g.n,
       KOKKOS_LAMBDA(const Index i, double& acc) {
-        if (!fl(i)) return;
+        if (!fl(i))
+          return;
         double d = 0.0;
-        for (Index k = st(i); k < st(i + 1); ++k) d += aA(k) * dr(k) * uf(k);
+        for (Index k = st(i); k < st(i + 1); ++k)
+          d += aA(k) * dr(k) * uf(k);
         d *= iv(i);
         acc += d * d;
       },
@@ -179,8 +183,8 @@ inline double divFaceNorm(const FaceGeom& g, View<const double> uf) {
 /// ABC cell-gradient of a scalar field `f`: gx/gy/gz = ½(g⁻+g⁺) of the adjacent face
 /// gradients along each axis, a closed face (α≤1e-12) contributing nothing (and not
 /// counted). On fluid cells only. Mirrors oracle::AmrFlow::gradOf for all three components.
-inline void grad3(const FaceGeom& g, View<const double> f, View<double> gx,
-                        View<double> gy, View<double> gz) {
+inline void grad3(const FaceGeom& g, View<const double> f, View<double> gx, View<double> gy,
+                  View<double> gz) {
   auto st = g.start;
   auto nb = g.nbr;
   auto ax = g.axis;
@@ -198,10 +202,10 @@ inline void grad3(const FaceGeom& g, View<const double> f, View<double> gx,
         double gp[3] = {0, 0, 0}, gm[3] = {0, 0, 0};
         int np[3] = {0, 0, 0}, nm[3] = {0, 0, 0};
         for (Index k = st(i); k < st(i + 1); ++k) {
-          if (al(k) <= 1e-12) continue;
+          if (al(k) <= 1e-12)
+            continue;
           const int a = ax(k);
-          const double gg =
-              (dr(k) > 0) ? (f(nb(k)) - fi) / di(k) : (fi - f(nb(k))) / di(k);
+          const double gg = (dr(k) > 0) ? (f(nb(k)) - fi) / di(k) : (fi - f(nb(k))) / di(k);
           if (dr(k) > 0) {
             gp[a] += gg;
             ++np[a];
@@ -223,11 +227,12 @@ inline void grad3(const FaceGeom& g, View<const double> f, View<double> gx,
 }
 
 /// Momentum RHS for one component: b_i = fluid ? (idiag·u_i + f_c − gradP_i − adv_i)·rscale_i : 0
-/// (== AmrCutCell::makeRhs of the oracle::AmrFlow predictor source, u_bc = 0). `adv` is the explicit
-/// deferred-correction advection term ρ(SOU−FOU) (zero for Stokes / fully-implicit at steady).
+/// (== AmrCutCell::makeRhs of the oracle::AmrFlow predictor source, u_bc = 0). `adv` is the
+/// explicit deferred-correction advection term ρ(SOU−FOU) (zero for Stokes / fully-implicit at
+/// steady).
 inline void momRhs(View<const double> uc, View<const double> gradP, View<const double> adv,
-                         View<const double> rscale, View<const char> fluid, double idiag, double fc,
-                         View<double> b, Index n) {
+                   View<const double> rscale, View<const char> fluid, double idiag, double fc,
+                   View<double> b, Index n) {
   Kokkos::parallel_for(
       "amr::flow_momrhs", n, KOKKOS_LAMBDA(const Index i) {
         b(i) = fluid(i) ? (idiag * uc(i) + fc - gradP(i) - adv(i)) * rscale(i) : 0.0;
@@ -243,9 +248,9 @@ inline void momRhs(View<const double> uc, View<const double> gradP, View<const d
 /// true) added to the static Stokes operator (the AMR reference adds advection after the cut-cell
 /// bake, so no K/M/X redistribution). Replaces the per-step HOST rebuild ⇒ no host round-trip.
 inline void buildFou(const FaceGeom& g, View<const double> u0, View<const double> u1,
-                           View<const double> u2, double rho, View<const double> rscale,
-                           View<double> advDiag, View<double> advCoef, View<const double> uf,
-                           bool useFace) {
+                     View<const double> u2, double rho, View<const double> rscale,
+                     View<double> advDiag, View<double> advCoef, View<const double> uf,
+                     bool useFace) {
   auto st = g.start;
   auto nb = g.nbr;
   auto ax = g.axis;
@@ -257,7 +262,8 @@ inline void buildFou(const FaceGeom& g, View<const double> u0, View<const double
       "amr::flow_buildfou", g.n, KOKKOS_LAMBDA(const Index i) {
         if (!fl(i)) {
           advDiag(i) = 0.0;
-          for (Index k = st(i); k < st(i + 1); ++k) advCoef(k) = 0.0;
+          for (Index k = st(i); k < st(i + 1); ++k)
+            advCoef(k) = 0.0;
           return;
         }
         const double rs = rscale(i);
@@ -292,8 +298,8 @@ inline void buildFou(const FaceGeom& g, View<const double> u0, View<const double
 /// (upupI/upupJ); the FOU flux is velOut·upwind. The implicit FOU is baked into the momentum
 /// operator (AmrCutCell::buildAdvectionFou + assembleOperator) so the two cancel at steady state.
 inline void deferredSou(const FaceGeom& g, View<const double> u0, View<const double> u1,
-                              View<const double> u2, int comp, double rho, int advScheme,
-                              View<double> defc, View<const double> uf, bool useFace) {
+                        View<const double> u2, int comp, double rho, int advScheme,
+                        View<double> defc, View<const double> uf, bool useFace) {
   auto st = g.start;
   auto nb = g.nbr;
   auto ax = g.axis;
@@ -313,7 +319,8 @@ inline void deferredSou(const FaceGeom& g, View<const double> u0, View<const dou
         double sou = 0.0, fou = 0.0;
         for (Index k = st(i); k < st(i + 1); ++k) {
           const Index j = nb(k);
-          if (!fl(j)) continue;
+          if (!fl(j))
+            continue;
           const int a = ax(k);
           const double uai = (a == 0) ? u0(i) : (a == 1) ? u1(i) : u2(i);
           const double uaj = (a == 0) ? u0(j) : (a == 1) ? u1(j) : u2(j);
@@ -334,9 +341,9 @@ inline void deferredSou(const FaceGeom& g, View<const double> u0, View<const dou
 
 /// Fully-explicit high-order advection for component `comp`: defc = ρ·SOU (no implicit FOU; the
 /// `setImplicitAdvection(false)` fallback). Same SOU/TVD reconstruction as deferredSou.
-inline void advectExplicit(const FaceGeom& g, View<const double> u0,
-                                 View<const double> u1, View<const double> u2, int comp, double rho,
-                                 int advScheme, View<double> defc, View<const double> uf, bool useFace) {
+inline void advectExplicit(const FaceGeom& g, View<const double> u0, View<const double> u1,
+                           View<const double> u2, int comp, double rho, int advScheme,
+                           View<double> defc, View<const double> uf, bool useFace) {
   auto st = g.start;
   auto nb = g.nbr;
   auto ax = g.axis;
@@ -356,7 +363,8 @@ inline void advectExplicit(const FaceGeom& g, View<const double> u0,
         double sou = 0.0;
         for (Index k = st(i); k < st(i + 1); ++k) {
           const Index j = nb(k);
-          if (!fl(j)) continue;
+          if (!fl(j))
+            continue;
           const int a = ax(k);
           const double uai = (a == 0) ? u0(i) : (a == 1) ? u1(i) : u2(i);
           const double uaj = (a == 0) ? u0(j) : (a == 1) ? u1(j) : u2(j);
@@ -375,19 +383,21 @@ inline void advectExplicit(const FaceGeom& g, View<const double> u0,
 }
 
 /// u_c -= gradPhi_c on fluid cells (the projection velocity correction).
-inline void correct(View<double> uc, View<const double> gphi, View<const char> fluid,
-                          Index n) {
+inline void correct(View<double> uc, View<const double> gphi, View<const char> fluid, Index n) {
   Kokkos::parallel_for(
-      "amr::flow_correct", n,
-      KOKKOS_LAMBDA(const Index i) { if (fluid(i)) uc(i) -= gphi(i); });
+      "amr::flow_correct", n, KOKKOS_LAMBDA(const Index i) {
+        if (fluid(i))
+          uc(i) -= gphi(i);
+      });
 }
 
 /// Rotational incremental pressure update: p += (ρ/dt)φ − μ·div, on fluid cells.
 inline void presUpdate(View<double> p, View<const double> phi, View<const double> div,
-                             View<const char> fluid, double rho_dt, double mu, Index n) {
+                       View<const char> fluid, double rho_dt, double mu, Index n) {
   Kokkos::parallel_for(
       "amr::flow_presupd", n, KOKKOS_LAMBDA(const Index i) {
-        if (fluid(i)) p(i) += rho_dt * phi(i) - mu * div(i);
+        if (fluid(i))
+          p(i) += rho_dt * phi(i) - mu * div(i);
       });
 }
 
@@ -457,16 +467,17 @@ class AmrFlow {
   void setMomentumGS(bool on) { momGS_ = on; }
 
   /// Opt-in (P4): solve the momentum predictor with the velocity multigrid used **as the solver**
-  /// — MG-preconditioned defect correction `u ← u + M⁻¹(b − A u)` iterated to tolerance — instead of
-  /// BiCGStab with the same MG as a preconditioner. This is the faithful mirror of flow's velocity
-  /// solve, which uses no Krylov method at all (RB-GS smoother / velocity-MG directly): the momentum
-  /// operator is diagonally dominant and invertible, so the stationary iteration converges, and
-  /// unlike BiCGStab it cannot break down on the strongly non-symmetric (D_rescale + FOU) operator
-  /// (no bi-orthogonal recurrence to lose — the failure mode P5 had to symmetrise the smoother to
-  /// avoid). With the GS smoother (setMomentumGS) and a velocity-MG (setMomentumMG, default on) this
-  /// is the full RB-GS/MG flow path; with MG off it degrades to plain damped-Jacobi sweeps
-  /// (flow's smoothComp). Default off (BiCGStab stays the validated default). Requires setMomentumMG
-  /// to actually be multigrid-accelerated; otherwise the Richardson iteration converges only slowly.
+  /// — MG-preconditioned defect correction `u ← u + M⁻¹(b − A u)` iterated to tolerance — instead
+  /// of BiCGStab with the same MG as a preconditioner. This is the faithful mirror of flow's
+  /// velocity solve, which uses no Krylov method at all (RB-GS smoother / velocity-MG directly):
+  /// the momentum operator is diagonally dominant and invertible, so the stationary iteration
+  /// converges, and unlike BiCGStab it cannot break down on the strongly non-symmetric (D_rescale +
+  /// FOU) operator (no bi-orthogonal recurrence to lose — the failure mode P5 had to symmetrise the
+  /// smoother to avoid). With the GS smoother (setMomentumGS) and a velocity-MG (setMomentumMG,
+  /// default on) this is the full RB-GS/MG flow path; with MG off it degrades to plain
+  /// damped-Jacobi sweeps (flow's smoothComp). Default off (BiCGStab stays the validated default).
+  /// Requires setMomentumMG to actually be multigrid-accelerated; otherwise the Richardson
+  /// iteration converges only slowly.
   void setMomentumMGSolver(bool on) { momMGSolver_ = on; }
 
   /// Optional Picard outer loop over the lagged advection (mirror of flow's outerIters_): each
@@ -496,10 +507,10 @@ class AmrFlow {
 
     // Device assembly (D6): the static cut-cell momentum operator CSR and the collocated face
     // geometry are assembled ON THE DEVICE (assembleMomentum / assembleFaceGeom), and the
-    // pressure MG operators are device-assembled per level (Multigrid D5) — so no host CSR walk and no
-    // operator round-trip. Each is bit-for-bit identical to the host assembler on OpenMP (locked in
-    // test_amr_momentum / test_amr_facegeom), so the flow result is unchanged. A shared
-    // device octree view backs both assemblers.
+    // pressure MG operators are device-assembled per level (Multigrid D5) — so no host CSR walk and
+    // no operator round-trip. Each is bit-for-bit identical to the host assembler on OpenMP (locked
+    // in test_amr_momentum / test_amr_facegeom), so the flow result is unchanged. A shared device
+    // octree view backs both assemblers.
     BlockOctreeView<3, Bits> ov;
     ov.upload(*t_);
     momOp_ = assembleMomentum<Bits>(mom_, ov);  // static Stokes operator (hasAdv stays false)
@@ -531,10 +542,12 @@ class AmrFlow {
       }
     }
     std::vector<char> fluidVec(static_cast<std::size_t>(n));
-    for (Index i = 0; i < n; ++i) fluidVec[static_cast<std::size_t>(i)] = mom_.isFluid(i) ? 1 : 0;
+    for (Index i = 0; i < n; ++i)
+      fluidVec[static_cast<std::size_t>(i)] = mom_.isFluid(i) ? 1 : 0;
     geom_ = assembleFaceGeom<Bits>(pres_, fluidVec, ov);
     std::vector<double> rs(static_cast<std::size_t>(n));
-    for (Index i = 0; i < n; ++i) rs[static_cast<std::size_t>(i)] = mom_.rhsScale(i);
+    for (Index i = 0; i < n; ++i)
+      rs[static_cast<std::size_t>(i)] = mom_.rhsScale(i);
     rscale_ = toDevice(rs, "df_rscale");
     fluid_ = geom_.fluid;
 
@@ -547,7 +560,8 @@ class AmrFlow {
     p_ = View<double>("df_p", static_cast<std::size_t>(n));
     phi_ = View<double>("df_phi", static_cast<std::size_t>(n));
     div_ = View<double>("df_div", static_cast<std::size_t>(n));
-    uf_ = View<double>("df_uf", geom_.nbr.extent(0));  // ABC divergence-free face field (per CSR face)
+    uf_ = View<double>("df_uf",
+                       geom_.nbr.extent(0));  // ABC divergence-free face field (per CSR face)
     faceFieldBuilt_ = false;
     bmom_ = View<double>("df_bmom", static_cast<std::size_t>(n));
     Kokkos::deep_copy(p_, 0.0);
@@ -602,68 +616,78 @@ class AmrFlow {
     // Freeze the time-level uⁿ for the backward-Euler mass term + warm start; it stays anchored
     // across the Picard outer iterations (only the advecting velocity re-lags). For outerIters_==1
     // this is just a copy of uⁿ ⇒ bit-identical to the single lagged step.
-    for (int c = 0; c < 3; ++c) Kokkos::deep_copy(u0_[c], View<const double>(u_[c]));
-    // −∇p^n is constant across the outer iterations (pressure is projected once, after the loop, like
-    // flow's single per-step projection) ⇒ hoist it out.
+    for (int c = 0; c < 3; ++c)
+      Kokkos::deep_copy(u0_[c], View<const double>(u_[c]));
+    // −∇p^n is constant across the outer iterations (pressure is projected once, after the loop,
+    // like flow's single per-step projection) ⇒ hoist it out.
     grad3(geom_, View<const double>(p_), gx_[0], gx_[1], gx_[2]);
-    // Picard outer loop over the lagged advection only (the momentum nonlinearity); for outerIters_==1
-    // this is the single lagged predictor, then one projection — bit-identical to before.
+    // Picard outer loop over the lagged advection only (the momentum nonlinearity); for
+    // outerIters_==1 this is the single lagged predictor, then one projection — bit-identical to
+    // before.
     for (int outer = 0; outer < outerIters_; ++outer) {
-      // --- advection lagged to the *current* predictor iterate (uⁿ on the first pass): implicit-FOU
-      // operator + explicit ρ(SOU−FOU) deferred correction. The matvec stays linear during each solve
-      // (the advecting velocity is frozen in advDiag_/advCoef_). With advection OFF the operator and
-      // RHS are identical every pass, so a second pass reproduces the first ⇒ instant early-stop. ---
+      // --- advection lagged to the *current* predictor iterate (uⁿ on the first pass):
+      // implicit-FOU operator + explicit ρ(SOU−FOU) deferred correction. The matvec stays linear
+      // during each solve (the advecting velocity is frozen in advDiag_/advCoef_). With advection
+      // OFF the operator and RHS are identical every pass, so a second pass reproduces the first ⇒
+      // instant early-stop. ---
       if (advect_) {
         momOp_.hasAdv = implicitFou_;
-        // Advect with the divergence-free face field uf (from the previous projection); fall back to
-        // ½(u_i+u_j) before the first projection has built it. The implicit FOU and the explicit SOU/FOU
-        // deferred correction use the SAME velocity ⇒ the FOU cancels at steady state (host-parity).
+        // Advect with the divergence-free face field uf (from the previous projection); fall back
+        // to ½(u_i+u_j) before the first projection has built it. The implicit FOU and the explicit
+        // SOU/FOU deferred correction use the SAME velocity ⇒ the FOU cancels at steady state
+        // (host-parity).
         const View<const double> ufv(uf_);
         if (implicitFou_)
           buildFou(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
-                         View<const double>(u_[2]), rho_, View<const double>(rscale_), advDiag_,
-                         advCoef_, ufv, faceFieldBuilt_);
+                   View<const double>(u_[2]), rho_, View<const double>(rscale_), advDiag_, advCoef_,
+                   ufv, faceFieldBuilt_);
         for (int c = 0; c < 3; ++c) {
           if (implicitFou_)
             deferredSou(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
-                              View<const double>(u_[2]), c, rho_, advScheme_, defc_[c], ufv, faceFieldBuilt_);
+                        View<const double>(u_[2]), c, rho_, advScheme_, defc_[c], ufv,
+                        faceFieldBuilt_);
           else
             advectExplicit(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
-                                 View<const double>(u_[2]), c, rho_, advScheme_, defc_[c], ufv, faceFieldBuilt_);
+                           View<const double>(u_[2]), c, rho_, advScheme_, defc_[c], ufv,
+                           faceFieldBuilt_);
         }
         // The staircase MG's fine level mirrors the sharp operator; refresh it so it picks up the
         // current advection state (hasAdv). (The Galerkin MG is the static viscous operator.)
-        if (momMGon_ && useStaircaseMG_) velMG_.setFineOp(momOp_);
+        if (momMGon_ && useStaircaseMG_)
+          velMG_.setFineOp(momOp_);
       }
-      // --- predictor: incremental BE viscous (+ implicit-FOU) solve per component, RHS carries −∇p^n
-      // and −ρ(SOU−FOU); the mass term is anchored at uⁿ (u0_), the solve warm-starts at the current
-      // iterate. ---
+      // --- predictor: incremental BE viscous (+ implicit-FOU) solve per component, RHS carries
+      // −∇p^n and −ρ(SOU−FOU); the mass term is anchored at uⁿ (u0_), the solve warm-starts at the
+      // current iterate. ---
       for (int c = 0; c < 3; ++c) {
-        momRhs(View<const double>(u0_[c]), View<const double>(gx_[c]),
-                     View<const double>(defc_[c]), View<const double>(rscale_),
-                     View<const char>(fluid_), idiag, f_[c], bmom_, n);
+        momRhs(View<const double>(u0_[c]), View<const double>(gx_[c]), View<const double>(defc_[c]),
+               View<const double>(rscale_), View<const char>(fluid_), idiag, f_[c], bmom_, n);
         // P4 (opt-in): the velocity-MG used as the *solver* — MG-preconditioned defect correction,
         // no Krylov (the flow RB-GS/velocity-MG mirror; cannot break down on the non-symmetric
         // operator) — vs the default MG-preconditioned BiCGStab. Both reach the same solution (the
         // matvec is the exact operator); the choice only trades robustness for convergence rate.
         lastMomIters_ +=
-            (momMGSolver_ ? momSolver_.solveDefectCorrection(momOp_, u_[c],
-                                                             View<const double>(bmom_), momIters, momTol_)
+            (momMGSolver_ ? momSolver_.solveDefectCorrection(
+                                momOp_, u_[c], View<const double>(bmom_), momIters, momTol_)
                           : momSolver_.solveBiCGStab(momOp_, u_[c], View<const double>(bmom_),
                                                      momIters, momTol_))
                 .iters;
       }
-      // Outer-loop convergence on the predictor velocity (skipped for the default outerIters_==1, so
-      // that path is untouched). With advection off the second iterate equals the first ⇒ stops at 2.
+      // Outer-loop convergence on the predictor velocity (skipped for the default outerIters_==1,
+      // so that path is untouched). With advection off the second iterate equals the first ⇒ stops
+      // at 2.
       if (outerIters_ > 1) {
         lastOuterIters_ = outer + 1;
         if (outer > 0) {
           double dmax = 0.0;
           for (int c = 0; c < 3; ++c)
-            dmax = std::max(dmax, maxAbsDiff(View<const double>(u_[c]), View<const double>(uprev_[c]), n));
-          if (dmax < outerTol_) break;
+            dmax = std::max(
+                dmax, maxAbsDiff(View<const double>(u_[c]), View<const double>(uprev_[c]), n));
+          if (dmax < outerTol_)
+            break;
         }
-        for (int c = 0; c < 3; ++c) Kokkos::deep_copy(uprev_[c], View<const double>(u_[c]));
+        for (int c = 0; c < 3; ++c)
+          Kokkos::deep_copy(uprev_[c], View<const double>(u_[c]));
       }
     }
     project(presIters);  // single pressure projection per step (flow structure)
@@ -673,7 +697,7 @@ class AmrFlow {
   void project(int presIters = 60) {
     const Index n = n_;
     divergence(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
-                     View<const double>(u_[2]), div_);
+               View<const double>(u_[2]), div_);
     Kokkos::deep_copy(phi_, 0.0);
     // Two selectable pressure drivers, like flow's CutcellMG (MG-PCG single-rank default,
     // standalone V-cycle the robust multi-rank default): MG-PCG for the near-steady, divergence-
@@ -687,18 +711,20 @@ class AmrFlow {
     } else {
       Kokkos::deep_copy(presMG_.b(0), div_);
       Kokkos::deep_copy(presMG_.x(0), 0.0);
-      for (int it = 0; it < presIters; ++it) presMG_.vcycle(2, 2, 60, 0.8);
+      for (int it = 0; it < presIters; ++it)
+        presMG_.vcycle(2, 2, 60, 0.8);
       Kokkos::deep_copy(phi_, presMG_.x(0));
       lastPresIters_ = presIters;
     }
     // Build the divergence-free FACE field from u* (still in u_) + φ, before the cell correction.
     buildFaceField(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
-                         View<const double>(u_[2]), View<const double>(phi_), uf_);
+                   View<const double>(u_[2]), View<const double>(phi_), uf_);
     faceFieldBuilt_ = true;
     grad3(geom_, View<const double>(phi_), gx_[0], gx_[1], gx_[2]);
-    for (int c = 0; c < 3; ++c) correct(u_[c], View<const double>(gx_[c]), View<const char>(fluid_), n);
-    presUpdate(p_, View<const double>(phi_), View<const double>(div_),
-                     View<const char>(fluid_), rho_ / dt_, mu_, n);
+    for (int c = 0; c < 3; ++c)
+      correct(u_[c], View<const double>(gx_[c]), View<const char>(fluid_), n);
+    presUpdate(p_, View<const double>(phi_), View<const double>(div_), View<const char>(fluid_),
+               rho_ / dt_, mu_, n);
   }
 
   /// DEBUG: the raw high-order advection ∇·(u u_comp) per cell from the current velocity
@@ -706,11 +732,13 @@ class AmrFlow {
   std::vector<double> debugSou(int comp) {
     View<double> s("dbg_sou", static_cast<std::size_t>(n_));
     advectExplicit(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
-                         View<const double>(u_[2]), comp, 1.0, advScheme_, s, View<const double>(uf_), false);
+                   View<const double>(u_[2]), comp, 1.0, advScheme_, s, View<const double>(uf_),
+                   false);
     std::vector<double> h(static_cast<std::size_t>(n_));
     auto m = Kokkos::create_mirror_view(s);
     Kokkos::deep_copy(m, s);
-    for (Index i = 0; i < n_; ++i) h[static_cast<std::size_t>(i)] = m(i);
+    for (Index i = 0; i < n_; ++i)
+      h[static_cast<std::size_t>(i)] = m(i);
     return h;
   }
   /// Run one V-cycle of a momentum MG as a preconditioner: z = M⁻¹ r. Templated on the MG type
@@ -730,8 +758,10 @@ class AmrFlow {
         "amr::flow_maxdiff", n,
         KOKKOS_LAMBDA(const Index i, double& lm) {
           double d = a(i) - b(i);
-          if (d < 0.0) d = -d;
-          if (d > lm) lm = d;
+          if (d < 0.0)
+            d = -d;
+          if (d > lm)
+            lm = d;
         },
         Kokkos::Max<double>(m));
     return m;
@@ -740,17 +770,20 @@ class AmrFlow {
   void copyToHost(const View<double>& d, std::vector<double>& h) const {
     auto m = Kokkos::create_mirror_view(d);
     Kokkos::deep_copy(m, d);
-    for (Index i = 0; i < n_; ++i) h[static_cast<std::size_t>(i)] = m(i);
+    for (Index i = 0; i < n_; ++i)
+      h[static_cast<std::size_t>(i)] = m(i);
   }
   /// Set a velocity component from host (testing / initial conditions).
   void setVelocity(int c, const std::vector<double>& h) {
     auto m = Kokkos::create_mirror_view(u_[c]);
-    for (Index i = 0; i < n_; ++i) m(i) = h[static_cast<std::size_t>(i)];
+    for (Index i = 0; i < n_; ++i)
+      m(i) = h[static_cast<std::size_t>(i)];
     Kokkos::deep_copy(u_[c], m);
   }
   /// Copy a velocity component back to host (single D2H, no host loop — S2a).
   std::vector<double> velocity(int c) const { return peclet::core::toVector(u_[c]); }
-  /// Copy the pressure field back to host (single D2H), (num_leaves,) — the incremental-rotational p.
+  /// Copy the pressure field back to host (single D2H), (num_leaves,) — the incremental-rotational
+  /// p.
   std::vector<double> pressure() const { return peclet::core::toVector(p_); }
 
   /// All three velocity components interleaved as a flat (n,3) row-major host buffer
@@ -772,13 +805,14 @@ class AmrFlow {
   /// L2 norm of the (openness-weighted) divergence of the current velocity.
   double divNormL2() {
     divergence(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
-                     View<const double>(u_[2]), div_);
+               View<const double>(u_[2]), div_);
     return std::sqrt(dotPlain(View<const double>(div_), View<const double>(div_), n_));
   }
-  /// L2 norm of the divergence of the ABC face field uf_ (built each project()): the φ-solve residual,
-  /// far below the cell field's O(h²) divNormL2 — including across 2:1 interfaces.
+  /// L2 norm of the divergence of the ABC face field uf_ (built each project()): the φ-solve
+  /// residual, far below the cell field's O(h²) divNormL2 — including across 2:1 interfaces.
   double divNormFace() { return divFaceNorm(geom_, View<const double>(uf_)); }
-  /// Copy the divergence-free face field to host (one value per CSR (sub)face, forEachFaceFull order).
+  /// Copy the divergence-free face field to host (one value per CSR (sub)face, forEachFaceFull
+  /// order).
   std::vector<double> faceField() const { return peclet::core::toVector(uf_); }
   Index numLeaves() const { return n_; }
   /// Per-leaf fluid mask (false inside the solid) — for host-side post-processing / bindings.
@@ -795,7 +829,8 @@ class AmrFlow {
   template <class SdfFn>
   double faceFrac(SdfFn&& sdfFn, const Vec<3>& fc, int axis) const {
     double sd = sdfFn(fc);
-    if (sd <= 0.0) return 0.0;
+    if (sd <= 0.0)
+      return 0.0;
     Vec<3> g{};
     for (int d = 0; d < 3; ++d) {
       Vec<3> pp = fc, pm = fc;
@@ -804,10 +839,12 @@ class AmrFlow {
       g[d] = (sdfFn(pp) - sdfFn(pm)) / (2.0 * h0_);
     }
     double gmag = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
-    if (gmag < 1e-6) gmag = 1e-6;
+    if (gmag < 1e-6)
+      gmag = 1e-6;
     int t1 = (axis + 1) % 3, t2 = (axis + 2) % 3;
     double denom = (std::fabs(g[t1]) + std::fabs(g[t2])) / gmag * h0_;
-    if (denom < 1e-9) denom = 1e-9;
+    if (denom < 1e-9)
+      denom = 1e-9;
     double frac = 0.5 + sd / denom;
     return frac < 0.0 ? 0.0 : (frac > 1.0 ? 1.0 : frac);
   }
@@ -818,18 +855,19 @@ class AmrFlow {
   double rho_ = 1.0, mu_ = 1.0, dt_ = 1e6;
   Vec<3> f_{};
   bool presPCG_ = true;
-  bool momMGon_ = true;        // velocity-MG momentum preconditioner (scalable; see setMomentumMG)
+  bool momMGon_ = true;  // velocity-MG momentum preconditioner (scalable; see setMomentumMG)
   bool useStaircaseMG_ = false;  // false = Galerkin (MomentumMG), true = staircase (VelocityMG)
   int mgVcPre_ = 2, mgVcBottom_ = 30;  // momentum-MG V-cycle pre/post sweeps + bottom sweeps
   Index mgMinCoarse_ = 256;            // staircase velocity-MG pore-scale cap (coarsest cell count)
-  bool momGS_ = false;                 // opt-in: multicolour Gauss–Seidel smoother in the momentum MG
-  bool momMGSolver_ = false;           // opt-in (P4): velocity-MG as the solver (defect correction), not BiCGStab
-  int outerIters_ = 1;                 // Picard outer iterations over the lagged advection (default 1)
-  double outerTol_ = 1e-6;             // outer-loop early-stop tolerance on max|Δu|
-  double momTol_ = 1e-8;  // per-step momentum BiCGStab relative tolerance (Phase-0 knob)
-  bool advect_ = false;       // momentum advection ∇·(u u) (off ⇒ Stokes)
-  bool implicitFou_ = true;   // implicit-FOU deferred-correction (stable) vs fully-explicit
-  int advScheme_ = 0;         // high-order flux: 0 = SOU (default), 1 = Koren TVD
+  bool momGS_ = false;  // opt-in: multicolour Gauss–Seidel smoother in the momentum MG
+  bool momMGSolver_ =
+      false;            // opt-in (P4): velocity-MG as the solver (defect correction), not BiCGStab
+  int outerIters_ = 1;  // Picard outer iterations over the lagged advection (default 1)
+  double outerTol_ = 1e-6;   // outer-loop early-stop tolerance on max|Δu|
+  double momTol_ = 1e-8;     // per-step momentum BiCGStab relative tolerance (Phase-0 knob)
+  bool advect_ = false;      // momentum advection ∇·(u u) (off ⇒ Stokes)
+  bool implicitFou_ = true;  // implicit-FOU deferred-correction (stable) vs fully-explicit
+  int advScheme_ = 0;        // high-order flux: 0 = SOU (default), 1 = Koren TVD
   Index n_ = 0;
   int lastMomIters_ = 0, lastPresIters_ = 0, lastOuterIters_ = 1;
 
@@ -847,10 +885,12 @@ class AmrFlow {
   View<double> rscale_;
   View<char> fluid_;
   std::array<View<double>, 3> u_, gx_;
-  std::array<View<double>, 3> u0_, uprev_;  // frozen uⁿ (BE mass term) + previous Picard outer iterate
+  std::array<View<double>, 3> u0_,
+      uprev_;  // frozen uⁿ (BE mass term) + previous Picard outer iterate
   View<double> p_, phi_, div_, bmom_;
   View<double> uf_;  // ABC/Basilisk divergence-free face field (one per CSR (sub)face)
-  bool faceFieldBuilt_ = false;  // uf_ populated by a projection (else advection falls back to ½(u_i+u_j))
+  bool faceFieldBuilt_ =
+      false;  // uf_ populated by a projection (else advection falls back to ½(u_i+u_j))
 };
 
 }  // namespace peclet::core::amr

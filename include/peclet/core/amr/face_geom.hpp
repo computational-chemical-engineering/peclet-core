@@ -26,10 +26,10 @@ struct FaceGeom {
   View<double> rawArea;    ///< raw face area (physical, no openness) per face — advection flux
   View<double> dist;       ///< face-normal distance (physical) per face, size nFaces
   View<double> alpha;      ///< openness per face (gradient gate), size nFaces
-  View<Index> upupI;       ///< upstream-of-i probe (periodicNeighbor(i,axis,−dir)) — SOU, size nFaces
-  View<Index> upupJ;       ///< upstream-of-j probe (periodicNeighbor(j,axis,+dir)) — SOU, size nFaces
-  View<double> invVol;     ///< 1/V_i per cell, size n
-  View<char> fluid;        ///< per-cell fluid flag, size n
+  View<Index> upupI;  ///< upstream-of-i probe (periodicNeighbor(i,axis,−dir)) — SOU, size nFaces
+  View<Index> upupJ;  ///< upstream-of-j probe (periodicNeighbor(j,axis,+dir)) — SOU, size nFaces
+  View<double> invVol;  ///< 1/V_i per cell, size n
+  View<char> fluid;     ///< per-cell fluid flag, size n
   Index n = 0;
 };
 

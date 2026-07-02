@@ -4,11 +4,11 @@
 #include <cstdio>
 #include <string>
 
-#include "test_util.hpp"
 #include "peclet/core/common/types.hpp"
 #include "peclet/core/geom/grid_sdf.hpp"
 #include "peclet/core/geom/sdf.hpp"
 #include "peclet/core/geom/vti_io.hpp"
+#include "test_util.hpp"
 
 using namespace peclet::core;
 using namespace peclet::core::geom;
@@ -33,11 +33,13 @@ int main() {
   PECLET_CORE_CHECK_EQ(static_cast<Index>(r.values.size()), static_cast<Index>(g.values.size()));
   int mism = 0;
   for (std::size_t i = 0; i < g.values.size(); ++i) {
-    if (r.values[i] != g.values[i]) ++mism;  // 9-digit ASCII round-trips float32 exactly
+    if (r.values[i] != g.values[i])
+      ++mism;  // 9-digit ASCII round-trips float32 exactly
   }
   PECLET_CORE_CHECK_EQ(mism, 0);
 
-  // Read-back field still evaluates as a sane SDF (sign agreement with analytic, away from surface).
+  // Read-back field still evaluates as a sane SDF (sign agreement with analytic, away from
+  // surface).
   PECLET_CORE_CHECK(r.eval({0.1, -0.2, 0.3}) < 0);  // center -> inside
   PECLET_CORE_CHECK(r.eval({1.9, -0.2, 0.3}) > 0);  // well outside
 
@@ -62,7 +64,8 @@ int main() {
   PECLET_CORE_CHECK_EQ(vr.dims[2], vec.dims[2]);
   int vmism = 0;
   for (std::size_t i = 0; i < vec.values.size(); ++i)
-    if (vr.values[i] != vec.values[i]) ++vmism;
+    if (vr.values[i] != vec.values[i])
+      ++vmism;
   PECLET_CORE_CHECK_EQ(vmism, 0);
 
   PECLET_CORE_RETURN_TEST_RESULT();

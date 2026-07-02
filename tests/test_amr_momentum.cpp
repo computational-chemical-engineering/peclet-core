@@ -16,9 +16,8 @@
 
 #ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
-#include <vector>
-
 #include <Kokkos_Core.hpp>
+#include <vector>
 
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/cut_cell.hpp"
@@ -38,20 +37,23 @@ constexpr double kR = 0.6;
 
 BO uniformFine(unsigned L) {
   BO t(IVec<3>{1, 1, 1}, L);
-  for (unsigned k = 0; k < L; ++k) t.refineIf([](Code, unsigned) { return true; });
+  for (unsigned k = 0; k < L; ++k)
+    t.refineIf([](Code, unsigned) { return true; });
   return t;
 }
 
 void setDev(View<double> v, const std::vector<double>& h) {
   auto m = Kokkos::create_mirror_view(v);
-  for (std::size_t i = 0; i < h.size(); ++i) m((Index)i) = h[i];
+  for (std::size_t i = 0; i < h.size(); ++i)
+    m((Index)i) = h[i];
   Kokkos::deep_copy(v, m);
 }
 std::vector<double> getDev(View<double> v, Index n) {
   std::vector<double> h((std::size_t)n);
   auto m = Kokkos::create_mirror_view(v);
   Kokkos::deep_copy(m, v);
-  for (Index i = 0; i < n; ++i) h[(std::size_t)i] = m(i);
+  for (Index i = 0; i < n; ++i)
+    h[(std::size_t)i] = m(i);
   return h;
 }
 
@@ -69,7 +71,8 @@ double maxFluidErr(const std::vector<double>& a, const std::vector<double>& b,
                    const AmrCutCell<21>& cc, Index n) {
   double e = 0;
   for (Index i = 0; i < n; ++i)
-    if (cc.isFluid(i)) e = std::max(e, std::fabs(a[(std::size_t)i] - b[(std::size_t)i]));
+    if (cc.isFluid(i))
+      e = std::max(e, std::fabs(a[(std::size_t)i] - b[(std::size_t)i]));
   return e;
 }
 
@@ -92,7 +95,8 @@ void run() {
 
   // ===== (1) matvec: device == host applyOp =====
   std::vector<double> u((std::size_t)n);
-  for (Index i = 0; i < n; ++i) u[(std::size_t)i] = std::sin(0.3 * i) - 0.2 * std::cos(0.11 * i);
+  for (Index i = 0; i < n; ++i)
+    u[(std::size_t)i] = std::sin(0.3 * i) - 0.2 * std::cos(0.11 * i);
   {
     auto A = cc.assembleOperator();
     MomentumOp op = upload(A);
@@ -114,7 +118,8 @@ void run() {
   // ===== (2) device solves reach the host gaussSeidel solution =====
   std::vector<double> src((std::size_t)n, 0.0);
   for (Index i = 0; i < n; ++i)
-    if (cc.isFluid(i)) src[(std::size_t)i] = 1.0;  // unit body force
+    if (cc.isFluid(i))
+      src[(std::size_t)i] = 1.0;  // unit body force
   std::vector<double> b = cc.makeRhs(src, 0.0);
 
   // host reference (serial GS to convergence)
@@ -122,7 +127,8 @@ void run() {
   double r0 = cc.residual(uh, b, res);
   for (int it = 0; it < 5000; ++it) {
     cc.gaussSeidel(uh, b, 20);
-    if (cc.residual(uh, b, res) < r0 * 1e-12) break;
+    if (cc.residual(uh, b, res) < r0 * 1e-12)
+      break;
   }
 
   auto A = cc.assembleOperator();
@@ -147,7 +153,8 @@ void run() {
   double rj = RB.res0;
   for (int k = 0; k < 40; ++k) {
     rj = solver.solveJacobi(op, du, View<const double>(db), 50);
-    if (rj < RB.res0 * 1e-9) break;
+    if (rj < RB.res0 * 1e-9)
+      break;
   }
   auto uj = getDev(du, n);
   double ej = maxFluidErr(uj, uh, cc, n);
@@ -160,7 +167,8 @@ void run() {
     for (int c = 0; c < 3; ++c) {
       vel[c].assign((std::size_t)n, 0.0);
       for (Index i = 0; i < n; ++i)
-        if (cc.isFluid(i)) vel[c][(std::size_t)i] = 0.2 * std::sin(0.05 * i + c);
+        if (cc.isFluid(i))
+          vel[c][(std::size_t)i] = 0.2 * std::sin(0.05 * i + c);
     }
     cc.buildAdvectionFou(vel, rho, {}, {}, false);
     auto Aa = cc.assembleOperator();

@@ -3,9 +3,9 @@
 ///
 /// Writes/reads a GridSdf as an ImageData PointData scalar in ASCII format — human-readable, exact
 /// float round-trip, and openable in ParaView. This is the interchange format `flow` and `dem`
-/// already use for SDF/field grids; consolidating their readers onto this is a follow-up. The reader
-/// is tolerant (attribute scan, not a full XML parse) but expects the ASCII inline layout this writer
-/// emits; binary/base64 "appended" VTI (what some existing files use) is a noted TODO.
+/// already use for SDF/field grids; consolidating their readers onto this is a follow-up. The
+/// reader is tolerant (attribute scan, not a full XML parse) but expects the ASCII inline layout
+/// this writer emits; binary/base64 "appended" VTI (what some existing files use) is a noted TODO.
 #ifndef PECLET_CORE_GEOM_VTI_IO_HPP
 #define PECLET_CORE_GEOM_VTI_IO_HPP
 
@@ -23,7 +23,8 @@ namespace peclet::core::geom {
 /// Write a GridSdf as a VTK ImageData (.vti), PointData Float32 scalar, ASCII.
 inline void writeVti(const std::string& path, const GridSdf& g, const std::string& name = "sdf") {
   std::ofstream f(path);
-  if (!f) throw std::runtime_error("writeVti: cannot open " + path);
+  if (!f)
+    throw std::runtime_error("writeVti: cannot open " + path);
   const Index nx = g.dims[0], ny = g.dims[1], nz = g.dims[2];
   f << "<?xml version=\"1.0\"?>\n"
     << "<VTKFile type=\"ImageData\" version=\"1.0\" byte_order=\"LittleEndian\">\n"
@@ -45,7 +46,8 @@ namespace detail {
 inline std::string vtiAttr(const std::string& s, const std::string& key) {
   std::string needle = key + "=\"";
   auto p = s.find(needle);
-  if (p == std::string::npos) throw std::runtime_error("readVti: missing attribute " + key);
+  if (p == std::string::npos)
+    throw std::runtime_error("readVti: missing attribute " + key);
   p += needle.size();
   auto e = s.find('"', p);
   return s.substr(p, e - p);
@@ -55,7 +57,8 @@ inline std::string vtiAttr(const std::string& s, const std::string& key) {
 /// Read a VTK ImageData (.vti) written by writeVti (ASCII PointData scalar) into a GridSdf.
 inline GridSdf readVti(const std::string& path) {
   std::ifstream f(path);
-  if (!f) throw std::runtime_error("readVti: cannot open " + path);
+  if (!f)
+    throw std::runtime_error("readVti: cannot open " + path);
   std::stringstream buf;
   buf << f.rdbuf();
   const std::string s = buf.str();
@@ -68,7 +71,8 @@ inline GridSdf readVti(const std::string& path) {
   std::istringstream(detail::vtiAttr(s, "Spacing")) >> g.spacing[0] >> g.spacing[1] >> g.spacing[2];
 
   auto da = s.find("<DataArray");
-  if (da == std::string::npos) throw std::runtime_error("readVti: no DataArray");
+  if (da == std::string::npos)
+    throw std::runtime_error("readVti: no DataArray");
   auto open = s.find('>', da);
   auto close = s.find("</DataArray>", open);
   std::istringstream data(s.substr(open + 1, close - open - 1));
@@ -95,7 +99,8 @@ struct VtiVector {
 inline void writeVtiVector(const std::string& path, const VtiVector& g,
                            const std::string& name = "vector") {
   std::ofstream f(path);
-  if (!f) throw std::runtime_error("writeVtiVector: cannot open " + path);
+  if (!f)
+    throw std::runtime_error("writeVtiVector: cannot open " + path);
   const Index nx = g.dims[0], ny = g.dims[1], nz = g.dims[2];
   f << "<?xml version=\"1.0\"?>\n"
     << "<VTKFile type=\"ImageData\" version=\"1.0\" byte_order=\"LittleEndian\">\n"
@@ -118,7 +123,8 @@ inline void writeVtiVector(const std::string& path, const VtiVector& g,
 /// Read a vector-field VTI written by writeVtiVector.
 inline VtiVector readVtiVector(const std::string& path) {
   std::ifstream f(path);
-  if (!f) throw std::runtime_error("readVtiVector: cannot open " + path);
+  if (!f)
+    throw std::runtime_error("readVtiVector: cannot open " + path);
   std::stringstream buf;
   buf << f.rdbuf();
   const std::string s = buf.str();

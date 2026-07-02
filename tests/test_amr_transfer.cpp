@@ -42,7 +42,8 @@ double cellVolRel(const BO& t, Index i) {
 }
 double relIntegral(const BO& t, const std::vector<double>& f) {
   double s = 0.0;
-  for (Index i = 0; i < t.numLeaves(); ++i) s += cellVolRel(t, i) * f[(std::size_t)i];
+  for (Index i = 0; i < t.numLeaves(); ++i)
+    s += cellVolRel(t, i) * f[(std::size_t)i];
   return s;
 }
 template <class Fn>
@@ -57,7 +58,8 @@ std::vector<double> sample(const BO& t, Fn&& fn) {
 
 BO graded() {
   BO t(IVec<3>{2, 2, 2}, 3);  // 16^3 fine
-  for (int k = 0; k < 2; ++k) t.refineIf([](Code, unsigned l) { return l > 0; });
+  for (int k = 0; k < 2; ++k)
+    t.refineIf([](Code, unsigned l) { return l > 0; });
   t.refineIf([&](Code c, unsigned) {
     auto o = M::from_code(c).decode();
     return o[0] < 8 && o[1] < 8 && o[2] < 8;
@@ -147,8 +149,9 @@ void run() {
       ePC += std::fabs(fpc[(std::size_t)i] - exact[(std::size_t)i]);
       eLIN += std::fabs(flin[(std::size_t)i] - exact[(std::size_t)i]);
     }
-    PECLET_CORE_CHECK(eLIN < ePC);                                                    // more accurate
-    PECLET_CORE_CHECK(std::fabs(relIntegral(fine, flin) - I0) < 1e-9 * std::fabs(I0)); // still conservative
+    PECLET_CORE_CHECK(eLIN < ePC);  // more accurate
+    PECLET_CORE_CHECK(std::fabs(relIntegral(fine, flin) - I0) <
+                      1e-9 * std::fabs(I0));  // still conservative
   }
 }
 

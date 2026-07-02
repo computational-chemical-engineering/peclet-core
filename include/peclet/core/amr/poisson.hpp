@@ -55,7 +55,8 @@ class AmrPoisson {
     h0_ = h0;
     alpha_.clear();
     hasOpen_ = false;
-    for (int d = 0; d < Dim; ++d) fineExt_[d] = static_cast<Coord>(t.brick()[d] * (Index(1) << t.lmax()));
+    for (int d = 0; d < Dim; ++d)
+      fineExt_[d] = static_cast<Coord>(t.brick()[d] * (Index(1) << t.lmax()));
   }
 
   void setOrigin(const Vec<Dim>& o) { origin_ = o; }
@@ -66,7 +67,8 @@ class AmrPoisson {
 
   /// Openness of leaf `i`'s face on (axis,dir); 1 if no openness has been set.
   double faceOpenness(Index i, int axis, int dir) const {
-    if (!hasOpen_) return 1.0;
+    if (!hasOpen_)
+      return 1.0;
     return alpha_[static_cast<std::size_t>(i) * kFaces + faceIndex(axis, dir)];
   }
 
@@ -96,7 +98,8 @@ class AmrPoisson {
           Vec<Dim> fc{};
           for (int d = 0; d < Dim; ++d)
             fc[d] = (d == axis) ? origin_[d] + static_cast<Real>(plane) * h0_
-                                : origin_[d] + (static_cast<Real>(lo[d]) + 0.5 * static_cast<Real>(s)) * h0_;
+                                : origin_[d] +
+                                      (static_cast<Real>(lo[d]) + 0.5 * static_cast<Real>(s)) * h0_;
           double a = static_cast<double>(openFn(fc, axis));
           a = a < 0.0 ? 0.0 : (a > 1.0 ? 1.0 : a);
           alpha_[static_cast<std::size_t>(i) * kFaces + faceIndex(axis, dir)] = a;
@@ -128,7 +131,8 @@ class AmrPoisson {
   /// when non-periodic), and — when `immersedWall_` — the solid fraction (1−α) of every
   /// interior face (the immersed no-slip wall of the velocity operator).
   double boundaryDiag(Index i) const {
-    if (periodic_ && !immersedWall_) return 0.0;
+    if (periodic_ && !immersedWall_)
+      return 0.0;
     auto b = t_->bounds(i);
     const auto& lo = b[0];
     const Coord si = Coord(Coord(1) << t_->level(i));
@@ -138,7 +142,8 @@ class AmrPoisson {
       for (int dir = -1; dir <= 1; dir += 2) {
         const long pc = (dir > 0) ? static_cast<long>(lo[axis]) + static_cast<long>(si)
                                   : static_cast<long>(lo[axis]) - 1;
-        const bool domainBoundary = !periodic_ && (pc < 0 || pc >= static_cast<long>(fineExt_[axis]));
+        const bool domainBoundary =
+            !periodic_ && (pc < 0 || pc >= static_cast<long>(fineExt_[axis]));
         if (domainBoundary)
           s += faceOpenness(i, axis, dir) * wall;  // domain Dirichlet wall (open part)
         else if (immersedWall_)
@@ -151,7 +156,8 @@ class AmrPoisson {
   Real cellVolume(Index i) const {
     Real w = cellWidth(i);
     Real v = 1;
-    for (int d = 0; d < Dim; ++d) v *= w;
+    for (int d = 0; d < Dim; ++d)
+      v *= w;
     return v;
   }
 
@@ -170,7 +176,8 @@ class AmrPoisson {
                                   : static_cast<long>(lo[axis]) - 1;
         // Non-periodic: a domain-boundary face has no neighbour cell (it is a Dirichlet
         // wall handled by boundaryDiag) — skip it.
-        if (!periodic_ && (pc < 0 || pc >= static_cast<long>(fineExt_[axis]))) continue;
+        if (!periodic_ && (pc < 0 || pc >= static_cast<long>(fineExt_[axis])))
+          continue;
         std::array<Coord, Dim> p = lo;
         p[axis] = wrap(pc, axis);
         Index j = t_->find(M::encode(p).code());
@@ -188,7 +195,8 @@ class AmrPoisson {
             q[axis] = wrap(pc, axis);
             int bit = 0;
             for (int t = 0; t < Dim; ++t) {
-              if (t == axis) continue;
+              if (t == axis)
+                continue;
               const Coord off = ((k >> bit) & 1) ? sj : Coord(0);
               q[t] = wrap(static_cast<long>(lo[t]) + static_cast<long>(off), t);
               ++bit;
@@ -234,13 +242,15 @@ class AmrPoisson {
             q[axis] = wrap(pc, axis);
             int bit = 0;
             for (int t = 0; t < Dim; ++t) {
-              if (t == axis) continue;
+              if (t == axis)
+                continue;
               const Coord off = ((k >> bit) & 1) ? sj : Coord(0);
               q[t] = wrap(static_cast<long>(lo[t]) + static_cast<long>(off), t);
               ++bit;
             }
             Index jj = t_->find(M::encode(q).code());
-            fn(jj, axis, dir, areaOf(sj), 0.5 * (static_cast<Real>(si) + static_cast<Real>(sj)) * h0_,
+            fn(jj, axis, dir, areaOf(sj),
+               0.5 * (static_cast<Real>(si) + static_cast<Real>(sj)) * h0_,
                faceOpenness(jj, axis, -dir));
           }
         }
@@ -275,17 +285,22 @@ class AmrPoisson {
     const double sf = static_cast<double>(Index(1) << t_->level(fine));
     double val = uc;
     for (int t = 0; t < Dim; ++t) {
-      if (t == axis) continue;
+      if (t == axis)
+        continue;
       const double dt = ((static_cast<double>(bf[0][t]) + 0.5 * sf) -
-                         (static_cast<double>(bc[0][t]) + 0.5 * sc)) * h0_;
+                         (static_cast<double>(bc[0][t]) + 0.5 * sc)) *
+                        h0_;
       Index cp = periodicNeighbor(coarse, t, +1);
       Index cm = periodicNeighbor(coarse, t, -1);
-      if (cp < 0 || cm < 0) continue;
-      if (t_->level(cp) != t_->level(coarse) || t_->level(cm) != t_->level(coarse)) continue;
+      if (cp < 0 || cm < 0)
+        continue;
+      if (t_->level(cp) != t_->level(coarse) || t_->level(cm) != t_->level(coarse))
+        continue;
       // Skip the correction near a solid: a nearly-closed tangential face means
       // the quadratic stencil would lean on a solid-side value. Drop to the raw
       // coarse value on this axis (locally lower order, but robust).
-      if (faceOpenness(coarse, t, +1) < 0.5 || faceOpenness(coarse, t, -1) < 0.5) continue;
+      if (faceOpenness(coarse, t, +1) < 0.5 || faceOpenness(coarse, t, -1) < 0.5)
+        continue;
       const double up = u[static_cast<std::size_t>(cp)];
       const double um = u[static_cast<std::size_t>(cm)];
       const double Dt = (up - um) / (2.0 * H);
@@ -308,7 +323,7 @@ class AmrPoisson {
         double uj = u[static_cast<std::size_t>(j)];
         double uii = ui;
         if (Lj > Li)
-          uj = coarseStar(u, j, i, axis);   // j coarser: correct its value
+          uj = coarseStar(u, j, i, axis);  // j coarser: correct its value
         else if (Lj < Li)
           uii = coarseStar(u, i, j, axis);  // i coarser: correct our value for this sub-face
         acc += a * c * (uj - uii);
@@ -334,8 +349,8 @@ class AmrPoisson {
   }
 
   /// The assembled FV (weight-CSR) operator: per-face conductance w = A_f/d_f·openness, per-cell
-  /// invVol and Dirichlet boundary diagonal, in the exact face order forEachFaceNeighbor emits. This
-  /// is the single host assembler the device MG build (multigrid.hpp) and the host shared-FV
+  /// invVol and Dirichlet boundary diagonal, in the exact face order forEachFaceNeighbor emits.
+  /// This is the single host assembler the device MG build (multigrid.hpp) and the host shared-FV
   /// apply both consume — and the form the shared face_csr.hpp kernels run.
   struct FvAssembled {
     std::vector<double> invVol;  ///< 1/V_i, size n
@@ -381,8 +396,8 @@ class AmrPoisson {
     v.bcDiag = HostArr<double>(A.bcDiag.data());
     return v;
   }
-  /// out = L u via the SHARED face_csr.hpp FV kernel over the assembled CSR — the same arithmetic the
-  /// device applyFv runs, executed serially. The geometric applyLaplacian below is the oracle;
+  /// out = L u via the SHARED face_csr.hpp FV kernel over the assembled CSR — the same arithmetic
+  /// the device applyFv runs, executed serially. The geometric applyLaplacian below is the oracle;
   /// test_amr_poisson asserts the two agree (anti-drift lock, no-Kokkos build).
   void applyFvShared(const std::vector<double>& u, std::vector<double>& out) const {
     const FvAssembled A = assembleFv();
@@ -390,7 +405,8 @@ class AmrPoisson {
     const Index n = numLeaves();
     out.assign(static_cast<std::size_t>(n), 0.0);
     const HostArr<double> uacc(u.data());
-    for (Index i = 0; i < n; ++i) out[static_cast<std::size_t>(i)] = fvApplyRow(op, i, uacc);
+    for (Index i = 0; i < n; ++i)
+      out[static_cast<std::size_t>(i)] = fvApplyRow(op, i, uacc);
   }
 
   /// out = L u (periodic FV Laplacian).
@@ -437,7 +453,8 @@ class AmrPoisson {
           diag += a * c;
         });
         if (diag != 0.0)
-          u[static_cast<std::size_t>(i)] = (sumOff - cellVolume(i) * rhs[static_cast<std::size_t>(i)]) / diag;
+          u[static_cast<std::size_t>(i)] =
+              (sumOff - cellVolume(i) * rhs[static_cast<std::size_t>(i)]) / diag;
       }
   }
 
@@ -450,7 +467,8 @@ class AmrPoisson {
       vol += cellVolume(i);
     }
     double m = sum / vol;
-    for (Index i = 0; i < n; ++i) u[static_cast<std::size_t>(i)] -= m;
+    for (Index i = 0; i < n; ++i)
+      u[static_cast<std::size_t>(i)] -= m;
   }
 
   const Octree& octree() const { return *t_; }
@@ -473,7 +491,8 @@ class AmrPoisson {
   // Physical area of a face of a cell of width-units `s`: (s*h0)^(Dim-1).
   Real areaOf(Coord s) const {
     Real area = 1;
-    for (int d = 0; d < Dim - 1; ++d) area *= static_cast<Real>(s) * h0_;
+    for (int d = 0; d < Dim - 1; ++d)
+      area *= static_cast<Real>(s) * h0_;
     return area;
   }
 
@@ -483,7 +502,7 @@ class AmrPoisson {
   Vec<Dim> origin_{};
   std::vector<double> alpha_;  // per-leaf per-face openness (kFaces per leaf), or empty
   bool hasOpen_ = false;
-  bool periodic_ = true;  // false ⇒ homogeneous Dirichlet domain walls (boundaryDiag)
+  bool periodic_ = true;       // false ⇒ homogeneous Dirichlet domain walls (boundaryDiag)
   bool immersedWall_ = false;  // true ⇒ velocity operator: (1−α) interior faces are no-slip walls
 };
 
@@ -503,14 +522,17 @@ class AmrMultigrid {
     for (;;) {
       Octree c = levels_.back();
       Index merged = c.coarsenIf([](Code, unsigned) { return true; });
-      if (merged == 0 || c.numLeaves() == levels_.back().numLeaves()) break;
+      if (merged == 0 || c.numLeaves() == levels_.back().numLeaves())
+        break;
       levels_.push_back(c);
-      if (c.numLeaves() == 1) break;
+      if (c.numLeaves() == 1)
+        break;
     }
     ops_.resize(levels_.size());
     // All levels share the finest h0: a coarse octree's leaves carry a higher
     // `level`, and cellWidth = h0 * 2^level already encodes the doubled width.
-    for (std::size_t L = 0; L < levels_.size(); ++L) ops_[L].init(levels_[L], h0);
+    for (std::size_t L = 0; L < levels_.size(); ++L)
+      ops_[L].init(levels_[L], h0);
     // child(fine slot) -> parent(coarse slot) for each fine/coarse pair.
     c2p_.assign(levels_.size() ? levels_.size() - 1 : 0, {});
     for (std::size_t L = 0; L + 1 < levels_.size(); ++L) {
@@ -530,14 +552,16 @@ class AmrMultigrid {
   /// Apply a boundary condition to every level (periodic default, or non-periodic
   /// homogeneous Dirichlet). Call after build().
   void setPeriodic(bool p) {
-    for (auto& o : ops_) o.setPeriodic(p);
+    for (auto& o : ops_)
+      o.setPeriodic(p);
   }
 
   /// Enable the immersed no-slip (Dirichlet) wall on every level — the velocity operator.
   /// Call after setOpenness() (the wall is derived per level from that level's coarsened
   /// aperture, so it is consistent down the hierarchy). Call after build().
   void setImmersedWall(bool w) {
-    for (auto& o : ops_) o.setImmersedWall(w);
+    for (auto& o : ops_)
+      o.setImmersedWall(w);
   }
 
   /// One V-cycle on level L solving L u = rhs (correction scheme).
@@ -559,13 +583,15 @@ class AmrMultigrid {
     std::vector<double> cvol(static_cast<std::size_t>(c.numLeaves()), 0.0);
     for (Index i = 0; i < f.numLeaves(); ++i) {
       Index p = c2p_[L][static_cast<std::size_t>(i)];
-      if (p < 0) continue;
+      if (p < 0)
+        continue;
       Real v = ops_[L].cellVolume(i);
       crhs[static_cast<std::size_t>(p)] += v * res[static_cast<std::size_t>(i)];
       cvol[static_cast<std::size_t>(p)] += v;
     }
     for (Index p = 0; p < c.numLeaves(); ++p)
-      if (cvol[static_cast<std::size_t>(p)] > 0) crhs[static_cast<std::size_t>(p)] /= cvol[static_cast<std::size_t>(p)];
+      if (cvol[static_cast<std::size_t>(p)] > 0)
+        crhs[static_cast<std::size_t>(p)] /= cvol[static_cast<std::size_t>(p)];
 
     std::vector<double> ccorr(static_cast<std::size_t>(c.numLeaves()), 0.0);
     vcycle(L + 1, ccorr, crhs, pre, post);
@@ -573,7 +599,8 @@ class AmrMultigrid {
     // Prolong correction (piecewise constant) and add.
     for (Index i = 0; i < f.numLeaves(); ++i) {
       Index p = c2p_[L][static_cast<std::size_t>(i)];
-      if (p >= 0) u[static_cast<std::size_t>(i)] += ccorr[static_cast<std::size_t>(p)];
+      if (p >= 0)
+        u[static_cast<std::size_t>(i)] += ccorr[static_cast<std::size_t>(p)];
     }
     ops_[L].gaussSeidel(u, rhs, post);
     ops_[L].removeMean(u);
@@ -592,8 +619,10 @@ class AmrMultigrid {
     for (int o = 0; o < outer; ++o) {
       P.applyLaplacianQuad(u, lq);
       P.applyLaplacian(u, ls);
-      for (std::size_t i = 0; i < n; ++i) rhsp[i] = rhs[i] - (lq[i] - ls[i]);
-      for (int c = 0; c < cyclesPerOuter; ++c) vcycle(0, u, rhsp);
+      for (std::size_t i = 0; i < n; ++i)
+        rhsp[i] = rhs[i] - (lq[i] - ls[i]);
+      for (int c = 0; c < cyclesPerOuter; ++c)
+        vcycle(0, u, rhsp);
       r = P.residualQuad(u, rhs, res);
     }
     return r;
@@ -607,9 +636,11 @@ class AmrMultigrid {
   /// build().
   template <class OpenFn>
   void setOpenness(OpenFn&& openFn) {
-    if (levels_.empty()) return;
+    if (levels_.empty())
+      return;
     ops_[0].buildOpenness(openFn);
-    for (std::size_t L = 0; L + 1 < levels_.size(); ++L) coarsenOpenness(L);
+    for (std::size_t L = 0; L + 1 < levels_.size(); ++L)
+      coarsenOpenness(L);
   }
 
  private:
@@ -625,7 +656,8 @@ class AmrMultigrid {
     std::vector<int> cnt(static_cast<std::size_t>(c.numLeaves()) * F, 0);
     for (Index i = 0; i < f.numLeaves(); ++i) {
       Index p = c2p_[L][static_cast<std::size_t>(i)];
-      if (p < 0) continue;
+      if (p < 0)
+        continue;
       const std::size_t base = static_cast<std::size_t>(p) * F;
       if (c.level(p) == f.level(i)) {
         // identity (cell not coarsened this round): copy every face.
@@ -646,7 +678,8 @@ class AmrMultigrid {
         }
       }
     }
-    for (std::size_t k = 0; k < ca.size(); ++k) ca[k] = cnt[k] ? ca[k] / cnt[k] : 1.0;
+    for (std::size_t k = 0; k < ca.size(); ++k)
+      ca[k] = cnt[k] ? ca[k] / cnt[k] : 1.0;
     ops_[L + 1].setOpennessRaw(std::move(ca));
   }
 

@@ -45,7 +45,8 @@ double fAt(Code gc, unsigned level) {
 std::vector<double> sampleField(const DO& d) {
   const Index n = d.local().numLeaves();
   std::vector<double> f((std::size_t)n);
-  for (Index i = 0; i < n; ++i) f[(std::size_t)i] = fAt(d.globalCode(i), d.local().level(i));
+  for (Index i = 0; i < n; ++i)
+    f[(std::size_t)i] = fAt(d.globalCode(i), d.local().level(i));
   return f;
 }
 double localMass(const DO& d, const std::vector<double>& f) {
@@ -64,7 +65,8 @@ void refineCorner(DO& d, int passes) {
   for (int p = 0; p < passes; ++p) {
     std::vector<Code> tr;
     for (Index i = 0; i < d.local().numLeaves(); ++i)
-      if (d.globalRootOf(i)[0] == 0 && d.local().level(i) > 0) tr.push_back(d.local().code(i));
+      if (d.globalRootOf(i)[0] == 0 && d.local().level(i) > 0)
+        tr.push_back(d.local().code(i));
     std::sort(tr.begin(), tr.end());
     tr.erase(std::unique(tr.begin(), tr.end()), tr.end());
     d.local().refineIf(
@@ -111,7 +113,8 @@ void run() {
   // (1a) every cell still carries its own value (field followed the leaf bit-for-bit).
   int valMism = 0;
   for (Index i = 0; i < world.local().numLeaves(); ++i)
-    if (fw[(std::size_t)i] != fAt(world.globalCode(i), world.local().level(i))) ++valMism;
+    if (fw[(std::size_t)i] != fAt(world.globalCode(i), world.local().level(i)))
+      ++valMism;
   PECLET_CORE_CHECK_EQ(valMism, 0);
 
   // (1b) global mesh + field bit-for-bit identical to the single-block computation.
@@ -126,8 +129,10 @@ void run() {
       ++mism;
       continue;
     }
-    if (world.local().level(i) != self.local().level(si)) ++mism;
-    if (fw[(std::size_t)i] != fs[(std::size_t)si]) ++mism;
+    if (world.local().level(i) != self.local().level(si))
+      ++mism;
+    if (fw[(std::size_t)i] != fs[(std::size_t)si])
+      ++mism;
   }
   PECLET_CORE_CHECK_EQ(mism, 0);
 
@@ -140,9 +145,9 @@ void run() {
   // (3) imbalance drops (only meaningful with >1 rank; np=1 is trivially 1.0 -> 1.0).
   double imb1 = imbalance(world);
   if (world.size() > 1) {
-    PECLET_CORE_CHECK(imb0 > 1.15);     // the skewed mesh really was imbalanced under equal-cell ORB
-    PECLET_CORE_CHECK(imb1 < imb0);     // weighted ORB improved it
-    PECLET_CORE_CHECK(imb1 < 1.6);      // ... to a decently even distribution
+    PECLET_CORE_CHECK(imb0 > 1.15);  // the skewed mesh really was imbalanced under equal-cell ORB
+    PECLET_CORE_CHECK(imb1 < imb0);  // weighted ORB improved it
+    PECLET_CORE_CHECK(imb1 < 1.6);   // ... to a decently even distribution
   }
 
   // A second rebalance is a no-op (already balanced for this weight) and still bit-exact.
@@ -151,7 +156,8 @@ void run() {
   fw.swap(cols2[0]);
   int valMism2 = 0;
   for (Index i = 0; i < world.local().numLeaves(); ++i)
-    if (fw[(std::size_t)i] != fAt(world.globalCode(i), world.local().level(i))) ++valMism2;
+    if (fw[(std::size_t)i] != fAt(world.globalCode(i), world.local().level(i)))
+      ++valMism2;
   PECLET_CORE_CHECK_EQ(valMism2, 0);
 }
 

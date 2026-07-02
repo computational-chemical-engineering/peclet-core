@@ -16,10 +16,10 @@
 #ifndef PECLET_CORE_HALO_NBX_HPP
 #define PECLET_CORE_HALO_NBX_HPP
 
-#include "peclet/core/common/mpi.hpp"
-
 #include <memory>
 #include <vector>
+
+#include "peclet/core/common/mpi.hpp"
 
 namespace peclet::core::halo {
 
@@ -51,7 +51,8 @@ class NbxEngine {
     for (;;) {
       auto buf = std::make_unique<std::vector<char>>();
       int dest = packNext(*buf);
-      if (dest < 0) break;
+      if (dest < 0)
+        break;
       MPI_Request req;
       MPI_Issend(buf->data(), static_cast<int>(buf->size()), MPI_BYTE, dest, tag, comm_, &req);
       sendBufs.push_back(std::move(buf));
@@ -87,7 +88,8 @@ class NbxEngine {
       } else {
         int bdone = 0;
         MPI_Test(&barrierReq, &bdone, MPI_STATUS_IGNORE);
-        if (bdone) done = true;
+        if (bdone)
+          done = true;
       }
     }
   }

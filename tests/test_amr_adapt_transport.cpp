@@ -35,7 +35,8 @@ constexpr double kN = 32.0;  // 32^3 fine over [0,1)^3 (brick 4^3, lmax 3)
 std::array<double, 3> centroidW(const BO& t, Index i) {
   auto o = M::from_code(t.code(i)).decode();
   double s = static_cast<double>(Index(1) << t.level(i));
-  return {((double)o[0] + 0.5 * s) / kN, ((double)o[1] + 0.5 * s) / kN, ((double)o[2] + 0.5 * s) / kN};
+  return {((double)o[0] + 0.5 * s) / kN, ((double)o[1] + 0.5 * s) / kN,
+          ((double)o[2] + 0.5 * s) / kN};
 }
 
 // Periodic Gaussian blob centred at cx (in x; y,z centred at 0.5), width σ.
@@ -50,7 +51,8 @@ double blob(const std::array<double, 3>& p, double cx) {
 }
 std::vector<double> sampleBlob(const BO& t, double cx) {
   std::vector<double> c((std::size_t)t.numLeaves());
-  for (Index i = 0; i < t.numLeaves(); ++i) c[(std::size_t)i] = blob(centroidW(t, i), cx);
+  for (Index i = 0; i < t.numLeaves(); ++i)
+    c[(std::size_t)i] = blob(centroidW(t, i), cx);
   return c;
 }
 double cellVolRel(const BO& t, Index i) {
@@ -59,7 +61,8 @@ double cellVolRel(const BO& t, Index i) {
 }
 double mass(const BO& t, const std::vector<double>& c) {
   double s = 0.0;
-  for (Index i = 0; i < t.numLeaves(); ++i) s += cellVolRel(t, i) * c[(std::size_t)i];
+  for (Index i = 0; i < t.numLeaves(); ++i)
+    s += cellVolRel(t, i) * c[(std::size_t)i];
   return s;
 }
 BO baseMesh() {
@@ -72,10 +75,10 @@ void run() {
   AmrGeometry<3> geo;
   geo.h0 = 1.0 / kN;
 
-  const double U = 1.0;                 // x-velocity (world/time), divergence-free
+  const double U = 1.0;  // x-velocity (world/time), divergence-free
   auto vel = [&](const Vec<3>&, int axis) { return axis == 0 ? U : 0.0; };
-  const double hFine = geo.h0;          // finest spacing
-  const double dt = 0.4 * hFine / U;    // CFL
+  const double hFine = geo.h0;        // finest spacing
+  const double dt = 0.4 * hFine / U;  // CFL
   const int steps = 16, adaptEvery = 4;
   const double cx0 = 0.3;
 
@@ -128,11 +131,11 @@ void run() {
       fineCx += x;
     }
   }
-  const double xc = sx / sw;            // scalar mass-weighted x-centroid
-  const double fc = fineCx / fineW;     // mean x of the finest cells
+  const double xc = sx / sw;                        // scalar mass-weighted x-centroid
+  const double fc = fineCx / fineW;                 // mean x of the finest cells
   PECLET_CORE_CHECK(std::fabs(xc - cxEnd) < 0.05);  // advection moved the blob correctly
   PECLET_CORE_CHECK(nFinest > 0);
-  PECLET_CORE_CHECK(std::fabs(fc - cxEnd) < 0.1);   // finest cells follow the blob
+  PECLET_CORE_CHECK(std::fabs(fc - cxEnd) < 0.1);  // finest cells follow the blob
 
   // (3) adaptive mesh stays smaller than uniform-fine (32^3 = 32768)
   PECLET_CORE_CHECK(maxLeaves < 32768);

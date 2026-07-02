@@ -9,9 +9,8 @@
 #ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
 #include <cstdint>
-#include <vector>
-
 #include <Kokkos_Core.hpp>
+#include <vector>
 
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/block_octree_view.hpp"
@@ -32,7 +31,8 @@ double hostLap(const BO& t, const std::vector<double>& x, Index i, double inv) {
   for (int axis = 0; axis < 3; ++axis)
     for (int dir = -1; dir <= 1; dir += 2) {
       Index j = t.faceNeighbor(i, axis, dir);
-      if (j >= 0) s += x[static_cast<std::size_t>(j)] - x[static_cast<std::size_t>(i)];
+      if (j >= 0)
+        s += x[static_cast<std::size_t>(j)] - x[static_cast<std::size_t>(i)];
     }
   return inv * s;
 }
@@ -71,19 +71,22 @@ void run() {
   Kokkos::deep_copy(hy, dy);
   int mism = 0;
   for (Index i = 0; i < n; ++i)
-    if (hy(i) != hostLap(t, x, i, inv)) ++mism;
+    if (hy(i) != hostLap(t, x, i, inv))
+      ++mism;
   PECLET_CORE_CHECK_EQ(mism, 0);
 
   // ---- a few Jacobi sweeps: device == host ----
   std::vector<double> b(static_cast<std::size_t>(n));
-  for (Index i = 0; i < n; ++i) b[static_cast<std::size_t>(i)] = std::sin(0.1 * i);
+  for (Index i = 0; i < n; ++i)
+    b[static_cast<std::size_t>(i)] = std::sin(0.1 * i);
   const double omega = 0.7, diag = 2.0 * 3 * inv;
 
   // device
-  View<double> du("u", static_cast<std::size_t>(n));   // starts 0
+  View<double> du("u", static_cast<std::size_t>(n));  // starts 0
   View<const double> db = toDevice(b, "b");
   View<double> dax("ax", static_cast<std::size_t>(n));
-  for (int it = 0; it < 5; ++it) jacobiSweep<3, kBits>(dev, du, db, dax, inv, omega);
+  for (int it = 0; it < 5; ++it)
+    jacobiSweep<3, kBits>(dev, du, db, dax, inv, omega);
   auto hu = Kokkos::create_mirror_view(du);
   Kokkos::deep_copy(hu, du);
 
@@ -91,13 +94,16 @@ void run() {
   std::vector<double> u(static_cast<std::size_t>(n), 0.0);
   for (int it = 0; it < 5; ++it) {
     std::vector<double> lx(static_cast<std::size_t>(n));
-    for (Index i = 0; i < n; ++i) lx[static_cast<std::size_t>(i)] = hostLap(t, u, i, inv);
     for (Index i = 0; i < n; ++i)
-      u[static_cast<std::size_t>(i)] += omega * (lx[static_cast<std::size_t>(i)] - b[static_cast<std::size_t>(i)]) / diag;
+      lx[static_cast<std::size_t>(i)] = hostLap(t, u, i, inv);
+    for (Index i = 0; i < n; ++i)
+      u[static_cast<std::size_t>(i)] +=
+          omega * (lx[static_cast<std::size_t>(i)] - b[static_cast<std::size_t>(i)]) / diag;
   }
   int jmis = 0;
   for (Index i = 0; i < n; ++i)
-    if (hu(i) != u[static_cast<std::size_t>(i)]) ++jmis;
+    if (hu(i) != u[static_cast<std::size_t>(i)])
+      ++jmis;
   PECLET_CORE_CHECK_EQ(jmis, 0);
 }
 

@@ -36,20 +36,39 @@ namespace peclet::core::amr {
 // ---- boundary-distance polynomials (port of flow cut_cell_ibm.hpp, SCHEME 0,
 //      double precision) ----
 namespace cc {
-// MORTON_HD (from face_csr.hpp): KOKKOS_FUNCTION on a Kokkos build, empty otherwise — so buildCutStencil
-// and these polynomials are device-callable under the AMR device assembler (assembly.hpp) yet
-// compile unchanged in the pure-C++ host oracle build. poly_abs replaces std::fabs (host-only under a
-// CUDA device pass); it is bit-identical to std::fabs for every value buildCutStencil feeds it (the
-// only difference, fabs(-0.0)=+0.0 vs −0.0, never occurs and would not change the |·|< comparisons).
-MORTON_HD inline double poly_abs(double x) { return x < 0.0 ? -x : x; }
-MORTON_HD inline double poly_D(double xi) { return xi * (1.0 + xi); }
-MORTON_HD inline double poly_N_nb(double xi) { return xi * (1.0 - xi); }
-MORTON_HD inline double poly_Nc(double xi) { return 2.0 * (xi * xi - 1.0); }
-MORTON_HD inline double poly_Nbc(double) { return 2.0; }
-MORTON_HD inline double poly_D_sandwich(double xm, double xp) { return xm * xp; }
-MORTON_HD inline double poly_N_c_sandwich(double xm, double xp) { return (xm + 1.0) * (xp - 1.0); }
-MORTON_HD inline double poly_Nbc_pp_sw(double xm, double xp) { return (xm / (xm + xp)) * (1.0 + xm); }
-MORTON_HD inline double poly_Nbc_mp_sw(double xm, double xp) { return (xp / (xm + xp)) * (1.0 - xp); }
+// MORTON_HD (from face_csr.hpp): KOKKOS_FUNCTION on a Kokkos build, empty otherwise — so
+// buildCutStencil and these polynomials are device-callable under the AMR device assembler
+// (assembly.hpp) yet compile unchanged in the pure-C++ host oracle build. poly_abs replaces
+// std::fabs (host-only under a CUDA device pass); it is bit-identical to std::fabs for every value
+// buildCutStencil feeds it (the only difference, fabs(-0.0)=+0.0 vs −0.0, never occurs and would
+// not change the |·|< comparisons).
+MORTON_HD inline double poly_abs(double x) {
+  return x < 0.0 ? -x : x;
+}
+MORTON_HD inline double poly_D(double xi) {
+  return xi * (1.0 + xi);
+}
+MORTON_HD inline double poly_N_nb(double xi) {
+  return xi * (1.0 - xi);
+}
+MORTON_HD inline double poly_Nc(double xi) {
+  return 2.0 * (xi * xi - 1.0);
+}
+MORTON_HD inline double poly_Nbc(double) {
+  return 2.0;
+}
+MORTON_HD inline double poly_D_sandwich(double xm, double xp) {
+  return xm * xp;
+}
+MORTON_HD inline double poly_N_c_sandwich(double xm, double xp) {
+  return (xm + 1.0) * (xp - 1.0);
+}
+MORTON_HD inline double poly_Nbc_pp_sw(double xm, double xp) {
+  return (xm / (xm + xp)) * (1.0 + xm);
+}
+MORTON_HD inline double poly_Nbc_mp_sw(double xm, double xp) {
+  return (xp / (xm + xp)) * (1.0 - xp);
+}
 }  // namespace cc
 
 template <unsigned Bits = 21u>
@@ -68,7 +87,8 @@ class AmrCutCell {
     t_ = &t;
     h0_ = h0;
     origin_ = origin;
-    for (int d = 0; d < 3; ++d) fineExt_[d] = static_cast<Coord>(t.brick()[d] * (Index(1) << t.lmax()));
+    for (int d = 0; d < 3; ++d)
+      fineExt_[d] = static_cast<Coord>(t.brick()[d] * (Index(1) << t.lmax()));
   }
 
   Index numLeaves() const { return t_->numLeaves(); }
@@ -83,19 +103,23 @@ class AmrCutCell {
   double rhsScale(Index i) const { return rscale_[static_cast<std::size_t>(i)]; }
 
   // ---- read-only views of the built geometry, for the device assembler (momentum_assembly.hpp)
-  // to stage to the device and reproduce build()/assembleOperator there. Mirrors how AmrPoisson exposes
-  // its openness to the device FV assembler.
-  const AmrPoisson<3, Bits>& lap() const { return lap_; }        ///< α=1 C/F ∇² geometry for regular cells
-  const std::vector<double>& sdfCRaw() const { return sdfC_; }   ///< per-cell SDF sample (build Pass 1)
-  const std::vector<Index>& nbRaw() const { return nb_; }        ///< n·6 periodic face-neighbour indices
+  // to stage to the device and reproduce build()/assembleOperator there. Mirrors how AmrPoisson
+  // exposes its openness to the device FV assembler.
+  const AmrPoisson<3, Bits>& lap() const {
+    return lap_;
+  }  ///< α=1 C/F ∇² geometry for regular cells
+  const std::vector<double>& sdfCRaw() const {
+    return sdfC_;
+  }  ///< per-cell SDF sample (build Pass 1)
+  const std::vector<Index>& nbRaw() const { return nb_; }  ///< n·6 periodic face-neighbour indices
   const std::vector<char>& fluidRaw() const { return fluid_; }
   const std::vector<char>& cutRaw() const { return cut_; }
   const std::vector<double>& acRaw() const { return AC_; }
-  const std::vector<double>& offRaw() const { return off_; }     ///< n·6 ξ-overlay off-diagonals
+  const std::vector<double>& offRaw() const { return off_; }  ///< n·6 ξ-overlay off-diagonals
   const std::vector<double>& rscaleRaw() const { return rscale_; }
   double idiag() const { return idiag_; }
   double mu() const { return mu_; }
-  double beta() const { return mu_ / (h0_ * h0_); }              ///< buildCutStencil's β (= mu_/h0²)
+  double beta() const { return mu_ / (h0_ * h0_); }  ///< buildCutStencil's β (= mu_/h0²)
   bool hasAdv() const { return hasAdv_; }
   const std::vector<double>& advDiagRaw() const { return advDiag_; }
   const std::vector<double>& advCoefRaw() const { return advCoef_; }
@@ -132,7 +156,8 @@ class AmrCutCell {
       sdfC_[static_cast<std::size_t>(i)] = sc;
       fluid_[static_cast<std::size_t>(i)] = sc > 0.0;
       kappa_[static_cast<std::size_t>(i)] = volumeFraction(i, sdfFn, nsub);
-      for (int k = 0; k < 6; ++k) nb_[static_cast<std::size_t>(i) * 6 + k] = neighbor(i, k);
+      for (int k = 0; k < 6; ++k)
+        nb_[static_cast<std::size_t>(i) * 6 + k] = neighbor(i, k);
     }
 
     // Pass 2: build per-leaf stencil.
@@ -140,7 +165,8 @@ class AmrCutCell {
     for (Index i = 0; i < n; ++i) {
       if (!fluid_[static_cast<std::size_t>(i)]) {  // solid: identity row u=0
         AC_[static_cast<std::size_t>(i)] = 1.0;
-        for (int k = 0; k < 6; ++k) off_[static_cast<std::size_t>(i) * 6 + k] = 0.0;
+        for (int k = 0; k < 6; ++k)
+          off_[static_cast<std::size_t>(i) * 6 + k] = 0.0;
         continue;
       }
       double sdf_n[6];
@@ -148,16 +174,20 @@ class AmrCutCell {
       for (int k = 0; k < 6; ++k) {
         Index j = nb_[static_cast<std::size_t>(i) * 6 + k];
         sdf_n[k] = (j >= 0) ? sdfC_[static_cast<std::size_t>(j)] : -1.0;  // missing => solid
-        if (sdf_n[k] < 0.0) anyGhost = true;
+        if (sdf_n[k] < 0.0)
+          anyGhost = true;
       }
       cut_[static_cast<std::size_t>(i)] = anyGhost ? 1 : 0;
       double AC = AC0, off[6];
-      for (int k = 0; k < 6; ++k) off[k] = -beta;
+      for (int k = 0; k < 6; ++k)
+        off[k] = -beta;
       double rscale = 1.0, inhomCoef = 0.0;
       if (anyGhost)
-        buildCutStencil(sdfC_[static_cast<std::size_t>(i)], sdf_n, beta, AC0, AC, off, rscale, inhomCoef);
+        buildCutStencil(sdfC_[static_cast<std::size_t>(i)], sdf_n, beta, AC0, AC, off, rscale,
+                        inhomCoef);
       AC_[static_cast<std::size_t>(i)] = AC;
-      for (int k = 0; k < 6; ++k) off_[static_cast<std::size_t>(i) * 6 + k] = off[k];
+      for (int k = 0; k < 6; ++k)
+        off_[static_cast<std::size_t>(i) * 6 + k] = off[k];
       rscale_[static_cast<std::size_t>(i)] = rscale;
       inhom_[static_cast<std::size_t>(i)] = inhomCoef;
     }
@@ -171,10 +201,10 @@ class AmrCutCell {
   /// device-portable form of the host operator — upload it once and run a parallel
   /// smoother / Krylov over it (momentum.hpp), instead of the serial gaussSeidel.
   struct Assembled {
-    std::vector<double> diag;   ///< size n
-    std::vector<Index> start;   ///< CSR row offsets, size n+1
-    std::vector<Index> nbr;     ///< neighbour leaf per off-diagonal, size nnz
-    std::vector<double> coef;   ///< off-diagonal coefficient, size nnz
+    std::vector<double> diag;  ///< size n
+    std::vector<Index> start;  ///< CSR row offsets, size n+1
+    std::vector<Index> nbr;    ///< neighbour leaf per off-diagonal, size nnz
+    std::vector<double> coef;  ///< off-diagonal coefficient, size nnz
   };
   /// `scaleAdvByRscale` (default false ⇒ reproduces applyOp/gaussSeidel exactly, for the matvec
   /// test): when true, the implicit-FOU advection is multiplied by the cut-cell D_rescale row
@@ -201,9 +231,11 @@ class AmrCutCell {
         A.diag[s] = AC_[s];
         for (int k = 0; k < 6; ++k) {
           double a = off_[s * 6 + k];
-          if (a == 0.0) continue;
+          if (a == 0.0)
+            continue;
           Index j = nb_[s * 6 + k];
-          if (j >= 0) rows[s].emplace_back(j, a);
+          if (j >= 0)
+            rows[s].emplace_back(j, a);
         }
       } else {  // regular fluid: idiag·I − μ∇² with C/F-aware face coupling
         const double invV = 1.0 / lap_.cellVolume(i);
@@ -224,7 +256,8 @@ class AmrCutCell {
     }
     for (Index i = 0; i < n; ++i)
       A.start[static_cast<std::size_t>(i) + 1] =
-          A.start[static_cast<std::size_t>(i)] + static_cast<Index>(rows[static_cast<std::size_t>(i)].size());
+          A.start[static_cast<std::size_t>(i)] +
+          static_cast<Index>(rows[static_cast<std::size_t>(i)].size());
     const Index nnz = A.start[static_cast<std::size_t>(n)];
     A.nbr.resize(static_cast<std::size_t>(nnz));
     A.coef.resize(static_cast<std::size_t>(nnz));
@@ -241,8 +274,9 @@ class AmrCutCell {
 
   // ---- Runtime operator: the assembled CSR applied with the SHARED face_csr.hpp row kernels — the
   // exact same arithmetic the device runs (momentum.hpp), executed serially here. assembleOperator
-  // folds the implicit-FOU advection into the single CSR, so the FaceCsrOpT view sets hasAdv=false. The
-  // *Geometric variants above are the independent reference the oracle tests check this against.
+  // folds the implicit-FOU advection into the single CSR, so the FaceCsrOpT view sets hasAdv=false.
+  // The *Geometric variants above are the independent reference the oracle tests check this
+  // against.
 
   /// View a host Assembled as a backend-agnostic FaceCsrOpT for the shared row kernels.
   FaceCsrOpT<HostArr<double>, HostArr<Index>> hostOp(const Assembled& A) const {
@@ -263,7 +297,8 @@ class AmrCutCell {
     const Index n = numLeaves();
     out.assign(static_cast<std::size_t>(n), 0.0);
     const HostArr<double> uacc(u.data());
-    for (Index i = 0; i < n; ++i) out[static_cast<std::size_t>(i)] = faceCsrApplyRow(op, i, uacc);
+    for (Index i = 0; i < n; ++i)
+      out[static_cast<std::size_t>(i)] = faceCsrApplyRow(op, i, uacc);
   }
 
   double residual(const std::vector<double>& u, const std::vector<double>& b,
@@ -277,13 +312,15 @@ class AmrCutCell {
     for (Index i = 0; i < n; ++i) {
       double r = b[static_cast<std::size_t>(i)] - faceCsrApplyRow(op, i, uacc);
       res[static_cast<std::size_t>(i)] = r;
-      if (fluid_[static_cast<std::size_t>(i)]) s += r * r;
+      if (fluid_[static_cast<std::size_t>(i)])
+        s += r * r;
     }
     return std::sqrt(s);
   }
 
-  /// `sweeps` true serial Gauss–Seidel sweeps (ω=1, in place) over the assembled CSR using the shared
-  /// point-update kernel — the host counterpart of the device multicolour GS, same per-cell formula.
+  /// `sweeps` true serial Gauss–Seidel sweeps (ω=1, in place) over the assembled CSR using the
+  /// shared point-update kernel — the host counterpart of the device multicolour GS, same per-cell
+  /// formula.
   void gaussSeidel(std::vector<double>& u, const std::vector<double>& b, int sweeps) const {
     const Assembled A = assembleOperator();
     const auto op = hostOp(A);
@@ -293,8 +330,8 @@ class AmrCutCell {
       for (Index i = 0; i < n; ++i) {
         double off, d;
         faceCsrOffDiag(op, i, uacc, off, d);
-        u[static_cast<std::size_t>(i)] =
-            faceCsrPointUpdate(b[static_cast<std::size_t>(i)], off, d, u[static_cast<std::size_t>(i)], 1.0);
+        u[static_cast<std::size_t>(i)] = faceCsrPointUpdate(b[static_cast<std::size_t>(i)], off, d,
+                                                            u[static_cast<std::size_t>(i)], 1.0);
       }
   }
 
@@ -317,15 +354,18 @@ class AmrCutCell {
         double acc = AC_[s] * u[s];
         for (int k = 0; k < 6; ++k) {
           double a = off_[s * 6 + k];
-          if (a == 0.0) continue;
+          if (a == 0.0)
+            continue;
           Index j = nb_[s * 6 + k];
-          if (j >= 0) acc += a * u[static_cast<std::size_t>(j)];
+          if (j >= 0)
+            acc += a * u[static_cast<std::size_t>(j)];
         }
         out[s] = acc;
       } else {
         out[s] = idiag_ * u[s] - mu_ * Lu[s];  // regular fluid (C/F-consistent)
       }
-      if (hasAdv_ && fluid_[s]) out[s] += advApply(i, u);  // implicit FOU advection
+      if (hasAdv_ && fluid_[s])
+        out[s] += advApply(i, u);  // implicit FOU advection
     }
   }
 
@@ -337,9 +377,10 @@ class AmrCutCell {
   /// advecting velocity at a wall (solid neighbour) face is zero (no flow through the
   /// immersed boundary). Rebuilt per step. Stable base of the deferred correction.
   /// `uf`/`faceStart` (+axis face velocity per forEachFaceFull (sub)face, when `useFace`) is the
-  /// divergence-free advecting velocity; otherwise the cell average ½(uadv_i+uadv_j) is used (before
-  /// the first projection has built uf). The implicit FOU and the explicit deferred correction must use
-  /// the SAME velocity, hence it lives here too — not only in the high-order term.
+  /// divergence-free advecting velocity; otherwise the cell average ½(uadv_i+uadv_j) is used
+  /// (before the first projection has built uf). The implicit FOU and the explicit deferred
+  /// correction must use the SAME velocity, hence it lives here too — not only in the high-order
+  /// term.
   void buildAdvectionFou(const std::array<std::vector<double>, 3>& uadv, double rho,
                          const std::vector<double>& uf, const std::vector<Index>& faceStart,
                          bool useFace) {
@@ -349,34 +390,41 @@ class AmrCutCell {
     hasAdv_ = true;
     auto velOutOf = [&](Index i, Index j, int axis, int dir, Index slot) {
       return useFace ? dir * uf[static_cast<std::size_t>(slot)]
-                     : dir * 0.5 * (uadv[axis][static_cast<std::size_t>(i)] + uadv[axis][static_cast<std::size_t>(j)]);
+                     : dir * 0.5 *
+                           (uadv[axis][static_cast<std::size_t>(i)] +
+                            uadv[axis][static_cast<std::size_t>(j)]);
     };
     // pass 1: count inflow (off-diagonal) fluid faces per cell.
     for (Index i = 0; i < n; ++i) {
-      if (!fluid_[static_cast<std::size_t>(i)]) continue;
+      if (!fluid_[static_cast<std::size_t>(i)])
+        continue;
       int cnt = 0;
       Index s = useFace ? faceStart[static_cast<std::size_t>(i)] : 0;
       lap_.forEachFaceFull(i, [&](Index j, int axis, int dir, double, double, double) {
-        if (fluid_[static_cast<std::size_t>(j)] && velOutOf(i, j, axis, dir, s) < 0.0) ++cnt;
+        if (fluid_[static_cast<std::size_t>(j)] && velOutOf(i, j, axis, dir, s) < 0.0)
+          ++cnt;
         ++s;
       });
       advStart_[static_cast<std::size_t>(i) + 1] = cnt;
     }
-    for (Index i = 0; i < n; ++i) advStart_[static_cast<std::size_t>(i) + 1] += advStart_[static_cast<std::size_t>(i)];
+    for (Index i = 0; i < n; ++i)
+      advStart_[static_cast<std::size_t>(i) + 1] += advStart_[static_cast<std::size_t>(i)];
     advNbr_.assign(advStart_[static_cast<std::size_t>(n)], -1);
     advCoef_.assign(advStart_[static_cast<std::size_t>(n)], 0.0);
     // pass 2: fill diagonal (outflow) + CSR off-diagonals (inflow).
     for (Index i = 0; i < n; ++i) {
-      if (!fluid_[static_cast<std::size_t>(i)]) continue;
+      if (!fluid_[static_cast<std::size_t>(i)])
+        continue;
       const double Vi = lap_.cellVolume(i);
       std::size_t pos = static_cast<std::size_t>(advStart_[static_cast<std::size_t>(i)]);
       Index s = useFace ? faceStart[static_cast<std::size_t>(i)] : 0;
       lap_.forEachFaceFull(i, [&](Index j, int axis, int dir, double area, double, double) {
         const Index slot = s++;
-        if (!fluid_[static_cast<std::size_t>(j)]) return;
+        if (!fluid_[static_cast<std::size_t>(j)])
+          return;
         double velOut = velOutOf(i, j, axis, dir, slot);
         double w = rho * area * velOut / Vi;
-        if (velOut < 0.0) {       // inflow → couple to upstream neighbour j (matches pass 1)
+        if (velOut < 0.0) {  // inflow → couple to upstream neighbour j (matches pass 1)
           advNbr_[pos] = j;
           advCoef_[pos] = w;
           ++pos;
@@ -397,8 +445,9 @@ class AmrCutCell {
         b[static_cast<std::size_t>(i)] = u_bc;  // solid held at u_bc
         continue;
       }
-      b[static_cast<std::size_t>(i)] = src[static_cast<std::size_t>(i)] * rscale_[static_cast<std::size_t>(i)] +
-                                       inhom_[static_cast<std::size_t>(i)] * u_bc;
+      b[static_cast<std::size_t>(i)] =
+          src[static_cast<std::size_t>(i)] * rscale_[static_cast<std::size_t>(i)] +
+          inhom_[static_cast<std::size_t>(i)] * u_bc;
     }
     return b;
   }
@@ -411,12 +460,14 @@ class AmrCutCell {
     for (Index i = 0; i < n; ++i) {
       double r = b[static_cast<std::size_t>(i)] - res[static_cast<std::size_t>(i)];
       res[static_cast<std::size_t>(i)] = r;
-      if (fluid_[static_cast<std::size_t>(i)]) s += r * r;
+      if (fluid_[static_cast<std::size_t>(i)])
+        s += r * r;
     }
     return std::sqrt(s);
   }
 
-  void gaussSeidelGeometric(std::vector<double>& u, const std::vector<double>& b, int sweeps) const {
+  void gaussSeidelGeometric(std::vector<double>& u, const std::vector<double>& b,
+                            int sweeps) const {
     const Index n = numLeaves();
     for (int s = 0; s < sweeps; ++s)
       for (Index i = 0; i < n; ++i) {
@@ -427,13 +478,19 @@ class AmrCutCell {
           double sum = b[si];
           for (int k = 0; k < 6; ++k) {
             double a = off_[si * 6 + k];
-            if (a == 0.0) continue;
+            if (a == 0.0)
+              continue;
             Index j = nb_[si * 6 + k];
-            if (j >= 0) sum -= a * u[static_cast<std::size_t>(j)];
+            if (j >= 0)
+              sum -= a * u[static_cast<std::size_t>(j)];
           }
           double d = AC_[si];
-          if (hasAdv_) { sum -= advOffSum(i, u); d += advDiag_[si]; }
-          if (d != 0.0) u[si] = sum / d;
+          if (hasAdv_) {
+            sum -= advOffSum(i, u);
+            d += advDiag_[si];
+          }
+          if (d != 0.0)
+            u[si] = sum / d;
         } else {  // regular fluid: idiag·u − μ∇² with C/F-aware face coupling
           double offsum = 0.0, dsum = 0.0;
           lap_.forEachFaceNeighbor(i, [&](Index j, Real c, int, double) {
@@ -443,7 +500,10 @@ class AmrCutCell {
           double Vi = lap_.cellVolume(i);
           double diagA = idiag_ + mu_ * dsum / Vi;
           double sum = b[si] + mu_ * offsum / Vi;
-          if (hasAdv_) { sum -= advOffSum(i, u); diagA += advDiag_[si]; }
+          if (hasAdv_) {
+            sum -= advOffSum(i, u);
+            diagA += advDiag_[si];
+          }
           u[si] = sum / diagA;
         }
       }
@@ -471,10 +531,10 @@ class AmrCutCell {
   double advApply(Index i, const std::vector<double>& u) const { return fouApply(i, u); }
 
  public:
-  // Port of ibmFillEntry<0> + ibmModifyStencil for one cut cell (Dirichlet). Public + MORTON_HD so the
-  // device assembler (momentum_assembly.hpp) runs the SAME per-cell stencil build on device.
-  MORTON_HD static void buildCutStencil(double sdf_c, const double sdf_n[6], double beta, double AC0,
-                                        double& ACout, double off[6], double& rscaleOut,
+  // Port of ibmFillEntry<0> + ibmModifyStencil for one cut cell (Dirichlet). Public + MORTON_HD so
+  // the device assembler (momentum_assembly.hpp) runs the SAME per-cell stencil build on device.
+  MORTON_HD static void buildCutStencil(double sdf_c, const double sdf_n[6], double beta,
+                                        double AC0, double& ACout, double off[6], double& rscaleOut,
                                         double& inhomOut) {
     bool ghost[6];
     double xi[6], D[6];
@@ -494,23 +554,33 @@ class AmrCutCell {
     bool sand[3] = {ghost[0] && ghost[1], ghost[2] && ghost[3], ghost[4] && ghost[5]};
     double Dsand[3] = {0, 0, 0};
     for (int a = 0; a < 3; ++a)
-      if (sand[a]) Dsand[a] = cc::poly_D_sandwich(xi[2 * a + 1], xi[2 * a]);
+      if (sand[a])
+        Dsand[a] = cc::poly_D_sandwich(xi[2 * a + 1], xi[2 * a]);
     double minAbs = 1e30, descale = 1.0;
-    auto upd = [&](double v) { if (cc::poly_abs(v) < minAbs) { minAbs = cc::poly_abs(v); descale = v; } };
+    auto upd = [&](double v) {
+      if (cc::poly_abs(v) < minAbs) {
+        minAbs = cc::poly_abs(v);
+        descale = v;
+      }
+    };
     for (int a = 0; a < 3; ++a) {
       if (sand[a])
         upd(Dsand[a]);
       else {
-        if (ghost[2 * a]) upd(D[2 * a]);
-        if (ghost[2 * a + 1]) upd(D[2 * a + 1]);
+        if (ghost[2 * a])
+          upd(D[2 * a]);
+        if (ghost[2 * a + 1])
+          upd(D[2 * a + 1]);
       }
     }
-    double K[6] = {0}, Mf[6] = {1, 1, 1, 1, 1, 1}, X[6] = {0}, Nbc[6] = {0}, R[6] = {1, 1, 1, 1, 1, 1};
+    double K[6] = {0}, Mf[6] = {1, 1, 1, 1, 1, 1}, X[6] = {0}, Nbc[6] = {0},
+           R[6] = {1, 1, 1, 1, 1, 1};
     for (int a = 0; a < 3; ++a) {
       int km = 2 * a + 1, kp = 2 * a;
       double Daxis = sand[a] ? Dsand[a] : (ghost[kp] ? D[kp] : (ghost[km] ? D[km] : descale));
       double r = descale / Daxis;
-      if (cc::poly_abs(Daxis) < 1e-9) r = 1.0;
+      if (cc::poly_abs(Daxis) < 1e-9)
+        r = 1.0;
       R[kp] = R[km] = r;
       if (sand[a]) {
         K[kp] = cc::poly_N_c_sandwich(xi[km], xi[kp]) * r;
@@ -527,7 +597,10 @@ class AmrCutCell {
             Nbc[kk] = cc::poly_Nbc(xi[kk]) * r;
             Mf[kk] = 0.0;
           } else {
-            K[kk] = 0.0; Mf[kk] = 1.0; X[kk] = 0.0; Nbc[kk] = 0.0;
+            K[kk] = 0.0;
+            Mf[kk] = 1.0;
+            X[kk] = 0.0;
+            Nbc[kk] = 0.0;
           }
         }
       }
@@ -544,7 +617,8 @@ class AmrCutCell {
       mod[OPP_[k]] += vnb * X[k];
     }
     ACout = aC;
-    for (int k = 0; k < 6; ++k) off[k] = -beta + mod[k];
+    for (int k = 0; k < 6; ++k)
+      off[k] = -beta + mod[k];
     rscaleOut = descale;
     inhomOut = inhom;
   }
@@ -554,7 +628,8 @@ class AmrCutCell {
     auto b = t_->bounds(i);
     double s = static_cast<double>(Index(1) << t_->level(i));
     Vec<3> c{};
-    for (int d = 0; d < 3; ++d) c[d] = origin_[d] + (static_cast<double>(b[0][d]) + 0.5 * s) * h0_;
+    for (int d = 0; d < 3; ++d)
+      c[d] = origin_[d] + (static_cast<double>(b[0][d]) + 0.5 * s) * h0_;
     return c;
   }
 
@@ -570,7 +645,8 @@ class AmrCutCell {
           Vec<3> p{origin_[0] + static_cast<double>(b[0][0]) * h0_ + (a + 0.5) / nsub * w,
                    origin_[1] + static_cast<double>(b[0][1]) * h0_ + (bb + 0.5) / nsub * w,
                    origin_[2] + static_cast<double>(b[0][2]) * h0_ + (cc2 + 0.5) / nsub * w};
-          if (sdfFn(p) > 0.0) ++inside;
+          if (sdfFn(p) > 0.0)
+            ++inside;
         }
     return static_cast<double>(inside) / total;
   }
@@ -580,7 +656,8 @@ class AmrCutCell {
     auto b = t_->bounds(i);
     const auto& lo = b[0];
     Coord si = Coord(Coord(1) << t_->level(i));
-    long pc = (dir > 0) ? static_cast<long>(lo[axis]) + static_cast<long>(si) : static_cast<long>(lo[axis]) - 1;
+    long pc = (dir > 0) ? static_cast<long>(lo[axis]) + static_cast<long>(si)
+                        : static_cast<long>(lo[axis]) - 1;
     long e = static_cast<long>(fineExt_[axis]);
     std::array<Coord, 3> p = lo;
     p[axis] = static_cast<Coord>(((pc % e) + e) % e);
@@ -594,10 +671,10 @@ class AmrCutCell {
   std::vector<double> sdfC_, kappa_, AC_, rscale_, inhom_, off_;
   std::vector<Index> nb_;
   std::vector<char> fluid_, cut_;
-  AmrPoisson<3, Bits> lap_;   // C/F-aware ∇² provider for regular fluid cells (α=1)
+  AmrPoisson<3, Bits> lap_;  // C/F-aware ∇² provider for regular fluid cells (α=1)
   double idiag_ = 0.0, mu_ = 1.0;
-  std::vector<double> advDiag_, advCoef_;     // implicit-FOU advection (rebuilt per step)
-  std::vector<Index> advStart_, advNbr_;      // CSR off-diagonals (C/F-conservative)
+  std::vector<double> advDiag_, advCoef_;  // implicit-FOU advection (rebuilt per step)
+  std::vector<Index> advStart_, advNbr_;   // CSR off-diagonals (C/F-conservative)
   bool hasAdv_ = false;
 };
 

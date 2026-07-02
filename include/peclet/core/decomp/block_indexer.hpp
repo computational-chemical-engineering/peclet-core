@@ -14,9 +14,7 @@ template <int Dim>
 class BlockIndexer {
  public:
   BlockIndexer() = default;
-  BlockIndexer(IVec<Dim> origin, IVec<Dim> size, int ghostWidth) {
-    init(origin, size, ghostWidth);
-  }
+  BlockIndexer(IVec<Dim> origin, IVec<Dim> size, int ghostWidth) { init(origin, size, ghostWidth); }
 
   void init(IVec<Dim> origin, IVec<Dim> size, int ghostWidth) {
     ghostWidth_ = ghostWidth;
@@ -35,7 +33,8 @@ class BlockIndexer {
   /// Total number of cells in the extended (inner + ghost) array.
   Index numCellsInclGhost() const {
     Index n = 1;
-    for (int i = 0; i < Dim; ++i) n *= sizeGhost_[i];
+    for (int i = 0; i < Dim; ++i)
+      n *= sizeGhost_[i];
     return n;
   }
 
@@ -82,7 +81,8 @@ class BlockIndexer {
   /// True if a local multi-index lies in the inner (non-ghost) region.
   bool isInner(const IVec<Dim>& l) const {
     for (int i = 0; i < Dim; ++i) {
-      if (l[i] < ghostWidth_ || l[i] >= ghostWidth_ + sizeInner_[i]) return false;
+      if (l[i] < ghostWidth_ || l[i] >= ghostWidth_ + sizeInner_[i])
+        return false;
     }
     return true;
   }

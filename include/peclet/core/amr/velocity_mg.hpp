@@ -17,7 +17,8 @@
 // Used as the momentum BiCGStab preconditioner exactly like MomentumMG; selectable so the
 // two coarse-operator strategies can be benchmarked head-to-head on the AMR. The implicit-FOU
 // advection on coarse levels (mirror buildUpwindCoarse) is a follow-up — the viscous staircase is
-// the diffusion preconditioner. Requires a Kokkos build + the morton checkout (PECLET_CORE_HAVE_MORTON).
+// the diffusion preconditioner. Requires a Kokkos build + the morton checkout
+// (PECLET_CORE_HAVE_MORTON).
 #ifndef PECLET_CORE_AMR_VELOCITY_MG_HPP
 #define PECLET_CORE_AMR_VELOCITY_MG_HPP
 
@@ -60,7 +61,8 @@ class VelocityMG {
     hmg_ = std::make_unique<AmrMultigrid<3, Bits>>();
     hmg_->build(finest, h0);  // octree hierarchy + per-level AmrPoisson (periodicNeighbor etc.)
     std::size_t nl = hmg_->numLevels();
-    while (nl > 1 && hmg_->op(nl - 1).octree().numLeaves() < minCoarse) --nl;  // pore-scale cap
+    while (nl > 1 && hmg_->op(nl - 1).octree().numLeaves() < minCoarse)
+      --nl;  // pore-scale cap
     levels_.clear();
     levels_.resize(nl);
 
@@ -71,7 +73,8 @@ class VelocityMG {
       const Octree& f = hmg_->op(L).octree();
       const Octree& c = hmg_->op(L + 1).octree();
       const Index nf = f.numLeaves(), nc = c.numLeaves();
-      std::vector<double> ks(static_cast<std::size_t>(nc), 0.0), kn(static_cast<std::size_t>(nc), 0.0);
+      std::vector<double> ks(static_cast<std::size_t>(nc), 0.0),
+          kn(static_cast<std::size_t>(nc), 0.0);
       for (Index i = 0; i < nf; ++i) {
         Code par = M::from_code(f.code(i)).ancestor(f.level(i) + 1).code();
         Index p = c.find(par);
@@ -81,7 +84,8 @@ class VelocityMG {
         }
       }
       for (Index p = 0; p < nc; ++p)
-        ks[static_cast<std::size_t>(p)] /= (kn[static_cast<std::size_t>(p)] > 0 ? kn[static_cast<std::size_t>(p)] : 1.0);
+        ks[static_cast<std::size_t>(p)] /=
+            (kn[static_cast<std::size_t>(p)] > 0 ? kn[static_cast<std::size_t>(p)] : 1.0);
       kap[L + 1] = std::move(ks);
     }
 
@@ -89,12 +93,13 @@ class VelocityMG {
     // flow VelocityMG's Phase-3 fix (doc/velocity_mg_plan.md): the cut cells' D_rescale-scaled
     // residuals and the solid cells are excluded from the coarse defect (zeroed before restriction
     // + skipped in prolongation), so the inconsistent sharp-IBM rows never reach the coarse grid —
-    // the fine smoother owns the cut band, the coarse grid solves the clean interior. Without it the
-    // staircase V-cycle diverges at large dt.
+    // the fine smoother owns the cut band, the coarse grid solves the clean interior. Without it
+    // the staircase V-cycle diverges at large dt.
     levels_[0].op = fineOp;
     {
       std::vector<char> excl(fluid.size());
-      for (std::size_t i = 0; i < fluid.size(); ++i) excl[i] = (!fluid[i] || cut[i]) ? 1 : 0;
+      for (std::size_t i = 0; i < fluid.size(); ++i)
+        excl[i] = (!fluid[i] || cut[i]) ? 1 : 0;
       levels_[0].solid = toDevice(excl, "vmg_excl0");
       allocScratch(levels_[0], static_cast<Index>(fluid.size()));
       // Colour the sharp fine operator (its face graph) for the optional GS smoother — copy the
@@ -104,15 +109,19 @@ class VelocityMG {
       auto mn = Kokkos::create_mirror_view(fineOp.faceNbr);
       Kokkos::deep_copy(ms, fineOp.faceStart);
       Kokkos::deep_copy(mn, fineOp.faceNbr);
-      for (std::size_t i = 0; i < hs.size(); ++i) hs[i] = ms(static_cast<Index>(i));
-      for (std::size_t i = 0; i < hn.size(); ++i) hn[i] = mn(static_cast<Index>(i));
+      for (std::size_t i = 0; i < hs.size(); ++i)
+        hs[i] = ms(static_cast<Index>(i));
+      for (std::size_t i = 0; i < hn.size(); ++i)
+        hn[i] = mn(static_cast<Index>(i));
       levels_[0].col = greedyColoring(hs, hn, fineOp.n);
     }
     // Coarse levels: rediscretized staircase operator + classified solid mask.
-    for (std::size_t L = 1; L < nl; ++L) buildStaircase(L, idiag, mu, kap[L]);
+    for (std::size_t L = 1; L < nl; ++L)
+      buildStaircase(L, idiag, mu, kap[L]);
 
     // Transfer maps L → L+1 (child→parent + child CSR), as in MomentumMG.
-    for (std::size_t L = 0; L + 1 < nl; ++L) buildTransfer(L);
+    for (std::size_t L = 0; L + 1 < nl; ++L)
+      buildTransfer(L);
   }
 
   std::size_t numLevels() const { return levels_.size(); }
@@ -127,7 +136,8 @@ class VelocityMG {
   void setGaussSeidel(bool on) { useGS_ = on; }
 
   /// One V-cycle (correction scheme) solving the fine operator. Average restriction, masked
-  /// piecewise-constant prolongation, clean-fluid residual exclude; Jacobi or multicolour-GS smoother.
+  /// piecewise-constant prolongation, clean-fluid residual exclude; Jacobi or multicolour-GS
+  /// smoother.
   void vcycle(int pre = 2, int post = 2, int bottom = 30, double omega = 0.7, std::size_t L = 0) {
     Level& lv = levels_[L];
     View<const double> bc(lv.b);
@@ -160,11 +170,13 @@ class VelocityMG {
   void smooth(Level& lv, int sweeps, double omega) {
     View<const double> bc(lv.b);
     if (useGS_)
-      // Undamped GS (omega=1.0): stable on the staircase Helmholtz diagonal, and the passed omega is
-      // Jacobi's damping limit (~0.7) which would needlessly weaken the GS smoothing.
-      for (int s = 0; s < sweeps; ++s) multicolorGSMom(lv.op, lv.x, bc, lv.col, 1.0);
+      // Undamped GS (omega=1.0): stable on the staircase Helmholtz diagonal, and the passed omega
+      // is Jacobi's damping limit (~0.7) which would needlessly weaken the GS smoothing.
+      for (int s = 0; s < sweeps; ++s)
+        multicolorGSMom(lv.op, lv.x, bc, lv.col, 1.0);
     else
-      for (int s = 0; s < sweeps; ++s) jacobiMom(lv.op, lv.x, bc, lv.tmp, omega);
+      for (int s = 0; s < sweeps; ++s)
+        jacobiMom(lv.op, lv.x, bc, lv.tmp, omega);
   }
 
   void allocScratch(Level& lv, Index n) {
@@ -182,24 +194,26 @@ class VelocityMG {
     // Shift floor on the coarse reaction: at large dt (idiag→0) a small immersed object can vanish
     // from the binary κ classification on the coarsest levels, leaving a singular periodic
     // Laplacian whose bottom solve diverges. Flooring idiag to μ/L² (the slowest diffusion mode)
-    // keeps every coarse level non-singular (Galerkin avoids this by inheriting the sharp operator).
-    const double Ldom =
-        ap.h0() * static_cast<double>(oct.brick()[0] * (Index(1) << oct.lmax()));
+    // keeps every coarse level non-singular (Galerkin avoids this by inheriting the sharp
+    // operator).
+    const double Ldom = ap.h0() * static_cast<double>(oct.brick()[0] * (Index(1) << oct.lmax()));
     const double id = std::max(idiag, mu / (Ldom * Ldom));
     std::vector<double> diag(static_cast<std::size_t>(n), 1.0);
     std::vector<char> solid(static_cast<std::size_t>(n), 1);
     std::vector<Index> start(static_cast<std::size_t>(n) + 1, 0);
     std::vector<std::vector<std::pair<Index, double>>> rows(static_cast<std::size_t>(n));
     for (Index i = 0; i < n; ++i) {
-      if (kap[static_cast<std::size_t>(i)] < 0.5) continue;  // classified solid: identity row
+      if (kap[static_cast<std::size_t>(i)] < 0.5)
+        continue;  // classified solid: identity row
       solid[static_cast<std::size_t>(i)] = 0;
-      const double H = ap.cellWidth(i);   // h0·2^L (uniform per level)
-      const double coef = mu / (H * H);   // μ·area/dist/V = μ/H² (isotropic coarse cell)
+      const double H = ap.cellWidth(i);  // h0·2^L (uniform per level)
+      const double coef = mu / (H * H);  // μ·area/dist/V = μ/H² (isotropic coarse cell)
       double dsum = id;
       for (int axis = 0; axis < 3; ++axis)
         for (int dir = -1; dir <= 1; dir += 2) {
           Index j = ap.periodicNeighbor(i, axis, dir);  // periodic wrap; same-level neighbour
-          if (j < 0) continue;                            // domain boundary (non-periodic): wall
+          if (j < 0)
+            continue;  // domain boundary (non-periodic): wall
           rows[static_cast<std::size_t>(i)].emplace_back(j, -coef);
           dsum += coef;  // every face counts toward the diagonal (a wall to a solid nbr too)
         }
@@ -207,7 +221,8 @@ class VelocityMG {
     }
     for (Index i = 0; i < n; ++i)
       start[static_cast<std::size_t>(i) + 1] =
-          start[static_cast<std::size_t>(i)] + static_cast<Index>(rows[static_cast<std::size_t>(i)].size());
+          start[static_cast<std::size_t>(i)] +
+          static_cast<Index>(rows[static_cast<std::size_t>(i)].size());
     const Index nnz = start[static_cast<std::size_t>(n)];
     std::vector<Index> nbr(static_cast<std::size_t>(nnz));
     std::vector<double> coef(static_cast<std::size_t>(nnz));
@@ -240,16 +255,19 @@ class VelocityMG {
       Code par = M::from_code(f.code(i)).ancestor(f.level(i) + 1).code();
       Index p = c.find(par);
       c2p[static_cast<std::size_t>(i)] = p;
-      if (p >= 0) ++cnt[static_cast<std::size_t>(p)];
+      if (p >= 0)
+        ++cnt[static_cast<std::size_t>(p)];
     }
     std::vector<Index> cstart(static_cast<std::size_t>(nc) + 1, 0);
     for (Index p = 0; p < nc; ++p)
-      cstart[static_cast<std::size_t>(p) + 1] = cstart[static_cast<std::size_t>(p)] + cnt[static_cast<std::size_t>(p)];
+      cstart[static_cast<std::size_t>(p) + 1] =
+          cstart[static_cast<std::size_t>(p)] + cnt[static_cast<std::size_t>(p)];
     std::vector<Index> cidx(static_cast<std::size_t>(nf));
     std::vector<Index> cur(cstart.begin(), cstart.end() - 1);
     for (Index i = 0; i < nf; ++i) {
       Index p = c2p[static_cast<std::size_t>(i)];
-      if (p >= 0) cidx[static_cast<std::size_t>(cur[static_cast<std::size_t>(p)]++)] = i;
+      if (p >= 0)
+        cidx[static_cast<std::size_t>(cur[static_cast<std::size_t>(p)]++)] = i;
     }
     levels_[L].c2p = toDevice(c2p, "vmg_c2p");
     levels_[L].childStart = toDevice(cstart, "vmg_cstart");

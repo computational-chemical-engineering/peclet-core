@@ -36,7 +36,8 @@ double maxRelErr(const std::vector<Vec<3>>& a, const std::vector<Vec<3>>& b) {
       na += b[i][d] * b[i][d];
     }
     double rel = std::sqrt(da) / (std::sqrt(na) + 1e-30);
-    if (rel > me) me = rel;
+    if (rel > me)
+      me = rel;
   }
   return me;
 }
@@ -46,18 +47,20 @@ void run() {
   std::vector<Vec<3>> pos(N);
   std::vector<double> mass(N, 1.0);
   std::uint64_t s = 987654321;
-  for (int i = 0; i < N; ++i) pos[i] = {pseudo(s), pseudo(s), pseudo(s)};  // in [0,1)^3
+  for (int i = 0; i < N; ++i)
+    pos[i] = {pseudo(s), pseudo(s), pseudo(s)};  // in [0,1)^3
 
   AmrGeometry<3> geo;  // origin 0, h0 1 ... but box must span the particles
   geo.origin = {0.0, 0.0, 0.0};
-  const unsigned lmax = 6;       // 64^3 fine cells over the unit box
+  const unsigned lmax = 6;  // 64^3 fine cells over the unit box
   geo.h0 = 1.0 / static_cast<double>(1u << lmax);
 
   // Direct reference.
   BarnesHut<3> bh;
   bh.build(pos, mass, geo, lmax, /*theta=*/0.0, /*soft=*/0.02);
   std::vector<Vec<3>> direct(N);
-  for (int i = 0; i < N; ++i) direct[i] = bh.accelerationDirect(i);
+  for (int i = 0; i < N; ++i)
+    direct[i] = bh.accelerationDirect(i);
 
   // (1) theta = 0 == direct sum.
   std::vector<Vec<3>> exact0 = bh.accelerations();

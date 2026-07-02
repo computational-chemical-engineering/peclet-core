@@ -61,7 +61,8 @@ class DistributedPoisson {
     y.assign(static_cast<std::size_t>(n), 0.0);
     for (Index i = 0; i < n; ++i) {
       double s = 0.0;
-      for (int f = 0; f < F; ++f) s += g[static_cast<std::size_t>(i) * F + f] - x[static_cast<std::size_t>(i)];
+      for (int f = 0; f < F; ++f)
+        s += g[static_cast<std::size_t>(i) * F + f] - x[static_cast<std::size_t>(i)];
       y[static_cast<std::size_t>(i)] = inv * s;  // L = ∇²
     }
   }
@@ -70,7 +71,8 @@ class DistributedPoisson {
   /// update is u_i += ω (L u_i − b_i)/diag with diag = 2*Dim/h² (= −L_ii, so the
   /// damping has the right sign for the negative-definite L). Reads only the previous
   /// iterate (one halo gather per sweep) ⇒ bit-identical to a serial single-block sweep.
-  void jacobi(std::vector<double>& x, const std::vector<double>& b, int sweeps, double omega = 0.8) const {
+  void jacobi(std::vector<double>& x, const std::vector<double>& b, int sweeps,
+              double omega = 0.8) const {
     const Index n = numLeaves();
     const int F = 2 * Dim;
     const double inv = 1.0 / (h0_ * h0_), diag = F * inv;
@@ -161,11 +163,13 @@ class DistributedMultigrid {
       long prod = 1;
       IVec<Dim> ng{};
       for (int d = 0; d < Dim; ++d) {
-        if (g[d] % 2 != 0 || g[d] / 2 < 2) ok = false;
+        if (g[d] % 2 != 0 || g[d] / 2 < 2)
+          ok = false;
         ng[d] = g[d] / 2;
         prod *= ng[d];
       }
-      if (!ok || prod < size) break;
+      if (!ok || prod < size)
+        break;
       g = ng;
       h *= 2.0;
     }
@@ -178,7 +182,8 @@ class DistributedMultigrid {
       c2p.assign(static_cast<std::size_t>(nf), -1);
       for (Index i = 0; i < nf; ++i) {
         IVec<Dim> gf = fine.globalRootOf(i), gc{};
-        for (int d = 0; d < Dim; ++d) gc[d] = gf[d] / 2;
+        for (int d = 0; d < Dim; ++d)
+          gc[d] = gf[d] / 2;
         Index p = coarse.findGlobalRoot(gc);
         assert(p >= 0 && "ORB decompositions must nest (power-of-two grid+ranks)");
         c2p[static_cast<std::size_t>(i)] = p;
@@ -192,8 +197,8 @@ class DistributedMultigrid {
   Index numLeaves(std::size_t L = 0) const { return levels_[L]->d.local().numLeaves(); }
 
   /// One V-cycle of A x = b on level `L` (default the finest), correction scheme.
-  void vcycle(std::vector<double>& x, const std::vector<double>& b, int pre = 2,
-              int post = 2, int bottom = 30, std::size_t L = 0) {
+  void vcycle(std::vector<double>& x, const std::vector<double>& b, int pre = 2, int post = 2,
+              int bottom = 30, std::size_t L = 0) {
     auto& op = levels_[L]->op;
     if (L + 1 == levels_.size()) {  // coarsest: a few smooths
       op.jacobi(x, b, bottom);
@@ -214,13 +219,15 @@ class DistributedMultigrid {
       cn[static_cast<std::size_t>(p)] += 1.0;
     }
     for (Index p = 0; p < nc; ++p)
-      if (cn[static_cast<std::size_t>(p)] > 0.0) cb[static_cast<std::size_t>(p)] /= cn[static_cast<std::size_t>(p)];
+      if (cn[static_cast<std::size_t>(p)] > 0.0)
+        cb[static_cast<std::size_t>(p)] /= cn[static_cast<std::size_t>(p)];
     // Coarse solve.
     std::vector<double> cx(static_cast<std::size_t>(nc), 0.0);
     vcycle(cx, cb, pre, post, bottom, L + 1);
     // Prolong (piecewise-constant) + correct.
     for (Index i = 0; i < nf; ++i)
-      x[static_cast<std::size_t>(i)] += cx[static_cast<std::size_t>(c2p[static_cast<std::size_t>(i)])];
+      x[static_cast<std::size_t>(i)] +=
+          cx[static_cast<std::size_t>(c2p[static_cast<std::size_t>(i)])];
     op.jacobi(x, b, post);
   }
 

@@ -4,8 +4,8 @@
 // than a uniform fine grid), and (c) stay 2:1 balanced.
 //
 // Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
-#include "test_util.hpp"
 #include "peclet/core/common/types.hpp"
+#include "test_util.hpp"
 
 #ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
@@ -51,7 +51,8 @@ void run() {
     Real width = geo.leafSize(t.level(i));
     if (std::fabs(sph.eval(c)) <= halfDiagFactor * width) {  // surface within the cell
       ++crossing;
-      if (t.level(i) != target) allCrossingFine = false;
+      if (t.level(i) != target)
+        allCrossingFine = false;
     }
   }
   PECLET_CORE_CHECK(crossing > 0);

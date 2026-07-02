@@ -37,8 +37,8 @@ namespace peclet::core::amr {
 /// refinement on ripples whose amplitude is at the noise level (typical ε≈0.01).
 /// Refine where E_i exceeds a threshold (~0.2–0.5); coarsen where it is small.
 template <int Dim, unsigned Bits>
-std::vector<double> lohnerIndicator(const BlockOctree<Dim, Bits>& t,
-                                    const std::vector<double>& u, double eps = 0.01) {
+std::vector<double> lohnerIndicator(const BlockOctree<Dim, Bits>& t, const std::vector<double>& u,
+                                    double eps = 0.01) {
   const Index n = t.numLeaves();
   std::vector<double> e(static_cast<std::size_t>(n), 0.0);
   for (Index i = 0; i < n; ++i) {
@@ -47,7 +47,8 @@ std::vector<double> lohnerIndicator(const BlockOctree<Dim, Bits>& t,
     for (int axis = 0; axis < Dim; ++axis) {
       const Index jp = t.faceNeighbor(i, axis, +1);
       const Index jm = t.faceNeighbor(i, axis, -1);
-      if (jp < 0 || jm < 0) continue;
+      if (jp < 0 || jm < 0)
+        continue;
       const double up = u[static_cast<std::size_t>(jp)];
       const double um = u[static_cast<std::size_t>(jm)];
       const double d2 = up - 2.0 * ui + um;
@@ -76,8 +77,10 @@ std::vector<double> secondDiffIndicator(const BlockOctree<Dim, Bits>& t,
     for (int axis = 0; axis < Dim; ++axis) {
       const Index jp = t.faceNeighbor(i, axis, +1);
       const Index jm = t.faceNeighbor(i, axis, -1);
-      if (jp < 0 || jm < 0) continue;
-      const double d2 = u[static_cast<std::size_t>(jp)] - 2.0 * ui + u[static_cast<std::size_t>(jm)];
+      if (jp < 0 || jm < 0)
+        continue;
+      const double d2 =
+          u[static_cast<std::size_t>(jp)] - 2.0 * ui + u[static_cast<std::size_t>(jm)];
       s += d2 * d2;
     }
     e[static_cast<std::size_t>(i)] = std::sqrt(s);

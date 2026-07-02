@@ -1,11 +1,11 @@
 /// @file grid_sdf.hpp
 /// @brief Sampled (grid) signed-distance field with trilinear interpolation.
 ///
-/// This is how real geometry enters the Eulerian/Lagrangian solvers: an SDF sampled on a regular grid
-/// (x-fastest, matching the suite indexing and `flow`/`dem`'s VTI fields). Values keep the suite
-/// sign convention (negative inside solid). Out-of-domain queries clamp to the nearest in-domain
-/// sample. Satisfies the same `peclet::core::geom::Sdf` concept as the analytic primitives, so solvers consume
-/// analytic and sampled geometry through one interface.
+/// This is how real geometry enters the Eulerian/Lagrangian solvers: an SDF sampled on a regular
+/// grid (x-fastest, matching the suite indexing and `flow`/`dem`'s VTI fields). Values keep the
+/// suite sign convention (negative inside solid). Out-of-domain queries clamp to the nearest
+/// in-domain sample. Satisfies the same `peclet::core::geom::Sdf` concept as the analytic
+/// primitives, so solvers consume analytic and sampled geometry through one interface.
 #ifndef PECLET_CORE_GEOM_GRID_SDF_HPP
 #define PECLET_CORE_GEOM_GRID_SDF_HPP
 
@@ -18,13 +18,13 @@ namespace peclet::core::geom {
 
 /// A signed-distance field sampled on a regular axis-aligned grid (negative inside solid).
 ///
-/// Models the `peclet::core::geom::Sdf` concept via `eval()`. Storage is x-fastest, matching the suite
-/// indexing convention and the VTI fields produced by `flow`/`dem`.
+/// Models the `peclet::core::geom::Sdf` concept via `eval()`. Storage is x-fastest, matching the
+/// suite indexing convention and the VTI fields produced by `flow`/`dem`.
 struct GridSdf {
   std::vector<float> values;  ///< Sample values, x-fastest: idx = i + j*nx + k*nx*ny.
   IVec<3> dims{};             ///< Sample count per axis (nx, ny, nz).
-  Vec<3> origin{};           ///< World position of sample (0,0,0).
-  Vec<3> spacing{1, 1, 1};   ///< World-space distance between samples per axis.
+  Vec<3> origin{};            ///< World position of sample (0,0,0).
+  Vec<3> spacing{1, 1, 1};    ///< World-space distance between samples per axis.
 
   /// Raw sample lookup at integer grid index (i,j,k); no bounds checking.
   double at(Index i, Index j, Index k) const {
@@ -69,7 +69,8 @@ GridSdf sample(const S& shape, IVec<3> dims, Vec<3> origin, Vec<3> spacing) {
   for (Index k = 0; k < dims[2]; ++k)
     for (Index j = 0; j < dims[1]; ++j)
       for (Index i = 0; i < dims[0]; ++i) {
-        Vec<3> p{origin[0] + i * spacing[0], origin[1] + j * spacing[1], origin[2] + k * spacing[2]};
+        Vec<3> p{origin[0] + i * spacing[0], origin[1] + j * spacing[1],
+                 origin[2] + k * spacing[2]};
         g.values[i + dims[0] * (j + dims[1] * k)] = static_cast<float>(shape.eval(p));
       }
   return g;

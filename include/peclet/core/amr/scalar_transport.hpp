@@ -45,21 +45,24 @@ class ScalarTransport {
   void init(const Octree& t, const AmrGeometry<Dim>& geo) {
     t_ = &t;
     geo_ = geo;
-    for (int d = 0; d < Dim; ++d) fineExt_[d] = static_cast<Coord>(t.brick()[d] * (Index(1) << t.lmax()));
+    for (int d = 0; d < Dim; ++d)
+      fineExt_[d] = static_cast<Coord>(t.brick()[d] * (Index(1) << t.lmax()));
   }
 
   Index numLeaves() const { return t_->numLeaves(); }
   Real cellWidth(Index i) const { return geo_.h0 * static_cast<Real>(Index(1) << t_->level(i)); }
   Real cellVolume(Index i) const {
     Real w = cellWidth(i), v = 1;
-    for (int d = 0; d < Dim; ++d) v *= w;
+    for (int d = 0; d < Dim; ++d)
+      v *= w;
     return v;
   }
 
   /// Total scalar content sum_i V_i c_i (conserved by a divergence-free update).
   double totalMass(const std::vector<double>& c) const {
     double s = 0.0;
-    for (Index i = 0; i < numLeaves(); ++i) s += cellVolume(i) * c[static_cast<std::size_t>(i)];
+    for (Index i = 0; i < numLeaves(); ++i)
+      s += cellVolume(i) * c[static_cast<std::size_t>(i)];
     return s;
   }
 
@@ -76,9 +79,9 @@ class ScalarTransport {
       forEachFace(i, [&](Index j, int axis, int oSign, Real area, const Vec<Dim>& fc, Real dist) {
         const double cj = c[static_cast<std::size_t>(j)];
         const double unOut = oSign * static_cast<double>(vel(fc, axis));
-        const double cUp = (unOut > 0.0) ? ci : cj;        // upwind
-        flux += area * unOut * cUp;                        // advective outflow
-        flux += -D * area * (cj - ci) / dist;              // diffusive outflow
+        const double cUp = (unOut > 0.0) ? ci : cj;  // upwind
+        flux += area * unOut * cUp;                  // advective outflow
+        flux += -D * area * (cj - ci) / dist;        // diffusive outflow
       });
       cOut[static_cast<std::size_t>(i)] = ci - dt * flux / cellVolume(i);
     }
@@ -103,7 +106,8 @@ class ScalarTransport {
         Index j0 = t_->find(M::encode(p).code());
         const unsigned Lj = t_->level(j0);
         if (Lj >= Li) {
-          fn(j0, axis, dir, faceArea(si), faceCentre(lo, axis, facePlane, std::array<Coord, Dim>{}, si),
+          fn(j0, axis, dir, faceArea(si),
+             faceCentre(lo, axis, facePlane, std::array<Coord, Dim>{}, si),
              0.5 * (static_cast<Real>(si) + static_cast<Real>(Coord(Coord(1) << Lj))) * geo_.h0);
         } else {
           const Coord sj = Coord(si >> 1);
@@ -114,7 +118,8 @@ class ScalarTransport {
             std::array<Coord, Dim> off{};
             int bit = 0;
             for (int t = 0; t < Dim; ++t) {
-              if (t == axis) continue;
+              if (t == axis)
+                continue;
               off[t] = ((k >> bit) & 1) ? sj : Coord(0);
               q[t] = wrap(static_cast<long>(lo[t]) + static_cast<long>(off[t]), t);
               ++bit;
@@ -134,7 +139,8 @@ class ScalarTransport {
   }
   Real faceArea(Coord s) const {
     Real a = 1;
-    for (int d = 0; d < Dim - 1; ++d) a *= static_cast<Real>(s) * geo_.h0;
+    for (int d = 0; d < Dim - 1; ++d)
+      a *= static_cast<Real>(s) * geo_.h0;
     return a;
   }
   // World centre of a (sub)face: `facePlane` is the shared-plane coord (fine) on

@@ -1,23 +1,23 @@
 // core — portable (Kokkos) device driver for the persistent Lagrangian ghost halo.
 //
 // Kokkos counterpart of the device-resident particle gather that packing-gpu hand-rolls
-// (gatherFloat4 / device-pointer MPI): it drives ParticleHaloTopology<Dim>'s forward/reverse exchanges with
-// on-device gather/scatter kernels, so per-particle attribute arrays stay on the GPU and only the
-// compact send/recv buffers are host-staged for MPI (or handed straight to a GPU-aware MPI via
-// PECLET_CORE_GPU_AWARE_MPI). Topology comes from ParticleHaloTopology::flatten(); results match the CPU exchange.
+// (gatherFloat4 / device-pointer MPI): it drives ParticleHaloTopology<Dim>'s forward/reverse
+// exchanges with on-device gather/scatter kernels, so per-particle attribute arrays stay on the GPU
+// and only the compact send/recv buffers are host-staged for MPI (or handed straight to a GPU-aware
+// MPI via PECLET_CORE_GPU_AWARE_MPI). Topology comes from ParticleHaloTopology::flatten(); results
+// match the CPU exchange.
 //
 //   forward<T>(owned -> ghost)        : copy each owner's value into its ghost copies (verbatim).
 //   reverse<T>(ghost -> owned, +=)    : accumulate ghost contributions back onto owners (atomic).
 //
-// The periodic position-shift forward (forwardPositions) is payload-specific (e.g. packing's float4)
-// and lives in the consumer; this primitive is the field-agnostic core.
+// The periodic position-shift forward (forwardPositions) is payload-specific (e.g. packing's
+// float4) and lives in the consumer; this primitive is the field-agnostic core.
 #ifndef PECLET_CORE_HALO_PARTICLE_HALO_HPP
 #define PECLET_CORE_HALO_PARTICLE_HALO_HPP
 
-#include "peclet/core/common/mpi.hpp"
-
 #include <vector>
 
+#include "peclet/core/common/mpi.hpp"
 #include "peclet/core/common/types.hpp"
 #include "peclet/core/common/view.hpp"
 #include "peclet/core/halo/grid_halo.hpp"  // detail::gpuAwareMpi()
@@ -41,10 +41,11 @@ class ParticleHalo {
     sendOff_ = t.sendOffsets;  // prefix sum into sendIdx, size sendRanks+1
     recvRanks_ = t.recvRanks;
     recvCounts_ = t.recvCounts;
-    recvOff_.assign(t.recvOffsets.begin(), t.recvOffsets.end());  // per recv rank start in [0,numReceived)
+    recvOff_.assign(t.recvOffsets.begin(),
+                    t.recvOffsets.end());  // per recv rank start in [0,numReceived)
     nSend_ = static_cast<Index>(t.sendIdx.size());
     numGhost_ = static_cast<Index>(halo.numGhost());
-    numReceived_ = t.numReceived;             // cross-rank ghosts [0,numReceived); self-ghosts after
+    numReceived_ = t.numReceived;  // cross-rank ghosts [0,numReceived); self-ghosts after
     numSelf_ = numGhost_ - numReceived_;
     d_sendIdx_ = toDevice(t.sendIdx, "peclet::core::halo::p_sendIdx");
     d_selfIdx_ = toDevice(t.selfIdx, "peclet::core::halo::p_selfIdx");
@@ -64,7 +65,8 @@ class ParticleHalo {
           KOKKOS_LAMBDA(const Index i) { buf(i) = o(idx(i)); });
     }
 
-    // MPI fills only the cross-rank received slots [0,numReceived); the self tail is gathered locally.
+    // MPI fills only the cross-rank received slots [0,numReceived); the self tail is gathered
+    // locally.
     std::vector<T> hSend, hRecv;
     T* sendBase;
     T* recvBase;
@@ -83,7 +85,8 @@ class ParticleHalo {
     std::vector<MPI_Request> reqs;
     postRecv(recvBase, recvRanks_, recvOff_, recvCounts_, tag, reqs);
     postSend(sendBase, sendRanks_, sendOff_, sendCounts_, tag, reqs);
-    if (!reqs.empty()) MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
+    if (!reqs.empty())
+      MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
 
     if (!aware && numReceived_) {
       auto sub = Kokkos::subview(
@@ -114,33 +117,36 @@ class ParticleHalo {
     std::vector<T> hGhost, hRecv;
     T* ghostBase;
     T* recvBase;
-    View<T> recvBuf = scratchAs<T>("peclet::core::halo::p_recvBuf");  // owners receive sendIdx-many contributions
+    View<T> recvBuf =
+        scratchAs<T>("peclet::core::halo::p_recvBuf");  // owners receive sendIdx-many contributions
     if (aware) {
       Kokkos::fence();
       ghostBase = ghost.data();
       recvBase = recvBuf.data();
     } else {
-      // Only the cross-rank ghost slice [0,numReceived) is sent over MPI (recvOff_/recvCounts_ index
-      // into it); the self-ghost tail [numReceived,numGhost) is consumed by the device self-scatter
-      // below straight from `ghost`, so it never needs to reach the host.
+      // Only the cross-rank ghost slice [0,numReceived) is sent over MPI (recvOff_/recvCounts_
+      // index into it); the self-ghost tail [numReceived,numGhost) is consumed by the device
+      // self-scatter below straight from `ghost`, so it never needs to reach the host.
       hGhost.resize(static_cast<std::size_t>(numReceived_));
       hRecv.resize(static_cast<std::size_t>(nSend_));
       if (numReceived_)
-        copyToHost(Kokkos::subview(
-                       ghost, std::pair<std::size_t, std::size_t>(
-                                  0, static_cast<std::size_t>(numReceived_))),
+        copyToHost(Kokkos::subview(ghost, std::pair<std::size_t, std::size_t>(
+                                              0, static_cast<std::size_t>(numReceived_))),
                    hGhost);
       ghostBase = hGhost.data();
       recvBase = hRecv.data();
     }
 
-    // Mirror of forward: ghost-holders send ghost slices, owners receive into sendIdx-shaped buffer.
+    // Mirror of forward: ghost-holders send ghost slices, owners receive into sendIdx-shaped
+    // buffer.
     std::vector<MPI_Request> reqs;
     postRecv(recvBase, sendRanks_, sendOff_, sendCounts_, tag, reqs);
     postSend(ghostBase, recvRanks_, recvOff_, recvCounts_, tag, reqs);
-    if (!reqs.empty()) MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
+    if (!reqs.empty())
+      MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
 
-    if (!aware) copyToDevice(hRecv, recvBuf);
+    if (!aware)
+      copyToDevice(hRecv, recvBuf);
     if (nSend_) {
       View<T> o = owned;
       IndexView idx = d_sendIdx_;
@@ -168,7 +174,8 @@ class ParticleHalo {
  private:
   template <class SrcView, class T>
   static void copyToHost(const SrcView& d, std::vector<T>& h) {
-    if (h.empty()) return;
+    if (h.empty())
+      return;
     Kokkos::View<T*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>> hv(h.data(),
                                                                                     h.size());
     Kokkos::deep_copy(hv, d);
@@ -188,7 +195,8 @@ class ParticleHalo {
   }
   template <class T>
   static void copyToDevice(const std::vector<T>& h, const View<T>& d) {
-    if (h.empty()) return;
+    if (h.empty())
+      return;
     Kokkos::View<const T*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>> hv(h.data(),
                                                                                           h.size());
     Kokkos::deep_copy(d, hv);

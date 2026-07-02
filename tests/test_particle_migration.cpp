@@ -4,7 +4,8 @@
 // Over several random-walk + migrate steps we require, globally and every step:
 //   - particle count is conserved (== N),
 //   - every particle resides on the rank that owns its position (ownerOf),
-//   - the id multiset is exactly {0..N-1} (checked via SUM and XOR reductions — together these catch
+//   - the id multiset is exactly {0..N-1} (checked via SUM and XOR reductions — together these
+//   catch
 //     any loss, duplication, or corruption).
 #include <mpi.h>
 
@@ -69,7 +70,8 @@ int main(int argc, char** argv) {
   // Expected invariants of the full id set.
   std::int64_t expectSum = N * (N - 1) / 2;
   std::int64_t expectXor = 0;
-  for (std::int64_t i = 0; i < N; ++i) expectXor ^= i;
+  for (std::int64_t i = 0; i < N; ++i)
+    expectXor ^= i;
 
   int fail = 0;
   for (int step = 0; step < 6; ++step) {
@@ -79,7 +81,8 @@ int main(int argc, char** argv) {
     std::int64_t localSum = 0, localXor = 0;
     std::int64_t localCount = static_cast<std::int64_t>(pos.size());
     for (std::size_t k = 0; k < pos.size(); ++k) {
-      if (mig.ownerOf(pos[k]) != rank) ++fail;
+      if (mig.ownerOf(pos[k]) != rank)
+        ++fail;
       std::int64_t id;
       std::memcpy(&id, &payload[k * stride], stride);
       localSum += id;

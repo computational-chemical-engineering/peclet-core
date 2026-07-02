@@ -32,7 +32,8 @@ using Code = DO::Code;
 
 double fAt(Code gc, double h0) {
   auto o = M::from_code(gc).decode();
-  double cx = ((double)o[0] + 0.5) * h0, cy = ((double)o[1] + 0.5) * h0, cz = ((double)o[2] + 0.5) * h0;
+  double cx = ((double)o[0] + 0.5) * h0, cy = ((double)o[1] + 0.5) * h0,
+         cz = ((double)o[2] + 0.5) * h0;
   const double k = 2.0 * M_PI;
   return std::sin(k * cx) * std::cos(k * cy) + std::cos(k * cz) * std::sin(k * cx);
 }
@@ -40,10 +41,12 @@ double fAt(Code gc, double h0) {
 void makeGraded(DO& d) {
   for (int pass = 0; pass < 2; ++pass) {
     d.local().refineIf([&](Code c, unsigned lvl) -> bool {
-      if (lvl == 0) return false;
+      if (lvl == 0)
+        return false;
       auto o = M::from_code(c).decode();
       for (int dd = 0; dd < 3; ++dd)
-        if ((long)o[dd] + d.blockFineOrigin()[dd] >= 8) return false;
+        if ((long)o[dd] + d.blockFineOrigin()[dd] >= 8)
+          return false;
       return true;
     });
   }
@@ -72,10 +75,12 @@ void run() {
   mgw.build(world);
   const Index nw = mgw.numLeaves();
   std::vector<double> uw((std::size_t)nw), bw, xw((std::size_t)nw, 0.0);
-  for (Index i = 0; i < nw; ++i) uw[(std::size_t)i] = fAt(world.globalCode(i), h0);
+  for (Index i = 0; i < nw; ++i)
+    uw[(std::size_t)i] = fAt(world.globalCode(i), h0);
   mgw.op().apply(uw, bw);
   const double r0 = mgw.op().residualNorm(xw, bw);
-  for (int c = 0; c < cycles; ++c) mgw.vcycle(xw, bw);
+  for (int c = 0; c < cycles; ++c)
+    mgw.vcycle(xw, bw);
   const double r1 = mgw.op().residualNorm(xw, bw);
 
   // ---- serial reference (whole domain, COMM_SELF) ----
@@ -86,9 +91,11 @@ void run() {
   mgs.build(self);
   const Index ns = mgs.numLeaves();
   std::vector<double> us((std::size_t)ns), bs, xs((std::size_t)ns, 0.0);
-  for (Index i = 0; i < ns; ++i) us[(std::size_t)i] = fAt(self.globalCode(i), h0);
+  for (Index i = 0; i < ns; ++i)
+    us[(std::size_t)i] = fAt(self.globalCode(i), h0);
   mgs.op().apply(us, bs);
-  for (int c = 0; c < cycles; ++c) mgs.vcycle(xs, bs);
+  for (int c = 0; c < cycles; ++c)
+    mgs.vcycle(xs, bs);
 
   // (1) bit-for-bit WORLD == SELF
   int mism = 0;
@@ -98,7 +105,8 @@ void run() {
       ++mism;
       continue;
     }
-    if (xw[(std::size_t)i] != xs[(std::size_t)si]) ++mism;
+    if (xw[(std::size_t)i] != xs[(std::size_t)si])
+      ++mism;
   }
   PECLET_CORE_CHECK_EQ(mism, 0);
   PECLET_CORE_CHECK(mgw.numLevels() >= 3);

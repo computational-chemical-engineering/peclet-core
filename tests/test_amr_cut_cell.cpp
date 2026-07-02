@@ -30,7 +30,8 @@ constexpr double kR = 0.6;     // sphere radius
 
 BO uniformFine(unsigned L) {
   BO t(IVec<3>{1, 1, 1}, L);
-  for (unsigned k = 0; k < L; ++k) t.refineIf([](Code, unsigned) { return true; });
+  for (unsigned k = 0; k < L; ++k)
+    t.refineIf([](Code, unsigned) { return true; });
   return t;
 }
 
@@ -59,24 +60,27 @@ Result solveSphere(unsigned L) {
     return -kLbox + (static_cast<double>(b[0][d]) + 0.5 * s) * h0;
   };
   for (Index i = 0; i < n; ++i) {
-    if (!cc.isFluid(i)) continue;
+    if (!cc.isFluid(i))
+      continue;
     double r2 = 0;
-    for (int d = 0; d < 3; ++d) r2 += center(i, d) * center(i, d);
+    for (int d = 0; d < 3; ++d)
+      r2 += center(i, d) * center(i, d);
     uex[static_cast<std::size_t>(i)] = kR * kR - r2;
     src[static_cast<std::size_t>(i)] = 6.0 * h0 * h0;  // A u = -h^2 f, f = lap u = -6
   }
   std::vector<double> b = cc.makeRhs(src, /*u_bc=*/0.0);
 
   // Anti-drift lock: the runtime operator (shared face_csr.hpp kernel over the assembled CSR — the
-  // SAME arithmetic the device runs) must reproduce the independent geometric reference. Validates the
-  // shared kernel in the pure-C++ (no-Kokkos) build.
+  // SAME arithmetic the device runs) must reproduce the independent geometric reference. Validates
+  // the shared kernel in the pure-C++ (no-Kokkos) build.
   {
     std::vector<double> ag, ac;
     cc.applyOpGeometric(uex, ag);
     cc.applyOp(uex, ac);
     double de = 0, mg = 0;
     for (Index i = 0; i < n; ++i) {
-      de = std::max(de, std::fabs(ag[static_cast<std::size_t>(i)] - ac[static_cast<std::size_t>(i)]));
+      de = std::max(de,
+                    std::fabs(ag[static_cast<std::size_t>(i)] - ac[static_cast<std::size_t>(i)]));
       mg = std::max(mg, std::fabs(ag[static_cast<std::size_t>(i)]));
     }
     std::printf("[cut] shared-CSR vs geometric applyOp: max|Δ| = %.3e (mag %.3e)\n", de, mg);
@@ -88,7 +92,8 @@ Result solveSphere(unsigned L) {
   for (int it = 0; it < 200000; ++it) {
     cc.gaussSeidel(u, b, 20);
     r = cc.residual(u, b, res);
-    if (r < r0 * 1e-9) break;
+    if (r < r0 * 1e-9)
+      break;
   }
 
   double e = 0, vol = 0;
@@ -105,7 +110,8 @@ Result solveSphere(unsigned L) {
   // a solid cell is held at u_bc (= 0)
   bool solidHeld = true;
   for (Index i = 0; i < n; ++i)
-    if (!cc.isFluid(i) && std::fabs(u[static_cast<std::size_t>(i)]) > 1e-9) solidHeld = false;
+    if (!cc.isFluid(i) && std::fabs(u[static_cast<std::size_t>(i)]) > 1e-9)
+      solidHeld = false;
   PECLET_CORE_CHECK(solidHeld);
 
   return {std::sqrt(e / nf), vol, nf};

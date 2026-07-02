@@ -1,8 +1,8 @@
 // core — shared types and conventions (see suite/docs/CONVENTIONS.md).
 //
 // Pillars: axis order is x-fastest (linear index I = x + y*nx + z*nx*ny), and SDF sign is
-// negative-inside-solid (enforced in peclet::core::geom, not here). This header is C++17-clean so it can be
-// pulled into CUDA translation units; C++20-only constructs live in host-only headers.
+// negative-inside-solid (enforced in peclet::core::geom, not here). This header is C++17-clean so
+// it can be pulled into CUDA translation units; C++20-only constructs live in host-only headers.
 #ifndef PECLET_CORE_COMMON_TYPES_HPP
 #define PECLET_CORE_COMMON_TYPES_HPP
 
@@ -34,7 +34,9 @@ struct Range {
 };
 
 /// Periodic wrap of a coordinate into [0, n): wrap(x, n) = (x % n + n) % n.
-inline Index wrap(Index x, Index n) { return ((x % n) + n) % n; }
+inline Index wrap(Index x, Index n) {
+  return ((x % n) + n) % n;
+}
 
 /// Compile-time-unrolled nested loop over [bgn, end) in row-major (axis 0 fastest) order.
 /// func receives the current IVec<Dim> index by const-ref. Ported from pbs::NestedLoop.

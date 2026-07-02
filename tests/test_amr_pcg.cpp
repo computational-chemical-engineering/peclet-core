@@ -16,9 +16,8 @@
 
 #ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
-#include <vector>
-
 #include <Kokkos_Core.hpp>
+#include <vector>
 
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/multigrid.hpp"
@@ -38,14 +37,16 @@ using AP = AmrPoisson<3, kBits>;
 
 void setDev(View<double> v, const std::vector<double>& h) {
   auto m = Kokkos::create_mirror_view(v);
-  for (std::size_t i = 0; i < h.size(); ++i) m((Index)i) = h[i];
+  for (std::size_t i = 0; i < h.size(); ++i)
+    m((Index)i) = h[i];
   Kokkos::deep_copy(v, m);
 }
 std::vector<double> getDev(View<double> v, Index n) {
   std::vector<double> h((std::size_t)n);
   auto m = Kokkos::create_mirror_view(v);
   Kokkos::deep_copy(m, v);
-  for (Index i = 0; i < n; ++i) h[(std::size_t)i] = m(i);
+  for (Index i = 0; i < n; ++i)
+    h[(std::size_t)i] = m(i);
   return h;
 }
 
@@ -53,7 +54,8 @@ std::vector<double> getDev(View<double> v, Index n) {
 // the lower octant to level 0, 2:1-balanced. (Same mesh as the device MG test.)
 BO gradedMesh() {
   BO t(IVec<3>{2, 2, 2}, 3);
-  for (int kk = 0; kk < 2; ++kk) t.refineIf([](Code, unsigned l) { return l > 0; });
+  for (int kk = 0; kk < 2; ++kk)
+    t.refineIf([](Code, unsigned l) { return l > 0; });
   t.refineIf([&](Code c, unsigned) {
     auto o = M::from_code(c).decode();
     return o[0] < 8 && o[1] < 8 && o[2] < 8;
@@ -103,7 +105,8 @@ void run() {
   };
   const double bnorm = [&] {
     double s = 0;
-    for (double v : b) s += v * v;
+    for (double v : b)
+      s += v * v;
     return std::sqrt(s);
   }();
 
@@ -119,8 +122,8 @@ void run() {
   auto R = pcg.solve(mg, dx, View<const double>(db), /*maxIters=*/200, /*tol=*/1e-12);
   auto xpcg = getDev(dx, n);
   double rpcg = resNorm(xpcg);
-  std::printf("[pcg] graded: %d iters, res %.3e -> %.3e (rel %.3e)\n", R.iters, R.res0,
-              rpcg, rpcg / bnorm);
+  std::printf("[pcg] graded: %d iters, res %.3e -> %.3e (rel %.3e)\n", R.iters, R.res0, rpcg,
+              rpcg / bnorm);
   PECLET_CORE_CHECK(rpcg < bnorm * 1e-9);
   PECLET_CORE_CHECK(R.iters < 60);  // CG over MG converges in a handful of iterations
 
@@ -135,7 +138,8 @@ void run() {
     mg.vcycle(2, 2, 40, 0.8);
     auto xv = getDev(mg.x(0), n);
     rv = resNorm(xv);
-    if (rv <= target) break;
+    if (rv <= target)
+      break;
   }
   // Each PCG iteration ≈ 1 V-cycle (preconditioner) + 1 matvec; count PCG fine matvecs as
   // iters*(cyclesPerPrec*(pre+post+...) + 1). Compare V-cycles-to-target: PCG should need
@@ -182,7 +186,8 @@ void run() {
   };
   double bOnorm = [&] {
     double s = 0;
-    for (double v : bO) s += v * v;
+    for (double v : bO)
+      s += v * v;
     return std::sqrt(s);
   }();
 

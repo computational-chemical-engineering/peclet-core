@@ -38,7 +38,7 @@ double bAt(Code gc, double h0) {
 }
 
 void run() {
-  const long N = 8;          // uniform N^3 periodic domain [0,1)^3 (root cells = finest)
+  const long N = 8;  // uniform N^3 periodic domain [0,1)^3 (root cells = finest)
   const double h0 = 1.0 / N;
   AmrGeometry<3> geo;
   geo.h0 = h0;
@@ -52,7 +52,8 @@ void run() {
   dpw.init(world, h0);
   const Index nw = world.local().numLeaves();
   std::vector<double> bw(static_cast<std::size_t>(nw)), xw(static_cast<std::size_t>(nw), 0.0);
-  for (Index i = 0; i < nw; ++i) bw[static_cast<std::size_t>(i)] = bAt(world.globalCode(i), h0);
+  for (Index i = 0; i < nw; ++i)
+    bw[static_cast<std::size_t>(i)] = bAt(world.globalCode(i), h0);
   dpw.jacobi(xw, bw, sweeps);
 
   // serial reference: whole domain as ONE block on MPI_COMM_SELF, same solve.
@@ -62,7 +63,8 @@ void run() {
   dps.init(self, h0);
   const Index ns = self.local().numLeaves();
   std::vector<double> bs(static_cast<std::size_t>(ns)), xs(static_cast<std::size_t>(ns), 0.0);
-  for (Index i = 0; i < ns; ++i) bs[static_cast<std::size_t>(i)] = bAt(self.globalCode(i), h0);
+  for (Index i = 0; i < ns; ++i)
+    bs[static_cast<std::size_t>(i)] = bAt(self.globalCode(i), h0);
   dps.jacobi(xs, bs, sweeps);
 
   // SELF block covers the whole domain with origin 0, so its local code == global code.

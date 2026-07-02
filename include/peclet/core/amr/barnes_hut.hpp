@@ -52,13 +52,17 @@ class BarnesHut {
     // Top-down: refine any leaf holding more than one particle (until level 0).
     for (;;) {
       std::vector<int> cnt(static_cast<std::size_t>(octree_.numLeaves()), 0);
-      for (std::size_t p = 0; p < pos_.size(); ++p) ++cnt[static_cast<std::size_t>(leafOf(p))];
+      for (std::size_t p = 0; p < pos_.size(); ++p)
+        ++cnt[static_cast<std::size_t>(leafOf(p))];
       std::vector<Code> split;
       for (Index i = 0; i < octree_.numLeaves(); ++i)
-        if (cnt[static_cast<std::size_t>(i)] > 1 && octree_.level(i) > 0) split.push_back(octree_.code(i));
-      if (split.empty()) break;
+        if (cnt[static_cast<std::size_t>(i)] > 1 && octree_.level(i) > 0)
+          split.push_back(octree_.code(i));
+      if (split.empty())
+        break;
       std::sort(split.begin(), split.end());
-      octree_.refineIf([&](Code c, unsigned) { return std::binary_search(split.begin(), split.end(), c); });
+      octree_.refineIf(
+          [&](Code c, unsigned) { return std::binary_search(split.begin(), split.end(), c); });
     }
 
     // Leaf -> particle CSR.
@@ -70,12 +74,14 @@ class BarnesHut {
       ofLeaf[p] = li;
       ++leafStart_[static_cast<std::size_t>(li) + 1];
     }
-    for (Index i = 0; i < nleaf; ++i) leafStart_[static_cast<std::size_t>(i) + 1] += leafStart_[static_cast<std::size_t>(i)];
+    for (Index i = 0; i < nleaf; ++i)
+      leafStart_[static_cast<std::size_t>(i) + 1] += leafStart_[static_cast<std::size_t>(i)];
     leafParts_.assign(pos_.size(), 0);
     std::vector<Index> cur(leafStart_.begin(), leafStart_.end() - 1);
     for (std::size_t p = 0; p < pos_.size(); ++p) {
       Index li = ofLeaf[p];
-      leafParts_[static_cast<std::size_t>(cur[static_cast<std::size_t>(li)]++)] = static_cast<Index>(p);
+      leafParts_[static_cast<std::size_t>(cur[static_cast<std::size_t>(li)]++)] =
+          static_cast<Index>(p);
     }
 
     // Node aggregates (mass + mass-weighted position) for every ancestor level.
@@ -88,7 +94,8 @@ class BarnesHut {
         Code anc = M::from_code(lo).ancestor(L).code();
         Agg& a = agg_[L][anc];
         a.m += mass_[p];
-        for (int d = 0; d < Dim; ++d) a.com[d] += mass_[p] * pos_[p][d];
+        for (int d = 0; d < Dim; ++d)
+          a.com[d] += mass_[p] * pos_[p][d];
       }
     }
   }
@@ -102,7 +109,8 @@ class BarnesHut {
 
   std::vector<Vec<Dim>> accelerations() const {
     std::vector<Vec<Dim>> a(pos_.size());
-    for (std::size_t p = 0; p < pos_.size(); ++p) a[p] = acceleration(static_cast<Index>(p));
+    for (std::size_t p = 0; p < pos_.size(); ++p)
+      a[p] = acceleration(static_cast<Index>(p));
     return a;
   }
 
@@ -110,7 +118,8 @@ class BarnesHut {
   Vec<Dim> accelerationDirect(Index pi) const {
     Vec<Dim> a{};
     for (std::size_t q = 0; q < pos_.size(); ++q)
-      if (static_cast<Index>(q) != pi) addPair(pos_[static_cast<std::size_t>(pi)], pos_[q], mass_[q], a);
+      if (static_cast<Index>(q) != pi)
+        addPair(pos_[static_cast<std::size_t>(pi)], pos_[q], mass_[q], a);
     return a;
   }
 
@@ -124,7 +133,8 @@ class BarnesHut {
 
   std::array<Index, Dim> makeBrick() const {
     std::array<Index, Dim> b{};
-    for (int d = 0; d < Dim; ++d) b[d] = 1;
+    for (int d = 0; d < Dim; ++d)
+      b[d] = 1;
     return b;
   }
 
@@ -132,8 +142,10 @@ class BarnesHut {
     std::array<Coord, Dim> c{};
     for (int d = 0; d < Dim; ++d) {
       long v = static_cast<long>(std::floor((pos_[p][d] - geo_.origin[d]) / geo_.h0));
-      if (v < 0) v = 0;
-      if (v >= static_cast<long>(fineExt_)) v = static_cast<long>(fineExt_) - 1;
+      if (v < 0)
+        v = 0;
+      if (v >= static_cast<long>(fineExt_))
+        v = static_cast<long>(fineExt_) - 1;
       c[d] = static_cast<Coord>(v);
     }
     return c;
@@ -148,7 +160,8 @@ class BarnesHut {
       r2 += dir[d] * dir[d];
     }
     double inv = 1.0 / (r2 * std::sqrt(r2));
-    for (int d = 0; d < Dim; ++d) a[d] += m * dir[d] * inv;
+    for (int d = 0; d < Dim; ++d)
+      a[d] += m * dir[d] * inv;
   }
 
   bool isLeafNode(unsigned L, Code code, Index& li) const {
@@ -158,14 +171,18 @@ class BarnesHut {
 
   void walk(unsigned L, Code code, Index pi, Vec<Dim>& a) const {
     auto it = agg_[L].find(code);
-    if (it == agg_[L].end()) return;
+    if (it == agg_[L].end())
+      return;
     const Agg& g = it->second;
 
     Index li = -1;
     if (isLeafNode(L, code, li)) {
-      for (Index k = leafStart_[static_cast<std::size_t>(li)]; k < leafStart_[static_cast<std::size_t>(li) + 1]; ++k) {
+      for (Index k = leafStart_[static_cast<std::size_t>(li)];
+           k < leafStart_[static_cast<std::size_t>(li) + 1]; ++k) {
         Index q = leafParts_[static_cast<std::size_t>(k)];
-        if (q != pi) addPair(pos_[static_cast<std::size_t>(pi)], pos_[static_cast<std::size_t>(q)], mass_[static_cast<std::size_t>(q)], a);
+        if (q != pi)
+          addPair(pos_[static_cast<std::size_t>(pi)], pos_[static_cast<std::size_t>(q)],
+                  mass_[static_cast<std::size_t>(q)], a);
       }
       return;
     }
@@ -196,9 +213,9 @@ class BarnesHut {
   Coord fineExt_ = 1;
   double theta_ = 0.5;
   double soft2_ = 1e-6;
-  std::vector<Index> leafStart_;            // CSR offsets, length nleaf+1
-  std::vector<Index> leafParts_;            // particle indices grouped by leaf
-  std::vector<std::map<Code, Agg>> agg_;    // agg_[level][nodeOriginCode]
+  std::vector<Index> leafStart_;          // CSR offsets, length nleaf+1
+  std::vector<Index> leafParts_;          // particle indices grouped by leaf
+  std::vector<std::map<Code, Agg>> agg_;  // agg_[level][nodeOriginCode]
 };
 
 }  // namespace peclet::core::amr

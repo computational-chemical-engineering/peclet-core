@@ -106,7 +106,8 @@ class DistributedOctree {
   IVec<Dim> globalRootOf(Index i) const {
     auto o = M::from_code(local_.code(i)).decode();
     IVec<Dim> g{};
-    for (int d = 0; d < Dim; ++d) g[d] = static_cast<Index>(o[d]) / rootSpan_ + blockOriginRoot_[d];
+    for (int d = 0; d < Dim; ++d)
+      g[d] = static_cast<Index>(o[d]) / rootSpan_ + blockOriginRoot_[d];
     return g;
   }
 
@@ -116,7 +117,8 @@ class DistributedOctree {
     std::array<Coord, Dim> lc{};
     for (int d = 0; d < Dim; ++d) {
       long v = g[d] - blockOriginRoot_[d];
-      if (v < 0 || v >= blockBrick_[d]) return -1;
+      if (v < 0 || v >= blockBrick_[d])
+        return -1;
       lc[d] = static_cast<Coord>(v * rootSpan_);
     }
     return local_.find(M::encode(lc).code());
@@ -134,7 +136,8 @@ class DistributedOctree {
   Code globalCode(Index i) const {
     auto b = local_.bounds(i);
     std::array<Coord, Dim> g{};
-    for (int d = 0; d < Dim; ++d) g[d] = static_cast<Coord>(b[0][d] + blockFineOrigin_[d]);
+    for (int d = 0; d < Dim; ++d)
+      g[d] = static_cast<Coord>(b[0][d] + blockFineOrigin_[d]);
     return M::encode(g).code();
   }
 
@@ -162,7 +165,8 @@ class DistributedOctree {
             std::array<Coord, Dim> gc{};
             int owner = -1;
             Index lnb = -1;
-            if (neighborInfo(i, axis, dir, gc, owner, lnb) != Remote) continue;
+            if (neighborInfo(i, axis, dir, gc, owner, lnb) != Remote)
+              continue;
             if (owner == rank_)
               consider(gc, Lf);
             else
@@ -174,7 +178,8 @@ class DistributedOctree {
       auto it = sendBufs.begin();
       eng.exchange(
           [&](std::vector<char>& out) -> int {
-            if (it == sendBufs.end()) return -1;
+            if (it == sendBufs.end())
+              return -1;
             out = it->second;
             int dest = it->first;
             ++it;
@@ -186,14 +191,16 @@ class DistributedOctree {
 
       std::sort(toRefine.begin(), toRefine.end());
       toRefine.erase(std::unique(toRefine.begin(), toRefine.end()), toRefine.end());
-      Index nref = local_.refineIf(
-          [&](Code c, unsigned) { return std::binary_search(toRefine.begin(), toRefine.end(), c); });
+      Index nref = local_.refineIf([&](Code c, unsigned) {
+        return std::binary_search(toRefine.begin(), toRefine.end(), c);
+      });
       work += nref;
       grandTotal += nref;
 
       long lw = static_cast<long>(work), gw = 0;
       MPI_Allreduce(&lw, &gw, 1, MPI_LONG, MPI_SUM, comm_);
-      if (gw == 0) break;
+      if (gw == 0)
+        break;
     }
     return grandTotal;
   }
@@ -219,7 +226,8 @@ class DistributedOctree {
     //    agreed across ranks (blocks are disjoint, so a SUM-Allreduce of the
     //    zero-padded local counts yields the full global grid).
     std::size_t ncells = 1;
-    for (int d = 0; d < Dim; ++d) ncells *= static_cast<std::size_t>(globalRootSize_[d]);
+    for (int d = 0; d < Dim; ++d)
+      ncells *= static_cast<std::size_t>(globalRootSize_[d]);
     std::vector<double> localWeight(ncells, 0.0), weight(ncells, 0.0);
     for (Index i = 0; i < n; ++i)
       localWeight[static_cast<std::size_t>(dec_.linearGlobal(globalRootOf(i)))] += 1.0;
@@ -232,7 +240,8 @@ class DistributedOctree {
     const IVec<Dim> newOriginRoot = nblk.origin;
     const IVec<Dim> newBrick = nblk.size;
     IVec<Dim> newFineOrigin{};
-    for (int d = 0; d < Dim; ++d) newFineOrigin[d] = newOriginRoot[d] * rootSpan_;
+    for (int d = 0; d < Dim; ++d)
+      newFineOrigin[d] = newOriginRoot[d] * rootSpan_;
 
     // 3. Classify every local leaf by its new owner; keep mine, pack the rest.
     //    Leaves are carried by *global* code so the receiver can rebase them.
@@ -248,7 +257,8 @@ class DistributedOctree {
       if (newOwner == rank_) {
         codes.push_back(gc);
         levels.push_back(lv);
-        for (int c = 0; c < K; ++c) cols[static_cast<std::size_t>(c)].push_back(fields[c][static_cast<std::size_t>(i)]);
+        for (int c = 0; c < K; ++c)
+          cols[static_cast<std::size_t>(c)].push_back(fields[c][static_cast<std::size_t>(i)]);
       } else {
         appendLeaf(sendBufs[newOwner], gc, lv, fields, i, K);
         ++migratedOut;
@@ -261,7 +271,8 @@ class DistributedOctree {
       auto it = sendBufs.begin();
       eng.exchange(
           [&](std::vector<char>& out) -> int {
-            if (it == sendBufs.end()) return -1;
+            if (it == sendBufs.end())
+              return -1;
             out = it->second;
             int dest = it->first;
             ++it;
@@ -271,7 +282,8 @@ class DistributedOctree {
             parseLeaves(msg, K, [&](Code gc, std::uint8_t lv, const double* comps) {
               codes.push_back(gc);
               levels.push_back(lv);
-              for (int c = 0; c < K; ++c) cols[static_cast<std::size_t>(c)].push_back(comps[c]);
+              for (int c = 0; c < K; ++c)
+                cols[static_cast<std::size_t>(c)].push_back(comps[c]);
             });
           });
     }
@@ -283,20 +295,25 @@ class DistributedOctree {
     for (std::size_t j = 0; j < m; ++j) {
       auto g = M::from_code(codes[j]).decode();
       std::array<Coord, Dim> lc{};
-      for (int d = 0; d < Dim; ++d) lc[d] = static_cast<Coord>(g[d] - newFineOrigin[d]);
+      for (int d = 0; d < Dim; ++d)
+        lc[d] = static_cast<Coord>(g[d] - newFineOrigin[d]);
       localCodes[j] = M::encode(lc).code();
     }
     std::vector<std::size_t> ord(m);
-    for (std::size_t j = 0; j < m; ++j) ord[j] = j;
-    std::sort(ord.begin(), ord.end(), [&](std::size_t a, std::size_t b) { return localCodes[a] < localCodes[b]; });
+    for (std::size_t j = 0; j < m; ++j)
+      ord[j] = j;
+    std::sort(ord.begin(), ord.end(),
+              [&](std::size_t a, std::size_t b) { return localCodes[a] < localCodes[b]; });
 
     std::vector<Code> sortedCodes(m);
     std::vector<std::uint8_t> sortedLevels(m);
-    std::vector<std::vector<double>> sortedCols(static_cast<std::size_t>(K), std::vector<double>(m));
+    std::vector<std::vector<double>> sortedCols(static_cast<std::size_t>(K),
+                                                std::vector<double>(m));
     for (std::size_t j = 0; j < m; ++j) {
       sortedCodes[j] = localCodes[ord[j]];
       sortedLevels[j] = levels[ord[j]];
-      for (int c = 0; c < K; ++c) sortedCols[static_cast<std::size_t>(c)][j] = cols[static_cast<std::size_t>(c)][ord[j]];
+      for (int c = 0; c < K; ++c)
+        sortedCols[static_cast<std::size_t>(c)][j] = cols[static_cast<std::size_t>(c)][ord[j]];
     }
 
     // 6. Install the new decomposition, block geometry and local octree.
@@ -305,9 +322,11 @@ class DistributedOctree {
     blockOriginRoot_ = newOriginRoot;
     blockBrick_ = newBrick;
     blockFineOrigin_ = newFineOrigin;
-    for (int d = 0; d < Dim; ++d) blockFineSize_[d] = newBrick[d] * rootSpan_;
+    for (int d = 0; d < Dim; ++d)
+      blockFineSize_[d] = newBrick[d] * rootSpan_;
     // globalFineSize_ is decomposition-independent and unchanged.
-    for (int c = 0; c < K; ++c) fields[c].swap(sortedCols[static_cast<std::size_t>(c)]);
+    for (int c = 0; c < K; ++c)
+      fields[c].swap(sortedCols[static_cast<std::size_t>(c)]);
     return migratedOut;
   }
 
@@ -333,11 +352,13 @@ class DistributedOctree {
           Index lnb = -1;
           NbState st = neighborInfo(i, axis, dir, gc, owner, lnb);
           if (st == InBlock) {
-            if (lnb >= 0) out[static_cast<std::size_t>(slot)] = field[static_cast<std::size_t>(lnb)];
+            if (lnb >= 0)
+              out[static_cast<std::size_t>(slot)] = field[static_cast<std::size_t>(lnb)];
           } else if (st == Remote) {
             if (owner == rank_) {
               Index leaf = locateGlobal(gc);
-              if (leaf >= 0) out[static_cast<std::size_t>(slot)] = field[static_cast<std::size_t>(leaf)];
+              if (leaf >= 0)
+                out[static_cast<std::size_t>(slot)] = field[static_cast<std::size_t>(leaf)];
             } else {
               appendRequest(reqBufs[owner], gc, static_cast<std::int64_t>(slot));
             }
@@ -351,7 +372,8 @@ class DistributedOctree {
       auto it = reqBufs.begin();
       eng.exchange(
           [&](std::vector<char>& outb) -> int {
-            if (it == reqBufs.end()) return -1;
+            if (it == reqBufs.end())
+              return -1;
             outb = it->second;
             int dest = it->first;
             ++it;
@@ -371,7 +393,8 @@ class DistributedOctree {
       auto it = replyBufs.begin();
       eng.exchange(
           [&](std::vector<char>& outb) -> int {
-            if (it == replyBufs.end()) return -1;
+            if (it == replyBufs.end())
+              return -1;
             outb = it->second;
             int dest = it->first;
             ++it;
@@ -390,15 +413,16 @@ class DistributedOctree {
   /// Static topology of the face-neighbour gather: which out-slots are filled from a local leaf
   /// (`directSlot`/`directLeaf`) and which must be gathered from an owner (`remoteCoords` at
   /// `remoteSlot`). This is the per-face `neighborInfo` classification, which depends only on the
-  /// decomposition — not the field — so a matvec loop can build it once and reuse it (C1), mirroring
-  /// how DistributedFvOperator caches its ghost coords. Slots left in neither list keep the sentinel
-  /// (domain boundary / no neighbour). Invalidated by `rebalance` (rebuild after a decomposition
-  /// change); the AMR solvers hold the decomposition fixed across a solve.
+  /// decomposition — not the field — so a matvec loop can build it once and reuse it (C1),
+  /// mirroring how DistributedFvOperator caches its ghost coords. Slots left in neither list keep
+  /// the sentinel (domain boundary / no neighbour). Invalidated by `rebalance` (rebuild after a
+  /// decomposition change); the AMR solvers hold the decomposition fixed across a solve.
   struct FaceGatherPlan {
-    std::vector<Index> directSlot, directLeaf;        ///< out[directSlot[k]] = field[directLeaf[k]]
-    std::vector<std::array<Coord, Dim>> remoteCoords;  ///< owner-gathered coords (incl. owner==rank)
-    std::vector<Index> remoteSlot;                     ///< out[remoteSlot[k]] = covered value
-    Index nFaces = 0;                                  ///< local leaves * 2*Dim
+    std::vector<Index> directSlot, directLeaf;  ///< out[directSlot[k]] = field[directLeaf[k]]
+    std::vector<std::array<Coord, Dim>>
+        remoteCoords;               ///< owner-gathered coords (incl. owner==rank)
+    std::vector<Index> remoteSlot;  ///< out[remoteSlot[k]] = covered value
+    Index nFaces = 0;               ///< local leaves * 2*Dim
   };
 
   FaceGatherPlan buildFaceGatherPlan() const {
@@ -431,7 +455,8 @@ class DistributedOctree {
 
   /// Face-neighbour gather using a precomputed FaceGatherPlan: only the field values move, the
   /// classification does not re-run. Bit-identical to `faceNeighborGather(field, sentinel)`.
-  std::vector<double> faceNeighborGather(const FaceGatherPlan& plan, const std::vector<double>& field,
+  std::vector<double> faceNeighborGather(const FaceGatherPlan& plan,
+                                         const std::vector<double>& field,
                                          double sentinel = kNoNeighbor) const {
     std::vector<double> out(static_cast<std::size_t>(plan.nFaces), sentinel);
     for (std::size_t k = 0; k < plan.directSlot.size(); ++k)
@@ -447,13 +472,14 @@ class DistributedOctree {
 
   /// Flattened, value-only topology for the face-neighbour gather, established ONCE: the per-matvec
   /// exchange then moves only `double` values (no coords, no locateGlobal) over a fixed graph — the
-  /// octree analogue of GridHaloTopology::flatten(). A device DistributedGatherHalo mirrors only the
-  /// compact send/recv buffers across MPI (à la grid_halo.hpp); the field stays on the device.
+  /// octree analogue of GridHaloTopology::flatten(). A device DistributedGatherHalo mirrors only
+  /// the compact send/recv buffers across MPI (à la grid_halo.hpp); the field stays on the device.
   struct GatherHaloTopology {
-    // Locally-resolved faces (InBlock + Remote-but-owner==rank): out[localSlot[k]] = field[localLeaf[k]].
+    // Locally-resolved faces (InBlock + Remote-but-owner==rank): out[localSlot[k]] =
+    // field[localLeaf[k]].
     std::vector<Index> localSlot, localLeaf;
-    // Owner side of the value exchange: gather these local leaves (−1 ⇒ send sentinel) and send to the
-    // requester ranks (concatenated per sendRanks/sendCounts, in received reqId order).
+    // Owner side of the value exchange: gather these local leaves (−1 ⇒ send sentinel) and send to
+    // the requester ranks (concatenated per sendRanks/sendCounts, in received reqId order).
     std::vector<int> sendRanks, sendCounts;
     std::vector<Index> sendLeaf;
     // Requester side: scatter the received values into these out-slots (per recvRanks/recvCounts).
@@ -462,16 +488,18 @@ class DistributedOctree {
     Index nFaces = 0;
   };
 
-  /// Build the value-only gather topology from a FaceGatherPlan: classify each remote coord by owner
-  /// (owner==rank folds into the local fills), then ONE NBX round in which each owner learns which of
-  /// its local leaves to send to each requester (locateGlobal happens here, once — never per matvec).
+  /// Build the value-only gather topology from a FaceGatherPlan: classify each remote coord by
+  /// owner (owner==rank folds into the local fills), then ONE NBX round in which each owner learns
+  /// which of its local leaves to send to each requester (locateGlobal happens here, once — never
+  /// per matvec).
   GatherHaloTopology buildGatherHaloTopology(const FaceGatherPlan& plan) const {
     GatherHaloTopology t;
     t.nFaces = plan.nFaces;
     t.localSlot = plan.directSlot;  // InBlock direct fills
     t.localLeaf = plan.directLeaf;
-    // Classify remote coords; group cross-rank requests by owner with a per-owner reqId = its position.
-    std::map<int, std::vector<char>> req;             // owner -> serialized (coord, reqId) requests
+    // Classify remote coords; group cross-rank requests by owner with a per-owner reqId = its
+    // position.
+    std::map<int, std::vector<char>> req;  // owner -> serialized (coord, reqId) requests
     std::map<int, std::vector<Index>> recvSlotByOwner;  // owner -> out-slots in reqId order
     for (std::size_t k = 0; k < plan.remoteCoords.size(); ++k) {
       const std::array<Coord, Dim>& gc = plan.remoteCoords[k];
@@ -492,16 +520,19 @@ class DistributedOctree {
     for (auto& kv : recvSlotByOwner) {  // requester side (deterministic owner order from std::map)
       t.recvRanks.push_back(kv.first);
       t.recvCounts.push_back(static_cast<int>(kv.second.size()));
-      for (Index s : kv.second) t.recvSlot.push_back(s);
+      for (Index s : kv.second)
+        t.recvSlot.push_back(s);
     }
-    // One NBX round: owners receive coord requests and resolve them to local leaves (in reqId order).
+    // One NBX round: owners receive coord requests and resolve them to local leaves (in reqId
+    // order).
     std::map<int, std::vector<Index>> sendLeafBySrc;
     {
       halo::NbxEngine eng(comm_);
       auto it = req.begin();
       eng.exchange(
           [&](std::vector<char>& o) -> int {
-            if (it == req.end()) return -1;
+            if (it == req.end())
+              return -1;
             o = it->second;
             int d = it->first;
             ++it;
@@ -521,7 +552,8 @@ class DistributedOctree {
     for (auto& kv : sendLeafBySrc) {  // owner side
       t.sendRanks.push_back(kv.first);
       t.sendCounts.push_back(static_cast<int>(kv.second.size()));
-      for (Index l : kv.second) t.sendLeaf.push_back(l);
+      for (Index l : kv.second)
+        t.sendLeaf.push_back(l);
     }
     return t;
   }
@@ -557,13 +589,15 @@ class DistributedOctree {
       }
     }
     requestReply(
-        req, [&](const std::array<Coord, Dim>& gc) -> double {
+        req,
+        [&](const std::array<Coord, Dim>& gc) -> double {
           Index leaf = locateGlobal(gc);
           return (leaf >= 0) ? static_cast<double>(local_.level(leaf)) : -1.0;
         },
         out, /*tagA=*/21, /*tagB=*/22);
     std::vector<int> lv(coords.size());
-    for (std::size_t i = 0; i < out.size(); ++i) lv[i] = static_cast<int>(out[i]);
+    for (std::size_t i = 0; i < out.size(); ++i)
+      lv[i] = static_cast<int>(out[i]);
     return lv;
   }
 
@@ -578,13 +612,15 @@ class DistributedOctree {
       int owner = ownerOfFine(coords[idx]);
       if (owner == rank_) {
         Index leaf = locateGlobal(coords[idx]);
-        if (leaf >= 0) out[idx] = field[static_cast<std::size_t>(leaf)];
+        if (leaf >= 0)
+          out[idx] = field[static_cast<std::size_t>(leaf)];
       } else {
         appendRequest(req[owner], coords[idx], static_cast<std::int64_t>(idx));
       }
     }
     requestReply(
-        req, [&](const std::array<Coord, Dim>& gc) -> double {
+        req,
+        [&](const std::array<Coord, Dim>& gc) -> double {
           Index leaf = locateGlobal(gc);
           return (leaf >= 0) ? field[static_cast<std::size_t>(leaf)] : sentinel;
         },
@@ -597,7 +633,8 @@ class DistributedOctree {
 
   int ownerOfFine(const std::array<Coord, Dim>& gc) const {
     IVec<Dim> rootCell{};
-    for (int d = 0; d < Dim; ++d) rootCell[d] = static_cast<Index>(gc[d]) / rootSpan_;
+    for (int d = 0; d < Dim; ++d)
+      rootCell[d] = static_cast<Index>(gc[d]) / rootSpan_;
     return dec_.ownerOf(rootCell);
   }
 
@@ -613,7 +650,8 @@ class DistributedOctree {
       auto it = req.begin();
       eng.exchange(
           [&](std::vector<char>& o) -> int {
-            if (it == req.end()) return -1;
+            if (it == req.end())
+              return -1;
             o = it->second;
             int d = it->first;
             ++it;
@@ -631,15 +669,17 @@ class DistributedOctree {
       auto it = rep.begin();
       eng.exchange(
           [&](std::vector<char>& o) -> int {
-            if (it == rep.end()) return -1;
+            if (it == rep.end())
+              return -1;
             o = it->second;
             int d = it->first;
             ++it;
             return d;
           },
           [&](int, std::vector<char>& msg) {
-            parseReplies(msg,
-                         [&](std::int64_t reqId, double v) { out[static_cast<std::size_t>(reqId)] = v; });
+            parseReplies(msg, [&](std::int64_t reqId, double v) {
+              out[static_cast<std::size_t>(reqId)] = v;
+            });
           },
           tagB);
     }
@@ -668,12 +708,14 @@ class DistributedOctree {
     }
 
     std::array<long, Dim> g{};
-    for (int d = 0; d < Dim; ++d) g[d] = static_cast<long>(blockFineOrigin_[d]) + static_cast<long>(lo[d]);
+    for (int d = 0; d < Dim; ++d)
+      g[d] = static_cast<long>(blockFineOrigin_[d]) + static_cast<long>(lo[d]);
     g[axis] = static_cast<long>(blockFineOrigin_[axis]) + pc;
     for (int d = 0; d < Dim; ++d) {
       const long gf = static_cast<long>(globalFineSize_[d]);
       if (g[d] < 0 || g[d] >= gf) {
-        if (!periodic_[d]) return DomainNone;
+        if (!periodic_[d])
+          return DomainNone;
         g[d] = ((g[d] % gf) + gf) % gf;
       }
     }
@@ -690,7 +732,8 @@ class DistributedOctree {
   /// rank's block (used by message handlers).
   Index locateGlobal(const std::array<Coord, Dim>& gc) const {
     std::array<Coord, Dim> lc{};
-    for (int d = 0; d < Dim; ++d) lc[d] = static_cast<Coord>(gc[d] - blockFineOrigin_[d]);
+    for (int d = 0; d < Dim; ++d)
+      lc[d] = static_cast<Coord>(gc[d] - blockFineOrigin_[d]);
     return local_.find(M::encode(lc).code());
   }
 

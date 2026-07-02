@@ -89,7 +89,8 @@ class AmrFlow {
     presMG_.build(*t_, h0_);
     presMG_.setOpenness([&](const Vec<3>& fc, int axis) { return faceFrac(sdfFn, fc, axis); });
     const Index n = t_->numLeaves();
-    for (int c = 0; c < 3; ++c) u_[c].assign(static_cast<std::size_t>(n), 0.0);
+    for (int c = 0; c < 3; ++c)
+      u_[c].assign(static_cast<std::size_t>(n), 0.0);
     phi_.assign(static_cast<std::size_t>(n), 0.0);
     p_.assign(static_cast<std::size_t>(n), 0.0);
     // Face CSR offsets: count the (sub)faces forEachFaceFull emits per cell (6 interior, more for a
@@ -119,13 +120,15 @@ class AmrFlow {
     std::array<std::vector<double>, 3> adv;  // full explicit advection term (incl. ρ)
     if (advect_) {
       if (implicitFou_)
-        mom_.buildAdvectionFou(u_, rho_, uf_, faceStart_, faceFieldBuilt_);  // FOU advected by the div-free uf
+        mom_.buildAdvectionFou(u_, rho_, uf_, faceStart_,
+                               faceFieldBuilt_);  // FOU advected by the div-free uf
       for (int c = 0; c < 3; ++c) {
         adv[c].assign(static_cast<std::size_t>(n), 0.0);
         for (Index i = 0; i < n; ++i)
           if (mom_.isFluid(i)) {
-            double term = rho_ * advectHO(c, i);                       // ρ·∇·(u u_c), high order
-            if (implicitFou_) term -= mom_.fouApply(i, u_[c]);         // − ρ·FOU (deferred correction)
+            double term = rho_ * advectHO(c, i);  // ρ·∇·(u u_c), high order
+            if (implicitFou_)
+              term -= mom_.fouApply(i, u_[c]);  // − ρ·FOU (deferred correction)
             adv[c][static_cast<std::size_t>(i)] = term;
           }
       }
@@ -138,7 +141,8 @@ class AmrFlow {
         if (mom_.isFluid(i)) {
           // incremental predictor: include the old pressure gradient −∇p^n.
           double s = (rho_ / dt_) * u_[c][static_cast<std::size_t>(i)] + f_[c] - gradOf(p_, i, c);
-          if (advect_) s -= adv[c][static_cast<std::size_t>(i)];  // HO (explicit) or HO−FOU (deferred)
+          if (advect_)
+            s -= adv[c][static_cast<std::size_t>(i)];  // HO (explicit) or HO−FOU (deferred)
           src[static_cast<std::size_t>(i)] = s;
         }
       std::vector<double> b = mom_.makeRhs(src, /*u_bc=*/0.0);
@@ -153,7 +157,8 @@ class AmrFlow {
     const Index n = t_->numLeaves();
     std::vector<double> div(static_cast<std::size_t>(n), 0.0);
     for (Index i = 0; i < n; ++i)
-      if (mom_.isFluid(i)) div[static_cast<std::size_t>(i)] = divergence(u_, i);
+      if (mom_.isFluid(i))
+        div[static_cast<std::size_t>(i)] = divergence(u_, i);
 
     std::fill(phi_.begin(), phi_.end(), 0.0);
     (void)presSweeps;
@@ -161,22 +166,24 @@ class AmrFlow {
     // consistent with the FV divergence / ABC gradient above (D, G, L share the
     // same face enumeration), so the collocated projection is stable across 2:1
     // interfaces. (The quadratic C/F flux is for pure-Poisson accuracy, not here.)
-    for (int it = 0; it < presIters; ++it) presMG_.vcycle(0, phi_, div);
+    for (int it = 0; it < presIters; ++it)
+      presMG_.vcycle(0, phi_, div);
 
     // Build the divergence-free FACE field from u* (still in u_) + φ, before the cell correction.
     buildFaceField();
 
     for (int c = 0; c < 3; ++c)
       for (Index i = 0; i < n; ++i)
-        if (mom_.isFluid(i)) u_[c][static_cast<std::size_t>(i)] -= gradOf(phi_, i, c);
+        if (mom_.isFluid(i))
+          u_[c][static_cast<std::size_t>(i)] -= gradOf(phi_, i, c);
 
     // Rotational incremental pressure update: p += (ρ/dt)φ − μ ∇·u*  (div is ∇·u*).
     // The −μ∇·u* rotational term removes the projection's boundary-layer splitting
     // error, making the steady solution dt-independent (vs plain Chorin).
     for (Index i = 0; i < n; ++i)
       if (mom_.isFluid(i))
-        p_[static_cast<std::size_t>(i)] +=
-            (rho_ / dt_) * phi_[static_cast<std::size_t>(i)] - mu_ * div[static_cast<std::size_t>(i)];
+        p_[static_cast<std::size_t>(i)] += (rho_ / dt_) * phi_[static_cast<std::size_t>(i)] -
+                                           mu_ * div[static_cast<std::size_t>(i)];
   }
 
   /// Openness-weighted FV divergence at leaf i, C/F-consistent: sum over (sub)faces
@@ -206,33 +213,38 @@ class AmrFlow {
   std::array<std::vector<double>, 3>& velocityRef() { return u_; }
 
   /// Build the ABC/Basilisk divergence-free FACE field from the current cell velocity u* and the
-  /// projection potential φ: uf_f = ½(u*_i+u*_j) − (φ₊−φ₋)/d_f, the +axis face velocity. Because the
-  /// pressure operator is L = D·G_face with the SAME (sub)faces, this gives D(uf)=D u*−Lφ = 0 exactly
-  /// (to the φ-solve residual). Call after the pressure solve, before the cell-gradient correction
-  /// (so u_ still holds u*). C/F-consistent: a 2:1 sub-face uses (φ_fine−φ_coarse)/d at the fine area.
+  /// projection potential φ: uf_f = ½(u*_i+u*_j) − (φ₊−φ₋)/d_f, the +axis face velocity. Because
+  /// the pressure operator is L = D·G_face with the SAME (sub)faces, this gives D(uf)=D u*−Lφ = 0
+  /// exactly (to the φ-solve residual). Call after the pressure solve, before the cell-gradient
+  /// correction (so u_ still holds u*). C/F-consistent: a 2:1 sub-face uses (φ_fine−φ_coarse)/d at
+  /// the fine area.
   void buildFaceField() {
     const Index n = t_->numLeaves();
     for (Index i = 0; i < n; ++i) {
       Index s = faceStart_[static_cast<std::size_t>(i)];
       pres_.forEachFaceFull(i, [&](Index j, int axis, int dir, double, double dist, double) {
-        const double uface = 0.5 * (u_[axis][static_cast<std::size_t>(i)] + u_[axis][static_cast<std::size_t>(j)]);
+        const double uface =
+            0.5 * (u_[axis][static_cast<std::size_t>(i)] + u_[axis][static_cast<std::size_t>(j)]);
         // +axis pressure gradient across the face: (φ₊−φ₋)/d, +side = dir>0 ? j : i.
-        const double gphi = (dir > 0)
-                                ? (phi_[static_cast<std::size_t>(j)] - phi_[static_cast<std::size_t>(i)]) / dist
-                                : (phi_[static_cast<std::size_t>(i)] - phi_[static_cast<std::size_t>(j)]) / dist;
+        const double gphi =
+            (dir > 0)
+                ? (phi_[static_cast<std::size_t>(j)] - phi_[static_cast<std::size_t>(i)]) / dist
+                : (phi_[static_cast<std::size_t>(i)] - phi_[static_cast<std::size_t>(j)]) / dist;
         uf_[static_cast<std::size_t>(s++)] = uface - gphi;
       });
     }
     faceFieldBuilt_ = true;
   }
 
-  /// L2 norm of the divergence of the FACE field uf_ (the div-free flux). After buildFaceField this is
-  /// the φ-solve residual (→ machine zero with a tight solve), vs the O(h²) residual of the cell field.
+  /// L2 norm of the divergence of the FACE field uf_ (the div-free flux). After buildFaceField this
+  /// is the φ-solve residual (→ machine zero with a tight solve), vs the O(h²) residual of the cell
+  /// field.
   double divNormFace() const {
     double tot = 0.0;
     const Index n = t_->numLeaves();
     for (Index i = 0; i < n; ++i) {
-      if (!mom_.isFluid(i)) continue;
+      if (!mom_.isFluid(i))
+        continue;
       Index s = faceStart_[static_cast<std::size_t>(i)];
       double d = 0.0;
       pres_.forEachFaceFull(i, [&](Index, int, int dir, double area, double, double alpha) {
@@ -244,7 +256,8 @@ class AmrFlow {
     return std::sqrt(tot);
   }
 
-  /// The divergence-free face field (read-only): uf[faceStart()[i]+s] for cell i's s-th forEachFaceFull face.
+  /// The divergence-free face field (read-only): uf[faceStart()[i]+s] for cell i's s-th
+  /// forEachFaceFull face.
   const std::vector<double>& faceField() const { return uf_; }
   const std::vector<Index>& faceStart() const { return faceStart_; }
 
@@ -275,21 +288,24 @@ class AmrFlow {
     double out = 0.0;
     Index s = faceFieldBuilt_ ? faceStart_[static_cast<std::size_t>(i)] : 0;
     pres_.forEachFaceFull(i, [&](Index j, int axis, int dir, double area, double, double) {
-      // Advecting velocity = the divergence-free FACE field uf (built by the previous projection), so
-      // the advective flux is conservative (∇·uf = 0) — Bell–Colella–Glaz / Basilisk. Falls back to
-      // the simple cell average ½(u_i+u_j) before the first projection has built uf. (At steady state
-      // φ→0 ⇒ uf = ½(u_i+u_j), so the steady solution is unchanged; the gain is in the transient.)
-      const double uface = faceFieldBuilt_
-                               ? uf_[static_cast<std::size_t>(s)]
-                               : 0.5 * (u_[axis][static_cast<std::size_t>(i)] + u_[axis][static_cast<std::size_t>(j)]);
+      // Advecting velocity = the divergence-free FACE field uf (built by the previous projection),
+      // so the advective flux is conservative (∇·uf = 0) — Bell–Colella–Glaz / Basilisk. Falls back
+      // to the simple cell average ½(u_i+u_j) before the first projection has built uf. (At steady
+      // state φ→0 ⇒ uf = ½(u_i+u_j), so the steady solution is unchanged; the gain is in the
+      // transient.)
+      const double uface = faceFieldBuilt_ ? uf_[static_cast<std::size_t>(s)]
+                                           : 0.5 * (u_[axis][static_cast<std::size_t>(i)] +
+                                                    u_[axis][static_cast<std::size_t>(j)]);
       ++s;
-      if (!mom_.isFluid(j)) return;  // no advection through the immersed boundary
+      if (!mom_.isFluid(j))
+        return;  // no advection through the immersed boundary
       double velOut = dir * uface;
       Index up = (velOut > 0.0) ? i : j, down = (velOut > 0.0) ? j : i;
       int upDir = (up == i) ? -dir : dir;  // upstream direction from the upwind cell
       Index upup = pres_.periodicNeighbor(up, axis, upDir);
       double phiUp = u_[comp][static_cast<std::size_t>(up)];
-      double phiUpUp = (upup >= 0 && mom_.isFluid(upup)) ? u_[comp][static_cast<std::size_t>(upup)] : phiUp;
+      double phiUpUp =
+          (upup >= 0 && mom_.isFluid(upup)) ? u_[comp][static_cast<std::size_t>(upup)] : phiUp;
       double phiFace = hoFace(phiUpUp, phiUp, u_[comp][static_cast<std::size_t>(down)]);
       out += area * velOut * phiFace;
     });
@@ -310,10 +326,17 @@ class AmrFlow {
     // Average the +axis-oriented face gradient (φ_j−φ_i)/dist over each side's
     // (sub)faces along axis c; a closed face contributes 0 (ABC). C/F-consistent.
     pres_.forEachFaceFull(i, [&](Index j, int axis, int dir, double, double dist, double alpha) {
-      if (axis != c || alpha <= 1e-12) return;
+      if (axis != c || alpha <= 1e-12)
+        return;
       double g = (dir > 0) ? (fld[static_cast<std::size_t>(j)] - pi) / dist
                            : (pi - fld[static_cast<std::size_t>(j)]) / dist;
-      if (dir > 0) { gp += g; ++np; } else { gm += g; ++nm; }
+      if (dir > 0) {
+        gp += g;
+        ++np;
+      } else {
+        gm += g;
+        ++nm;
+      }
     });
     double gpa = np ? gp / np : 0.0, gma = nm ? gm / nm : 0.0;
     return 0.5 * (gpa + gma);
@@ -328,7 +351,8 @@ class AmrFlow {
   template <class SdfFn>
   double faceFrac(SdfFn&& sdfFn, const Vec<3>& fc, int axis) const {
     double sd = sdfFn(fc);
-    if (sd <= 0.0) return 0.0;
+    if (sd <= 0.0)
+      return 0.0;
     Vec<3> g{};
     for (int d = 0; d < 3; ++d) {
       Vec<3> pp = fc, pm = fc;
@@ -337,10 +361,12 @@ class AmrFlow {
       g[d] = (sdfFn(pp) - sdfFn(pm)) / (2.0 * h0_);
     }
     double gmag = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
-    if (gmag < 1e-6) gmag = 1e-6;
+    if (gmag < 1e-6)
+      gmag = 1e-6;
     int t1 = (axis + 1) % 3, t2 = (axis + 2) % 3;
     double denom = (std::fabs(g[t1]) + std::fabs(g[t2])) / gmag * h0_;
-    if (denom < 1e-9) denom = 1e-9;
+    if (denom < 1e-9)
+      denom = 1e-9;
     double frac = 0.5 + sd / denom;
     return frac < 0.0 ? 0.0 : (frac > 1.0 ? 1.0 : frac);
   }
@@ -354,19 +380,21 @@ class AmrFlow {
   int advScheme_ = 0;        // 0 = SOU (default), 1 = Koren TVD
   Vec<3> f_{};
   AmrCutCell<Bits> mom_;
-  AmrPoisson<3, Bits> pres_;       // openness + divergence/gradient access
-  AmrMultigrid<3, Bits> presMG_;   // fast (graded-capable) pressure solve
+  AmrPoisson<3, Bits> pres_;      // openness + divergence/gradient access
+  AmrMultigrid<3, Bits> presMG_;  // fast (graded-capable) pressure solve
   std::array<std::vector<double>, 3> u_;
   std::vector<double> phi_;  // pressure-increment potential (per projection)
   std::vector<double> p_;    // accumulated pressure (rotational incremental scheme)
-  // Basilisk/ABC divergence-free FACE field: uf_[faceStart_[i]+s] is the +axis velocity through cell
-  // i's s-th (sub)face, in forEachFaceFull order. Each internal (sub)face is stored from BOTH incident
-  // cells; the orientation-based build keeps the two copies identical. At a 2:1 interface a coarse cell
-  // owns 2^(Dim-1) fine sub-faces and the fine cell owns its single face — so the face field is at the
-  // finest resolution touching each face and the coarse-cell divergence sums its sub-faces.
+  // Basilisk/ABC divergence-free FACE field: uf_[faceStart_[i]+s] is the +axis velocity through
+  // cell i's s-th (sub)face, in forEachFaceFull order. Each internal (sub)face is stored from BOTH
+  // incident cells; the orientation-based build keeps the two copies identical. At a 2:1 interface
+  // a coarse cell owns 2^(Dim-1) fine sub-faces and the fine cell owns its single face — so the
+  // face field is at the finest resolution touching each face and the coarse-cell divergence sums
+  // its sub-faces.
   std::vector<Index> faceStart_;  // CSR offsets into uf_, size n+1
   std::vector<double> uf_;        // +axis face velocity per (cell,face) slot
-  bool faceFieldBuilt_ = false;   // uf_ populated by a projection (else advection falls back to ½(u_i+u_j))
+  bool faceFieldBuilt_ =
+      false;  // uf_ populated by a projection (else advection falls back to ½(u_i+u_j))
 };
 
 }  // namespace peclet::core::amr::oracle

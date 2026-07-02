@@ -22,7 +22,9 @@ using peclet::core::halo::GridHaloTopology;
 
 static constexpr int kDim = 3;
 
-static double now() { return MPI_Wtime(); }
+static double now() {
+  return MPI_Wtime();
+}
 
 int main(int argc, char** argv) {
   MPI_Init(&argc, &argv);
@@ -48,16 +50,17 @@ int main(int argc, char** argv) {
 
   const auto& idx = halo.indexer();
   std::vector<double> a(idx.numCellsInclGhost(), 0.0);
-  idx.forEachInner([&](const IVec<kDim>& lmd) {
-    a[idx.localMdToLocal(lmd)] = static_cast<double>(rank);
-  });
+  idx.forEachInner(
+      [&](const IVec<kDim>& lmd) { a[idx.localMdToLocal(lmd)] = static_cast<double>(rank); });
   GridFieldView<double> field{a.data()};
 
   auto bench = [&](const char* label, auto&& doExchange) {
-    for (int w = 0; w < 5; ++w) doExchange();  // warmup
+    for (int w = 0; w < 5; ++w)
+      doExchange();  // warmup
     MPI_Barrier(MPI_COMM_WORLD);
     double t0 = now();
-    for (int it = 0; it < iters; ++it) doExchange();
+    for (int it = 0; it < iters; ++it)
+      doExchange();
     MPI_Barrier(MPI_COMM_WORLD);
     double t = (now() - t0) / iters;
     double tmax = 0.0;
@@ -69,8 +72,8 @@ int main(int argc, char** argv) {
 
   if (rank == 0) {
     std::printf("# transport-core halo benchmark\n");
-    std::printf("# ranks=%d  global=%lldx%lldx%lld  ghost=%d  iters=%d\n", size, (long long)gsize[0],
-                (long long)gsize[1], (long long)gsize[2], ghost, iters);
+    std::printf("# ranks=%d  global=%lldx%lldx%lld  ghost=%d  iters=%d\n", size,
+                (long long)gsize[0], (long long)gsize[1], (long long)gsize[2], ghost, iters);
     std::printf("# neighbors(rank0)=%zu  ghostRecv(rank0)=%zu  buildTopology=%.1f us\n",
                 halo.numNeighbors(), halo.numGhostRecv(), tBuild * 1e6);
   }

@@ -60,7 +60,8 @@ std::vector<double> makeRhs(const BO& t, double h0, const AmrPoisson<2, 32>& P) 
     vol += P.cellVolume(i);
   }
   m /= vol;
-  for (Index i = 0; i < n; ++i) rhs[static_cast<std::size_t>(i)] -= m;
+  for (Index i = 0; i < n; ++i)
+    rhs[static_cast<std::size_t>(i)] -= m;
   return rhs;
 }
 
@@ -81,7 +82,8 @@ void run() {
     mg1.solveQuad(u1, rhs, 80, 1);
     double dmax = 0;
     for (Index i = 0; i < n; ++i)
-      dmax = std::max(dmax, std::fabs(u0[static_cast<std::size_t>(i)] - u1[static_cast<std::size_t>(i)]));
+      dmax = std::max(dmax,
+                      std::fabs(u0[static_cast<std::size_t>(i)] - u1[static_cast<std::size_t>(i)]));
     PECLET_CORE_CHECK(dmax < 1e-12);
   }
 
@@ -97,7 +99,8 @@ void run() {
     mg.setOpenness(openFn);
     const AmrPoisson<2, 32>& P = mg.op();
     std::vector<double> u(static_cast<std::size_t>(n)), lq;
-    for (Index i = 0; i < n; ++i) u[static_cast<std::size_t>(i)] = std::sin(0.1 * i) + 0.3 * std::cos(0.07 * i);
+    for (Index i = 0; i < n; ++i)
+      u[static_cast<std::size_t>(i)] = std::sin(0.1 * i) + 0.3 * std::cos(0.07 * i);
     P.applyLaplacianQuad(u, lq);
     double integ = 0, scale = 0;
     for (Index i = 0; i < n; ++i) {

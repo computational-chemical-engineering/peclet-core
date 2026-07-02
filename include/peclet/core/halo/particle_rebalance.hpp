@@ -1,23 +1,23 @@
 // core — particle-count load re-balancing for the Lagrangian path.
 //
 // The Eulerian/AMR side rebalances by re-decomposing on a per-cell *work* weight and migrating the
-// owned data (see peclet::core::amr::DistributedOctree::rebalance). This is the Lagrangian counterpart: when
-// particles drift (e.g. a dense DEM packing densifies and skews the per-block count), the equal-cell
-// ORB no longer balances the load. rebalanceByParticleCount() bins the particles onto the
-// decomposition grid, re-decomposes with the *weighted* ORB so every block carries a near-equal
-// particle count, and migrates particles to their new owners with the existing ParticleMigrator.
+// owned data (see peclet::core::amr::DistributedOctree::rebalance). This is the Lagrangian
+// counterpart: when particles drift (e.g. a dense DEM packing densifies and skews the per-block
+// count), the equal-cell ORB no longer balances the load. rebalanceByParticleCount() bins the
+// particles onto the decomposition grid, re-decomposes with the *weighted* ORB so every block
+// carries a near-equal particle count, and migrates particles to their new owners with the existing
+// ParticleMigrator.
 //
 // It is a pure redistribution: the global particle set is unchanged (count conserved, positions and
 // payloads preserved); only ownership moves. The BlockDecomposer is re-initialised in place, so a
-// ParticleMigrator (or GridHaloTopology) holding a pointer to it transparently sees the new partition.
-// MPI-optional: a single rank keeps every particle and the decomposition is unchanged.
+// ParticleMigrator (or GridHaloTopology) holding a pointer to it transparently sees the new
+// partition. MPI-optional: a single rank keeps every particle and the decomposition is unchanged.
 #ifndef PECLET_CORE_HALO_PARTICLE_REBALANCE_HPP
 #define PECLET_CORE_HALO_PARTICLE_REBALANCE_HPP
 
-#include "peclet/core/common/mpi.hpp"
-
 #include <vector>
 
+#include "peclet/core/common/mpi.hpp"
 #include "peclet/core/common/types.hpp"
 #include "peclet/core/decomp/block_decomposer.hpp"
 #include "peclet/core/halo/particle_migrator.hpp"
@@ -45,17 +45,20 @@ std::size_t rebalanceByParticleCount(decomp::BlockDecomposer<Dim>& dec, Particle
   // 1. Particle count per global decomposition cell, agreed across ranks.
   const IVec<Dim>& gsize = dec.globalSize();
   std::size_t ncells = 1;
-  for (int d = 0; d < Dim; ++d) ncells *= static_cast<std::size_t>(gsize[d]);
+  for (int d = 0; d < Dim; ++d)
+    ncells *= static_cast<std::size_t>(gsize[d]);
   std::vector<double> localCount(ncells, 0.0), weight(ncells, 0.0);
   for (const Vec<Dim>& x : pos)
     localCount[static_cast<std::size_t>(dec.linearGlobal(mig.cellOf(x)))] += 1.0;
-  MPI_Allreduce(localCount.data(), weight.data(), static_cast<int>(ncells), MPI_DOUBLE, MPI_SUM, comm);
+  MPI_Allreduce(localCount.data(), weight.data(), static_cast<int>(ncells), MPI_DOUBLE, MPI_SUM,
+                comm);
 
   // 2. Weighted re-decomposition over the same grid (in place: mig still points at dec).
   int sz = 1;
   MPI_Comm_size(comm, &sz);
   dec.init(static_cast<std::size_t>(sz), gsize, weight);
-  if (weightOut) *weightOut = std::move(weight);
+  if (weightOut)
+    *weightOut = std::move(weight);
 
   // 3. Migrate particles to their new owners. ParticleMigrator already reassigns by ownerOf, which
   //    now reflects the re-weighted partition.

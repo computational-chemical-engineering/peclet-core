@@ -1,21 +1,20 @@
-// Device-resident distributed AMR multigrid (peclet::core::amr::DistributedMultigridView, C2): the V-cycle
-// runs entirely in Kokkos kernels over the device field, mirroring only the compact gather buffer
-// across MPI. It must (1) reproduce the HOST DistributedMultigrid on the same decomposition bit-for-bit
-// (the device port is exact), (2) match the single-block MPI_COMM_SELF reference bit-for-bit (consistent
-// across rank counts), and (3) actually solve. np = 1,2,4,8.
+// Device-resident distributed AMR multigrid (peclet::core::amr::DistributedMultigridView, C2): the
+// V-cycle runs entirely in Kokkos kernels over the device field, mirroring only the compact gather
+// buffer across MPI. It must (1) reproduce the HOST DistributedMultigrid on the same decomposition
+// bit-for-bit (the device port is exact), (2) match the single-block MPI_COMM_SELF reference
+// bit-for-bit (consistent across rank counts), and (3) actually solve. np = 1,2,4,8.
 //
 // Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
 #ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
+#include <Kokkos_Core.hpp>
 #include <vector>
 
-#include <Kokkos_Core.hpp>
-
-#include "peclet/core/amr/distributed_view.hpp"
 #include "peclet/core/amr/distributed_octree.hpp"
 #include "peclet/core/amr/distributed_poisson.hpp"
+#include "peclet/core/amr/distributed_view.hpp"
 #include "peclet/core/common/mpi.hpp"
 
 using namespace peclet::core;
@@ -41,7 +40,8 @@ std::vector<double> down(const View<double>& d, Index n) {
   std::vector<double> h(static_cast<std::size_t>(n));
   auto m = Kokkos::create_mirror_view(d);
   Kokkos::deep_copy(m, d);
-  for (Index i = 0; i < n; ++i) h[static_cast<std::size_t>(i)] = m(i);
+  for (Index i = 0; i < n; ++i)
+    h[static_cast<std::size_t>(i)] = m(i);
   return h;
 }
 
@@ -64,7 +64,8 @@ void run() {
   View<double> xw = dmg.x(0);
   Kokkos::deep_copy(xw, 0.0);
   const double r0 = dmg.op().residualNorm(View<const double>(xw), View<const double>(bw));
-  for (int c = 0; c < cycles; ++c) dmg.vcycle(xw, View<const double>(bw));
+  for (int c = 0; c < cycles; ++c)
+    dmg.vcycle(xw, View<const double>(bw));
   const double r1 = dmg.op().residualNorm(View<const double>(xw), View<const double>(bw));
   std::vector<double> xwh = down(xw, nw);
 
@@ -72,33 +73,39 @@ void run() {
   DistributedMultigrid<3, kBits> hmg;
   hmg.build(IVec<3>{N, N, N}, geo, per, MPI_COMM_WORLD);
   std::vector<double> bh(static_cast<std::size_t>(nw)), xh(static_cast<std::size_t>(nw), 0.0);
-  for (Index i = 0; i < nw; ++i) bh[static_cast<std::size_t>(i)] = bAt(hmg.octree().globalCode(i), h0);
-  for (int c = 0; c < cycles; ++c) hmg.vcycle(xh, bh);
+  for (Index i = 0; i < nw; ++i)
+    bh[static_cast<std::size_t>(i)] = bAt(hmg.octree().globalCode(i), h0);
+  for (int c = 0; c < cycles; ++c)
+    hmg.vcycle(xh, bh);
 
   // --- device, single block on MPI_COMM_SELF (consistency across rank counts) ---
   DistributedMultigridView<3, kBits> dms;
   dms.build(IVec<3>{N, N, N}, geo, per, MPI_COMM_SELF);
   const Index ns = dms.numLeaves();
   std::vector<double> bsh(static_cast<std::size_t>(ns));
-  for (Index i = 0; i < ns; ++i) bsh[static_cast<std::size_t>(i)] = bAt(dms.octree().globalCode(i), h0);
+  for (Index i = 0; i < ns; ++i)
+    bsh[static_cast<std::size_t>(i)] = bAt(dms.octree().globalCode(i), h0);
   View<double> bs = toDevice(bsh, "bs");
   View<double> xs = dms.x(0);
   Kokkos::deep_copy(xs, 0.0);
-  for (int c = 0; c < cycles; ++c) dms.vcycle(xs, View<const double>(bs));
+  for (int c = 0; c < cycles; ++c)
+    dms.vcycle(xs, View<const double>(bs));
   std::vector<double> xsh = down(xs, ns);
 
   int mismH = 0, mismS = 0;
   double maxH = 0.0, maxS = 0.0;
   for (Index i = 0; i < nw; ++i) {
     // device-vs-host on the same WORLD decomposition (index-aligned).
-    maxH = std::max(maxH, std::fabs(xwh[static_cast<std::size_t>(i)] - xh[static_cast<std::size_t>(i)]));
+    maxH = std::max(maxH,
+                    std::fabs(xwh[static_cast<std::size_t>(i)] - xh[static_cast<std::size_t>(i)]));
     // device-WORLD vs device-SELF: SELF block covers the whole domain ⇒ local code == global code.
     Index si = dms.octree().local().find(dmg.octree().globalCode(i));
     if (si < 0) {
       ++mismS;
       continue;
     }
-    maxS = std::max(maxS, std::fabs(xwh[static_cast<std::size_t>(i)] - xsh[static_cast<std::size_t>(si)]));
+    maxS = std::max(
+        maxS, std::fabs(xwh[static_cast<std::size_t>(i)] - xsh[static_cast<std::size_t>(si)]));
   }
   (void)mismH;
   PECLET_CORE_CHECK_EQ(mismS, 0);

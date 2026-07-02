@@ -52,7 +52,8 @@ class MortonIndexer {
   /// `g[i] - origin[i]` is in [0, 2^Bits).
   MORTON_HD Code codeOf(const IVec<Dim>& g) const {
     M m;
-    for (int i = 0; i < Dim; ++i) m.set(static_cast<unsigned>(i), localCoord(g, i));
+    for (int i = 0; i < Dim; ++i)
+      m.set(static_cast<unsigned>(i), localCoord(g, i));
     return m.code();
   }
 

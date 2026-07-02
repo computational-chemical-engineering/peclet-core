@@ -8,8 +8,8 @@
 //
 // Guarded by PECLET_CORE_HAVE_MORTON: without the morton sibling checkout this is a no-op
 // pass (the octree header defines nothing).
-#include "test_util.hpp"
 #include "peclet/core/common/types.hpp"
+#include "test_util.hpp"
 
 #ifdef PECLET_CORE_HAVE_MORTON
 #include <array>
@@ -65,11 +65,14 @@ Oracle uniformOracle(IVec<3> brick, unsigned lmax) {
 
 // Compare a BlockOctree's (sorted) leaf set to the oracle's (map is Z-ordered).
 bool sameLeaves(const BO& t, const Oracle& o) {
-  if (t.numLeaves() != static_cast<Index>(o.size())) return false;
+  if (t.numLeaves() != static_cast<Index>(o.size()))
+    return false;
   Index i = 0;
   for (auto it = o.begin(); it != o.end(); ++it, ++i) {
-    if (t.code(i) != it->first.code()) return false;
-    if (t.level(i) != it->second.level) return false;
+    if (t.code(i) != it->first.code())
+      return false;
+    if (t.level(i) != it->second.level)
+      return false;
   }
   return true;
 }
@@ -81,11 +84,13 @@ void test_uniform_and_locate() {
   PECLET_CORE_CHECK_EQ((long long)t.numLeaves(), (long long)(brick[0] * brick[1] * brick[2]));
   PECLET_CORE_CHECK(t.isBalanced());
 
-  const long total = (long)(brick[0] * brick[1] * brick[2]) * (1L << lmax) * (1L << lmax) * (1L << lmax);
+  const long total =
+      (long)(brick[0] * brick[1] * brick[2]) * (1L << lmax) * (1L << lmax) * (1L << lmax);
   PECLET_CORE_CHECK_EQ((long long)fineVolume(t), (long long)total);
 
   // Sorted ascending by code.
-  for (Index i = 1; i < t.numLeaves(); ++i) PECLET_CORE_CHECK(t.code(i - 1) < t.code(i));
+  for (Index i = 1; i < t.numLeaves(); ++i)
+    PECLET_CORE_CHECK(t.code(i - 1) < t.code(i));
 
   // Point location lands in a leaf whose bounds contain the point.
   std::uint64_t st = 12345;
@@ -94,9 +99,11 @@ void test_uniform_and_locate() {
     auto p = randPoint(st, span);
     Index leaf = t.find(p);
     PECLET_CORE_CHECK(leaf >= 0);
-    if (leaf < 0) continue;
+    if (leaf < 0)
+      continue;
     auto b = t.bounds(leaf);
-    for (int d = 0; d < 3; ++d) PECLET_CORE_CHECK(p[d] >= b[0][d] && p[d] <= b[1][d]);
+    for (int d = 0; d < 3; ++d)
+      PECLET_CORE_CHECK(p[d] >= b[0][d] && p[d] <= b[1][d]);
   }
 }
 
@@ -119,7 +126,8 @@ void test_refine_matches_oracle() {
       t.refineIf([&](Code c, unsigned) { return c == target; });
     }
     auto it = o.find(BO::M::from_code(pc));
-    if (it != o.end() && it->second.level > 0) o.refine(it, [](auto, unsigned) { return 0; });
+    if (it != o.end() && it->second.level > 0)
+      o.refine(it, [](auto, unsigned) { return 0; });
 
     PECLET_CORE_CHECK(sameLeaves(t, o));
     // Volume is conserved by refinement.
@@ -145,8 +153,8 @@ void test_balance() {
   // Create a genuine 2-level jump: refine the corner root cell [0,4)^3 to level 1
   // (size-2 children), then refine the child on its +x face down to level 0. A
   // size-1 cell at x=3 then sits next to the unrefined size-4 neighbour at x=4.
-  refineLeafAt(t, {0, 0, 0});  // level 2 -> 1
-  refineLeafAt(t, {3, 0, 0});  // level 1 -> 0
+  refineLeafAt(t, {0, 0, 0});          // level 2 -> 1
+  refineLeafAt(t, {3, 0, 0});          // level 1 -> 0
   PECLET_CORE_CHECK(!t.isBalanced());  // unbalanced before (level 0 adjacent to level 2)
 
   const long volBefore = fineVolume(t);

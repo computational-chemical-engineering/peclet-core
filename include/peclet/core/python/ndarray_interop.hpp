@@ -11,22 +11,22 @@
 //   * a device (CUDA/HIP) View exports as a DLPack-capable array that CuPy/PyTorch consume
 //     zero-copy via `cupy.from_dlpack(...)` / `torch.from_dlpack(...)`.
 // Lifetime is correct because the exported array owns a capsule holding a *copy* of the View, and
-// Kokkos Views are reference-counted — the allocation lives exactly as long as Python references it.
+// Kokkos Views are reference-counted — the allocation lives exactly as long as Python references
+// it.
 //
 // This header is only included by binding translation units (which link nanobind + Kokkos). It is
 // NOT pulled into the device kernels. Layout note: the suite is x-fastest (LayoutLeft), so a
-// `peclet::core::Field3D<T>` of logical shape (nx,ny,nz) exports with element strides {1, nx, nx*ny} — i.e.
-// a Fortran-order NumPy array indexed [x,y,z], matching docs/CONVENTIONS.md §6.
+// `peclet::core::Field3D<T>` of logical shape (nx,ny,nz) exports with element strides {1, nx,
+// nx*ny} — i.e. a Fortran-order NumPy array indexed [x,y,z], matching docs/CONVENTIONS.md §6.
 #ifndef PECLET_CORE_PYTHON_NDARRAY_INTEROP_HPP
 #define PECLET_CORE_PYTHON_NDARRAY_INTEROP_HPP
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 
-#include <Kokkos_Core.hpp>
-
 #include <array>
 #include <cstring>
+#include <Kokkos_Core.hpp>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -114,12 +114,13 @@ nb::ndarray<nb::numpy, T> vector_to_ndarray(std::vector<T>&& v,
                                    nb::device::cpu::value, 0);
 }
 
-/// Import a (contiguous) Python array into a freshly-allocated flat device `peclet::core::View<T>`. A host
-/// array is staged up (deep_copy from an unmanaged host wrap == the old `peclet::core::toDevice`); a device
-/// array on this build's backend is wrapped unmanaged and copied **on-device** (no host bounce —
-/// the CuPy zero-copy-onto-GPU path). An array on an incompatible device throws. The caller must
-/// pass a contiguous array (bindings enforce this via a typed `nb::ndarray<T, nb::c_contig>` /
-/// `nb::f_contig` parameter); the data is read as a flat buffer of `a.size()` elements.
+/// Import a (contiguous) Python array into a freshly-allocated flat device `peclet::core::View<T>`.
+/// A host array is staged up (deep_copy from an unmanaged host wrap == the old
+/// `peclet::core::toDevice`); a device array on this build's backend is wrapped unmanaged and
+/// copied **on-device** (no host bounce — the CuPy zero-copy-onto-GPU path). An array on an
+/// incompatible device throws. The caller must pass a contiguous array (bindings enforce this via a
+/// typed `nb::ndarray<T, nb::c_contig>` / `nb::f_contig` parameter); the data is read as a flat
+/// buffer of `a.size()` elements.
 template <class T>
 peclet::core::View<T> ndarray_to_view(const nb::ndarray<>& a, const std::string& label) {
   require_dtype<T>(a, "ndarray_to_view");
@@ -132,7 +133,8 @@ peclet::core::View<T> ndarray_to_view(const nb::ndarray<>& a, const std::string&
     Kokkos::deep_copy(d, hv);
   } else if constexpr (!is_host_space_v<peclet::core::MemSpace>) {
     if (dev != dlpack_device<peclet::core::MemSpace>().first)
-      throw std::runtime_error("ndarray_to_view: array is on an incompatible device for this build");
+      throw std::runtime_error(
+          "ndarray_to_view: array is on an incompatible device for this build");
     Kokkos::View<const T*, peclet::core::MemSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>> dv(
         static_cast<const T*>(a.data()), n);
     Kokkos::deep_copy(d, dv);
@@ -153,16 +155,19 @@ std::vector<T> ndarray_to_vector(const nb::ndarray<>& a) {
   std::vector<T> out(n);
   const int dev = a.device_type();
   if (dev == nb::device::cpu::value) {
-    if (n) std::memcpy(out.data(), a.data(), n * sizeof(T));
+    if (n)
+      std::memcpy(out.data(), a.data(), n * sizeof(T));
   } else if constexpr (!is_host_space_v<peclet::core::MemSpace>) {
     if (dev != dlpack_device<peclet::core::MemSpace>().first)
-      throw std::runtime_error("ndarray_to_vector: array is on an incompatible device for this build");
+      throw std::runtime_error(
+          "ndarray_to_vector: array is on an incompatible device for this build");
     Kokkos::View<const T*, peclet::core::MemSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>> dv(
         static_cast<const T*>(a.data()), n);
     Kokkos::View<T*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>> hv(out.data(), n);
     Kokkos::deep_copy(hv, dv);
   } else {
-    throw std::runtime_error("ndarray_to_vector: array is on an incompatible device for this build");
+    throw std::runtime_error(
+        "ndarray_to_vector: array is on an incompatible device for this build");
   }
   return out;
 }

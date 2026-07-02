@@ -1,15 +1,16 @@
 // core — shared, backend-agnostic kernels for an assembled face-CSR operator.
 //
-// The "host" serial reference solver (peclet::core::amr::AmrCutCell / oracle::AmrFlow, pure C++20) and the "device"
-// Kokkos solver (peclet::core::amr::MomentumOp + momentum.hpp) used to carry two independent
-// encodings of the SAME per-cell arithmetic — a real drift risk. This header is the single source of
-// that arithmetic: the assembled operator
+// The "host" serial reference solver (peclet::core::amr::AmrCutCell / oracle::AmrFlow, pure C++20)
+// and the "device" Kokkos solver (peclet::core::amr::MomentumOp + momentum.hpp) used to carry two
+// independent encodings of the SAME per-cell arithmetic — a real drift risk. This header is the
+// single source of that arithmetic: the assembled operator
 //
 //     (A u)_i = diag_i · u_i + Σ_{k ∈ [start_i, start_{i+1})} coef_k · u[nbr_k]
 //                              ( + optional implicit-FOU advection over a second CSR )
 //
 // expressed once as MORTON_HD row kernels over a *templated accessor*, so the SAME body serves
-//   - the host: a plain serial loop, arrays = raw pointers (no Kokkos dependency — MORTON_HD is empty
+//   - the host: a plain serial loop, arrays = raw pointers (no Kokkos dependency — MORTON_HD is
+//   empty
 //     in a non-Kokkos, non-CUDA build, so these compile as ordinary inline functions); and
 //   - the device: inside Kokkos::parallel_for, arrays = Kokkos::View.
 //
@@ -20,10 +21,10 @@
 
 #include "peclet/core/common/types.hpp"
 
-// MORTON_HD: KOKKOS_FUNCTION under a Kokkos build, __host__ __device__ under nvcc, empty otherwise —
-// so the row kernels are device-callable when compiled for the device and ordinary host functions in
-// the pure-C++ build. morton.hpp defines it for all three cases; when the (optional) morton checkout
-// is absent the operator is host-only, so an empty fallback is exactly right.
+// MORTON_HD: KOKKOS_FUNCTION under a Kokkos build, __host__ __device__ under nvcc, empty otherwise
+// — so the row kernels are device-callable when compiled for the device and ordinary host functions
+// in the pure-C++ build. morton.hpp defines it for all three cases; when the (optional) morton
+// checkout is absent the operator is host-only, so an empty fallback is exactly right.
 #if defined(PECLET_CORE_HAVE_MORTON)
 #include <morton/morton.hpp>
 #endif
@@ -33,8 +34,8 @@
 
 namespace peclet::core::amr {
 
-/// A uniform accessor over a raw host array, giving it the `operator()(i)` that Kokkos::View has, so
-/// the row kernels can be written once for both. (Device passes a `View<const T>` directly.)
+/// A uniform accessor over a raw host array, giving it the `operator()(i)` that Kokkos::View has,
+/// so the row kernels can be written once for both. (Device passes a `View<const T>` directly.)
 template <class T>
 struct HostArr {
   const T* p = nullptr;
@@ -60,10 +61,12 @@ struct FaceCsrOpT {
 template <class Op, class U>
 MORTON_HD inline double faceCsrApplyRow(const Op& op, Index i, const U& u) {
   double acc = op.diag(i) * u(i);
-  for (Index k = op.start(i); k < op.start(i + 1); ++k) acc += op.coef(k) * u(op.nbr(k));
+  for (Index k = op.start(i); k < op.start(i + 1); ++k)
+    acc += op.coef(k) * u(op.nbr(k));
   if (op.hasAdv) {
     acc += op.advDiag(i) * u(i);
-    for (Index k = op.advStart(i); k < op.advStart(i + 1); ++k) acc += op.advCoef(k) * u(op.advNbr(k));
+    for (Index k = op.advStart(i); k < op.advStart(i + 1); ++k)
+      acc += op.advCoef(k) * u(op.advNbr(k));
   }
   return acc;
 }
@@ -75,9 +78,11 @@ template <class Op, class U>
 MORTON_HD inline void faceCsrOffDiag(const Op& op, Index i, const U& u, double& off, double& d) {
   off = 0.0;
   d = op.diag(i);
-  for (Index k = op.start(i); k < op.start(i + 1); ++k) off += op.coef(k) * u(op.nbr(k));
+  for (Index k = op.start(i); k < op.start(i + 1); ++k)
+    off += op.coef(k) * u(op.nbr(k));
   if (op.hasAdv) {
-    for (Index k = op.advStart(i); k < op.advStart(i + 1); ++k) off += op.advCoef(k) * u(op.advNbr(k));
+    for (Index k = op.advStart(i); k < op.advStart(i + 1); ++k)
+      off += op.advCoef(k) * u(op.advNbr(k));
     d += op.advDiag(i);
   }
 }
@@ -96,8 +101,8 @@ MORTON_HD inline double faceCsrPointUpdate(double b_i, double off, double d, dou
 // momentum operator above it stores per-face conductances `w` and a per-cell `invVol`, with the
 // diagonal *derived* (the symmetric Laplacian Σ w·(u_nbr − u_i)); a Helmholtz generalisation
 //   H u = c0·u + cD·( invVol·( Σ w·(u_nbr − u_i) − bcDiag·u ) )
-// (c0=0, cD=1 ⇒ the pure FV Laplacian L) keeps the L path bit-exact. Same body for host (AmrPoisson)
-// and device (poisson.hpp FvOp).
+// (c0=0, cD=1 ⇒ the pure FV Laplacian L) keeps the L path bit-exact. Same body for host
+// (AmrPoisson) and device (poisson.hpp FvOp).
 // ---------------------------------------------------------------------------
 
 /// A backend-agnostic view of an assembled FV (weight-CSR) operator.
@@ -106,7 +111,7 @@ struct FvCsrOpT {
   Index n = 0;
   D invVol, coef;  // coef = per-face conductance w = openness·A_f/d_f
   I start, nbr;
-  D bcDiag;        // homogeneous-Dirichlet boundary diagonal (0 when periodic)
+  D bcDiag;  // homogeneous-Dirichlet boundary diagonal (0 when periodic)
   double c0 = 0.0, cD = 1.0;
 };
 
@@ -115,7 +120,8 @@ template <class Op, class U>
 MORTON_HD inline double fvApplyRow(const Op& op, Index i, const U& u) {
   const double ui = u(i);
   double acc = 0.0;
-  for (Index k = op.start(i); k < op.start(i + 1); ++k) acc += op.coef(k) * (u(op.nbr(k)) - ui);
+  for (Index k = op.start(i); k < op.start(i + 1); ++k)
+    acc += op.coef(k) * (u(op.nbr(k)) - ui);
   return op.c0 * ui + op.cD * (op.invVol(i) * (acc - op.bcDiag(i) * ui));
 }
 

@@ -1,22 +1,20 @@
-// Device-resident particle migration (peclet::core::halo::ParticleMigratorView, D1): particles live in device
-// Views; the periodic wrap + ORB owner lookup run on device, departing particles are device-packed into
-// compact buffers, only those cross MPI (NBX), arrivals unpack back on device. Same correctness contract
-// as the host migrator (test_particle_migration): over random-walk + migrate steps, globally and every
-// step — count is conserved (== N), every local particle is owned by this rank, and the id multiset is
-// exactly {0..N-1} (SUM + XOR reductions). np = 1,2,4,8.
+// Device-resident particle migration (peclet::core::halo::ParticleMigratorView, D1): particles live
+// in device Views; the periodic wrap + ORB owner lookup run on device, departing particles are
+// device-packed into compact buffers, only those cross MPI (NBX), arrivals unpack back on device.
+// Same correctness contract as the host migrator (test_particle_migration): over random-walk +
+// migrate steps, globally and every step — count is conserved (== N), every local particle is owned
+// by this rank, and the id multiset is exactly {0..N-1} (SUM + XOR reductions). np = 1,2,4,8.
 //
 // Guarded by PECLET_CORE_HAVE_MORTON (for the Kokkos-on-MPI build wiring); a no-op otherwise.
-#include "test_util.hpp"
-
 #include <cstdint>
-#include <vector>
-
 #include <Kokkos_Core.hpp>
+#include <vector>
 
 #include "peclet/core/common/mpi.hpp"
 #include "peclet/core/decomp/block_decomposer.hpp"
 #include "peclet/core/halo/particle_migrator.hpp"
 #include "peclet/core/halo/particle_migrator_view.hpp"
+#include "test_util.hpp"
 
 using namespace peclet::core;
 using namespace peclet::core::halo;
@@ -24,12 +22,13 @@ using namespace peclet::core::halo;
 namespace {
 
 constexpr int Dim = 3;
-constexpr Index N = 512;        // global particle count
-constexpr Index G = 8;          // 8^3 cell grid, [0,8)^3 periodic, unit cells
+constexpr Index N = 512;  // global particle count
+constexpr Index G = 8;    // 8^3 cell grid, [0,8)^3 periodic, unit cells
 
 // Deterministic per-(id,step) pseudo-random displacement in (-0.5, 0.5) per axis.
 KOKKOS_INLINE_FUNCTION double jitter(std::uint64_t id, int step, int axis) {
-  std::uint64_t s = id * 0x9e3779b97f4a7c15ULL + static_cast<std::uint64_t>(step) * 0x100000001b3ULL +
+  std::uint64_t s = id * 0x9e3779b97f4a7c15ULL +
+                    static_cast<std::uint64_t>(step) * 0x100000001b3ULL +
                     static_cast<std::uint64_t>(axis) * 0xff51afd7ed558ccdULL;
   s ^= s >> 33;
   s *= 0xff51afd7ed558ccdULL;
@@ -71,29 +70,36 @@ void run() {
     }
     char b[sizeof(std::int64_t)];
     std::memcpy(b, &id, stride);
-    for (std::size_t k = 0; k < stride; ++k) iy.push_back(b[k]);
+    for (std::size_t k = 0; k < stride; ++k)
+      iy.push_back(b[k]);
     ++cnt0;
   }
-  Kokkos::deep_copy(Kokkos::subview(pos, std::pair<std::size_t, std::size_t>(0, ip.size())),
-                    Kokkos::View<const double*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>(
-                        ip.data(), ip.size()));
-  Kokkos::deep_copy(Kokkos::subview(pay, std::pair<std::size_t, std::size_t>(0, iy.size())),
-                    Kokkos::View<const char*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>(
-                        iy.data(), iy.size()));
+  Kokkos::deep_copy(
+      Kokkos::subview(pos, std::pair<std::size_t, std::size_t>(0, ip.size())),
+      Kokkos::View<const double*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>(
+          ip.data(), ip.size()));
+  Kokkos::deep_copy(
+      Kokkos::subview(pay, std::pair<std::size_t, std::size_t>(0, iy.size())),
+      Kokkos::View<const char*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>(
+          iy.data(), iy.size()));
   Index n = cnt0;
 
   // Expected invariants of the full id set {0..N-1}.
   std::int64_t expSum = N * (N - 1) / 2, expXor = 0;
-  for (std::int64_t id = 0; id < N; ++id) expXor ^= id;
+  for (std::int64_t id = 0; id < N; ++id)
+    expXor ^= id;
 
   for (int step = 0; step < 6; ++step) {
     // random-walk on device, then migrate on device.
     Kokkos::parallel_for(
         "walk", Kokkos::RangePolicy<ExecSpace>(0, n), KOKKOS_LAMBDA(const Index i) {
-          std::uint64_t id = 0;  // reconstruct the little-endian id from the byte payload (device-safe)
+          std::uint64_t id =
+              0;  // reconstruct the little-endian id from the byte payload (device-safe)
           for (std::size_t k = 0; k < stride; ++k)
-            id |= static_cast<std::uint64_t>(static_cast<unsigned char>(pay(i * stride + k))) << (8 * k);
-          for (int d = 0; d < Dim; ++d) pos(i * Dim + d) += jitter(id, step, d);
+            id |= static_cast<std::uint64_t>(static_cast<unsigned char>(pay(i * stride + k)))
+                  << (8 * k);
+          for (int d = 0; d < Dim; ++d)
+            pos(i * Dim + d) += jitter(id, step, d);
         });
     n = mig.migrate(pos, pay, n, stride);
 
@@ -111,7 +117,8 @@ void run() {
       Kokkos::deep_copy(mp, pos);
       Kokkos::deep_copy(my, pay);
       for (Index i = 0; i < n; ++i) {
-        for (int d = 0; d < Dim; ++d) hp[static_cast<std::size_t>(i) * Dim + d] = mp(i * Dim + d);
+        for (int d = 0; d < Dim; ++d)
+          hp[static_cast<std::size_t>(i) * Dim + d] = mp(i * Dim + d);
         std::memcpy(&hid[static_cast<std::size_t>(i)], &my(i * stride), stride);
       }
     }
@@ -120,8 +127,10 @@ void run() {
     std::int64_t localSum = 0, localXor = 0;
     for (Index i = 0; i < n; ++i) {
       Vec<Dim> x;
-      for (int d = 0; d < Dim; ++d) x[d] = hp[static_cast<std::size_t>(i) * Dim + d];
-      if (hmig.ownerOf(x) != rank) ++fail;
+      for (int d = 0; d < Dim; ++d)
+        x[d] = hp[static_cast<std::size_t>(i) * Dim + d];
+      if (hmig.ownerOf(x) != rank)
+        ++fail;
       localSum += hid[static_cast<std::size_t>(i)];
       localXor ^= hid[static_cast<std::size_t>(i)];
     }

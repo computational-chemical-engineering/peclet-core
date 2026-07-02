@@ -77,14 +77,17 @@ class DistributedFvOperator {
       Vec<Dim> fc{};
       long plane = flo[axis] + (faceDir > 0 ? static_cast<long>(s) : 0L);
       for (int d2 = 0; d2 < Dim; ++d2)
-        fc[d2] = (d2 == axis) ? org[d2] + static_cast<double>(plane) * h0_
-                              : org[d2] + (static_cast<double>(flo[d2]) + 0.5 * static_cast<double>(s)) * h0_;
+        fc[d2] =
+            (d2 == axis)
+                ? org[d2] + static_cast<double>(plane) * h0_
+                : org[d2] + (static_cast<double>(flo[d2]) + 0.5 * static_cast<double>(s)) * h0_;
       double a = openFn(fc, axis);
       return a < 0.0 ? 0.0 : (a > 1.0 ? 1.0 : a);
     };
     auto gLo = [&](const std::array<Coord, Dim>& lc) {
       std::array<long, Dim> g{};
-      for (int d2 = 0; d2 < Dim; ++d2) g[d2] = static_cast<long>(lc[d2]) + static_cast<long>(bfo[d2]);
+      for (int d2 = 0; d2 < Dim; ++d2)
+        g[d2] = static_cast<long>(lc[d2]) + static_cast<long>(bfo[d2]);
       return g;
     };
     // Global fine lower corner of the k-th fine sub-neighbour across a coarse cell's
@@ -96,14 +99,17 @@ class DistributedFvOperator {
       flo[axis] = (dir > 0) ? clo[axis] + static_cast<long>(si) : clo[axis] - static_cast<long>(sj);
       int bit = 0;
       for (int t = 0; t < Dim; ++t) {
-        if (t == axis) continue;
+        if (t == axis)
+          continue;
         flo[t] = clo[t] + (((k >> bit) & 1) ? static_cast<long>(sj) : 0L);
         ++bit;
       }
       for (int d2 = 0; d2 < Dim; ++d2) {
         long gf = static_cast<long>(d.globalFineSize()[d2]);
-        if (flo[d2] < 0) flo[d2] += gf;
-        else if (flo[d2] >= gf) flo[d2] -= gf;
+        if (flo[d2] < 0)
+          flo[d2] += gf;
+        else if (flo[d2] >= gf)
+          flo[d2] -= gf;
       }
       return flo;
     };
@@ -134,14 +140,17 @@ class DistributedFvOperator {
       for (int axis = 0; axis < Dim; ++axis)
         for (int dir = -1; dir <= 1; dir += 2) {
           typename DO::FaceInfo fi = d.faceAcross(i, axis, dir);
-          if (fi.state == 2) continue;  // DomainNone
-          if (fi.state == 0) {          // InBlock: enumerate locally
+          if (fi.state == 2)
+            continue;           // DomainNone
+          if (fi.state == 0) {  // InBlock: enumerate locally
             Index j = fi.localNb;
-            if (j < 0) continue;
+            if (j < 0)
+              continue;
             const int Lj = static_cast<int>(t.level(j));
             if (Lj >= Li) {  // finer side is i: α at i's face
               const double a = alphaOf(gLo(lo), si, axis, dir);
-              ent[static_cast<std::size_t>(i)].push_back(E{a * coeff(si, Coord(Coord(1) << Lj)), j, -1});
+              ent[static_cast<std::size_t>(i)].push_back(
+                  E{a * coeff(si, Coord(Coord(1) << Lj)), j, -1});
             } else {  // finer side is the sub-neighbour jj: α at jj's face (−dir)
               const Coord sj = Coord(si >> 1);
               const long pc = (dir > 0) ? static_cast<long>(lo[axis]) + static_cast<long>(si)
@@ -152,13 +161,15 @@ class DistributedFvOperator {
                 q[axis] = static_cast<Coord>(pc);
                 int bit = 0;
                 for (int tt = 0; tt < Dim; ++tt) {
-                  if (tt == axis) continue;
+                  if (tt == axis)
+                    continue;
                   const Coord off = ((k >> bit) & 1) ? sj : Coord(0);
                   q[tt] = static_cast<Coord>(lo[tt] + off);
                   ++bit;
                 }
                 Index jj = t.find(M::encode(q).code());
-                const double a = alphaOf(fineLoGlobal(gLo(lo), si, sj, axis, dir, k), sj, axis, -dir);
+                const double a =
+                    alphaOf(fineLoGlobal(gLo(lo), si, sj, axis, dir, k), sj, axis, -dir);
                 ent[static_cast<std::size_t>(i)].push_back(E{a * coeff(si, sj), jj, -1});
               }
             }
@@ -175,7 +186,8 @@ class DistributedFvOperator {
 
     // One owner gather of the across-face covering level for every remote face.
     std::vector<std::array<Coord, Dim>> coverCoords(rfaces.size());
-    for (std::size_t r = 0; r < rfaces.size(); ++r) coverCoords[r] = rfaces[r].gc;
+    for (std::size_t r = 0; r < rfaces.size(); ++r)
+      coverCoords[r] = rfaces[r].gc;
     std::vector<int> coverLv = d.coverLevels(coverCoords);
 
     // Pass 2: expand into the final CSR; ghost coords deduped to ghost slots.
@@ -183,7 +195,8 @@ class DistributedFvOperator {
     std::vector<std::array<Coord, Dim>> ghostCoords;
     auto ghostRef = [&](const std::array<Coord, Dim>& gc) -> Index {
       auto it = ghostSlot.find(gc);
-      if (it != ghostSlot.end()) return it->second;
+      if (it != ghostSlot.end())
+        return it->second;
       Index s = static_cast<Index>(ghostCoords.size());
       ghostSlot.emplace(gc, s);
       ghostCoords.push_back(gc);
@@ -200,7 +213,8 @@ class DistributedFvOperator {
         } else {
           const RFace& rf = rfaces[static_cast<std::size_t>(e.rfId)];
           const int Lj = coverLv[static_cast<std::size_t>(e.rfId)];
-          if (Lj < 0) continue;  // no neighbour
+          if (Lj < 0)
+            continue;         // no neighbour
           if (Lj >= rf.Li) {  // finer side is i: α at i's face
             const double a = alphaOf(rf.iLo, rf.si, rf.axis, rf.dir);
             const double ww = a * coeff(rf.si, Coord(Coord(1) << Lj));
@@ -212,8 +226,8 @@ class DistributedFvOperator {
             const int nsub = 1 << (Dim - 1);
             for (int k = 0; k < nsub; ++k) {
               std::array<Coord, Dim> sc = subCoord(rf.gc, rf.axis, k, sj);
-              const double a =
-                  alphaOf(fineLoGlobal(rf.iLo, rf.si, sj, rf.axis, rf.dir, k), sj, rf.axis, -rf.dir);
+              const double a = alphaOf(fineLoGlobal(rf.iLo, rf.si, sj, rf.axis, rf.dir, k), sj,
+                                       rf.axis, -rf.dir);
               const double ww = a * coeff(rf.si, sj);
               ref_.push_back(d_->local().numLeaves() + ghostRef(sc));
               w_.push_back(ww);
@@ -237,9 +251,11 @@ class DistributedFvOperator {
     for (Index i = 0; i < n_; ++i) {
       const double ui = u[static_cast<std::size_t>(i)];
       double acc = 0.0;
-      for (Index k = start_[static_cast<std::size_t>(i)]; k < start_[static_cast<std::size_t>(i) + 1]; ++k) {
+      for (Index k = start_[static_cast<std::size_t>(i)];
+           k < start_[static_cast<std::size_t>(i) + 1]; ++k) {
         const Index r = ref_[static_cast<std::size_t>(k)];
-        const double val = (r < n_) ? u[static_cast<std::size_t>(r)] : g[static_cast<std::size_t>(r - n_)];
+        const double val =
+            (r < n_) ? u[static_cast<std::size_t>(r)] : g[static_cast<std::size_t>(r - n_)];
         acc += w_[static_cast<std::size_t>(k)] * (val - ui);
       }
       Lu[static_cast<std::size_t>(i)] = invVol_[static_cast<std::size_t>(i)] * acc;
@@ -278,19 +294,22 @@ class DistributedFvOperator {
       std::vector<double> g = d_->coverValues(ghostCoords_, u);
       for (Index i = 0; i < n_; ++i) {
         double sumOff = 0.0;
-        for (Index k = start_[static_cast<std::size_t>(i)]; k < start_[static_cast<std::size_t>(i) + 1]; ++k) {
+        for (Index k = start_[static_cast<std::size_t>(i)];
+             k < start_[static_cast<std::size_t>(i) + 1]; ++k) {
           const Index r = ref_[static_cast<std::size_t>(k)];
-          const double val = (r < n_) ? u[static_cast<std::size_t>(r)] : g[static_cast<std::size_t>(r - n_)];
+          const double val =
+              (r < n_) ? u[static_cast<std::size_t>(r)] : g[static_cast<std::size_t>(r - n_)];
           sumOff += w_[static_cast<std::size_t>(k)] * val;
         }
         const double Vrhs = rhs[static_cast<std::size_t>(i)] / invVol_[static_cast<std::size_t>(i)];
         tmp[static_cast<std::size_t>(i)] =
-            (diag_[static_cast<std::size_t>(i)] != 0.0) ? (sumOff - Vrhs) / diag_[static_cast<std::size_t>(i)]
-                                                        : u[static_cast<std::size_t>(i)];
+            (diag_[static_cast<std::size_t>(i)] != 0.0)
+                ? (sumOff - Vrhs) / diag_[static_cast<std::size_t>(i)]
+                : u[static_cast<std::size_t>(i)];
       }
       for (Index i = 0; i < n_; ++i)
-        u[static_cast<std::size_t>(i)] =
-            (1.0 - omega) * u[static_cast<std::size_t>(i)] + omega * tmp[static_cast<std::size_t>(i)];
+        u[static_cast<std::size_t>(i)] = (1.0 - omega) * u[static_cast<std::size_t>(i)] +
+                                         omega * tmp[static_cast<std::size_t>(i)];
     }
   }
 
@@ -298,12 +317,14 @@ class DistributedFvOperator {
   double cellWidth(int level) const { return h0_ * static_cast<double>(Index(1) << level); }
   double cellVol(int level) const {
     double w = cellWidth(level), v = 1.0;
-    for (int d = 0; d < Dim; ++d) v *= w;
+    for (int d = 0; d < Dim; ++d)
+      v *= w;
     return v;
   }
   double areaOf(Coord s) const {
     double a = 1.0;
-    for (int d = 0; d < Dim - 1; ++d) a *= static_cast<double>(s) * h0_;
+    for (int d = 0; d < Dim - 1; ++d)
+      a *= static_cast<double>(s) * h0_;
     return a;
   }
   double coeff(Coord si, Coord sj) const {
@@ -312,15 +333,18 @@ class DistributedFvOperator {
   }
 
   // tangential sub-coord for a finer 2:1 face (global, wrapped to the domain).
-  std::array<Coord, Dim> subCoord(const std::array<Coord, Dim>& gc, int axis, int k, Coord sj) const {
+  std::array<Coord, Dim> subCoord(const std::array<Coord, Dim>& gc, int axis, int k,
+                                  Coord sj) const {
     std::array<Coord, Dim> q = gc;
     int bit = 0;
     for (int tt = 0; tt < Dim; ++tt) {
-      if (tt == axis) continue;
+      if (tt == axis)
+        continue;
       const Coord off = ((k >> bit) & 1) ? sj : Coord(0);
       long v = static_cast<long>(gc[tt]) + static_cast<long>(off);
       const long gf = static_cast<long>(d_->globalFineSize()[tt]);
-      if (v >= gf) v -= gf;  // periodic tangential wrap (in-domain otherwise)
+      if (v >= gf)
+        v -= gf;  // periodic tangential wrap (in-domain otherwise)
       q[tt] = static_cast<Coord>(v);
       ++bit;
     }
@@ -331,7 +355,7 @@ class DistributedFvOperator {
   double h0_ = 1.0;
   Index n_ = 0;
   std::vector<double> invVol_, diag_, w_;
-  std::vector<Index> start_, ref_;                 // face CSR (ref<n local, else ghost)
+  std::vector<Index> start_, ref_;                   // face CSR (ref<n local, else ghost)
   std::vector<std::array<Coord, Dim>> ghostCoords_;  // dedup ghost cells (slot = ref−n)
 };
 
@@ -392,7 +416,8 @@ class GradedDistributedMultigrid {
       BO coarse = levels_.back()->d.local();  // copy
       const Index before = coarse.numLeaves();
       coarse.coarsenIf([](typename DO::Code, unsigned) { return true; });
-      if (coarse.numLeaves() == before) break;  // uniform root brick reached
+      if (coarse.numLeaves() == before)
+        break;  // uniform root brick reached
       auto lv = std::make_unique<Level>();
       lv->d.init(g, lmax, geo, per, comm);
       lv->d.local() = coarse;  // same ORB block, coarsened local octree
@@ -432,7 +457,8 @@ class GradedDistributedMultigrid {
       const Index nf = f.numLeaves();
       auto& c2p = levels_[L]->c2p;
       c2p.assign(static_cast<std::size_t>(nf), -1);
-      for (Index i = 0; i < nf; ++i) c2p[static_cast<std::size_t>(i)] = c.find(f.code(i));
+      for (Index i = 0; i < nf; ++i)
+        c2p[static_cast<std::size_t>(i)] = c.find(f.code(i));
     }
 
     // Bottom solver (openness-free only): a uniform DistributedMultigrid on the root
@@ -451,7 +477,8 @@ class GradedDistributedMultigrid {
       nCoarse_ = coarsest.local().numLeaves();
       innerMap_.assign(static_cast<std::size_t>(nCoarse_), -1);
       for (Index i = 0; i < nCoarse_; ++i)
-        innerMap_[static_cast<std::size_t>(i)] = inner_->octree(0).findGlobalRoot(coarsest.globalRootOf(i));
+        innerMap_[static_cast<std::size_t>(i)] =
+            inner_->octree(0).findGlobalRoot(coarsest.globalRootOf(i));
     }
   }
 
@@ -479,22 +506,26 @@ class GradedDistributedMultigrid {
     // restrict residual → coarse rhs (local average over children).
     auto& cl = *levels_[L + 1];
     const Index nc = cl.d.local().numLeaves();
-    std::vector<double> cb(static_cast<std::size_t>(nc), 0.0), cn(static_cast<std::size_t>(nc), 0.0);
+    std::vector<double> cb(static_cast<std::size_t>(nc), 0.0),
+        cn(static_cast<std::size_t>(nc), 0.0);
     const auto& c2p = lv.c2p;
     const Index nf = lv.d.local().numLeaves();
     for (Index i = 0; i < nf; ++i) {
       Index p = c2p[static_cast<std::size_t>(i)];
-      if (p < 0) continue;
+      if (p < 0)
+        continue;
       cb[static_cast<std::size_t>(p)] += res[static_cast<std::size_t>(i)];
       cn[static_cast<std::size_t>(p)] += 1.0;
     }
     for (Index p = 0; p < nc; ++p)
-      if (cn[static_cast<std::size_t>(p)] > 0.0) cb[static_cast<std::size_t>(p)] /= cn[static_cast<std::size_t>(p)];
+      if (cn[static_cast<std::size_t>(p)] > 0.0)
+        cb[static_cast<std::size_t>(p)] /= cn[static_cast<std::size_t>(p)];
     std::vector<double> cx(static_cast<std::size_t>(nc), 0.0);
     vcycle(cx, cb, pre, post, innerCycles, omega, L + 1);
     for (Index i = 0; i < nf; ++i) {
       Index p = c2p[static_cast<std::size_t>(i)];
-      if (p >= 0) x[static_cast<std::size_t>(i)] += cx[static_cast<std::size_t>(p)];
+      if (p >= 0)
+        x[static_cast<std::size_t>(i)] += cx[static_cast<std::size_t>(p)];
     }
     lv.op.jacobi(x, b, post, omega);
   }
@@ -509,22 +540,26 @@ class GradedDistributedMultigrid {
     std::vector<double> res;
     op.residual(x, b, res);
     const Index ni = inner_->numLeaves(0);
-    std::vector<double> bi(static_cast<std::size_t>(ni), 0.0), ei(static_cast<std::size_t>(ni), 0.0);
+    std::vector<double> bi(static_cast<std::size_t>(ni), 0.0),
+        ei(static_cast<std::size_t>(ni), 0.0);
     for (Index i = 0; i < nCoarse_; ++i) {
       Index m = innerMap_[static_cast<std::size_t>(i)];
-      if (m >= 0) bi[static_cast<std::size_t>(m)] = res[static_cast<std::size_t>(i)];
+      if (m >= 0)
+        bi[static_cast<std::size_t>(m)] = res[static_cast<std::size_t>(i)];
     }
-    for (int c = 0; c < cycles; ++c) inner_->vcycle(ei, bi);
+    for (int c = 0; c < cycles; ++c)
+      inner_->vcycle(ei, bi);
     for (Index i = 0; i < nCoarse_; ++i) {
       Index m = innerMap_[static_cast<std::size_t>(i)];
-      if (m >= 0) x[static_cast<std::size_t>(i)] += ei[static_cast<std::size_t>(m)];
+      if (m >= 0)
+        x[static_cast<std::size_t>(i)] += ei[static_cast<std::size_t>(m)];
     }
   }
 
   struct Level {
     DO d;
     DistributedFvOperator<Dim, Bits> op;
-    std::vector<Index> c2p;        // fine leaf → covering coarse leaf (local)
+    std::vector<Index> c2p;         // fine leaf → covering coarse leaf (local)
     std::vector<double> x, b, res;  // scratch
   };
   std::vector<std::unique_ptr<Level>> levels_;

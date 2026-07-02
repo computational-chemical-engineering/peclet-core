@@ -29,9 +29,9 @@
 #include <vector>
 
 #include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/face_csr.hpp"   // shared host+device assembled-operator row kernels
 #include "peclet/core/amr/multigrid.hpp"  // restrictField / prolongAdd transfer kernels
 #include "peclet/core/amr/pcg.hpp"        // dotPlain-style primitives: axpy, zpby, negate
-#include "peclet/core/amr/face_csr.hpp"          // shared host+device assembled-operator row kernels
 #include "peclet/core/common/view.hpp"
 
 namespace peclet::core::amr {
@@ -48,16 +48,16 @@ struct MomentumOp {
   Index n = 0;
   // Optional implicit-FOU advection (over the face-geometry CSR):
   bool hasAdv = false;
-  View<double> advDiag;   ///< per-cell outflow (diagonal) advection weight, size n
-  View<Index> advStart;   ///< face-geom CSR row offsets, size n+1
-  View<Index> advNbr;     ///< face-geom neighbour per face, size nFaces
-  View<double> advCoef;   ///< per-face inflow advection coefficient (0 on outflow/solid faces)
+  View<double> advDiag;  ///< per-cell outflow (diagonal) advection weight, size n
+  View<Index> advStart;  ///< face-geom CSR row offsets, size n+1
+  View<Index> advNbr;    ///< face-geom neighbour per face, size nFaces
+  View<double> advCoef;  ///< per-face inflow advection coefficient (0 on outflow/solid faces)
 };
 
 /// View the assembled momentum operator through the shared, backend-agnostic FaceCsrOpT, so the
 /// device kernels and the host serial solver (cut_cell.hpp) run the *same* row arithmetic
-/// (face_csr.hpp) and cannot drift. Non-const Views convert to their const accessor form implicitly;
-/// the advection arrays are empty (and untouched) when hasAdv is false.
+/// (face_csr.hpp) and cannot drift. Non-const Views convert to their const accessor form
+/// implicitly; the advection arrays are empty (and untouched) when hasAdv is false.
 inline FaceCsrOpT<View<const double>, View<const Index>> momView(const MomentumOp& op) {
   FaceCsrOpT<View<const double>, View<const Index>> v;
   v.n = op.n;
@@ -77,13 +77,12 @@ inline FaceCsrOpT<View<const double>, View<const Index>> momView(const MomentumO
 inline void applyMom(const MomentumOp& op, View<const double> u, View<double> Au) {
   const auto A = momView(op);
   Kokkos::parallel_for(
-      "amr::mom_apply", op.n,
-      KOKKOS_LAMBDA(const Index i) { Au(i) = faceCsrApplyRow(A, i, u); });
+      "amr::mom_apply", op.n, KOKKOS_LAMBDA(const Index i) { Au(i) = faceCsrApplyRow(A, i, u); });
 }
 
 /// res = b − A u.
-inline void residualMom(const MomentumOp& op, View<const double> u,
-                              View<const double> b, View<double> res) {
+inline void residualMom(const MomentumOp& op, View<const double> u, View<const double> b,
+                        View<double> res) {
   const auto A = momView(op);
   Kokkos::parallel_for(
       "amr::mom_residual", op.n,
@@ -92,8 +91,8 @@ inline void residualMom(const MomentumOp& op, View<const double> u,
 
 /// One weighted-Jacobi sweep of A u = b (in place). `tmp` is scratch (size n). Pass 1
 /// reads only the previous iterate, pass 2 updates ⇒ order-independent / deterministic.
-inline void jacobiMom(const MomentumOp& op, View<double> u, View<const double> b,
-                            View<double> tmp, double omega) {
+inline void jacobiMom(const MomentumOp& op, View<double> u, View<const double> b, View<double> tmp,
+                      double omega) {
   const auto A = momView(op);
   Kokkos::parallel_for(
       "amr::mom_jacobi_compute", op.n, KOKKOS_LAMBDA(const Index i) {
@@ -147,27 +146,30 @@ struct Coloring {
 /// Deterministic from the natural cell order.
 ///
 /// The adjacency is **symmetrised** first (undirected: i conflicts with j if i∈nbr(j) OR j∈nbr(i)).
-/// The assembled cut-cell operator's CSR can be structurally *asymmetric* — the ξ-polynomial Dirichlet
-/// overlay adds extrapolation entries a cut cell references but its target doesn't reference back — and
-/// colouring only the outgoing edges would then leave two mutually-adjacent cells the same colour, a
-/// data race that makes the GS sweep a non-deterministic (inconsistent) operator and silently breaks
-/// the BiCGStab it preconditions (false convergence to NaN at scale). Symmetrising is the correctness
-/// guard; it costs one O(nnz) host pass at build/adapt time.
+/// The assembled cut-cell operator's CSR can be structurally *asymmetric* — the ξ-polynomial
+/// Dirichlet overlay adds extrapolation entries a cut cell references but its target doesn't
+/// reference back — and colouring only the outgoing edges would then leave two mutually-adjacent
+/// cells the same colour, a data race that makes the GS sweep a non-deterministic (inconsistent)
+/// operator and silently breaks the BiCGStab it preconditions (false convergence to NaN at scale).
+/// Symmetrising is the correctness guard; it costs one O(nnz) host pass at build/adapt time.
 inline Coloring greedyColoring(const std::vector<Index>& start, const std::vector<Index>& nbr,
                                Index n) {
   // Build the symmetric (undirected) adjacency in CSR form.
   std::vector<Index> deg(static_cast<std::size_t>(n) + 1, 0);
   for (Index i = 0; i < n; ++i)
-    for (Index k = start[static_cast<std::size_t>(i)]; k < start[static_cast<std::size_t>(i) + 1]; ++k) {
+    for (Index k = start[static_cast<std::size_t>(i)]; k < start[static_cast<std::size_t>(i) + 1];
+         ++k) {
       ++deg[static_cast<std::size_t>(i) + 1];
       ++deg[static_cast<std::size_t>(nbr[static_cast<std::size_t>(k)]) + 1];
     }
-  for (Index i = 0; i < n; ++i) deg[static_cast<std::size_t>(i) + 1] += deg[static_cast<std::size_t>(i)];
+  for (Index i = 0; i < n; ++i)
+    deg[static_cast<std::size_t>(i) + 1] += deg[static_cast<std::size_t>(i)];
   std::vector<Index> aStart(deg);  // copy of the offsets
   std::vector<Index> aNbr(static_cast<std::size_t>(deg[static_cast<std::size_t>(n)]));
   std::vector<Index> acur(deg.begin(), deg.end() - 1);
   for (Index i = 0; i < n; ++i)
-    for (Index k = start[static_cast<std::size_t>(i)]; k < start[static_cast<std::size_t>(i) + 1]; ++k) {
+    for (Index k = start[static_cast<std::size_t>(i)]; k < start[static_cast<std::size_t>(i) + 1];
+         ++k) {
       const Index j = nbr[static_cast<std::size_t>(k)];
       aNbr[static_cast<std::size_t>(acur[static_cast<std::size_t>(i)]++)] = j;
       aNbr[static_cast<std::size_t>(acur[static_cast<std::size_t>(j)]++)] = i;
@@ -176,22 +178,28 @@ inline Coloring greedyColoring(const std::vector<Index>& start, const std::vecto
   std::vector<int> stamp;  // stamp[c]==i ⇒ colour c forbidden for cell i (avoids per-cell clears)
   int nColors = 1;
   for (Index i = 0; i < n; ++i) {
-    for (Index k = aStart[static_cast<std::size_t>(i)]; k < aStart[static_cast<std::size_t>(i) + 1]; ++k) {
+    for (Index k = aStart[static_cast<std::size_t>(i)]; k < aStart[static_cast<std::size_t>(i) + 1];
+         ++k) {
       const int nc = color[static_cast<std::size_t>(aNbr[static_cast<std::size_t>(k)])];
       if (nc >= 0) {
-        if (static_cast<std::size_t>(nc) >= stamp.size()) stamp.resize(static_cast<std::size_t>(nc) + 1, -1);
+        if (static_cast<std::size_t>(nc) >= stamp.size())
+          stamp.resize(static_cast<std::size_t>(nc) + 1, -1);
         stamp[static_cast<std::size_t>(nc)] = static_cast<int>(i);
       }
     }
     int c = 0;
-    while (c < static_cast<int>(stamp.size()) && stamp[static_cast<std::size_t>(c)] == static_cast<int>(i)) ++c;
+    while (c < static_cast<int>(stamp.size()) &&
+           stamp[static_cast<std::size_t>(c)] == static_cast<int>(i))
+      ++c;
     color[static_cast<std::size_t>(i)] = c;
-    if (c + 1 > nColors) nColors = c + 1;
+    if (c + 1 > nColors)
+      nColors = c + 1;
   }
   Coloring col;
   col.nColors = nColors;
   col.hStart.assign(static_cast<std::size_t>(nColors) + 1, 0);
-  for (Index i = 0; i < n; ++i) ++col.hStart[static_cast<std::size_t>(color[static_cast<std::size_t>(i)]) + 1];
+  for (Index i = 0; i < n; ++i)
+    ++col.hStart[static_cast<std::size_t>(color[static_cast<std::size_t>(i)]) + 1];
   for (int c = 0; c < nColors; ++c)
     col.hStart[static_cast<std::size_t>(c) + 1] += col.hStart[static_cast<std::size_t>(c)];
   std::vector<Index> idx(static_cast<std::size_t>(n));
@@ -206,16 +214,16 @@ inline Coloring greedyColoring(const std::vector<Index>& start, const std::vecto
 
 /// One **symmetric** multicolour Gauss–Seidel sweep of A u = b in place (momentum operator: diag +
 /// face CSR + optional implicit-FOU advection): a forward pass over colours 0…C-1 followed by a
-/// reverse pass C-1…0. Each colour is a parallel_for over its cells doing the GS point update reading
-/// the current (already-updated) neighbours; cells of one colour share no edge ⇒ race-free.
+/// reverse pass C-1…0. Each colour is a parallel_for over its cells doing the GS point update
+/// reading the current (already-updated) neighbours; cells of one colour share no edge ⇒ race-free.
 ///
-/// The forward+reverse pairing makes the smoother **symmetric**, which matters when the MG V-cycle is
-/// used as a *preconditioner* for BiCGStab (the momentum path): a forward-only GS V-cycle is a
+/// The forward+reverse pairing makes the smoother **symmetric**, which matters when the MG V-cycle
+/// is used as a *preconditioner* for BiCGStab (the momentum path): a forward-only GS V-cycle is a
 /// non-symmetric, non-normal operator that breaks BiCGStab's bi-orthogonal recurrence on the larger
-/// non-symmetric 64³ system (false convergence to NaN), whereas the symmetric (SGS) V-cycle keeps it
-/// robust — the textbook remedy, and the behaviour flow gets from its RB-GS / MG-as-solver path.
+/// non-symmetric 64³ system (false convergence to NaN), whereas the symmetric (SGS) V-cycle keeps
+/// it robust — the textbook remedy, and the behaviour flow gets from its RB-GS / MG-as-solver path.
 inline void multicolorGSMom(const MomentumOp& op, View<double> u, View<const double> b,
-                                  const Coloring& col, double omega) {
+                            const Coloring& col, double omega) {
   const auto A = momView(op);
   auto idx = col.idx;
   auto colorPass = [&](int c) {
@@ -229,8 +237,10 @@ inline void multicolorGSMom(const MomentumOp& op, View<double> u, View<const dou
           u(i) = faceCsrPointUpdate(b(i), off, d, u(i), omega);
         });
   };
-  for (int c = 0; c < col.nColors; ++c) colorPass(c);             // forward
-  for (int c = col.nColors - 2; c >= 0; --c) colorPass(c);         // reverse (last colour not repeated)
+  for (int c = 0; c < col.nColors; ++c)
+    colorPass(c);  // forward
+  for (int c = col.nColors - 2; c >= 0; --c)
+    colorPass(c);  // reverse (last colour not repeated)
 }
 
 // ===========================================================================
@@ -265,9 +275,11 @@ class MomentumMG {
     for (;;) {
       Octree c = octs_.back();
       Index merged = c.coarsenIf([](Code, unsigned) { return true; });
-      if (merged == 0 || c.numLeaves() == octs_.back().numLeaves()) break;
+      if (merged == 0 || c.numLeaves() == octs_.back().numLeaves())
+        break;
       octs_.push_back(c);
-      if (c.numLeaves() == 1) break;
+      if (c.numLeaves() == 1)
+        break;
     }
     const std::size_t nl = octs_.size();
     levels_.clear();
@@ -287,16 +299,19 @@ class MomentumMG {
         Code par = M::from_code(f.code(i)).ancestor(f.level(i) + 1).code();
         Index p = c.find(par);
         c2p[static_cast<std::size_t>(i)] = p;
-        if (p >= 0) ++cnt[static_cast<std::size_t>(p)];
+        if (p >= 0)
+          ++cnt[static_cast<std::size_t>(p)];
       }
       std::vector<Index> cstart(static_cast<std::size_t>(nc) + 1, 0);
       for (Index p = 0; p < nc; ++p)
-        cstart[static_cast<std::size_t>(p) + 1] = cstart[static_cast<std::size_t>(p)] + cnt[static_cast<std::size_t>(p)];
+        cstart[static_cast<std::size_t>(p) + 1] =
+            cstart[static_cast<std::size_t>(p)] + cnt[static_cast<std::size_t>(p)];
       std::vector<Index> cidx(static_cast<std::size_t>(nf));
       std::vector<Index> cur(cstart.begin(), cstart.end() - 1);
       for (Index i = 0; i < nf; ++i) {
         Index p = c2p[static_cast<std::size_t>(i)];
-        if (p >= 0) cidx[static_cast<std::size_t>(cur[static_cast<std::size_t>(p)]++)] = i;
+        if (p >= 0)
+          cidx[static_cast<std::size_t>(cur[static_cast<std::size_t>(p)]++)] = i;
       }
       levels_[L].c2p = toDevice(c2p, "mmg_c2p");
       levels_[L].childStart = toDevice(cstart, "mmg_cstart");
@@ -306,12 +321,15 @@ class MomentumMG {
       std::vector<std::map<Index, double>> acc(static_cast<std::size_t>(nc));
       for (Index i = 0; i < nf; ++i) {
         Index p = c2p[static_cast<std::size_t>(i)];
-        if (p < 0) continue;
+        if (p < 0)
+          continue;
         const double w = 1.0 / static_cast<double>(cnt[static_cast<std::size_t>(p)]);
         acc[static_cast<std::size_t>(p)][p] += w * hdiag[static_cast<std::size_t>(i)];
-        for (Index k = hstart[static_cast<std::size_t>(i)]; k < hstart[static_cast<std::size_t>(i) + 1]; ++k) {
+        for (Index k = hstart[static_cast<std::size_t>(i)];
+             k < hstart[static_cast<std::size_t>(i) + 1]; ++k) {
           Index q = c2p[static_cast<std::size_t>(hnbr[static_cast<std::size_t>(k)])];
-          if (q < 0) continue;
+          if (q < 0)
+            continue;
           acc[static_cast<std::size_t>(p)][q] += w * hcoef[static_cast<std::size_t>(k)];
         }
       }
@@ -390,11 +408,14 @@ class MomentumMG {
   void smooth(Level& lv, int sweeps, double omega) {
     View<const double> bc(lv.b);
     if (useGS_)
-      // Multicolour GS is stable undamped on this diagonally-dominant operator (ρ/dt + 6μ + FOU > 0);
-      // the passed omega is Jacobi's damping limit (~0.7) and would needlessly weaken GS, so use 1.0.
-      for (int s = 0; s < sweeps; ++s) multicolorGSMom(lv.op, lv.x, bc, lv.col, 1.0);
+      // Multicolour GS is stable undamped on this diagonally-dominant operator (ρ/dt + 6μ + FOU >
+      // 0); the passed omega is Jacobi's damping limit (~0.7) and would needlessly weaken GS, so
+      // use 1.0.
+      for (int s = 0; s < sweeps; ++s)
+        multicolorGSMom(lv.op, lv.x, bc, lv.col, 1.0);
     else
-      for (int s = 0; s < sweeps; ++s) jacobiMom(lv.op, lv.x, bc, lv.tmp, omega);
+      for (int s = 0; s < sweeps; ++s)
+        jacobiMom(lv.op, lv.x, bc, lv.tmp, omega);
   }
   void uploadLevel(std::size_t L, const std::vector<double>& diag, const std::vector<Index>& start,
                    const std::vector<Index>& nbr, const std::vector<double>& coef) {
@@ -437,10 +458,10 @@ class MomentumSolver {
 
   /// Plain weighted-Jacobi solve (the simple parallel mirror of the host GS smoother):
   /// `sweeps` damped-Jacobi sweeps of A u = b in place. Returns the final residual L2.
-  double solveJacobi(const MomentumOp& op, View<double> u, View<const double> b,
-                     int sweeps) {
+  double solveJacobi(const MomentumOp& op, View<double> u, View<const double> b, int sweeps) {
     ensure(op.n);
-    for (int s = 0; s < sweeps; ++s) jacobiMom(op, u, b, tmp_, omega_);
+    for (int s = 0; s < sweeps; ++s)
+      jacobiMom(op, u, b, tmp_, omega_);
     residualMom(op, View<const double>(u), b, r_);
     return std::sqrt(dotPlain(View<const double>(r_), View<const double>(r_), op.n));
   }
@@ -465,12 +486,13 @@ class MomentumSolver {
     Result R;
     residualMom(op, View<const double>(u), b, r_);
     R.res0 = std::sqrt(dotPlain(View<const double>(r_), View<const double>(r_), n));
-    if (R.res0 == 0.0) return R;
+    if (R.res0 == 0.0)
+      return R;
     double rnorm = R.res0;
     int it = 0;
     for (; it < maxIters; ++it) {
-      applyPrec(op, r_, phat_);                       // phat = M⁻¹ r
-      axpy(u, 1.0, View<const double>(phat_), n);     // u += phat
+      applyPrec(op, r_, phat_);                    // phat = M⁻¹ r
+      axpy(u, 1.0, View<const double>(phat_), n);  // u += phat
       residualMom(op, View<const double>(u), b, r_);
       rnorm = std::sqrt(dotPlain(View<const double>(r_), View<const double>(r_), n));
       if (rnorm <= tol * R.res0) {
@@ -494,7 +516,8 @@ class MomentumSolver {
     residualMom(op, View<const double>(u), b, r_);
     Kokkos::deep_copy(rhat_, r_);  // shadow residual
     R.res0 = std::sqrt(dotPlain(View<const double>(r_), View<const double>(r_), n));
-    if (R.res0 == 0.0) return R;
+    if (R.res0 == 0.0)
+      return R;
     double rho = 1, alpha = 1, omega = 1;
     Kokkos::deep_copy(v_, 0.0);
     Kokkos::deep_copy(p_, 0.0);
@@ -502,7 +525,8 @@ class MomentumSolver {
     int it = 0;
     for (; it < maxIters; ++it) {
       double rhoNew = dotPlain(View<const double>(rhat_), View<const double>(r_), n);
-      if (rhoNew == 0.0) break;
+      if (rhoNew == 0.0)
+        break;
       double beta = (rhoNew / rho) * (alpha / omega);
       // p = r + beta (p − omega v)
       bicgPUpdate(p_, View<const double>(r_), View<const double>(v_), beta, omega, n);
@@ -536,7 +560,8 @@ class MomentumSolver {
         break;
       }
       rho = rhoNew;
-      if (omega == 0.0) break;
+      if (omega == 0.0)
+        break;
     }
     R.iters = it;
     R.res = rnorm;
@@ -556,10 +581,12 @@ class MomentumSolver {
       Kokkos::deep_copy(z, v);
       return;
     }
-    for (int s = 0; s < jacPre_; ++s) jacobiMom(op, z, View<const double>(v), tmp_, omega_);
+    for (int s = 0; s < jacPre_; ++s)
+      jacobiMom(op, z, View<const double>(v), tmp_, omega_);
   }
   void ensure(Index n) {
-    if (r_.extent(0) == static_cast<std::size_t>(n)) return;
+    if (r_.extent(0) == static_cast<std::size_t>(n))
+      return;
     auto mk = [&](const char* l) { return View<double>(l, static_cast<std::size_t>(n)); };
     r_ = mk("mom_r");
     rhat_ = mk("mom_rhat");

@@ -6,9 +6,9 @@
 //
 // Guarded by PECLET_CORE_HAVE_MORTON: without the morton sibling checkout this is a no-op
 // pass (the indexer header defines nothing).
-#include "test_util.hpp"
 #include "peclet/core/common/types.hpp"
 #include "peclet/core/decomp/morton_indexer.hpp"
+#include "test_util.hpp"
 
 #ifdef PECLET_CORE_HAVE_MORTON
 #include <set>
@@ -31,9 +31,9 @@ static void test3d() {
     Code c = idx.codeOf(g);
 
     // Agrees with a direct origin-relative morton encode.
-    auto ref = morton::Morton<3, 21>::encode(
-        (std::uint32_t)(g[0] - origin[0]), (std::uint32_t)(g[1] - origin[1]),
-        (std::uint32_t)(g[2] - origin[2]));
+    auto ref = morton::Morton<3, 21>::encode((std::uint32_t)(g[0] - origin[0]),
+                                             (std::uint32_t)(g[1] - origin[1]),
+                                             (std::uint32_t)(g[2] - origin[2]));
     PECLET_CORE_CHECK_EQ((long long)c, (long long)ref.code());
 
     // Round-trips back to the same global multi-index.

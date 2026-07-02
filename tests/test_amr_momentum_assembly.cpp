@@ -1,8 +1,8 @@
 // Device cut-cell MOMENTUM operator ASSEMBLY (peclet::core::amr::assembleMomentum, on the S1 CSR
 // primitive) must reproduce host AmrCutCell::build (Pass 2 buildCutStencil) + assembleOperator
-// bit-for-bit on the OpenMP backend: the ξ-overlay stencil rebuild (AC/off/cut/rscale), and the merged
-// diag + face-CSR over the three per-cell branches (solid identity / ξ-overlay / regular ∇²·μ). This is
-// the D3 anti-drift lock.
+// bit-for-bit on the OpenMP backend: the ξ-overlay stencil rebuild (AC/off/cut/rscale), and the
+// merged diag + face-CSR over the three per-cell branches (solid identity / ξ-overlay / regular
+// ∇²·μ). This is the D3 anti-drift lock.
 //
 // Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
@@ -10,15 +10,14 @@
 #ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
 #include <cstdint>
-#include <vector>
-
 #include <Kokkos_Core.hpp>
+#include <vector>
 
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/block_octree_view.hpp"
 #include "peclet/core/amr/cut_cell.hpp"
-#include "peclet/core/amr/momentum_assembly.hpp"
 #include "peclet/core/amr/momentum.hpp"
+#include "peclet/core/amr/momentum_assembly.hpp"
 
 using namespace peclet::core;
 using namespace peclet::core::amr;
@@ -34,16 +33,19 @@ std::vector<T> down(const View<T>& d) {
   std::vector<T> h(d.extent(0));
   auto m = Kokkos::create_mirror_view(d);
   Kokkos::deep_copy(m, d);
-  for (std::size_t i = 0; i < h.size(); ++i) h[i] = m(i);
+  for (std::size_t i = 0; i < h.size(); ++i)
+    h[i] = m(i);
   return h;
 }
 
 template <class A, class B>
 int mismatch(const std::vector<A>& a, const std::vector<B>& b) {
-  if (a.size() != b.size()) return -1;
+  if (a.size() != b.size())
+    return -1;
   int m = 0;
   for (std::size_t i = 0; i < a.size(); ++i)
-    if (static_cast<double>(a[i]) != static_cast<double>(b[i])) ++m;
+    if (static_cast<double>(a[i]) != static_cast<double>(b[i]))
+      ++m;
   return m;
 }
 
@@ -63,7 +65,8 @@ void run() {
   t.balance2to1();
 
   const double h0 = 0.1;
-  // A sphere centred in the block ⇒ a mix of solid (inside), cut (straddling), and regular fluid cells.
+  // A sphere centred in the block ⇒ a mix of solid (inside), cut (straddling), and regular fluid
+  // cells.
   const Vec<3> org{-0.8, -0.8, -0.8};
   const double R = 0.45;
   AmrCutCell<kBits> cc;

@@ -4,8 +4,8 @@
 // reads back exactly.
 //
 // Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
-#include "test_util.hpp"
 #include "peclet/core/common/types.hpp"
+#include "test_util.hpp"
 
 #ifdef PECLET_CORE_HAVE_MORTON
 #include <cstdio>
@@ -26,7 +26,8 @@ namespace {
 std::string attr(const std::string& s, const std::string& key) {
   std::string needle = key + "=\"";
   auto p = s.find(needle);
-  if (p == std::string::npos) return "";
+  if (p == std::string::npos)
+    return "";
   p += needle.size();
   return s.substr(p, s.find('"', p) - p);
 }
@@ -52,7 +53,8 @@ void run() {
   // Per-leaf field = refinement level, plus geometry placing the block at a
   // non-trivial world origin / spacing.
   LeafField<double> lvl(t);
-  for (Index i = 0; i < t.numLeaves(); ++i) lvl[i] = static_cast<double>(t.level(i));
+  for (Index i = 0; i < t.numLeaves(); ++i)
+    lvl[i] = static_cast<double>(t.level(i));
   AmrGeometry<3> geo;
   geo.origin = {1.0, -2.0, 0.5};
   geo.h0 = 0.25;
@@ -82,7 +84,8 @@ void run() {
   double v = 0;
   bool ok = true;
   while (data >> v) {
-    if (count < t.numLeaves() && v != static_cast<double>(t.level(count))) ok = false;
+    if (count < t.numLeaves() && v != static_cast<double>(t.level(count)))
+      ok = false;
     ++count;
   }
   PECLET_CORE_CHECK(ok);

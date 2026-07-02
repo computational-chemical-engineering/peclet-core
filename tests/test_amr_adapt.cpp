@@ -42,19 +42,24 @@ double cellVolRel(const BO& t, Index i) {
 }
 double relIntegral(const BO& t, const std::vector<double>& f) {
   double s = 0.0;
-  for (Index i = 0; i < t.numLeaves(); ++i) s += cellVolRel(t, i) * f[(std::size_t)i];
+  for (Index i = 0; i < t.numLeaves(); ++i)
+    s += cellVolRel(t, i) * f[(std::size_t)i];
   return s;
 }
 double relScale(const BO& t, const std::vector<double>& f) {  // Σ V·|f| (the front is ~mean-zero)
   double s = 0.0;
-  for (Index i = 0; i < t.numLeaves(); ++i) s += cellVolRel(t, i) * std::fabs(f[(std::size_t)i]);
+  for (Index i = 0; i < t.numLeaves(); ++i)
+    s += cellVolRel(t, i) * std::fabs(f[(std::size_t)i]);
   return s;
 }
 // Tanh front at x = 0.5, ~1 base cell wide.
-double front(double xw) { return std::tanh((xw - 0.5) / 0.05); }
+double front(double xw) {
+  return std::tanh((xw - 0.5) / 0.05);
+}
 std::vector<double> sampleFront(const BO& t) {
   std::vector<double> f((std::size_t)t.numLeaves());
-  for (Index i = 0; i < t.numLeaves(); ++i) f[(std::size_t)i] = front(xWorld(t, i));
+  for (Index i = 0; i < t.numLeaves(); ++i)
+    f[(std::size_t)i] = front(xWorld(t, i));
   return f;
 }
 // uniform level-`lvl` mesh on a 4x4x4 / lmax=3 brick (32^3 fine): base level 1 = 16^3
@@ -64,7 +69,8 @@ BO uniform(unsigned lvl) {
   while (true) {
     Index before = t.numLeaves();
     t.refineIf([&](Code, unsigned l) { return l > lvl; });
-    if (t.numLeaves() == before) break;
+    if (t.numLeaves() == before)
+      break;
   }
   return t;
 }
@@ -78,11 +84,13 @@ void run() {
     double eFront = 0.0, eFar = 0.0;
     for (Index i = 0; i < t.numLeaves(); ++i) {
       double d = std::fabs(xWorld(t, i) - 0.5);
-      if (d < 0.1) eFront = std::max(eFront, e[(std::size_t)i]);
-      if (d > 0.3) eFar = std::max(eFar, e[(std::size_t)i]);
+      if (d < 0.1)
+        eFront = std::max(eFront, e[(std::size_t)i]);
+      if (d > 0.3)
+        eFar = std::max(eFar, e[(std::size_t)i]);
     }
-    PECLET_CORE_CHECK(eFront > 0.3);   // strong signal at the front
-    PECLET_CORE_CHECK(eFar < 0.05);    // quiet far field
+    PECLET_CORE_CHECK(eFront > 0.3);  // strong signal at the front
+    PECLET_CORE_CHECK(eFar < 0.05);   // quiet far field
   }
 
   // (2) one adapt step: refine near front, coarsen far, conserve
@@ -121,8 +129,8 @@ void run() {
         ++nFinest;
         maxFineDist = std::max(maxFineDist, std::fabs(xWorld(t, i) - 0.5));
       }
-    PECLET_CORE_CHECK(nFinest > 0);          // reached the finest level
-    PECLET_CORE_CHECK(maxFineDist < 0.2);    // finest cells hug the front
+    PECLET_CORE_CHECK(nFinest > 0);        // reached the finest level
+    PECLET_CORE_CHECK(maxFineDist < 0.2);  // finest cells hug the front
     // adaptive mesh is smaller than uniform-fine (32^3 = 32768)
     PECLET_CORE_CHECK(t.numLeaves() < 32768);
   }

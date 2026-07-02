@@ -10,9 +10,9 @@
 #include <numeric>
 #include <vector>
 
-#include "test_util.hpp"
 #include "peclet/core/common/types.hpp"
 #include "peclet/core/decomp/block_decomposer.hpp"
+#include "test_util.hpp"
 
 using namespace peclet::core;
 using peclet::core::decomp::BlockDecomposer;
@@ -20,7 +20,8 @@ using peclet::core::decomp::BlockDecomposer;
 template <int Dim>
 Index volume(const IVec<Dim>& s) {
   Index v = 1;
-  for (int i = 0; i < Dim; ++i) v *= s[i];
+  for (int i = 0; i < Dim; ++i)
+    v *= s[i];
   return v;
 }
 
@@ -34,7 +35,8 @@ void checkCase(IVec<Dim> globalSize, std::size_t numBlocks) {
   // Block volumes sum to the global volume (no gaps, allowing for rounding distribution).
   Index total = volume<Dim>(globalSize);
   Index summed = 0;
-  for (std::size_t b = 0; b < dec.numBlocks(); ++b) summed += volume<Dim>(dec.sizes()[b]);
+  for (std::size_t b = 0; b < dec.numBlocks(); ++b)
+    summed += volume<Dim>(dec.sizes()[b]);
   PECLET_CORE_CHECK_EQ(summed, total);
 
   // Every global cell is owned by exactly one block, and ownerOf agrees with that block's region.
@@ -68,7 +70,8 @@ std::vector<double> blockWeights(const BlockDecomposer<Dim>& dec,
     const auto& o = dec.origins()[b];
     const auto& s = dec.sizes()[b];
     IVec<Dim> bgn = o, end{};
-    for (int i = 0; i < Dim; ++i) end[i] = o[i] + s[i];
+    for (int i = 0; i < Dim; ++i)
+      end[i] = o[i] + s[i];
     forEachInBox<Dim>(bgn, end, [&](const IVec<Dim>& g) { w[b] += weights[dec.linearGlobal(g)]; });
   }
   return w;
@@ -102,9 +105,10 @@ void checkEqualWeightsBitExact(IVec<Dim> globalSize, std::size_t numBlocks) {
   }
   // ownerOf agrees at every cell too (covers the implicit tree, not just leaf order).
   IVec<Dim> bgn{}, end{};
-  for (int i = 0; i < Dim; ++i) end[i] = globalSize[i];
-  forEachInBox<Dim>(bgn, end,
-                    [&](const IVec<Dim>& g) { PECLET_CORE_CHECK_EQ(decW.ownerOf(g), dec.ownerOf(g)); });
+  for (int i = 0; i < Dim; ++i)
+    end[i] = globalSize[i];
+  forEachInBox<Dim>(
+      bgn, end, [&](const IVec<Dim>& g) { PECLET_CORE_CHECK_EQ(decW.ownerOf(g), dec.ownerOf(g)); });
 }
 
 // A smooth, monotone weight gradient that equal-cell-count ORB balances poorly: the weighted ORB
@@ -114,13 +118,15 @@ void checkSkewedBalances(IVec<Dim> globalSize, std::size_t numBlocks) {
   Index total = volume<Dim>(globalSize);
   std::vector<Real> weights(static_cast<std::size_t>(total), 0.0);
   IVec<Dim> bgn{}, end{};
-  for (int i = 0; i < Dim; ++i) end[i] = globalSize[i];
+  for (int i = 0; i < Dim; ++i)
+    end[i] = globalSize[i];
 
   // weight grows steeply across the diagonal so every axis carries a gradient to balance.
   BlockDecomposer<Dim> probe(1, globalSize);  // just for linearGlobal
   forEachInBox<Dim>(bgn, end, [&](const IVec<Dim>& g) {
     double frac = 0.0;
-    for (int i = 0; i < Dim; ++i) frac += static_cast<double>(g[i]) / globalSize[i];
+    for (int i = 0; i < Dim; ++i)
+      frac += static_cast<double>(g[i]) / globalSize[i];
     weights[probe.linearGlobal(g)] = 1.0 + 50.0 * frac;
   });
 
@@ -130,14 +136,16 @@ void checkSkewedBalances(IVec<Dim> globalSize, std::size_t numBlocks) {
   // Weighted ORB is still an exact tiling of the grid (cell-aligned, no gaps/overlap).
   Index summed = 0;
   std::vector<Index> count(decW.numBlocks(), 0);
-  for (std::size_t b = 0; b < decW.numBlocks(); ++b) summed += volume<Dim>(decW.sizes()[b]);
+  for (std::size_t b = 0; b < decW.numBlocks(); ++b)
+    summed += volume<Dim>(decW.sizes()[b]);
   PECLET_CORE_CHECK_EQ(summed, total);
   forEachInBox<Dim>(bgn, end, [&](const IVec<Dim>& g) {
     int owner = decW.ownerOf(g);
     PECLET_CORE_CHECK(owner >= 0 && owner < static_cast<int>(decW.numBlocks()));
     const auto& o = decW.origins()[owner];
     const auto& s = decW.sizes()[owner];
-    for (int i = 0; i < Dim; ++i) PECLET_CORE_CHECK(g[i] >= o[i] && g[i] < o[i] + s[i]);
+    for (int i = 0; i < Dim; ++i)
+      PECLET_CORE_CHECK(g[i] >= o[i] && g[i] < o[i] + s[i]);
     ++count[owner];
   });
   for (std::size_t b = 0; b < decW.numBlocks(); ++b)

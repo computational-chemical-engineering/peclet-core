@@ -13,9 +13,9 @@ namespace nb = nanobind;
 using namespace peclet::core::python;
 
 // Kernels live in their own (non-auto-returning) functions: nvcc forbids a KOKKOS_LAMBDA inside a
-// function with a deduced return type, and the wrappers below return `auto` (the bridge's return type
-// differs host vs device). Real bindings already keep kernels in solver headers, so this only matters
-// for these inline test kernels.
+// function with a deduced return type, and the wrappers below return `auto` (the bridge's return
+// type differs host vs device). Real bindings already keep kernels in solver headers, so this only
+// matters for these inline test kernels.
 static void scale2(peclet::core::View<double> v) {
   Kokkos::parallel_for("x2", v.extent(0), KOKKOS_LAMBDA(int i) { v(i) *= 2.0; });
   Kokkos::fence();
@@ -47,15 +47,18 @@ static auto make_field(int nx, int ny, int nz) {
 // extra copy (the sdflow getter path).
 static auto vec_field(int nx, int ny, int nz) {
   std::vector<double> v(static_cast<std::size_t>(nx) * ny * nz);
-  for (std::size_t i = 0; i < v.size(); ++i) v[i] = double(i);
+  for (std::size_t i = 0; i < v.size(); ++i)
+    v[i] = double(i);
   return vector_to_ndarray(std::move(v), {(std::size_t)nx, (std::size_t)ny, (std::size_t)nz},
                            {1, (std::int64_t)nx, (std::int64_t)nx * ny});
 }
 
 NB_MODULE(interop_test_module, m) {
-  if (!Kokkos::is_initialized()) Kokkos::initialize();
+  if (!Kokkos::is_initialized())
+    Kokkos::initialize();
   nb::module_::import_("atexit").attr("register")(nb::cpp_function([]() {
-    if (Kokkos::is_initialized() && !Kokkos::is_finalized()) Kokkos::finalize();
+    if (Kokkos::is_initialized() && !Kokkos::is_finalized())
+      Kokkos::finalize();
   }));
   m.attr("execution_space") = nb::str(Kokkos::DefaultExecutionSpace::name());
   m.def("double_it", &double_it);

@@ -16,9 +16,8 @@
 #ifdef PECLET_CORE_HAVE_MORTON
 #include <algorithm>
 #include <cmath>
-#include <vector>
-
 #include <Kokkos_Core.hpp>
+#include <vector>
 
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/flow.hpp"
@@ -35,7 +34,8 @@ using Code = BO::Code;
 
 BO uniformFine(unsigned L) {
   BO t(IVec<3>{1, 1, 1}, L);
-  for (unsigned k = 0; k < L; ++k) t.refineIf([](Code, unsigned) { return true; });
+  for (unsigned k = 0; k < L; ++k)
+    t.refineIf([](Code, unsigned) { return true; });
   return t;
 }
 
@@ -61,7 +61,8 @@ void test_poiseuille() {
   hfl.setDt(1e6);
   hfl.setBodyForce(G, 0, 0);
   hfl.setSolid(sdf);
-  for (int s = 0; s < 5; ++s) hfl.step(/*momSweeps=*/300, /*presIters=*/5, /*presSweeps=*/2);
+  for (int s = 0; s < 5; ++s)
+    hfl.step(/*momSweeps=*/300, /*presIters=*/5, /*presSweeps=*/2);
   const auto& hux = hfl.velocity(0);
 
   // Device.
@@ -72,7 +73,8 @@ void test_poiseuille() {
   dfl.setDt(1e6);
   dfl.setBodyForce(G, 0, 0);
   dfl.setSolid(sdf);
-  for (int s = 0; s < 5; ++s) dfl.step(/*momIters=*/400, /*presIters=*/80);
+  for (int s = 0; s < 5; ++s)
+    dfl.step(/*momIters=*/400, /*presIters=*/80);
   const auto dux = dfl.velocity(0);
 
   const Index n = t.numLeaves();
@@ -87,7 +89,8 @@ void test_poiseuille() {
       e += d * d;
       ++nf;
       dh = std::max(dh, std::fabs(dux[(std::size_t)i] - hux[(std::size_t)i]));
-      if (dux[(std::size_t)i] > 1e-3) fluidPositive = true;
+      if (dux[(std::size_t)i] > 1e-3)
+        fluidPositive = true;
     } else if (std::fabs(dux[(std::size_t)i]) > 1e-12) {
       solidsZero = false;
     }
@@ -120,7 +123,8 @@ void test_sphere() {
   hfl.setDt(1e6);
   hfl.setBodyForce(G, 0, 0);
   hfl.setSolid(sdf);
-  for (int s = 0; s < 8; ++s) hfl.step(/*momSweeps=*/400, /*presIters=*/8, /*presSweeps=*/2);
+  for (int s = 0; s < 8; ++s)
+    hfl.step(/*momSweeps=*/400, /*presIters=*/8, /*presSweeps=*/2);
   const auto& hux = hfl.velocity(0);
 
   AmrFlow<21> dfl;
@@ -129,7 +133,8 @@ void test_sphere() {
   dfl.setDt(1e6);
   dfl.setBodyForce(G, 0, 0);
   dfl.setSolid(sdf);
-  for (int s = 0; s < 8; ++s) dfl.step(/*momIters=*/500, /*presIters=*/120);
+  for (int s = 0; s < 8; ++s)
+    dfl.step(/*momIters=*/500, /*presIters=*/120);
   const auto dux = dfl.velocity(0);
 
   // mean streamwise velocity (permeability proxy) + field agreement on fluid cells.
@@ -172,7 +177,8 @@ void test_momentum_mg_option() {
     f.setBodyForce(1.0, 0, 0);
     f.setMomentumMG(mgPre);
     f.setSolid(sdf);
-    for (int s = 0; s < 8; ++s) f.step(400, 120);
+    for (int s = 0; s < 8; ++s)
+      f.step(400, 120);
     return f.velocity(0);
   };
   auto uoff = run(false);
@@ -207,19 +213,20 @@ void test_momentum_scaling() {
     f.setDt(1e6);
     f.setBodyForce(1.0, 0, 0);
     f.setSolid(sdf);  // momentum MG on by default
-    for (int s = 0; s < 4; ++s) f.step(400, 60);
+    for (int s = 0; s < 4; ++s)
+      f.step(400, 60);
     return f.lastMomIters();
   };
   int m4 = momIters(4), m5 = momIters(5);  // 16³, 32³
   std::printf("[flow] velocity-MG momentum iters: 16³=%d  32³=%d  (ratio %.2f)\n", m4, m5,
               (double)m5 / std::max(1, m4));
   PECLET_CORE_CHECK(m5 < 2 * m4);  // near-flat (multigrid) — would ~double without it
-  PECLET_CORE_CHECK(m5 < 150);     // absolute bound (3 components × a few dozen MG-accelerated iters)
+  PECLET_CORE_CHECK(m5 < 150);  // absolute bound (3 components × a few dozen MG-accelerated iters)
 }
 
 // Implicit-FOU + deferred-correction SOU advection (Navier–Stokes), validated against the host
-// oracle::AmrFlow which runs the identical scheme: (a) Poiseuille with advection ON still converges to
-// the analytic parabola (∇·(u u)=0 for unidirectional flow) and matches the host; (b) an
+// oracle::AmrFlow which runs the identical scheme: (a) Poiseuille with advection ON still converges
+// to the analytic parabola (∇·(u u)=0 for unidirectional flow) and matches the host; (b) an
 // immersed sphere at finite Re (the advection term is non-trivial) reaches the same steady
 // velocity field on device and host.
 // Kernel-only isolation: the device high-order advection ∇·(u u_c) must equal the host
@@ -238,7 +245,8 @@ void test_advection_kernel() {
     };
     auto allfluid = [](const Vec<3>&) { return 1.0; };
     std::array<std::vector<double>, 3> U;
-    for (int c = 0; c < 3; ++c) U[c].assign((std::size_t)n, 0.0);
+    for (int c = 0; c < 3; ++c)
+      U[c].assign((std::size_t)n, 0.0);
     for (Index i = 0; i < n; ++i) {
       double x = cellCoord(t, i, 0, h0), y = cellCoord(t, i, 1, h0), z = cellCoord(t, i, 2, h0);
       U[0][(std::size_t)i] = std::sin(k * x) * std::cos(k * y) * std::cos(k * z) + 0.3;
@@ -249,17 +257,23 @@ void test_advection_kernel() {
     hfl.init(t, h0);
     hfl.setDt(1.0);
     hfl.setAdvection(true);
-    if (which == 0) hfl.setSolid(allfluid);
-    else hfl.setSolid(sphere);
-    for (int c = 0; c < 3; ++c) hfl.velocityRef()[c] = U[c];
+    if (which == 0)
+      hfl.setSolid(allfluid);
+    else
+      hfl.setSolid(sphere);
+    for (int c = 0; c < 3; ++c)
+      hfl.velocityRef()[c] = U[c];
 
     AmrFlow<21> dfl;
     dfl.init(t, h0);
     dfl.setDt(1.0);
     dfl.setAdvection(true);
-    if (which == 0) dfl.setSolid(allfluid);
-    else dfl.setSolid(sphere);
-    for (int c = 0; c < 3; ++c) dfl.setVelocity(c, U[c]);
+    if (which == 0)
+      dfl.setSolid(allfluid);
+    else
+      dfl.setSolid(sphere);
+    for (int c = 0; c < 3; ++c)
+      dfl.setVelocity(c, U[c]);
 
     double emax = 0, mag = 0;
     for (int c = 0; c < 3; ++c) {
@@ -293,7 +307,8 @@ void test_advection() {
     hfl.setBodyForce(G, 0, 0);
     hfl.setAdvection(true);  // SOU + implicit FOU (defaults)
     hfl.setSolid(sdf);
-    for (int s = 0; s < 6; ++s) hfl.step(300, 5, 2);
+    for (int s = 0; s < 6; ++s)
+      hfl.step(300, 5, 2);
     const auto& hux = hfl.velocity(0);
 
     AmrFlow<21> dfl;
@@ -303,7 +318,8 @@ void test_advection() {
     dfl.setBodyForce(G, 0, 0);
     dfl.setAdvection(true);
     dfl.setSolid(sdf);
-    for (int s = 0; s < 6; ++s) dfl.step(400, 80);
+    for (int s = 0; s < 6; ++s)
+      dfl.step(400, 80);
     const auto dux = dfl.velocity(0);
 
     const Index n = t.numLeaves();
@@ -369,10 +385,11 @@ void test_advection() {
         hmax = std::max(hmax, std::fabs(hux[(std::size_t)i]));
         ++nf;
       }
-    std::printf("[flow] sphere+adv (Re~%.1f): Umean host %.6e dev %.6e (rel %.2e), max|dev-host| "
-                "%.3e (mag %.3e)\n",
-                G * (hsum / nf) * 0.4 / mu, hsum / nf, dsum / nf,
-                std::fabs(dsum - hsum) / std::fabs(hsum), dmax, hmax);
+    std::printf(
+        "[flow] sphere+adv (Re~%.1f): Umean host %.6e dev %.6e (rel %.2e), max|dev-host| "
+        "%.3e (mag %.3e)\n",
+        G * (hsum / nf) * 0.4 / mu, hsum / nf, dsum / nf, std::fabs(dsum - hsum) / std::fabs(hsum),
+        dmax, hmax);
     PECLET_CORE_CHECK(std::fabs(dsum - hsum) / std::fabs(hsum) < 5e-3);  // same steady permeability
     PECLET_CORE_CHECK(dmax < 1e-2 * hmax);                               // fields agree
   }
@@ -397,9 +414,11 @@ void test_staircase_mg() {
     f.setDt(1e6);
     f.setBodyForce(1.0, 0, 0);
     f.setVelocityMGStaircase(staircase);
-    if (staircase) f.setVelocityMGMinCoarse(512);
+    if (staircase)
+      f.setVelocityMGMinCoarse(512);
     f.setSolid(sdf);
-    for (int s = 0; s < 6; ++s) f.step(400, 60);
+    for (int s = 0; s < 6; ++s)
+      f.step(400, 60);
     return f.velocity(0);
   };
   auto ug = run(false);  // Galerkin
@@ -410,8 +429,10 @@ void test_staircase_mg() {
     dmax = std::max(dmax, std::fabs(us[(std::size_t)i] - ug[(std::size_t)i]));
     mag = std::max(mag, std::fabs(ug[(std::size_t)i]));
   }
-  std::printf("[flow] staircase-vs-Galerkin MG: max|stair-galerkin| = %.3e (mag %.3e)\n", dmax, mag);
-  PECLET_CORE_CHECK(dmax < 1e-4 * mag);  // same converged step regardless of coarse-operator strategy
+  std::printf("[flow] staircase-vs-Galerkin MG: max|stair-galerkin| = %.3e (mag %.3e)\n", dmax,
+              mag);
+  PECLET_CORE_CHECK(dmax <
+                    1e-4 * mag);  // same converged step regardless of coarse-operator strategy
 }
 
 // Multicolour Gauss–Seidel smoother (P5): for both coarse-operator strategies, the GS-smoothed MG
@@ -434,10 +455,12 @@ void test_momentum_gs() {
     f.setDt(1e6);
     f.setBodyForce(1.0, 0, 0);
     f.setVelocityMGStaircase(staircase);
-    if (staircase) f.setVelocityMGMinCoarse(512);
+    if (staircase)
+      f.setVelocityMGMinCoarse(512);
     f.setMomentumGS(gs);
     f.setSolid(sdf);
-    for (int s = 0; s < 6; ++s) f.step(400, 60);
+    for (int s = 0; s < 6; ++s)
+      f.step(400, 60);
     return f.velocity(0);
   };
   const Index n = t.numLeaves();
@@ -476,11 +499,13 @@ void test_momentum_mgsolver() {
     f.setDt(1e6);
     f.setBodyForce(1.0, 0, 0);
     f.setVelocityMGStaircase(staircase);
-    if (staircase) f.setVelocityMGMinCoarse(512);
-    f.setMomentumGS(true);          // exercise the Krylov-free solve with the RB-GS smoother
+    if (staircase)
+      f.setVelocityMGMinCoarse(512);
+    f.setMomentumGS(true);  // exercise the Krylov-free solve with the RB-GS smoother
     f.setMomentumMGSolver(mgSolver);
     f.setSolid(sdf);
-    for (int s = 0; s < 6; ++s) f.step(400, 60);
+    for (int s = 0; s < 6; ++s)
+      f.step(400, 60);
     return f.velocity(0);
   };
   const Index n = t.numLeaves();
@@ -499,12 +524,13 @@ void test_momentum_mgsolver() {
 }
 
 // P4: the optional Picard outer loop over the lagged advection.
-//   (a) Stokes (advection off): the extra outer iterations are genuine no-ops — re-lagging an absent
-//       advection cannot move the already-projected iterate — so the early-stop must engage (a couple
-//       of iterations, not the cap) and the field must match the single-step run.
+//   (a) Stokes (advection off): the extra outer iterations are genuine no-ops — re-lagging an
+//   absent
+//       advection cannot move the already-projected iterate — so the early-stop must engage (a
+//       couple of iterations, not the cap) and the field must match the single-step run.
 //   (b) Navier–Stokes: the loop must reach a valid NS steady field close to the single lagged step
-//       (they coincide exactly only at true steady; after a finite number of steps the gap is at the
-//       transient level — the same bar the device-vs-host advection field check uses).
+//       (they coincide exactly only at true steady; after a finite number of steps the gap is at
+//       the transient level — the same bar the device-vs-host advection field check uses).
 void test_picard_outer() {
   const unsigned L = 4;
   BO t = uniformFine(L);
@@ -527,8 +553,10 @@ void test_picard_outer() {
       f.setBodyForce(1.0, 0, 0);
       f.setOuterIterations(outer, 1e-9);
       f.setSolid(sdf);
-      for (int s = 0; s < 6; ++s) f.step(400, 60);
-      if (lastOuter) *lastOuter = f.lastOuterIters();
+      for (int s = 0; s < 6; ++s)
+        f.step(400, 60);
+      if (lastOuter)
+        *lastOuter = f.lastOuterIters();
       return f.velocity(0);
     };
     int lo1 = 0, lo5 = 0;
@@ -563,7 +591,8 @@ void test_picard_outer() {
       f.setAdvection(true);
       f.setOuterIterations(outer, 1e-7);
       f.setSolid(sdf);
-      for (int s = 0; s < 50; ++s) f.step(200, 80);
+      for (int s = 0; s < 50; ++s)
+        f.step(200, 80);
       return f.velocity(0);
     };
     auto u1 = run(1);
@@ -574,7 +603,8 @@ void test_picard_outer() {
       mag = std::max(mag, std::fabs(u1[(std::size_t)i]));
     }
     std::printf("[flow] picard outer NS (n=4): max|picard-single| = %.3e (mag %.3e)\n", dmax, mag);
-    PECLET_CORE_CHECK(dmax < 1e-2 * mag);  // same NS steady field (transient-level gap, sibling's bar)
+    PECLET_CORE_CHECK(dmax <
+                      1e-2 * mag);  // same NS steady field (transient-level gap, sibling's bar)
   }
 }
 

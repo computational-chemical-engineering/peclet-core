@@ -41,21 +41,23 @@ Index refineToSdf(BlockOctree<Dim, Bits>& t, const AmrGeometry<Dim>& geo, SdfFn&
     std::vector<Code> toRefine;
     for (Index i = 0; i < t.numLeaves(); ++i) {
       const unsigned L = t.level(i);
-      if (L <= targetLevel) continue;
+      if (L <= targetLevel)
+        continue;
       auto b = t.bounds(i);
       Vec<Dim> c = geo.center(b);
       const Real width = geo.leafSize(L);
       if (std::fabs(static_cast<Real>(sdf(c))) <= halfDiagFactor * width + band * geo.h0)
         toRefine.push_back(t.code(i));
     }
-    if (toRefine.empty()) break;
+    if (toRefine.empty())
+      break;
     std::sort(toRefine.begin(), toRefine.end());
     toRefine.erase(std::unique(toRefine.begin(), toRefine.end()), toRefine.end());
-    total += t.refineIf([&](Code c, unsigned) {
-      return std::binary_search(toRefine.begin(), toRefine.end(), c);
-    });
+    total += t.refineIf(
+        [&](Code c, unsigned) { return std::binary_search(toRefine.begin(), toRefine.end(), c); });
   }
-  if (balance) total += t.balance2to1();
+  if (balance)
+    total += t.balance2to1();
   return total;
 }
 

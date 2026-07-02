@@ -33,7 +33,8 @@ void laplacian(BlockOctreeView<Dim, Bits> dev, View<double> x, View<double> y, d
         for (int axis = 0; axis < Dim; ++axis)
           for (int dir = -1; dir <= 1; dir += 2) {
             Index j = dev.faceNeighbor(i, axis, dir);
-            if (j >= 0) s += x(j) - x(i);
+            if (j >= 0)
+              s += x(j) - x(i);
           }
         y(i) = inv * s;
       });
@@ -44,7 +45,7 @@ void laplacian(BlockOctreeView<Dim, Bits> dev, View<double> x, View<double> y, d
 /// (= −L_ii), has the right sign for the negative-definite L. `lx` is scratch (L x).
 template <int Dim, unsigned Bits>
 void jacobiSweep(BlockOctreeView<Dim, Bits> dev, View<double> x, View<const double> b,
-                       View<double> lx, double inv, double omega) {
+                 View<double> lx, double inv, double omega) {
   const Index n = dev.numLeaves();
   const double diag = 2.0 * Dim * inv;
   // lx = L x = ∇² x
@@ -54,7 +55,8 @@ void jacobiSweep(BlockOctreeView<Dim, Bits> dev, View<double> x, View<const doub
         for (int axis = 0; axis < Dim; ++axis)
           for (int dir = -1; dir <= 1; dir += 2) {
             Index j = dev.faceNeighbor(i, axis, dir);
-            if (j >= 0) s += x(j) - x(i);
+            if (j >= 0)
+              s += x(j) - x(i);
           }
         lx(i) = inv * s;
       });
@@ -76,11 +78,11 @@ void jacobiSweep(BlockOctreeView<Dim, Bits> dev, View<double> x, View<const doub
 // graded V-cycle converges instead of stalling on the inconsistent plain op).
 // ===========================================================================
 struct FvOp {
-  View<double> invVol;     ///< 1/V_i, size n
-  View<Index> faceStart;   ///< CSR row offsets, size n+1
-  View<Index> faceNbr;     ///< neighbour leaf per face, size nFaces
-  View<double> faceW;      ///< w_f = openness·A_f/d_f per face, size nFaces
-  View<double> bcDiag;     ///< Dirichlet boundary diagonal per cell (0 if periodic), size n
+  View<double> invVol;    ///< 1/V_i, size n
+  View<Index> faceStart;  ///< CSR row offsets, size n+1
+  View<Index> faceNbr;    ///< neighbour leaf per face, size nFaces
+  View<double> faceW;     ///< w_f = openness·A_f/d_f per face, size nFaces
+  View<double> bcDiag;    ///< Dirichlet boundary diagonal per cell (0 if periodic), size n
   Index n = 0;
   // Helmholtz generalisation: the applied operator is H = c0·I + cD·L (c0=0, cD=1 ⇒ the
   // pure Laplacian L, the default — bit-exact unchanged). Setting c0=idiag, cD=−μ turns the
@@ -117,7 +119,7 @@ inline void applyFv(const FvOp& op, View<const double> u, View<double> Lu) {
 
 /// res = rhs − H u.
 inline void residualFv(const FvOp& op, View<const double> u, View<const double> rhs,
-                             View<double> res) {
+                       View<double> res) {
   const auto A = fvView(op);
   Kokkos::parallel_for(
       "amr::fv_residual", op.n,
@@ -130,8 +132,8 @@ inline void residualFv(const FvOp& op, View<const double> u, View<const double> 
 /// sweep is order-independent / bit-reproducible. The pure-L path (c0=0, cD=1)
 /// keeps the exact original expression (bit-exact); the Helmholtz path uses the
 /// point solve of (c0·I + cD·L) u = rhs.
-inline void jacobiFv(const FvOp& op, View<double> u, View<const double> rhs,
-                           View<double> tmp, double omega) {
+inline void jacobiFv(const FvOp& op, View<double> u, View<const double> rhs, View<double> tmp,
+                     double omega) {
   const auto A = fvView(op);
   Kokkos::parallel_for(
       "amr::fv_jacobi_compute", op.n,
@@ -153,41 +155,46 @@ inline void removeMeanFv(const FvOp& op, View<double> u) {
   auto bc = op.bcDiag;
   double sx = 0.0, sv = 0.0;
   // Numerator and denominator share the same active-cell diagonal d = bc + Σfw; fold them into a
-  // single multi-output reduction so that diagonal is walked once instead of twice. Each output keeps
-  // its original term verbatim (u/invVol, 1/invVol) and its own Sum reducer over the same range, so
-  // the result is bit-identical to the two separate reduces. (The subtract pass below recomputes d a
-  // third time but is a parallel_for, where reloading a cached mask would cost the same as the walk.)
+  // single multi-output reduction so that diagonal is walked once instead of twice. Each output
+  // keeps its original term verbatim (u/invVol, 1/invVol) and its own Sum reducer over the same
+  // range, so the result is bit-identical to the two separate reduces. (The subtract pass below
+  // recomputes d a third time but is a parallel_for, where reloading a cached mask would cost the
+  // same as the walk.)
   Kokkos::parallel_reduce(
       "amr::fv_rmean", op.n,
       KOKKOS_LAMBDA(const Index i, double& an, double& ad) {
         double d = bc(i);
-        for (Index k = fs(i); k < fs(i + 1); ++k) d += fw(k);
+        for (Index k = fs(i); k < fs(i + 1); ++k)
+          d += fw(k);
         if (d > 1e-30) {
           an += u(i) / invVol(i);  // V_i = 1/invVol_i
           ad += 1.0 / invVol(i);
         }
       },
       sx, sv);
-  if (sv <= 0.0) return;
+  if (sv <= 0.0)
+    return;
   const double m = sx / sv;
   Kokkos::parallel_for(
       "amr::fv_rmean_sub", op.n, KOKKOS_LAMBDA(const Index i) {
         double d = bc(i);
-        for (Index k = fs(i); k < fs(i + 1); ++k) d += fw(k);
-        if (d > 1e-30) u(i) -= m;
+        for (Index k = fs(i); k < fs(i + 1); ++k)
+          d += fw(k);
+        if (d > 1e-30)
+          u(i) -= m;
       });
 }
 
 /// dq = (L_quad − L_std) u, the quadratic coarse-fine correction as its own SpMV
 /// over a precomputed CSR (built from AmrPoisson::coarseStar). Used for deferred
 /// correction: solve L_std u = rhs − dq with dq lagged ⇒ 2nd-order at 2:1 faces.
-inline void quadDelta(View<const Index> qStart, View<const Index> qSlot,
-                            View<const double> qCoef, View<const double> u, View<double> dq,
-                            Index n) {
+inline void quadDelta(View<const Index> qStart, View<const Index> qSlot, View<const double> qCoef,
+                      View<const double> u, View<double> dq, Index n) {
   Kokkos::parallel_for(
       "amr::fv_quad_delta", n, KOKKOS_LAMBDA(const Index i) {
         double acc = 0.0;
-        for (Index k = qStart(i); k < qStart(i + 1); ++k) acc += qCoef(k) * u(qSlot(k));
+        for (Index k = qStart(i); k < qStart(i + 1); ++k)
+          acc += qCoef(k) * u(qSlot(k));
         dq(i) = acc;
       });
 }

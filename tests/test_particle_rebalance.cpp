@@ -1,4 +1,5 @@
-// MPI correctness of particle-count load re-balancing (peclet::core::halo::rebalanceByParticleCount).
+// MPI correctness of particle-count load re-balancing
+// (peclet::core::halo::rebalanceByParticleCount).
 //
 // N particles are scattered with positions concentrated in one corner of the domain, so the
 // equal-cell-count ORB leaves the corner-owning ranks heavily overloaded. After one rebalance —
@@ -88,18 +89,21 @@ int main(int argc, char** argv) {
 
   const std::int64_t expectSum = N * (N - 1) / 2;
   std::int64_t expectXor = 0;
-  for (std::int64_t i = 0; i < N; ++i) expectXor ^= i;
+  for (std::int64_t i = 0; i < N; ++i)
+    expectXor ^= i;
 
   int fail = 0;
   auto checkInvariants = [&](const char* tag) {
     std::int64_t localSum = 0, localXor = 0, localCount = static_cast<std::int64_t>(pos.size());
     for (std::size_t k = 0; k < pos.size(); ++k) {
-      if (mig.ownerOf(pos[k]) != rank) ++fail;  // placed on its new owner
+      if (mig.ownerOf(pos[k]) != rank)
+        ++fail;  // placed on its new owner
       std::int64_t id;
       std::memcpy(&id, &payload[k * stride], stride);
       Vec<kDim> want = posOf(id, gsize);  // position unchanged, bit-for-bit
       for (int i = 0; i < kDim; ++i)
-        if (pos[k][i] != want[i]) ++fail;
+        if (pos[k][i] != want[i])
+          ++fail;
       localSum += id;
       localXor ^= id;
     }
@@ -122,33 +126,40 @@ int main(int argc, char** argv) {
 
   // Rebalance: weighted re-decompose by particle count + migrate.
   std::vector<double> weight;
-  peclet::core::halo::rebalanceByParticleCount(dec, mig, pos, payload, stride, MPI_COMM_WORLD, &weight);
+  peclet::core::halo::rebalanceByParticleCount(dec, mig, pos, payload, stride, MPI_COMM_WORLD,
+                                               &weight);
   checkInvariants("post-rebalance");
   double imb1 = imbalance(pos.size(), N, size, MPI_COMM_WORLD);
 
   // The agreed weight grid must account for every particle exactly once.
   double wsum = 0.0;
-  for (double w : weight) wsum += w;
-  if (wsum != static_cast<double>(N)) ++fail;
+  for (double w : weight)
+    wsum += w;
+  if (wsum != static_cast<double>(N))
+    ++fail;
 
   if (size > 1) {
-    if (!(imb0 > 1.25)) ++fail;       // equal-cell ORB really was imbalanced
-    if (!(imb1 < imb0)) ++fail;       // weighted ORB improved it
-    if (!(imb1 < 1.5)) ++fail;        // ... to a decently even distribution
+    if (!(imb0 > 1.25))
+      ++fail;  // equal-cell ORB really was imbalanced
+    if (!(imb1 < imb0))
+      ++fail;  // weighted ORB improved it
+    if (!(imb1 < 1.5))
+      ++fail;  // ... to a decently even distribution
   }
 
   // A second rebalance stays correct and does not worsen the balance.
   peclet::core::halo::rebalanceByParticleCount(dec, mig, pos, payload, stride, MPI_COMM_WORLD);
   checkInvariants("second-rebalance");
   double imb2 = imbalance(pos.size(), N, size, MPI_COMM_WORLD);
-  if (size > 1 && !(imb2 < 1.5)) ++fail;
+  if (size > 1 && !(imb2 < 1.5))
+    ++fail;
 
   int totalFail = 0;
   MPI_Allreduce(&fail, &totalFail, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   if (rank == 0) {
     if (totalFail == 0)
-      std::printf("OK (np=%d): %lld particles, imbalance %.2f -> %.2f -> %.2f\n", size, (long long)N,
-                  imb0, imb1, imb2);
+      std::printf("OK (np=%d): %lld particles, imbalance %.2f -> %.2f -> %.2f\n", size,
+                  (long long)N, imb0, imb1, imb2);
     else
       std::fprintf(stderr, "FAILED (np=%d): %d\n", size, totalFail);
   }

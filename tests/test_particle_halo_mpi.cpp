@@ -1,4 +1,5 @@
-// MPI correctness of the persistent ParticleHaloTopology (forward / forwardPositions / reverse-accumulate).
+// MPI correctness of the persistent ParticleHaloTopology (forward / forwardPositions /
+// reverse-accumulate).
 //
 // After migration each rank owns its block's particles and builds the halo. We check against a
 // brute-force Allgather reference:
@@ -71,7 +72,8 @@ int main(int argc, char** argv) {
   mig.migrate(pos, payload, stride);
   std::size_t Nown = pos.size();
   std::vector<std::int64_t> myid(Nown);
-  for (std::size_t i = 0; i < Nown; ++i) std::memcpy(&myid[i], &payload[i * stride], stride);
+  for (std::size_t i = 0; i < Nown; ++i)
+    std::memcpy(&myid[i], &payload[i * stride], stride);
 
   // --- build halo ---
   ParticleHaloTopology<3> halo;
@@ -81,7 +83,8 @@ int main(int argc, char** argv) {
 
   // forward(id): each ghost gets its owner's id
   std::vector<double> ownIdD(Nown), ghIdD(G);
-  for (std::size_t i = 0; i < Nown; ++i) ownIdD[i] = (double)myid[i];
+  for (std::size_t i = 0; i < Nown; ++i)
+    ownIdD[i] = (double)myid[i];
   halo.forward(ownIdD.data(), ghIdD.data());
 
   // reverse(ones): each owned accumulates a count of its ghost copies
@@ -115,16 +118,20 @@ int main(int argc, char** argv) {
   std::vector<std::int64_t> expectIds;
   for (const auto& g : all) {
     Vec<3> x{g.p[0], g.p[1], g.p[2]}, img;
-    if (mig.ownerOf(x) == rank) continue;
-    if (mig.withinRcutOfBlock(x, rank, rcut, img)) expectIds.push_back(g.id);
+    if (mig.ownerOf(x) == rank)
+      continue;
+    if (mig.withinRcutOfBlock(x, rank, rcut, img))
+      expectIds.push_back(g.id);
   }
   std::vector<std::int64_t> gotIds(G);
-  for (std::size_t s = 0; s < G; ++s) gotIds[s] = (std::int64_t)std::llround(ghIdD[s]);
+  for (std::size_t s = 0; s < G; ++s)
+    gotIds[s] = (std::int64_t)std::llround(ghIdD[s]);
   {
     auto a = gotIds, b = expectIds;
     std::sort(a.begin(), a.end());
     std::sort(b.begin(), b.end());
-    if (a != b) ++fail;
+    if (a != b)
+      ++fail;
   }
   // each ghost sits at the correct periodic image of its (id'd) owner
   const auto& gp = halo.ghostPositions();
@@ -150,15 +157,18 @@ int main(int argc, char** argv) {
     Vec<3> img;
     int expect = 0;
     for (int r = 0; r < size; ++r)
-      if (r != rank && mig.withinRcutOfBlock(pos[i], r, rcut, img)) ++expect;
-    if ((int)std::llround(ownCount[i]) != expect) ++fail;
+      if (r != rank && mig.withinRcutOfBlock(pos[i], r, rcut, img))
+        ++expect;
+    if ((int)std::llround(ownCount[i]) != expect)
+      ++fail;
   }
 
-  // (4) periodic self-ghosts (includePeriodicSelf): the cross-rank ghosts above + LOCAL copies of an
-  // owned particle at its own periodic image(s) within rcut of this rank's block (needed for an
-  // undecomposed periodic axis / np=1). Brute-force oracle: a self-ghost exists for each non-identity
-  // periodic image (±L per axis) of an owned particle that comes within rcut of this rank's own block;
-  // forwardPositions must place it at owner+shift, and forward(id) must carry the owner's id.
+  // (4) periodic self-ghosts (includePeriodicSelf): the cross-rank ghosts above + LOCAL copies of
+  // an owned particle at its own periodic image(s) within rcut of this rank's block (needed for an
+  // undecomposed periodic axis / np=1). Brute-force oracle: a self-ghost exists for each
+  // non-identity periodic image (±L per axis) of an owned particle that comes within rcut of this
+  // rank's own block; forwardPositions must place it at owner+shift, and forward(id) must carry the
+  // owner's id.
   ParticleHaloTopology<3> halo2;
   halo2.init(mig);
   halo2.build(pos, rcut, /*includePeriodicSelf=*/true);
@@ -173,12 +183,16 @@ int main(int argc, char** argv) {
     for (int sx = -1; sx <= 1; ++sx)
       for (int sy = -1; sy <= 1; ++sy)
         for (int sz = -1; sz <= 1; ++sz) {
-          if (sx == 0 && sy == 0 && sz == 0) continue;
+          if (sx == 0 && sy == 0 && sz == 0)
+            continue;
           const int sc[3] = {sx, sy, sz};
           double d2 = 0;
           Vec<3> imgpos;
           for (int d = 0; d < 3; ++d) {
-            if (sc[d] != 0 && !map.periodic[d]) { d2 = 1e30; break; }
+            if (sc[d] != 0 && !map.periodic[d]) {
+              d2 = 1e30;
+              break;
+            }
             const double L = map.cellSize[d] * gsize[d];
             const double lo = map.origin[d] + bo[d] * map.cellSize[d];
             const double hi = map.origin[d] + (bo[d] + bs[d]) * map.cellSize[d];
@@ -187,28 +201,39 @@ int main(int argc, char** argv) {
             const double gap = (p < lo) ? (lo - p) : (p > hi) ? (p - hi) : 0.0;
             d2 += gap * gap;
           }
-          if (d2 >= rcut * rcut) continue;
+          if (d2 >= rcut * rcut)
+            continue;
           ++selfExpect;
-          // find a self-ghost (id == owner id, position == imgpos) in the tail of halo2's ghost list.
+          // find a self-ghost (id == owner id, position == imgpos) in the tail of halo2's ghost
+          // list.
           for (std::size_t s = 0; s < G2; ++s) {
-            if ((std::int64_t)std::llround(ghId2[s]) != myid[i]) continue;
-            if (std::fabs(gp2[s][0] - imgpos[0]) < 1e-9 && std::fabs(gp2[s][1] - imgpos[1]) < 1e-9 &&
-                std::fabs(gp2[s][2] - imgpos[2]) < 1e-9) { ++selfMatched; break; }
+            if ((std::int64_t)std::llround(ghId2[s]) != myid[i])
+              continue;
+            if (std::fabs(gp2[s][0] - imgpos[0]) < 1e-9 &&
+                std::fabs(gp2[s][1] - imgpos[1]) < 1e-9 &&
+                std::fabs(gp2[s][2] - imgpos[2]) < 1e-9) {
+              ++selfMatched;
+              break;
+            }
           }
         }
   }
-  if (selfMatched != selfExpect) ++fail;
+  if (selfMatched != selfExpect)
+    ++fail;
   // total ghosts must be the cross-rank set (G) plus exactly the self set.
-  if (G2 != G + (std::size_t)selfExpect) ++fail;
+  if (G2 != G + (std::size_t)selfExpect)
+    ++fail;
 
   int total = 0;
   MPI_Allreduce(&fail, &total, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   long long gG = 0, lG = (long long)G;
   MPI_Reduce(&lG, &gG, 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
   if (rank == 0) {
-    std::printf("# ParticleHaloTopology: ghosts=%lld (forward+forwardPositions+reverse checked)\n", gG);
+    std::printf("# ParticleHaloTopology: ghosts=%lld (forward+forwardPositions+reverse checked)\n",
+                gG);
     if (total == 0)
-      std::printf("OK (np=%d): forward / forwardPositions / reverse(sum) match brute force\n", size);
+      std::printf("OK (np=%d): forward / forwardPositions / reverse(sum) match brute force\n",
+                  size);
     else
       std::fprintf(stderr, "FAILED (np=%d): %d\n", size, total);
   }

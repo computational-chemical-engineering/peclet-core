@@ -55,9 +55,11 @@ void run() {
   mgw.build(IVec<3>{N, N, N}, geo, per, MPI_COMM_WORLD);
   const Index nw = mgw.numLeaves();
   std::vector<double> bw(static_cast<std::size_t>(nw)), xw(static_cast<std::size_t>(nw), 0.0);
-  for (Index i = 0; i < nw; ++i) bw[static_cast<std::size_t>(i)] = bAt(mgw.octree().globalCode(i), h0);
+  for (Index i = 0; i < nw; ++i)
+    bw[static_cast<std::size_t>(i)] = bAt(mgw.octree().globalCode(i), h0);
   const double r0 = mgw.op().residualNorm(xw, bw);
-  for (int c = 0; c < cycles; ++c) mgw.vcycle(xw, bw);
+  for (int c = 0; c < cycles; ++c)
+    mgw.vcycle(xw, bw);
   const double r1 = mgw.op().residualNorm(xw, bw);
 
   // serial reference: whole domain as ONE block on MPI_COMM_SELF, same V-cycles.
@@ -65,8 +67,10 @@ void run() {
   mgs.build(IVec<3>{N, N, N}, geo, per, MPI_COMM_SELF);
   const Index ns = mgs.numLeaves();
   std::vector<double> bs(static_cast<std::size_t>(ns)), xs(static_cast<std::size_t>(ns), 0.0);
-  for (Index i = 0; i < ns; ++i) bs[static_cast<std::size_t>(i)] = bAt(mgs.octree().globalCode(i), h0);
-  for (int c = 0; c < cycles; ++c) mgs.vcycle(xs, bs);
+  for (Index i = 0; i < ns; ++i)
+    bs[static_cast<std::size_t>(i)] = bAt(mgs.octree().globalCode(i), h0);
+  for (int c = 0; c < cycles; ++c)
+    mgs.vcycle(xs, bs);
 
   // The SELF block covers the whole domain (origin 0) ⇒ local code == global code.
   int mism = 0;
@@ -77,12 +81,13 @@ void run() {
       ++mism;
       continue;
     }
-    maxdiff = std::max(maxdiff, std::fabs(xw[static_cast<std::size_t>(i)] - xs[static_cast<std::size_t>(si)]));
+    maxdiff = std::max(
+        maxdiff, std::fabs(xw[static_cast<std::size_t>(i)] - xs[static_cast<std::size_t>(si)]));
   }
   PECLET_CORE_CHECK_EQ(mism, 0);
-  PECLET_CORE_CHECK(maxdiff == 0.0);     // bit-for-bit across rank counts
+  PECLET_CORE_CHECK(maxdiff == 0.0);  // bit-for-bit across rank counts
   PECLET_CORE_CHECK(mgw.numLevels() == 4);
-  PECLET_CORE_CHECK(r1 < r0 * 1e-3);     // MG actually solves (≥ 3 orders in 8 cycles)
+  PECLET_CORE_CHECK(r1 < r0 * 1e-3);  // MG actually solves (≥ 3 orders in 8 cycles)
 }
 
 }  // namespace

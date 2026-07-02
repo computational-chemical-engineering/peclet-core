@@ -1,11 +1,11 @@
-// End-to-end validation: a distributed explicit heat-diffusion solver built on GridHaloTopology, checked
-// cell-for-cell against an independent serial reference.
+// End-to-end validation: a distributed explicit heat-diffusion solver built on GridHaloTopology,
+// checked cell-for-cell against an independent serial reference.
 //
 // This is the real point of the halo layer: each step exchanges the ghost layer, then updates inner
 // cells with a 2*Dim+1 point Laplacian stencil. If the decomposition, ownership, periodic wrap and
 // async exchange are all correct, the distributed field must match the serial integration of the
-// same periodic problem exactly (to round-off). We also check mass conservation. Runs with both halo
-// engines.
+// same periodic problem exactly (to round-off). We also check mass conservation. Runs with both
+// halo engines.
 #include <mpi.h>
 
 #include <cmath>
@@ -35,11 +35,14 @@ static double initField(const BlockDecomposer<kDim>& dec, const IVec<kDim>& g) {
 static std::vector<double> serialReference(const BlockDecomposer<kDim>& dec) {
   const IVec<kDim>& n = dec.globalSize();
   Index total = 1;
-  for (int i = 0; i < kDim; ++i) total *= n[i];
+  for (int i = 0; i < kDim; ++i)
+    total *= n[i];
   std::vector<double> u(total), un(total);
   IVec<kDim> bgn{}, end{};
-  for (int i = 0; i < kDim; ++i) end[i] = n[i];
-  forEachInBox<kDim>(bgn, end, [&](const IVec<kDim>& g) { u[dec.linearGlobal(g)] = initField(dec, g); });
+  for (int i = 0; i < kDim; ++i)
+    end[i] = n[i];
+  forEachInBox<kDim>(bgn, end,
+                     [&](const IVec<kDim>& g) { u[dec.linearGlobal(g)] = initField(dec, g); });
 
   for (int s = 0; s < kSteps; ++s) {
     forEachInBox<kDim>(bgn, end, [&](const IVec<kDim>& g) {
@@ -68,7 +71,8 @@ static int runDistributed(const BlockDecomposer<kDim>& dec, int rank,
   std::vector<double> u(idx.numCellsInclGhost(), 0.0), un(idx.numCellsInclGhost(), 0.0);
   idx.forEachInner([&](const IVec<kDim>& lmd) {
     IVec<kDim> g{};
-    for (int i = 0; i < kDim; ++i) g[i] = lmd[i] + idx.originInclGhost()[i];
+    for (int i = 0; i < kDim; ++i)
+      g[i] = lmd[i] + idx.originInclGhost()[i];
     u[idx.localMdToLocal(lmd)] = initField(dec, g);
   });
 
@@ -101,10 +105,12 @@ static int runDistributed(const BlockDecomposer<kDim>& dec, int rank,
   double localSum = 0.0;
   idx.forEachInner([&](const IVec<kDim>& lmd) {
     IVec<kDim> g{};
-    for (int i = 0; i < kDim; ++i) g[i] = lmd[i] + idx.originInclGhost()[i];
+    for (int i = 0; i < kDim; ++i)
+      g[i] = lmd[i] + idx.originInclGhost()[i];
     double got = u[idx.localMdToLocal(lmd)];
     double exp = ref[dec.linearGlobal(g)];
-    if (std::fabs(got - exp) > 1e-9) ++fail;
+    if (std::fabs(got - exp) > 1e-9)
+      ++fail;
     localSum += got;
   });
 
@@ -112,7 +118,8 @@ static int runDistributed(const BlockDecomposer<kDim>& dec, int rank,
   MPI_Allreduce(&localSum, &globalSum, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
   // Mass conservation: distributed sum must equal the serial field's sum.
   double refSum = 0.0;
-  for (double v : ref) refSum += v;
+  for (double v : ref)
+    refSum += v;
   if (rank == 0 && std::fabs(globalSum - refSum) > 1e-6) {
     std::fprintf(stderr, "  mass mismatch: dist=%.9f ref=%.9f\n", globalSum, refSum);
     ++fail;

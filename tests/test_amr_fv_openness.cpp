@@ -13,9 +13,8 @@
 
 #ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
-#include <vector>
-
 #include <Kokkos_Core.hpp>
+#include <vector>
 
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/multigrid.hpp"
@@ -39,21 +38,24 @@ double openFn(const Vec<3>& p, int /*axis*/) {
 
 void setDev(View<double> v, const std::vector<double>& h) {
   auto m = Kokkos::create_mirror_view(v);
-  for (std::size_t i = 0; i < h.size(); ++i) m((Index)i) = h[i];
+  for (std::size_t i = 0; i < h.size(); ++i)
+    m((Index)i) = h[i];
   Kokkos::deep_copy(v, m);
 }
 std::vector<double> getDev(View<double> v, Index n) {
   std::vector<double> h((std::size_t)n);
   auto m = Kokkos::create_mirror_view(v);
   Kokkos::deep_copy(m, v);
-  for (Index i = 0; i < n; ++i) h[(std::size_t)i] = m(i);
+  for (Index i = 0; i < n; ++i)
+    h[(std::size_t)i] = m(i);
   return h;
 }
 
 void run() {
   // Graded multilevel octree: 2×2×2 brick (level 3), lower octant refined to level 0.
   BO t(IVec<3>{2, 2, 2}, 3);
-  for (int kk = 0; kk < 2; ++kk) t.refineIf([](Code, unsigned l) { return l > 0; });
+  for (int kk = 0; kk < 2; ++kk)
+    t.refineIf([](Code, unsigned l) { return l > 0; });
   t.refineIf([&](Code c, unsigned) {
     auto o = M::from_code(c).decode();
     return o[0] < 8 && o[1] < 8 && o[2] < 8;
@@ -90,7 +92,8 @@ void run() {
     std::vector<double> hLu;
     hmg.op(L).applyLaplacian(x, hLu);
     for (Index i = 0; i < n; ++i)
-      if (dLh[(std::size_t)i] != hLu[(std::size_t)i]) ++totalMism;
+      if (dLh[(std::size_t)i] != hLu[(std::size_t)i])
+        ++totalMism;
   }
   PECLET_CORE_CHECK_EQ(totalMism, 0);
 
@@ -99,7 +102,8 @@ void run() {
   std::vector<double> uex((std::size_t)n0);
   for (Index i = 0; i < n0; ++i) {
     auto o = M::from_code(hmg.op(0).octree().code(i)).decode();
-    double cx = ((double)o[0] + 0.5) * h0, cy = ((double)o[1] + 0.5) * h0, cz = ((double)o[2] + 0.5) * h0;
+    double cx = ((double)o[0] + 0.5) * h0, cy = ((double)o[1] + 0.5) * h0,
+           cz = ((double)o[2] + 0.5) * h0;
     const double k = 2.0 * M_PI;
     uex[(std::size_t)i] = std::sin(k * cx) * std::cos(k * cy) + std::cos(k * cz);
   }
@@ -123,7 +127,8 @@ void run() {
     return std::sqrt(s2);
   };
   const double r0 = resNorm();
-  for (int c = 0; c < 40; ++c) mg.vcycle(2, 2, 60, 0.8);
+  for (int c = 0; c < 40; ++c)
+    mg.vcycle(2, 2, 60, 0.8);
   const double r1 = resNorm();
   PECLET_CORE_CHECK(r1 < r0 * 1e-3);
 }

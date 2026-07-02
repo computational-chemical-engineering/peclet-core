@@ -40,7 +40,8 @@ double openFn(const Vec<3>& p, int /*axis*/) {
 
 double fAt(Code gc, double h0) {
   auto o = M::from_code(gc).decode();
-  double cx = ((double)o[0] + 0.5) * h0, cy = ((double)o[1] + 0.5) * h0, cz = ((double)o[2] + 0.5) * h0;
+  double cx = ((double)o[0] + 0.5) * h0, cy = ((double)o[1] + 0.5) * h0,
+         cz = ((double)o[2] + 0.5) * h0;
   const double k = 2.0 * M_PI;
   return std::sin(k * cx) * std::cos(k * cy) + std::cos(k * cz) * std::sin(k * cx);
 }
@@ -48,10 +49,12 @@ double fAt(Code gc, double h0) {
 void makeGraded(DO& d) {
   for (int pass = 0; pass < 2; ++pass) {
     d.local().refineIf([&](Code c, unsigned lvl) -> bool {
-      if (lvl == 0) return false;
+      if (lvl == 0)
+        return false;
       auto o = M::from_code(c).decode();
       for (int dd = 0; dd < 3; ++dd)
-        if ((long)o[dd] + d.blockFineOrigin()[dd] >= 8) return false;
+        if ((long)o[dd] + d.blockFineOrigin()[dd] >= 8)
+          return false;
       return true;
     });
   }
@@ -81,8 +84,10 @@ void run() {
   const Index ns = self.local().numLeaves();
 
   std::vector<double> fw((std::size_t)nw), fs((std::size_t)ns);
-  for (Index i = 0; i < nw; ++i) fw[(std::size_t)i] = fAt(world.globalCode(i), h0);
-  for (Index i = 0; i < ns; ++i) fs[(std::size_t)i] = fAt(self.globalCode(i), h0);
+  for (Index i = 0; i < nw; ++i)
+    fw[(std::size_t)i] = fAt(world.globalCode(i), h0);
+  for (Index i = 0; i < ns; ++i)
+    fs[(std::size_t)i] = fAt(self.globalCode(i), h0);
 
   // ===== (1b) SELF openness operator == host AmrPoisson::applyLaplacian (bit-exact) =====
   {
@@ -95,7 +100,8 @@ void run() {
     ops.apply(fs, opLu);
     int mism = 0;
     for (Index i = 0; i < ns; ++i)
-      if (opLu[(std::size_t)i] != hostLu[(std::size_t)i]) ++mism;
+      if (opLu[(std::size_t)i] != hostLu[(std::size_t)i])
+        ++mism;
     PECLET_CORE_CHECK_EQ(mism, 0);
   }
 
@@ -106,7 +112,8 @@ void run() {
   int amis = 0;
   for (Index i = 0; i < nw; ++i) {
     Index si = self.local().find(world.globalCode(i));
-    if (si < 0 || luw[(std::size_t)i] != lus[(std::size_t)si]) ++amis;
+    if (si < 0 || luw[(std::size_t)i] != lus[(std::size_t)si])
+      ++amis;
   }
   PECLET_CORE_CHECK_EQ(amis, 0);
 
@@ -121,13 +128,16 @@ void run() {
   mgs.op().apply(fs, bs);
   const double r0 = mgw.op().residualNorm(xw, bw);
   const int cycles = 20;
-  for (int c = 0; c < cycles; ++c) mgw.vcycle(xw, bw);
-  for (int c = 0; c < cycles; ++c) mgs.vcycle(xs, bs);
+  for (int c = 0; c < cycles; ++c)
+    mgw.vcycle(xw, bw);
+  for (int c = 0; c < cycles; ++c)
+    mgs.vcycle(xs, bs);
   const double r1 = mgw.op().residualNorm(xw, bw);
   int jmis = 0;
   for (Index i = 0; i < nw; ++i) {
     Index si = self.local().find(world.globalCode(i));
-    if (si < 0 || xw[(std::size_t)i] != xs[(std::size_t)si]) ++jmis;
+    if (si < 0 || xw[(std::size_t)i] != xs[(std::size_t)si])
+      ++jmis;
   }
   PECLET_CORE_CHECK_EQ(jmis, 0);
   PECLET_CORE_CHECK(r1 < r0 * 1e-6);

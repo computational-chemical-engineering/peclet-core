@@ -35,7 +35,7 @@ struct Out {
   double stdLinf, quadLinf, conserv;
 };
 Out solve(long Nr) {
-  BO t(IVec<2>{Nr, Nr}, 1);                  // root cells at level 1 (size 2 fine)
+  BO t(IVec<2>{Nr, Nr}, 1);  // root cells at level 1 (size 2 fine)
   const double h0 = 1.0 / static_cast<double>(Nr * 2);
   t.refineIf([&](Code c, unsigned L) {
     auto o = M::from_code(c).decode();
@@ -81,7 +81,8 @@ Out solve(long Nr) {
   std::vector<double> us(static_cast<std::size_t>(n), 0.0), res;
   for (int c = 0; c < 80; ++c) {
     mg.vcycle(0, us, rhs);
-    if (P.residual(us, rhs, res) < 1e-12) break;
+    if (P.residual(us, rhs, res) < 1e-12)
+      break;
   }
   std::vector<double> uq(static_cast<std::size_t>(n), 0.0);
   mg.solveQuad(uq, rhs, 300, 1);
@@ -109,9 +110,9 @@ void run() {
   // (1) order: quadratic ~2nd order (ratio ~4); standard degraded (< 2.6).
   double quadOrder = b.quadLinf / c.quadLinf;
   double stdOrder = b.stdLinf / c.stdLinf;
-  PECLET_CORE_CHECK(quadOrder > 3.0);          // ~2nd order in L-infinity
-  PECLET_CORE_CHECK(stdOrder < 2.6);           // standard two-point degraded near C/F
-  PECLET_CORE_CHECK(c.quadLinf < c.stdLinf);   // quadratic is more accurate at the finest
+  PECLET_CORE_CHECK(quadOrder > 3.0);         // ~2nd order in L-infinity
+  PECLET_CORE_CHECK(stdOrder < 2.6);          // standard two-point degraded near C/F
+  PECLET_CORE_CHECK(c.quadLinf < c.stdLinf);  // quadratic is more accurate at the finest
 
   // (2) conservation / refluxing.
   PECLET_CORE_CHECK(b.conserv < 1e-9);

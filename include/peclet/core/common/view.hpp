@@ -3,12 +3,12 @@
 // One place defines the execution/memory spaces, the 1D device array the halo exchange operates on
 // (it gathers/scatters by flat x-fastest local index, so a contiguous per-cell field is a View<T>),
 // and the 3D structured field (x-fastest => Kokkos::LayoutLeft). Including this header requires
-// Kokkos (build with -DPECLET_CORE_ENABLE_KOKKOS=ON); the CPU and legacy-CUDA paths do NOT pull it in.
+// Kokkos (build with -DPECLET_CORE_ENABLE_KOKKOS=ON); the CPU and legacy-CUDA paths do NOT pull it
+// in.
 #ifndef PECLET_CORE_COMMON_VIEW_HPP
 #define PECLET_CORE_COMMON_VIEW_HPP
 
 #include <Kokkos_Core.hpp>
-
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,8 +25,8 @@ using MemSpace = ExecSpace::memory_space;
 template <class T>
 using View = Kokkos::View<T*, MemSpace>;
 
-/// Host-accessible mirror of View<T> (identical to View<T> on host backends). Defined via the actual
-/// create_mirror_view return type to stay correct across Kokkos backends/versions.
+/// Host-accessible mirror of View<T> (identical to View<T> on host backends). Defined via the
+/// actual create_mirror_view return type to stay correct across Kokkos backends/versions.
 template <class T>
 using HostView = decltype(Kokkos::create_mirror_view(std::declval<View<T>>()));
 
@@ -34,7 +34,8 @@ using HostView = decltype(Kokkos::create_mirror_view(std::declval<View<T>>()));
 using IndexView = Kokkos::View<Index*, MemSpace>;
 
 /// 3D structured field in the suite's x-fastest convention: LayoutLeft makes the leftmost (x) index
-/// contiguous, i.e. I = x + y*nx + z*nx*ny — identical to peclet::core::Index linearization and cfd-gpu grids.
+/// contiguous, i.e. I = x + y*nx + z*nx*ny — identical to peclet::core::Index linearization and
+/// cfd-gpu grids.
 template <class T>
 using Field3D = Kokkos::View<T***, Kokkos::LayoutLeft, MemSpace>;
 
@@ -55,8 +56,9 @@ inline View<T> toDevice(const std::vector<T>& h, const std::string& label) {
 /// view(i,c)`, the suite's particle-SoA Python export order. This replaces the redundant
 /// "create_mirror_view → deep_copy → element-by-element loop → std::vector" idiom in the binding
 /// getters (S2a) with a single device→host transfer and no hand-written loop. The row-order flatten
-/// is layout-correct on every backend: a LayoutLeft (e.g. CUDA-default) device View is transposed on
-/// the host hop rather than blindly memcpy'd, so the exported ordering matches across CPU/GPU builds.
+/// is layout-correct on every backend: a LayoutLeft (e.g. CUDA-default) device View is transposed
+/// on the host hop rather than blindly memcpy'd, so the exported ordering matches across CPU/GPU
+/// builds.
 template <class V>
 std::vector<std::remove_const_t<typename V::value_type>> toVector(const V& view) {
   using T = std::remove_const_t<typename V::value_type>;
@@ -64,7 +66,8 @@ std::vector<std::remove_const_t<typename V::value_type>> toVector(const V& view)
   if (view.size()) {
     auto host = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), view);
     Kokkos::LayoutRight layout;
-    for (std::size_t i = 0; i < V::rank; ++i) layout.dimension[i] = view.extent(i);
+    for (std::size_t i = 0; i < V::rank; ++i)
+      layout.dimension[i] = view.extent(i);
     Kokkos::View<typename V::non_const_data_type, Kokkos::LayoutRight, Kokkos::HostSpace,
                  Kokkos::MemoryTraits<Kokkos::Unmanaged>>
         dst(out.data(), layout);

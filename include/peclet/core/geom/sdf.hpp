@@ -3,10 +3,11 @@
 // Sign convention (load-bearing, shared across the suite): sdf < 0 inside solid, > 0 in fluid/void,
 // 0 on the surface; the gradient points outward (into the fluid). Analytic primitives mirror the
 // shapes packing-gpu already uses (sphere, box, hollow cylinder); a generic finite-difference
-// gradient covers any shape, and a `Sdf` concept lets solvers accept analytic or grid SDFs uniformly.
+// gradient covers any shape, and a `Sdf` concept lets solvers accept analytic or grid SDFs
+// uniformly.
 //
-// C++17-clean below the concept so this header can be pulled into CUDA translation units; the concept
-// itself is guarded for C++20 host use.
+// C++17-clean below the concept so this header can be pulled into CUDA translation units; the
+// concept itself is guarded for C++20 host use.
 #ifndef PECLET_CORE_GEOM_SDF_HPP
 #define PECLET_CORE_GEOM_SDF_HPP
 
@@ -18,8 +19,12 @@
 namespace peclet::core::geom {
 
 namespace detail {
-inline Vec<3> sub(const Vec<3>& a, const Vec<3>& b) { return {a[0] - b[0], a[1] - b[1], a[2] - b[2]}; }
-inline double norm(const Vec<3>& a) { return std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]); }
+inline Vec<3> sub(const Vec<3>& a, const Vec<3>& b) {
+  return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+}
+inline double norm(const Vec<3>& a) {
+  return std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+}
 }  // namespace detail
 
 /// Solid ball: negative inside.

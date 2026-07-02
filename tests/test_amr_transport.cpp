@@ -31,7 +31,8 @@ using Code = BO::Code;
 
 BO uniformFine(unsigned L) {
   BO t(IVec<3>{1, 1, 1}, L);
-  for (unsigned k = 0; k < L; ++k) t.refineIf([](Code, unsigned) { return true; });
+  for (unsigned k = 0; k < L; ++k)
+    t.refineIf([](Code, unsigned) { return true; });
   return t;
 }
 
@@ -52,7 +53,8 @@ void test_conservation(const BO& t, double h0) {
   ScalarTransport<3, kBits> st(t, geo);
   std::vector<double> c(static_cast<std::size_t>(t.numLeaves())), tmp;
   std::uint64_t s = 13;
-  for (auto& x : c) x = pseudo(s);
+  for (auto& x : c)
+    x = pseudo(s);
   UniformVel vel{{0.7, -0.3, 0.2}};
   double minDx = h0;  // finest cell width
   double dt = 0.2 * std::min(minDx / 0.7, minDx * minDx / (2.0 * 0.01 * 3.0));
@@ -75,7 +77,8 @@ void test_diffusion_rate() {
   const double k = 2.0 * M_PI;
   std::vector<double> c(static_cast<std::size_t>(t.numLeaves())), tmp;
   auto xc = [&](Index i) { return (static_cast<double>(t.bounds(i)[0][0]) + 0.5) * h0; };
-  for (Index i = 0; i < t.numLeaves(); ++i) c[static_cast<std::size_t>(i)] = std::sin(k * xc(i));
+  for (Index i = 0; i < t.numLeaves(); ++i)
+    c[static_cast<std::size_t>(i)] = std::sin(k * xc(i));
 
   auto amplitude = [&](const std::vector<double>& f) {
     double num = 0, den = 0;
@@ -121,14 +124,16 @@ void test_advection_monotone() {
       st.step(c, tmp, dt, 0.0, vel);
       c.swap(tmp);
     }
-    for (double v : c) maxdev = std::max(maxdev, std::fabs(v - 2.5));
+    for (double v : c)
+      maxdev = std::max(maxdev, std::fabs(v - 2.5));
     PECLET_CORE_CHECK(maxdev < 1e-10);
   }
 
   // (b) upwind is monotone: a step profile in [0,1] develops no over/undershoot.
   {
     std::vector<double> c(static_cast<std::size_t>(t.numLeaves())), tmp;
-    for (Index i = 0; i < t.numLeaves(); ++i) c[static_cast<std::size_t>(i)] = (xc(i) < 0.5) ? 1.0 : 0.0;
+    for (Index i = 0; i < t.numLeaves(); ++i)
+      c[static_cast<std::size_t>(i)] = (xc(i) < 0.5) ? 1.0 : 0.0;
     UniformVel vel{{1.0, 0.0, 0.0}};
     double dt = 0.4 * h0 / 1.0;
     double lo = 1e30, hi = -1e30;

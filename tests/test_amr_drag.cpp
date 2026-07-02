@@ -36,7 +36,8 @@ using Code = BO::Code;
 // SC sphere drag factor K for solid fraction phi on an N^3 grid (dx=1, sdflow's setup).
 double dragK(unsigned L, double phi) {
   BO t(IVec<3>{1, 1, 1}, L);
-  for (unsigned k = 0; k < L; ++k) t.refineIf([](Code, unsigned) { return true; });
+  for (unsigned k = 0; k < L; ++k)
+    t.refineIf([](Code, unsigned) { return true; });
   const long N = 1L << L;
   const double R = std::pow(phi * 3.0 / (4.0 * M_PI), 1.0 / 3.0) * static_cast<double>(N);
   const double mu = 0.1, f = 1e-3, dt = 60.0, c = N / 2.0;
@@ -52,10 +53,12 @@ double dragK(unsigned L, double phi) {
     return std::sqrt(dx * dx + dy * dy + dz * dz) - R;  // <0 inside sphere (solid)
   });
   const Index n = t.numLeaves();
-  for (int it = 0; it < 100; ++it) fl.step(/*momSweeps=*/120, /*presIters=*/6, 2);  // -> steady
+  for (int it = 0; it < 100; ++it)
+    fl.step(/*momSweeps=*/120, /*presIters=*/6, 2);  // -> steady
   double s = 0;
   const auto& u = fl.velocity(0);
-  for (Index i = 0; i < n; ++i) s += u[static_cast<std::size_t>(i)];
+  for (Index i = 0; i < n; ++i)
+    s += u[static_cast<std::size_t>(i)];
   double umean = s / n;
   return f * N * N * N / (6.0 * M_PI * mu * R * umean);
 }
@@ -82,7 +85,8 @@ void run() {
   AmrGeometry<3> geo;
   geo.h0 = 1.0;
   peclet::core::geom::Sphere sph{{c, c, c}, R};
-  refineToSdf(t, geo, [&](const Vec<3>& p) { return -sph.eval(p); }, /*target*/ 0, /*band*/ 2.5, true);
+  refineToSdf(
+      t, geo, [&](const Vec<3>& p) { return -sph.eval(p); }, /*target*/ 0, /*band*/ 2.5, true);
   PECLET_CORE_CHECK(t.numLeaves() < Nf * Nf * Nf);  // genuinely coarsened (graded)
 
   oracle::AmrFlow<21> fl;
@@ -97,7 +101,8 @@ void run() {
     return std::sqrt(dx * dx + dy * dy + dz * dz) - R;
   });
   const long nuni = Nf * Nf * Nf;
-  for (int it = 0; it < 45; ++it) fl.step(70, 5, 2);  // -> near steady (finest 16)
+  for (int it = 0; it < 45; ++it)
+    fl.step(70, 5, 2);  // -> near steady (finest 16)
   double usup = 0;
   const auto& u = fl.velocity(0);
   for (Index i = 0; i < t.numLeaves(); ++i) {

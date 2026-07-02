@@ -32,14 +32,8 @@ inline const std::array<std::array<int, Dim>, (1 << Dim)>& vtkCorners();
 
 template <>
 inline const std::array<std::array<int, 3>, 8>& vtkCorners<3>() {
-  static const std::array<std::array<int, 3>, 8> c{{{0, 0, 0},
-                                                    {1, 0, 0},
-                                                    {1, 1, 0},
-                                                    {0, 1, 0},
-                                                    {0, 0, 1},
-                                                    {1, 0, 1},
-                                                    {1, 1, 1},
-                                                    {0, 1, 1}}};
+  static const std::array<std::array<int, 3>, 8> c{
+      {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}}};
   return c;
 }
 template <>
@@ -52,18 +46,18 @@ inline const std::array<std::array<int, 2>, 4>& vtkCorners<2>() {
 /// Write a BlockOctree (+ world geometry + a per-leaf scalar) as a VTK
 /// UnstructuredGrid (.vtu), ASCII, one cell per leaf.
 template <int Dim, unsigned Bits>
-void writeVtu(const std::string& path, const BlockOctree<Dim, Bits>& t,
-              const AmrGeometry<Dim>& geo, const std::string& name,
-              const std::vector<double>& cellData) {
+void writeVtu(const std::string& path, const BlockOctree<Dim, Bits>& t, const AmrGeometry<Dim>& geo,
+              const std::string& name, const std::vector<double>& cellData) {
   static_assert(Dim == 2 || Dim == 3, "writeVtu supports 2D/3D");
   const Index nLeaf = t.numLeaves();
   if (static_cast<Index>(cellData.size()) != nLeaf)
     throw std::runtime_error("writeVtu: cellData size != numLeaves");
 
   std::ofstream f(path);
-  if (!f) throw std::runtime_error("writeVtu: cannot open " + path);
+  if (!f)
+    throw std::runtime_error("writeVtu: cannot open " + path);
 
-  constexpr int NP = 1 << Dim;          // points per cell
+  constexpr int NP = 1 << Dim;  // points per cell
   const int cellType = (Dim == 3) ? 12 : 9;
   const auto& corners = detail::vtkCorners<Dim>();
   const std::size_t npts = static_cast<std::size_t>(nLeaf) * NP;
@@ -94,19 +88,23 @@ void writeVtu(const std::string& path, const BlockOctree<Dim, Bits>& t,
   // --- cells ---
   f << "      <Cells>\n"
     << "        <DataArray type=\"Int64\" Name=\"connectivity\" format=\"ascii\">\n";
-  for (std::size_t p = 0; p < npts; ++p) f << p << (((p + 1) % NP == 0) ? '\n' : ' ');
+  for (std::size_t p = 0; p < npts; ++p)
+    f << p << (((p + 1) % NP == 0) ? '\n' : ' ');
   f << "        </DataArray>\n"
     << "        <DataArray type=\"Int64\" Name=\"offsets\" format=\"ascii\">\n";
-  for (Index i = 0; i < nLeaf; ++i) f << static_cast<std::size_t>(i + 1) * NP << '\n';
+  for (Index i = 0; i < nLeaf; ++i)
+    f << static_cast<std::size_t>(i + 1) * NP << '\n';
   f << "        </DataArray>\n"
     << "        <DataArray type=\"UInt8\" Name=\"types\" format=\"ascii\">\n";
-  for (Index i = 0; i < nLeaf; ++i) f << cellType << '\n';
+  for (Index i = 0; i < nLeaf; ++i)
+    f << cellType << '\n';
   f << "        </DataArray>\n      </Cells>\n";
 
   // --- cell data ---
   f << "      <CellData Scalars=\"" << name << "\">\n"
     << "        <DataArray type=\"Float64\" Name=\"" << name << "\" format=\"ascii\">\n";
-  for (Index i = 0; i < nLeaf; ++i) f << cellData[static_cast<std::size_t>(i)] << '\n';
+  for (Index i = 0; i < nLeaf; ++i)
+    f << cellData[static_cast<std::size_t>(i)] << '\n';
   f << "        </DataArray>\n      </CellData>\n";
 
   f << "    </Piece>\n  </UnstructuredGrid>\n</VTKFile>\n";
@@ -114,9 +112,8 @@ void writeVtu(const std::string& path, const BlockOctree<Dim, Bits>& t,
 
 /// Convenience overload taking a LeafField<double>.
 template <int Dim, unsigned Bits>
-void writeVtu(const std::string& path, const BlockOctree<Dim, Bits>& t,
-              const AmrGeometry<Dim>& geo, const std::string& name,
-              const LeafField<double>& field) {
+void writeVtu(const std::string& path, const BlockOctree<Dim, Bits>& t, const AmrGeometry<Dim>& geo,
+              const std::string& name, const LeafField<double>& field) {
   writeVtu(path, t, geo, name, field.values);
 }
 

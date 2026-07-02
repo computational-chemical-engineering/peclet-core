@@ -14,9 +14,8 @@
 
 #ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
-#include <vector>
-
 #include <Kokkos_Core.hpp>
+#include <vector>
 
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/multigrid.hpp"
@@ -38,20 +37,23 @@ double openFn(const Vec<3>& p, int /*axis*/) {
 
 void setDev(View<double> v, const std::vector<double>& h) {
   auto m = Kokkos::create_mirror_view(v);
-  for (std::size_t i = 0; i < h.size(); ++i) m((Index)i) = h[i];
+  for (std::size_t i = 0; i < h.size(); ++i)
+    m((Index)i) = h[i];
   Kokkos::deep_copy(v, m);
 }
 std::vector<double> getDev(View<double> v, Index n) {
   std::vector<double> h((std::size_t)n);
   auto m = Kokkos::create_mirror_view(v);
   Kokkos::deep_copy(m, v);
-  for (Index i = 0; i < n; ++i) h[(std::size_t)i] = m(i);
+  for (Index i = 0; i < n; ++i)
+    h[(std::size_t)i] = m(i);
   return h;
 }
 
 void run() {
   BO t(IVec<3>{2, 2, 2}, 3);
-  for (int kk = 0; kk < 2; ++kk) t.refineIf([](Code, unsigned l) { return l > 0; });
+  for (int kk = 0; kk < 2; ++kk)
+    t.refineIf([](Code, unsigned l) { return l > 0; });
   t.refineIf([&](Code c, unsigned) {
     auto o = M::from_code(c).decode();
     return o[0] < 8 && o[1] < 8 && o[2] < 8;
@@ -69,7 +71,8 @@ void run() {
   std::vector<double> uex((std::size_t)n0);
   for (Index i = 0; i < n0; ++i) {
     auto o = M::from_code(mg.octreeCode(0, i)).decode();
-    double cx = ((double)o[0] + 0.5) * h0, cy = ((double)o[1] + 0.5) * h0, cz = ((double)o[2] + 0.5) * h0;
+    double cx = ((double)o[0] + 0.5) * h0, cy = ((double)o[1] + 0.5) * h0,
+           cz = ((double)o[2] + 0.5) * h0;
     const double k = 2.0 * M_PI;
     uex[(std::size_t)i] = std::sin(k * cx) * std::cos(k * cy) + std::cos(k * cz);
   }
@@ -95,7 +98,8 @@ void run() {
     setDev(mg.b(0), b);
     Kokkos::deep_copy(mg.x(0), 0.0);
     double r0 = resNorm();
-    for (int c = 0; c < cycles; ++c) mg.vcycle(2, 2, 60, 0.8);
+    for (int c = 0; c < cycles; ++c)
+      mg.vcycle(2, 2, 60, 0.8);
     return std::pair<double, double>(r0, resNorm());
   };
 
@@ -107,7 +111,8 @@ void run() {
       "KAPPA-RESTRICT on DIRICHLET (n0=%lld, %d cycles, strong cut):\n"
       "  plain volume-avg : r0=%.3e r1=%.3e  factor/cyc=%.4f\n"
       "  kappa-weighted   : r0=%.3e r1=%.3e  factor/cyc=%.4f\n",
-      (long long)n0, cycles, plain.first, plain.second, ratePlain, kap.first, kap.second, rateKappa);
+      (long long)n0, cycles, plain.first, plain.second, ratePlain, kap.first, kap.second,
+      rateKappa);
 
   // FINDING (this mesh): plain → ~2.6e-10 (≈0.36/cyc), κ-weighted → ~6.7e-7 (≈0.47/cyc).
   // On Dirichlet (non-singular) the κ stall/floor from the periodic case is GONE — both
@@ -117,7 +122,7 @@ void run() {
   // volume-average remains the default; κ-restrict is safe on non-singular configs but is
   // not a convergence win in these tests.
   PECLET_CORE_CHECK(plain.second < plain.first * 1e-8);  // no floor (baseline)
-  PECLET_CORE_CHECK(kap.second < kap.first * 1e-8);       // no floor with κ either (Dirichlet)
+  PECLET_CORE_CHECK(kap.second < kap.first * 1e-8);      // no floor with κ either (Dirichlet)
 }
 
 }  // namespace

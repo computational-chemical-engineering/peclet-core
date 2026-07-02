@@ -61,9 +61,11 @@ MORTON_HD inline Index amrLocate(const typename M::code_type* codes, const std::
       hi = mid;
   }
   Index idx = lo - 1;
-  if (idx < 0) return -1;
+  if (idx < 0)
+    return -1;
   // p is inside leaf idx iff clearing the leaf's low bits gives its origin.
-  if (M::from_code(p).ancestor(levels[idx]).code() == codes[idx]) return idx;
+  if (M::from_code(p).ancestor(levels[idx]).code() == codes[idx])
+    return idx;
   return -1;
 }
 
@@ -101,7 +103,8 @@ class BlockOctree {
     IVec<Dim> end = brick_;
     forEachInBox<Dim>(bgn, end, [&](const IVec<Dim>& r) {
       std::array<Coord, Dim> o{};
-      for (int i = 0; i < Dim; ++i) o[i] = static_cast<Coord>(r[i]) * rootSpan;
+      for (int i = 0; i < Dim; ++i)
+        o[i] = static_cast<Coord>(r[i]) * rootSpan;
       codes_.push_back(M::encode(o).code());
       levels_.push_back(static_cast<std::uint8_t>(lmax_));
     });
@@ -137,9 +140,7 @@ class BlockOctree {
   // ---- queries -----------------------------------------------------------
 
   /// Leaf containing Morton code `p`, or -1. Host wrapper over amrLocate.
-  Index find(Code p) const {
-    return amrLocate<M>(codes_.data(), levels_.data(), numLeaves(), p);
-  }
+  Index find(Code p) const { return amrLocate<M>(codes_.data(), levels_.data(), numLeaves(), p); }
   /// Leaf containing fine-unit coordinates, or -1.
   Index find(const std::array<Coord, Dim>& fine) const { return find(M::encode(fine).code()); }
 
@@ -162,9 +163,11 @@ class BlockOctree {
     M probe = M::from_code(codes_[static_cast<std::size_t>(i)]);
     const Coord step = Coord(Coord(1) << levels_[static_cast<std::size_t>(i)]);
     if (dir >= 0) {
-      if (!probe.try_add(static_cast<unsigned>(axis), step)) return -1;  // block edge
+      if (!probe.try_add(static_cast<unsigned>(axis), step))
+        return -1;  // block edge
     } else {
-      if (!probe.try_sub(static_cast<unsigned>(axis), 1)) return -1;  // one past lower face
+      if (!probe.try_sub(static_cast<unsigned>(axis), 1))
+        return -1;  // one past lower face
     }
     return find(probe.code());
   }
@@ -269,7 +272,8 @@ class BlockOctree {
           }
         }
       }
-      if (toRefine.empty()) break;
+      if (toRefine.empty())
+        break;
       std::sort(toRefine.begin(), toRefine.end());
       toRefine.erase(std::unique(toRefine.begin(), toRefine.end()), toRefine.end());
       total += refineIf([&](Code c, unsigned) {
@@ -290,7 +294,8 @@ class BlockOctree {
           if (nb >= 0) {
             unsigned Ln = levels_[static_cast<std::size_t>(nb)];
             unsigned hi = Lf > Ln ? Lf : Ln, lo = Lf > Ln ? Ln : Lf;
-            if (hi - lo > 1) return false;
+            if (hi - lo > 1)
+              return false;
           }
         }
     }
@@ -300,9 +305,9 @@ class BlockOctree {
  private:
   void sortByCode() {
     std::vector<Index> ord(codes_.size());
-    for (std::size_t i = 0; i < ord.size(); ++i) ord[i] = static_cast<Index>(i);
-    std::sort(ord.begin(), ord.end(),
-              [&](Index a, Index b) { return codes_[a] < codes_[b]; });
+    for (std::size_t i = 0; i < ord.size(); ++i)
+      ord[i] = static_cast<Index>(i);
+    std::sort(ord.begin(), ord.end(), [&](Index a, Index b) { return codes_[a] < codes_[b]; });
     std::vector<Code> nc(codes_.size());
     std::vector<std::uint8_t> nl(levels_.size());
     for (std::size_t i = 0; i < ord.size(); ++i) {
@@ -316,7 +321,7 @@ class BlockOctree {
   IVec<Dim> brick_{};
   IVec<Dim> globalOrigin_{};
   unsigned lmax_ = 0;
-  std::vector<Code> codes_;        // leaf origin codes, ascending (Z-order)
+  std::vector<Code> codes_;           // leaf origin codes, ascending (Z-order)
   std::vector<std::uint8_t> levels_;  // parallel to codes_
 };
 

@@ -9,9 +9,8 @@
 #ifdef PECLET_CORE_HAVE_MORTON
 #include <array>
 #include <cstdint>
-#include <vector>
-
 #include <Kokkos_Core.hpp>
+#include <vector>
 
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/block_octree_view.hpp"
@@ -61,13 +60,13 @@ void run() {
   View<Code> dProbe = toDevice(probes, "probes");
   View<Index> dOut("locate_out", probes.size());
   Kokkos::parallel_for(
-      "amr_locate", probes.size(),
-      KOKKOS_LAMBDA(const int i) { dOut(i) = dev.locate(dProbe(i)); });
+      "amr_locate", probes.size(), KOKKOS_LAMBDA(const int i) { dOut(i) = dev.locate(dProbe(i)); });
   auto hOut = Kokkos::create_mirror_view(dOut);
   Kokkos::deep_copy(hOut, dOut);
   int mism = 0;
   for (std::size_t i = 0; i < probes.size(); ++i)
-    if (hOut(i) != t.find(probes[i])) ++mism;
+    if (hOut(i) != t.find(probes[i]))
+      ++mism;
   PECLET_CORE_CHECK_EQ(mism, 0);
 
   // ---- face neighbours: device == host for every leaf, every face ----
@@ -85,8 +84,10 @@ void run() {
   int nmis = 0;
   for (Index i = 0; i < nleaf; ++i)
     for (int axis = 0; axis < 3; ++axis) {
-      if (hNbr(i * 6 + axis * 2 + 0) != t.faceNeighbor(i, axis, +1)) ++nmis;
-      if (hNbr(i * 6 + axis * 2 + 1) != t.faceNeighbor(i, axis, -1)) ++nmis;
+      if (hNbr(i * 6 + axis * 2 + 0) != t.faceNeighbor(i, axis, +1))
+        ++nmis;
+      if (hNbr(i * 6 + axis * 2 + 1) != t.faceNeighbor(i, axis, -1))
+        ++nmis;
     }
   PECLET_CORE_CHECK_EQ(nmis, 0);
 }

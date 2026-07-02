@@ -3,15 +3,15 @@
 // After particles move, each one may now belong to a different rank's block. migrate() reassigns
 // every particle to the rank that owns the block containing its (periodically wrapped) position,
 // shipping departing particles to their new owner via the NBX engine — the dynamic/sparse exchange
-// the consensus protocol is built for. Positions and an opaque fixed-stride payload travel together,
-// so the caller can carry velocity, orientation, id, etc. without this layer knowing the schema.
+// the consensus protocol is built for. Positions and an opaque fixed-stride payload travel
+// together, so the caller can carry velocity, orientation, id, etc. without this layer knowing the
+// schema.
 //
-// This is the Lagrangian counterpart to peclet::core::halo::GridHaloTopology (Eulerian ghost cells): same
-// decomposition, same async engine, different payload — the field-agnostic design in action.
+// This is the Lagrangian counterpart to peclet::core::halo::GridHaloTopology (Eulerian ghost
+// cells): same decomposition, same async engine, different payload — the field-agnostic design in
+// action.
 #ifndef PECLET_CORE_HALO_PARTICLE_MIGRATOR_HPP
 #define PECLET_CORE_HALO_PARTICLE_MIGRATOR_HPP
-
-#include "peclet/core/common/mpi.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -21,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "peclet/core/common/mpi.hpp"
 #include "peclet/core/common/types.hpp"
 #include "peclet/core/decomp/block_decomposer.hpp"
 #include "peclet/core/halo/nbx.hpp"
@@ -30,9 +31,9 @@ namespace peclet::core::halo {
 /// Physical-space layout that maps a position to a global cell of the decomposition.
 template <int Dim>
 struct DomainMap {
-  Vec<Dim> origin{};                  ///< physical coordinate of global cell (0,...)
-  Vec<Dim> cellSize{};                ///< physical size of one global cell
-  std::array<bool, Dim> periodic{};   ///< per-axis periodicity
+  Vec<Dim> origin{};                 ///< physical coordinate of global cell (0,...)
+  Vec<Dim> cellSize{};               ///< physical size of one global cell
+  std::array<bool, Dim> periodic{};  ///< per-axis periodicity
 };
 
 template <int Dim>
@@ -72,7 +73,8 @@ class ParticleMigrator {
   Vec<Dim> wrapPosition(Vec<Dim> x) const {
     const IVec<Dim>& gsize = dec_->globalSize();
     for (int i = 0; i < Dim; ++i) {
-      if (!map_.periodic[i]) continue;
+      if (!map_.periodic[i])
+        continue;
       double L = map_.cellSize[i] * static_cast<double>(gsize[i]);
       double rel = x[i] - map_.origin[i];
       rel = std::fmod(std::fmod(rel, L) + L, L);
@@ -81,8 +83,8 @@ class ParticleMigrator {
     return x;
   }
 
-  /// Reassign every particle to its owning rank. `pos` and `payload` (stride bytes per particle) are
-  /// rewritten in place to hold exactly this rank's particles after migration. Returns the new
+  /// Reassign every particle to its owning rank. `pos` and `payload` (stride bytes per particle)
+  /// are rewritten in place to hold exactly this rank's particles after migration. Returns the new
   /// local count. Last-migrated stats are available via lastSent()/lastReceived().
   std::size_t migrate(std::vector<Vec<Dim>>& pos, std::vector<char>& payload, std::size_t stride) {
     const std::size_t n = pos.size();
@@ -97,14 +99,16 @@ class ParticleMigrator {
       int owner = ownerOf(wx);
       if (owner == rank_) {
         pos[keep] = wx;
-        if (stride) std::memmove(&payload[keep * stride], &payload[i * stride], stride);
+        if (stride)
+          std::memmove(&payload[keep * stride], &payload[i * stride], stride);
         ++keep;
       } else {
         auto& buf = outbox[owner];
         std::size_t off = buf.size();
         buf.resize(off + recBytes);
         std::memcpy(buf.data() + off, wx.data(), posBytes);
-        if (stride) std::memcpy(buf.data() + off + posBytes, &payload[i * stride], stride);
+        if (stride)
+          std::memcpy(buf.data() + off + posBytes, &payload[i * stride], stride);
         ++sent_;
       }
     }
@@ -114,13 +118,15 @@ class ParticleMigrator {
     // Ship departing particles to their owners and absorb arrivals (NBX).
     std::vector<std::pair<int, const std::vector<char>*>> queue;
     queue.reserve(outbox.size());
-    for (auto& [r, buf] : outbox) queue.emplace_back(r, &buf);
+    for (auto& [r, buf] : outbox)
+      queue.emplace_back(r, &buf);
 
     received_ = 0;
     NbxEngine nbx(comm_);
     std::size_t q = 0;
     auto packNext = [&](std::vector<char>& out) -> int {
-      if (q >= queue.size()) return -1;
+      if (q >= queue.size())
+        return -1;
       int dest = queue[q].first;
       out = *queue[q].second;
       ++q;
@@ -186,12 +192,13 @@ class ParticleMigrator {
     return d2 < rcut * rcut;
   }
 
-  /// Append the shift (= image − x) of EVERY periodic image of `x` that comes within `rcut` of block
-  /// `r`'s AABB (enumerating the up-to-3^Dim images: 0 and ±L per periodic axis). Unlike
+  /// Append the shift (= image − x) of EVERY periodic image of `x` that comes within `rcut` of
+  /// block `r`'s AABB (enumerating the up-to-3^Dim images: 0 and ±L per periodic axis). Unlike
   /// `withinRcutOfBlock` (which keeps only the single nearest image), this yields all qualifying
-  /// images — the owner-based view a ghost layer needs when one rank borders ITSELF across a periodic
-  /// face (an undecomposed periodic axis, or np=1). `allowIdentity=false` drops the un-shifted image,
-  /// so r==self yields only the periodic self-wrap copies (a particle is never its own ghost).
+  /// images — the owner-based view a ghost layer needs when one rank borders ITSELF across a
+  /// periodic face (an undecomposed periodic axis, or np=1). `allowIdentity=false` drops the
+  /// un-shifted image, so r==self yields only the periodic self-wrap copies (a particle is never
+  /// its own ghost).
   void imagesWithinRcutOfBlock(const Vec<Dim>& x, int r, double rcut, bool allowIdentity,
                                std::vector<Vec<Dim>>& outShifts) const {
     const auto& o = dec_->origins()[r];
@@ -205,10 +212,15 @@ class ParticleMigrator {
       const double L = map_.cellSize[d] * static_cast<double>(gsize[d]);
       cand[d][0] = 0.0;
       nc[d] = 1;
-      if (map_.periodic[d]) { cand[d][1] = -L; cand[d][2] = L; nc[d] = 3; }
+      if (map_.periodic[d]) {
+        cand[d][1] = -L;
+        cand[d][2] = L;
+        nc[d] = 3;
+      }
     }
     int total = 1;
-    for (int d = 0; d < Dim; ++d) total *= nc[d];
+    for (int d = 0; d < Dim; ++d)
+      total *= nc[d];
     const double rc2 = rcut * rcut;
     for (int idx = 0; idx < total; ++idx) {
       Vec<Dim> shift{};
@@ -219,20 +231,23 @@ class ParticleMigrator {
         const int k = t % nc[d];
         t /= nc[d];
         shift[d] = cand[d][k];
-        if (k != 0) identity = false;
+        if (k != 0)
+          identity = false;
         const double p = x[d] + shift[d];
         const double gap = (p < lo[d]) ? (lo[d] - p) : (p > hi[d]) ? (p - hi[d]) : 0.0;
         d2 += gap * gap;
       }
-      if (d2 < rc2 && (allowIdentity || !identity)) outShifts.push_back(shift);
+      if (d2 < rc2 && (allowIdentity || !identity))
+        outShifts.push_back(shift);
     }
   }
 
-  /// Gather ghost copies of particles within `rcut` of this rank's block boundary. For each particle
-  /// this rank owns, a copy (the periodic image closest to the target block) is sent to every OTHER
-  /// rank whose block comes within `rcut`. Received ghosts are written to ghostPos/ghostPayload
-  /// (cleared first). Returns the number of ghosts received. This is the Lagrangian halo: after it,
-  /// each rank's neighbour search runs locally over its owned + ghost particles.
+  /// Gather ghost copies of particles within `rcut` of this rank's block boundary. For each
+  /// particle this rank owns, a copy (the periodic image closest to the target block) is sent to
+  /// every OTHER rank whose block comes within `rcut`. Received ghosts are written to
+  /// ghostPos/ghostPayload (cleared first). Returns the number of ghosts received. This is the
+  /// Lagrangian halo: after it, each rank's neighbour search runs locally over its owned + ghost
+  /// particles.
   std::size_t gatherGhosts(const std::vector<Vec<Dim>>& pos, const std::vector<char>& payload,
                            std::size_t stride, double rcut, std::vector<Vec<Dim>>& ghostPos,
                            std::vector<char>& ghostPayload) {
@@ -247,23 +262,28 @@ class ParticleMigrator {
     Vec<Dim> img;
     for (std::size_t i = 0; i < pos.size(); ++i) {
       for (int r = 0; r < nranks; ++r) {
-        if (r == rank_) continue;
-        if (!withinRcutOfBlock(pos[i], r, rcut, img)) continue;
+        if (r == rank_)
+          continue;
+        if (!withinRcutOfBlock(pos[i], r, rcut, img))
+          continue;
         auto& buf = outbox[r];
         std::size_t off = buf.size();
         buf.resize(off + recBytes);
         std::memcpy(buf.data() + off, img.data(), posBytes);
-        if (stride) std::memcpy(buf.data() + off + posBytes, &payload[i * stride], stride);
+        if (stride)
+          std::memcpy(buf.data() + off + posBytes, &payload[i * stride], stride);
       }
     }
 
     std::vector<std::pair<int, const std::vector<char>*>> queue;
     queue.reserve(outbox.size());
-    for (auto& kv : outbox) queue.emplace_back(kv.first, &kv.second);
+    for (auto& kv : outbox)
+      queue.emplace_back(kv.first, &kv.second);
     std::size_t q = 0, recv = 0;
     NbxEngine nbx(comm_);
     auto packNext = [&](std::vector<char>& out) -> int {
-      if (q >= queue.size()) return -1;
+      if (q >= queue.size())
+        return -1;
       int dest = queue[q].first;
       out = *queue[q].second;
       ++q;

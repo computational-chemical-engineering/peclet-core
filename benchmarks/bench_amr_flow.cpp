@@ -16,9 +16,9 @@
 
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/flow.hpp"
+#include "peclet/core/amr/flow_oracle.hpp"
 #include "peclet/core/amr/multigrid.hpp"
 #include "peclet/core/amr/pcg.hpp"
-#include "peclet/core/amr/flow_oracle.hpp"
 #include "peclet/core/amr/poisson.hpp"
 
 using namespace peclet::core;
@@ -33,7 +33,8 @@ double ms(Clock::time_point a, Clock::time_point b) {
 }
 BO uniformFine(unsigned L) {
   BO t(IVec<3>{1, 1, 1}, L);
-  for (unsigned k = 0; k < L; ++k) t.refineIf([](Code, unsigned) { return true; });
+  for (unsigned k = 0; k < L; ++k)
+    t.refineIf([](Code, unsigned) { return true; });
   return t;
 }
 
@@ -61,7 +62,8 @@ void benchFlowCompare(unsigned L, int steps) {
   hfl.setSolid(sdf);
   hfl.step(200, 5, 2);  // warm up
   auto h0t = Clock::now();
-  for (int s = 0; s < steps; ++s) hfl.step(200, 5, 2);
+  for (int s = 0; s < steps; ++s)
+    hfl.step(200, 5, 2);
   double hostMs = ms(h0t, Clock::now()) / steps;
 
   AmrFlow<21> dfl;
@@ -73,13 +75,15 @@ void benchFlowCompare(unsigned L, int steps) {
   dfl.step(200, 40);
   Kokkos::fence();
   auto d0t = Clock::now();
-  for (int s = 0; s < steps; ++s) dfl.step(200, 40);
+  for (int s = 0; s < steps; ++s)
+    dfl.step(200, 40);
   Kokkos::fence();
   double devMs = ms(d0t, Clock::now()) / steps;
 
-  std::printf("flow  L=%u  N=%ld^3  cells=%7ld :  host %9.2f ms/step  device %8.2f ms/step  "
-              "speedup %6.1fx\n",
-              L, N, (long)n, hostMs, devMs, hostMs / devMs);
+  std::printf(
+      "flow  L=%u  N=%ld^3  cells=%7ld :  host %9.2f ms/step  device %8.2f ms/step  "
+      "speedup %6.1fx\n",
+      L, N, (long)n, hostMs, devMs, hostMs / devMs);
 }
 
 // Profile: split a device step into momentum-predictor vs pressure-projection time and
@@ -117,9 +121,10 @@ void profileFlow(unsigned L, int steps) {
     momIt = dfl.lastMomIters();
     presIt = dfl.lastPresIters();
   }
-  std::printf("prof  L=%u  cells=%8ld :  momentum ~%7.2f ms (%4d it/step)  pressure ~%7.2f ms "
-              "(%3d it/step)\n",
-              L, (long)n, momMs / steps, momIt, presMs / steps, presIt);
+  std::printf(
+      "prof  L=%u  cells=%8ld :  momentum ~%7.2f ms (%4d it/step)  pressure ~%7.2f ms "
+      "(%3d it/step)\n",
+      L, (long)n, momMs / steps, momIt, presMs / steps, presIt);
 }
 
 // Diagnostic: how the per-step momentum vs pressure solver effort depends on dt. The
@@ -141,10 +146,12 @@ void dtSweep(unsigned L) {
     dfl.setDt(dt);
     dfl.setBodyForce(1.0, 0, 0);
     dfl.setSolid(sdf);
-    for (int s = 0; s < 4; ++s) dfl.step(400, 60);  // measure per-step solver effort
-    std::printf("dt    L=%u  dt=%9.2e (idiag=ρ/dt=%9.2e, μ/h²=%9.2e) :  momentum %4d it/step  "
-                "pressure %3d it/step\n",
-                L, dt, rho / dt, mu / (h0 * h0), dfl.lastMomIters(), dfl.lastPresIters());
+    for (int s = 0; s < 4; ++s)
+      dfl.step(400, 60);  // measure per-step solver effort
+    std::printf(
+        "dt    L=%u  dt=%9.2e (idiag=ρ/dt=%9.2e, μ/h²=%9.2e) :  momentum %4d it/step  "
+        "pressure %3d it/step\n",
+        L, dt, rho / dt, mu / (h0 * h0), dfl.lastMomIters(), dfl.lastPresIters());
   }
 }
 
@@ -179,9 +186,10 @@ void velocityMgCompare(unsigned L) {
   };
   auto j = runIt(false);
   auto m = runIt(true);
-  std::printf("velmg L=%u cells=%8ld :  Jacobi-BiCGStab %4d it/step %8.2f ms  |  velocity-MG %4d "
-              "it/step %8.2f ms  (%.1fx fewer it)\n",
-              L, (long)n, j.first, j.second, m.first, m.second, (double)j.first / m.first);
+  std::printf(
+      "velmg L=%u cells=%8ld :  Jacobi-BiCGStab %4d it/step %8.2f ms  |  velocity-MG %4d "
+      "it/step %8.2f ms  (%.1fx fewer it)\n",
+      L, (long)n, j.first, j.second, m.first, m.second, (double)j.first / m.first);
 }
 
 // Q2 head-to-head: Galerkin (MomentumMG) vs rediscretized staircase (VelocityMG) as
@@ -199,7 +207,8 @@ void mgStrategyCompare(unsigned L) {
     dfl.setDt(1e6);
     dfl.setBodyForce(1.0, 0, 0);
     dfl.setVelocityMGStaircase(staircase);
-    if (staircase) dfl.setVelocityMGMinCoarse(4096);  // sphere (r=0.25) resolved only to ~16³
+    if (staircase)
+      dfl.setVelocityMGMinCoarse(4096);  // sphere (r=0.25) resolved only to ~16³
     dfl.setMomentumGS(gs);
     dfl.setSolid(sdf);
     double tm = 0;
@@ -214,18 +223,20 @@ void mgStrategyCompare(unsigned L) {
       it = dfl.lastMomIters();
     }
     auto u = dfl.velocity(0);
-    for (Index i = 0; i < n; ++i) um += u[(std::size_t)i];
+    for (Index i = 0; i < n; ++i)
+      um += u[(std::size_t)i];
     return std::make_tuple(it, tm, um / n);
   };
   // 2×2: coarse-operator strategy (Galerkin / staircase) × smoother (Jacobi / multicolour-GS).
-  // it/step is the momentum-MG-preconditioned BiCGStab count to a fixed tolerance — GS should cut it
-  // (RB-GS "owns the cut band"), most visibly for the staircase at finer L.
+  // it/step is the momentum-MG-preconditioned BiCGStab count to a fixed tolerance — GS should cut
+  // it (RB-GS "owns the cut band"), most visibly for the staircase at finer L.
   auto gj = runIt(false, false);
   auto gg = runIt(false, true);
   auto sj = runIt(true, false);
   auto sg = runIt(true, true);
   std::printf(
-      "mgstrat L=%u cells=%8ld :  Galerkin[jac %4d / gs %4d] it/step  |  staircase[jac %4d / gs %4d] "
+      "mgstrat L=%u cells=%8ld :  Galerkin[jac %4d / gs %4d] it/step  |  staircase[jac %4d / gs "
+      "%4d] "
       "it/step  (Umean Gj %.3e Gg %.3e Sj %.3e Sg %.3e)\n",
       L, (long)n, std::get<0>(gj), std::get<0>(gg), std::get<0>(sj), std::get<0>(sg),
       std::get<2>(gj), std::get<2>(gg), std::get<2>(sj), std::get<2>(sg));
@@ -248,7 +259,8 @@ void benchFlow(unsigned L, int steps) {
   dfl.step(200, 40);
   Kokkos::fence();
   auto d0t = Clock::now();
-  for (int s = 0; s < steps; ++s) dfl.step(200, 40);
+  for (int s = 0; s < steps; ++s)
+    dfl.step(200, 40);
   Kokkos::fence();
   double devMs = ms(d0t, Clock::now()) / steps;
   std::printf("flow  L=%u  N=%ld^3  cells=%8ld :  device %9.2f ms/step  (%7.1f Mcell/s)\n", L, N,
@@ -272,7 +284,8 @@ void benchPoisson(unsigned L) {
   }
   ap.applyLaplacian(uex, b);
   double bn = 0;
-  for (double v : b) bn += v * v;
+  for (double v : b)
+    bn += v * v;
   bn = std::sqrt(bn);
   const double tol = 1e-8;
 
@@ -281,7 +294,8 @@ void benchPoisson(unsigned L) {
   View<double> db("b", (std::size_t)n);
   {
     auto m = Kokkos::create_mirror_view(db);
-    for (Index i = 0; i < n; ++i) m(i) = b[(std::size_t)i];
+    for (Index i = 0; i < n; ++i)
+      m(i) = b[(std::size_t)i];
     Kokkos::deep_copy(db, m);
   }
   // Device-side residual norm (no host round-trip — fair to the V-cycle loop).
@@ -299,7 +313,8 @@ void benchPoisson(unsigned L) {
   int nv = 0;
   for (; nv < 500; ++nv) {
     mg.vcycle(2, 2, 60, 0.8);
-    if (resDev(mg.x(0)) <= tol * bn) break;
+    if (resDev(mg.x(0)) <= tol * bn)
+      break;
   }
   Kokkos::fence();
   double vMs = ms(v0, Clock::now());
@@ -314,9 +329,10 @@ void benchPoisson(unsigned L) {
   Kokkos::fence();
   double pMs = ms(p0, Clock::now());
 
-  std::printf("pois  L=%u  cells=%ld :  V-cycle %3d cyc %7.2f ms  |  MG-PCG %3d it %7.2f ms  "
-              "(%.1fx fewer cycles, %.2fx time)\n",
-              L, (long)n, nv + 1, vMs, R.iters, pMs, (double)(nv + 1) / R.iters, vMs / pMs);
+  std::printf(
+      "pois  L=%u  cells=%ld :  V-cycle %3d cyc %7.2f ms  |  MG-PCG %3d it %7.2f ms  "
+      "(%.1fx fewer cycles, %.2fx time)\n",
+      L, (long)n, nv + 1, vMs, R.iters, pMs, (double)(nv + 1) / R.iters, vMs / pMs);
 }
 }  // namespace
 
@@ -329,19 +345,25 @@ int main(int argc, char** argv) {
   {
     std::printf("# backend: %s\n", Kokkos::DefaultExecutionSpace::name());
     std::printf("# --- Poisson: V-cycle vs MG-PCG to rel 1e-8 ---\n");
-    for (unsigned L = 4; L <= Ldev; ++L) benchPoisson(L);
+    for (unsigned L = 4; L <= Ldev; ++L)
+      benchPoisson(L);
     std::printf("# --- Flow: host (serial) vs device, where host is affordable ---\n");
-    for (unsigned L = 4; L <= Lhost; ++L) benchFlowCompare(L, steps);
+    for (unsigned L = 4; L <= Lhost; ++L)
+      benchFlowCompare(L, steps);
     std::printf("# --- Flow: device-only throughput scaling ---\n");
-    for (unsigned L = 4; L <= Ldev; ++L) benchFlow(L, steps);
+    for (unsigned L = 4; L <= Ldev; ++L)
+      benchFlow(L, steps);
     std::printf("# --- Flow: momentum-vs-pressure profile ---\n");
-    for (unsigned L = 5; L <= Ldev; ++L) profileFlow(L, steps);
+    for (unsigned L = 5; L <= Ldev; ++L)
+      profileFlow(L, steps);
     std::printf("# --- Diagnostic: momentum/pressure solver effort vs dt ---\n");
     dtSweep(Ldev >= 6 ? 6 : Ldev);
     std::printf("# --- Phase 1: velocity-MG vs Jacobi-BiCGStab momentum (steady dt) ---\n");
-    for (unsigned L = 5; L <= Ldev; ++L) velocityMgCompare(L);
+    for (unsigned L = 5; L <= Ldev; ++L)
+      velocityMgCompare(L);
     std::printf("# --- Q2: Galerkin vs rediscretized staircase momentum-MG ---\n");
-    for (unsigned L = 4; L <= Ldev; ++L) mgStrategyCompare(L);
+    for (unsigned L = 4; L <= Ldev; ++L)
+      mgStrategyCompare(L);
   }
   Kokkos::finalize();
   return 0;

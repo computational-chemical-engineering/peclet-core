@@ -33,8 +33,8 @@
 #include <utility>
 #include <vector>
 
-#include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/assembly.hpp"  // assembleFv (device per-level operator rebuild, D5)
+#include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/fv_op.hpp"
 #include "peclet/core/amr/poisson.hpp"
 #include "peclet/core/common/view.hpp"
@@ -43,12 +43,13 @@ namespace peclet::core::amr {
 
 /// Restrict: coarse(p) = mean over p's children (CSR fixed order ⇒ deterministic).
 inline void restrictField(View<const Index> childStart, View<const Index> childIdx,
-                           View<const double> fine, View<double> coarse, Index nCoarse) {
+                          View<const double> fine, View<double> coarse, Index nCoarse) {
   Kokkos::parallel_for(
       "amr::device_restrict", nCoarse, KOKKOS_LAMBDA(const Index p) {
         const Index a = childStart(p), z = childStart(p + 1);
         double s = 0.0;
-        for (Index k = a; k < z; ++k) s += fine(childIdx(k));
+        for (Index k = a; k < z; ++k)
+          s += fine(childIdx(k));
         coarse(p) = (z > a) ? s / static_cast<double>(z - a) : 0.0;
       });
 }
@@ -60,8 +61,8 @@ inline void restrictField(View<const Index> childStart, View<const Index> childI
 /// NOTE: unlike the plain volume-average, this is *not* exactly conservative, so the
 /// restricted residual of a mean-zero RHS need not stay mean-zero.)
 inline void restrictKappa(View<const Index> childStart, View<const Index> childIdx,
-                                View<const double> fine, View<const double> kappa,
-                                View<double> coarse, Index nCoarse) {
+                          View<const double> fine, View<const double> kappa, View<double> coarse,
+                          Index nCoarse) {
   Kokkos::parallel_for(
       "amr::device_restrict_kappa", nCoarse, KOKKOS_LAMBDA(const Index p) {
         const Index a = childStart(p), z = childStart(p + 1);
@@ -78,23 +79,26 @@ inline void restrictKappa(View<const Index> childStart, View<const Index> childI
 
 /// Prolong (piecewise-constant) + correct: fine(i) += coarse(c2p(i)).
 inline void prolongAdd(View<const Index> c2p, View<const double> coarse, View<double> fine,
-                             Index nFine) {
+                       Index nFine) {
   Kokkos::parallel_for(
       "amr::device_prolong", nFine, KOKKOS_LAMBDA(const Index i) {
         const Index p = c2p(i);
-        if (p >= 0) fine(i) += coarse(p);
+        if (p >= 0)
+          fine(i) += coarse(p);
       });
 }
 
 /// Masked piecewise-constant prolong + correct: fine(i) += coarse(c2p(i)) only on non-excluded fine
 /// cells (mirrors flow VelocityMG::prolongMasked — no correction into a cut/solid cell). Generic.
 inline void prolongAddMasked(View<const Index> c2p, View<const double> coarse,
-                                   View<const char> excl, View<double> fine, Index nFine) {
+                             View<const char> excl, View<double> fine, Index nFine) {
   Kokkos::parallel_for(
       "amr::device_prolong_masked", nFine, KOKKOS_LAMBDA(const Index i) {
-        if (excl(i)) return;
+        if (excl(i))
+          return;
         const Index p = c2p(i);
-        if (p >= 0) fine(i) += coarse(p);
+        if (p >= 0)
+          fine(i) += coarse(p);
       });
 }
 
@@ -103,7 +107,10 @@ inline void prolongAddMasked(View<const Index> c2p, View<const double> coarse,
 /// coarse grid (the clean-fluid exclude). Generic.
 inline void zeroMasked(View<double> v, View<const char> excl, Index n) {
   Kokkos::parallel_for(
-      "amr::device_zero_masked", n, KOKKOS_LAMBDA(const Index i) { if (excl(i)) v(i) = 0.0; });
+      "amr::device_zero_masked", n, KOKKOS_LAMBDA(const Index i) {
+        if (excl(i))
+          v(i) = 0.0;
+      });
 }
 
 template <int Dim, unsigned Bits = (Dim == 2 ? 32u : (Dim == 3 ? 21u : 16u))>
@@ -177,23 +184,28 @@ class Multigrid {
     Level& lv = levels_[L];
     View<const double> bc(lv.b);
     if (L + 1 == levels_.size()) {
-      for (int s = 0; s < bottom; ++s) jacobiFv(lv.op, lv.x, bc, lv.tmp, omega);
-      if (removeMean_) removeMeanFv(lv.op, lv.x);
+      for (int s = 0; s < bottom; ++s)
+        jacobiFv(lv.op, lv.x, bc, lv.tmp, omega);
+      if (removeMean_)
+        removeMeanFv(lv.op, lv.x);
       return;
     }
-    for (int s = 0; s < pre; ++s) jacobiFv(lv.op, lv.x, bc, lv.tmp, omega);
+    for (int s = 0; s < pre; ++s)
+      jacobiFv(lv.op, lv.x, bc, lv.tmp, omega);
     residualFv(lv.op, View<const double>(lv.x), bc, lv.res);
     Level& cl = levels_[L + 1];
     if (kappaRestrict_)
       restrictKappa(lv.childStart, lv.childIdx, View<const double>(lv.res),
-                          View<const double>(lv.kappa), cl.b, cl.n);
+                    View<const double>(lv.kappa), cl.b, cl.n);
     else
       restrictField(lv.childStart, lv.childIdx, View<const double>(lv.res), cl.b, cl.n);
     Kokkos::deep_copy(cl.x, 0.0);
     vcycle(pre, post, bottom, omega, L + 1);
     prolongAdd(lv.c2p, View<const double>(cl.x), lv.x, lv.n);
-    for (int s = 0; s < post; ++s) jacobiFv(lv.op, lv.x, bc, lv.tmp, omega);
-    if (removeMean_) removeMeanFv(lv.op, lv.x);
+    for (int s = 0; s < post; ++s)
+      jacobiFv(lv.op, lv.x, bc, lv.tmp, omega);
+    if (removeMean_)
+      removeMeanFv(lv.op, lv.x);
   }
 
   /// Solve L_quad u = rhs (the 2nd-order graded operator) by deferred correction:
@@ -210,16 +222,17 @@ class Multigrid {
     auto bb = lv.b;
     double r = 0.0;
     for (int o = 0; o < outer; ++o) {
-      quadDelta(View<const Index>(qStart_), View<const Index>(qSlot_),
-                      View<const double>(qCoef_), View<const double>(lv.x), dq_, lv.n);
+      quadDelta(View<const Index>(qStart_), View<const Index>(qSlot_), View<const double>(qCoef_),
+                View<const double>(lv.x), dq_, lv.n);
       Kokkos::parallel_for(
           "amr::quad_rhsp", lv.n, KOKKOS_LAMBDA(const Index i) { bb(i) = b0(i) - dq(i); });
-      for (int c = 0; c < cyclesPerOuter; ++c) vcycle(pre, post, bottom, omega, 0);
+      for (int c = 0; c < cyclesPerOuter; ++c)
+        vcycle(pre, post, bottom, omega, 0);
     }
     // r = || b0true − (L_std + quad) x ||
     residualFv(lv.op, View<const double>(lv.x), View<const double>(b0true_), lv.res);
-    quadDelta(View<const Index>(qStart_), View<const Index>(qSlot_),
-                    View<const double>(qCoef_), View<const double>(lv.x), dq_, lv.n);
+    quadDelta(View<const Index>(qStart_), View<const Index>(qSlot_), View<const double>(qCoef_),
+              View<const double>(lv.x), dq_, lv.n);
     auto res = lv.res;
     double s = 0.0;
     Kokkos::parallel_reduce(
@@ -263,7 +276,8 @@ class Multigrid {
       for (Index i = 0; i < lv.n; ++i) {
         double s = 0.0;
         for (int axis = 0; axis < Dim; ++axis)
-          for (int dir = -1; dir <= 1; dir += 2) s += ap.faceOpenness(i, axis, dir);
+          for (int dir = -1; dir <= 1; dir += 2)
+            s += ap.faceOpenness(i, axis, dir);
         kap[static_cast<std::size_t>(i)] = s / static_cast<double>(2 * Dim);
       }
       lv.kappa = toDevice(kap, "mg_kappa");
@@ -282,16 +296,19 @@ class Multigrid {
         Code parent = M::from_code(f.code(i)).ancestor(f.level(i) + 1).code();
         Index p = c.find(parent);
         c2p[static_cast<std::size_t>(i)] = p;
-        if (p >= 0) ++cnt[static_cast<std::size_t>(p)];
+        if (p >= 0)
+          ++cnt[static_cast<std::size_t>(p)];
       }
       std::vector<Index> start(static_cast<std::size_t>(nc) + 1, 0);
       for (Index p = 0; p < nc; ++p)
-        start[static_cast<std::size_t>(p) + 1] = start[static_cast<std::size_t>(p)] + cnt[static_cast<std::size_t>(p)];
+        start[static_cast<std::size_t>(p) + 1] =
+            start[static_cast<std::size_t>(p)] + cnt[static_cast<std::size_t>(p)];
       std::vector<Index> idx(static_cast<std::size_t>(nf));
       std::vector<Index> cur(start.begin(), start.end() - 1);
       for (Index i = 0; i < nf; ++i) {
         Index p = c2p[static_cast<std::size_t>(i)];
-        if (p >= 0) idx[static_cast<std::size_t>(cur[static_cast<std::size_t>(p)]++)] = i;
+        if (p >= 0)
+          idx[static_cast<std::size_t>(cur[static_cast<std::size_t>(p)]++)] = i;
       }
       levels_[L].c2p = toDevice(c2p, "mg_c2p");
       levels_[L].childStart = toDevice(start, "mg_cstart");
@@ -322,10 +339,11 @@ class Multigrid {
   }
 
  public:
-  /// Re-assemble every level's operator ON THE DEVICE from the (host) hierarchy's current geometry —
-  /// the dynamic-AMR rebuild hook (D5/D6). After a moving boundary re-samples each level's openness on
-  /// the host AmrPoisson (hmg_), this rebuilds all per-level FvOps on device with no host CSR walk and
-  /// no round-trip, preserving each level's Helmholtz c0/cD. Topology (c2p/child maps) is unchanged.
+  /// Re-assemble every level's operator ON THE DEVICE from the (host) hierarchy's current geometry
+  /// — the dynamic-AMR rebuild hook (D5/D6). After a moving boundary re-samples each level's
+  /// openness on the host AmrPoisson (hmg_), this rebuilds all per-level FvOps on device with no
+  /// host CSR walk and no round-trip, preserving each level's Helmholtz c0/cD. Topology (c2p/child
+  /// maps) is unchanged.
   void reassembleOperators() {
     const std::size_t nl = hmg_->numLevels();
     for (std::size_t L = 0; L < nl && L < levels_.size(); ++L)
@@ -333,7 +351,6 @@ class Multigrid {
   }
 
  private:
-
   // Build the quadratic coarse-fine correction CSR: dq_i = Σ coef·u[slot] equals
   // (L_quad − L_std)u (AmrPoisson::coarseStar, expressed as a linear stencil).
   void buildQuadCsr(const Poisson& ap, const Octree& t) {
@@ -345,16 +362,20 @@ class Multigrid {
       const double invV = 1.0 / ap.cellVolume(i);
       ap.forEachFaceNeighbor(i, [&](Index j, Real c, int axis, double a) {
         const unsigned Lj = t.level(j);
-        if (Lj == Li) return;
+        if (Lj == Li)
+          return;
         const Index coarse = (Lj > Li) ? j : i;
         const Index fine = (Lj > Li) ? i : j;
         const double scale = invV * (a * c) * ((Lj > Li) ? 1.0 : -1.0);
-        addCoarseStarStencil(ap, t, per[static_cast<std::size_t>(i)], coarse, fine, axis, scale, h0);
+        addCoarseStarStencil(ap, t, per[static_cast<std::size_t>(i)], coarse, fine, axis, scale,
+                             h0);
       });
     }
     std::vector<Index> qs(static_cast<std::size_t>(n) + 1, 0);
     for (Index i = 0; i < n; ++i)
-      qs[static_cast<std::size_t>(i) + 1] = qs[static_cast<std::size_t>(i)] + static_cast<Index>(per[static_cast<std::size_t>(i)].size());
+      qs[static_cast<std::size_t>(i) + 1] =
+          qs[static_cast<std::size_t>(i)] +
+          static_cast<Index>(per[static_cast<std::size_t>(i)].size());
     const Index nq = qs[static_cast<std::size_t>(n)];
     std::vector<Index> slot(static_cast<std::size_t>(nq));
     std::vector<double> coef(static_cast<std::size_t>(nq));
@@ -382,14 +403,19 @@ class Multigrid {
     const double sc = static_cast<double>(Index(1) << t.level(coarse));
     const double sf = static_cast<double>(Index(1) << t.level(fine));
     for (int tt = 0; tt < Dim; ++tt) {
-      if (tt == axis) continue;
+      if (tt == axis)
+        continue;
       const double dt = ((static_cast<double>(bf[0][tt]) + 0.5 * sf) -
-                         (static_cast<double>(bc[0][tt]) + 0.5 * sc)) * h0;
+                         (static_cast<double>(bc[0][tt]) + 0.5 * sc)) *
+                        h0;
       Index cp = ap.periodicNeighbor(coarse, tt, +1);
       Index cm = ap.periodicNeighbor(coarse, tt, -1);
-      if (cp < 0 || cm < 0) continue;
-      if (t.level(cp) != t.level(coarse) || t.level(cm) != t.level(coarse)) continue;
-      if (ap.faceOpenness(coarse, tt, +1) < 0.5 || ap.faceOpenness(coarse, tt, -1) < 0.5) continue;
+      if (cp < 0 || cm < 0)
+        continue;
+      if (t.level(cp) != t.level(coarse) || t.level(cm) != t.level(coarse))
+        continue;
+      if (ap.faceOpenness(coarse, tt, +1) < 0.5 || ap.faceOpenness(coarse, tt, -1) < 0.5)
+        continue;
       const double cUp = dt / (2.0 * H) + 0.5 * dt * dt / (H * H);
       const double cUm = -dt / (2.0 * H) + 0.5 * dt * dt / (H * H);
       const double cUc = -dt * dt / (H * H);

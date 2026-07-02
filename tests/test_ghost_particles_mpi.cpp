@@ -1,10 +1,10 @@
 // MPI correctness of Lagrangian ghost-particle gathering (ParticleMigrator::gatherGhosts).
 //
 // After migration each rank owns the particles in its block. gatherGhosts(rcut) must give each rank
-// exactly the particles owned by OTHER ranks that lie within `rcut` of its block (periodic). We check
-// this against a brute-force reference: every rank Allgathers all particles, then independently
-// computes which ones should be its ghosts; the gathered id-set must equal the reference id-set, with
-// no duplicates and no self-owned particles.
+// exactly the particles owned by OTHER ranks that lie within `rcut` of its block (periodic). We
+// check this against a brute-force reference: every rank Allgathers all particles, then
+// independently computes which ones should be its ghosts; the gathered id-set must equal the
+// reference id-set, with no duplicates and no self-owned particles.
 #include <mpi.h>
 
 #include <algorithm>
@@ -73,7 +73,8 @@ int main(int argc, char** argv) {
   std::vector<char> gpay;
   mig.gatherGhosts(pos, payload, stride, rcut, gpos, gpay);
   std::vector<std::int64_t> gotIds(gpos.size());
-  for (std::size_t i = 0; i < gpos.size(); ++i) std::memcpy(&gotIds[i], &gpay[i * stride], stride);
+  for (std::size_t i = 0; i < gpos.size(); ++i)
+    std::memcpy(&gotIds[i], &gpay[i * stride], stride);
 
   // --- brute-force reference: Allgather all owned particles ---
   int local = (int)pos.size();
@@ -102,9 +103,11 @@ int main(int argc, char** argv) {
   std::vector<std::int64_t> expectIds;
   for (const auto& g : all) {
     Vec<3> x{g.p[0], g.p[1], g.p[2]};
-    if (mig.ownerOf(x) == rank) continue;  // owned here -> not a ghost
+    if (mig.ownerOf(x) == rank)
+      continue;  // owned here -> not a ghost
     Vec<3> img;
-    if (mig.withinRcutOfBlock(x, rank, rcut, img)) expectIds.push_back(g.id);
+    if (mig.withinRcutOfBlock(x, rank, rcut, img))
+      expectIds.push_back(g.id);
   }
 
   std::sort(gotIds.begin(), gotIds.end());
@@ -120,7 +123,8 @@ int main(int argc, char** argv) {
       }
   // no duplicates among gathered ghosts
   for (std::size_t i = 1; i < gotIds.size(); ++i)
-    if (gotIds[i] == gotIds[i - 1]) ++fail;
+    if (gotIds[i] == gotIds[i - 1])
+      ++fail;
 
   int total = 0;
   MPI_Allreduce(&fail, &total, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);

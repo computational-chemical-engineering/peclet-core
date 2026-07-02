@@ -1,15 +1,15 @@
-// Device collocated FACE-GEOMETRY assembly (peclet::core::amr::assembleFaceGeom) must reproduce host
-// buildFaceGeom bit-for-bit on OpenMP: same forEachFaceFull enumeration + per-face geometry
-// (nbr/axis/dir/α·area/raw area/dist/α/upstream probes) + per-cell invVol/fluid. The D4 anti-drift lock.
+// Device collocated FACE-GEOMETRY assembly (peclet::core::amr::assembleFaceGeom) must reproduce
+// host buildFaceGeom bit-for-bit on OpenMP: same forEachFaceFull enumeration + per-face geometry
+// (nbr/axis/dir/α·area/raw area/dist/α/upstream probes) + per-cell invVol/fluid. The D4 anti-drift
+// lock.
 //
 // Guarded by PECLET_CORE_HAVE_MORTON; a no-op pass without the morton sibling checkout.
 #include "test_util.hpp"
 
 #ifdef PECLET_CORE_HAVE_MORTON
 #include <cmath>
-#include <vector>
-
 #include <Kokkos_Core.hpp>
+#include <vector>
 
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/block_octree_view.hpp"
@@ -31,16 +31,19 @@ std::vector<T> down(const View<T>& d) {
   std::vector<T> h(d.extent(0));
   auto m = Kokkos::create_mirror_view(d);
   Kokkos::deep_copy(m, d);
-  for (std::size_t i = 0; i < h.size(); ++i) h[i] = m(i);
+  for (std::size_t i = 0; i < h.size(); ++i)
+    h[i] = m(i);
   return h;
 }
 
 template <class T>
 int mismatch(const std::vector<T>& a, const std::vector<T>& b) {
-  if (a.size() != b.size()) return -1;
+  if (a.size() != b.size())
+    return -1;
   int m = 0;
   for (std::size_t i = 0; i < a.size(); ++i)
-    if (a[i] != b[i]) ++m;
+    if (a[i] != b[i])
+      ++m;
   return m;
 }
 
@@ -76,11 +79,13 @@ void run() {
       double c = org[d] + (static_cast<double>(b[0][d]) + 0.5 * s) * h0;
       r2 += c * c;
     }
-    fluid[static_cast<std::size_t>(i)] = (std::sqrt(r2) - 0.45 > 0.0) ? 1 : 0;  // outside sphere = fluid
+    fluid[static_cast<std::size_t>(i)] =
+        (std::sqrt(r2) - 0.45 > 0.0) ? 1 : 0;  // outside sphere = fluid
   }
 
   // Host reference (walk + upload) vs device assembly.
-  FaceGeom hg = buildFaceGeom<3, kBits>(ap, [&](Index i) { return fluid[static_cast<std::size_t>(i)] != 0; });
+  FaceGeom hg =
+      buildFaceGeom<3, kBits>(ap, [&](Index i) { return fluid[static_cast<std::size_t>(i)] != 0; });
   BlockOctreeView<3, kBits> dev;
   dev.upload(t);
   FaceGeom dg = assembleFaceGeom<kBits>(ap, fluid, dev);

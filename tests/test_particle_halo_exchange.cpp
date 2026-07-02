@@ -1,29 +1,29 @@
 // MPI + Kokkos correctness of the device-driven Lagrangian ghost halo.
 //
-// Same setup as test_particle_halo_mpi.cpp, but run the persistent forward/reverse exchanges BOTH on
-// the CPU (ParticleHaloTopology) and on the device (ParticleHalo), and require the device result
+// Same setup as test_particle_halo_mpi.cpp, but run the persistent forward/reverse exchanges BOTH
+// on the CPU (ParticleHaloTopology) and on the device (ParticleHalo), and require the device result
 // to match the CPU result bit-for-bit:
 //   forward(id)        -> each ghost carries its owner's id,
 //   reverse(ones, sum) -> each owned particle accumulates a count of how many ranks ghost it.
 #include <mpi.h>
 
-#include <Kokkos_Core.hpp>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <Kokkos_Core.hpp>
 #include <vector>
 
 #include "peclet/core/common/types.hpp"
 #include "peclet/core/common/view.hpp"
 #include "peclet/core/decomp/block_decomposer.hpp"
-#include "peclet/core/halo/particle_halo_topology.hpp"
 #include "peclet/core/halo/particle_halo.hpp"
+#include "peclet/core/halo/particle_halo_topology.hpp"
 #include "peclet/core/halo/particle_migrator.hpp"
 
 using namespace peclet::core;
 using peclet::core::decomp::BlockDecomposer;
-using peclet::core::halo::ParticleHalo;
 using peclet::core::halo::DomainMap;
+using peclet::core::halo::ParticleHalo;
 using peclet::core::halo::ParticleHaloTopology;
 using peclet::core::halo::ParticleMigrator;
 
@@ -96,7 +96,8 @@ int main(int argc, char** argv) {
     View<double> dGhost(Kokkos::view_alloc("ghost", Kokkos::WithoutInitializing), G);
     {
       auto hOwn = Kokkos::create_mirror_view(dOwn);
-      for (std::size_t i = 0; i < Nown; ++i) hOwn(i) = ownId[i];
+      for (std::size_t i = 0; i < Nown; ++i)
+        hOwn(i) = ownId[i];
       Kokkos::deep_copy(dOwn, hOwn);
     }
     dhalo.forward(dOwn, dGhost);
@@ -104,7 +105,8 @@ int main(int argc, char** argv) {
     {
       auto hGhost = Kokkos::create_mirror_view(dGhost);
       Kokkos::deep_copy(hGhost, dGhost);
-      for (std::size_t i = 0; i < G; ++i) ghDev[i] = hGhost(i);
+      for (std::size_t i = 0; i < G; ++i)
+        ghDev[i] = hGhost(i);
     }
 
     View<double> dGones(Kokkos::view_alloc("gones", Kokkos::WithoutInitializing), G);
@@ -115,14 +117,17 @@ int main(int argc, char** argv) {
     {
       auto hCnt = Kokkos::create_mirror_view(dOwnCnt);
       Kokkos::deep_copy(hCnt, dOwnCnt);
-      for (std::size_t i = 0; i < Nown; ++i) ownCntDev[i] = hCnt(i);
+      for (std::size_t i = 0; i < Nown; ++i)
+        ownCntDev[i] = hCnt(i);
     }
 
     // --- device must match CPU bit-for-bit ---
     for (std::size_t i = 0; i < G; ++i)
-      if (ghDev[i] != ghCpu[i]) ++fail;
+      if (ghDev[i] != ghCpu[i])
+        ++fail;
     for (std::size_t i = 0; i < Nown; ++i)
-      if (ownCntDev[i] != ownCntCpu[i]) ++fail;
+      if (ownCntDev[i] != ownCntCpu[i])
+        ++fail;
   }
 
   int total = 0;
@@ -131,7 +136,8 @@ int main(int argc, char** argv) {
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
   if (rank == 0) {
     if (total == 0)
-      std::printf("OK (np=%d): Kokkos particle forward/reverse match CPU ParticleHaloTopology\n", size);
+      std::printf("OK (np=%d): Kokkos particle forward/reverse match CPU ParticleHaloTopology\n",
+                  size);
     else
       std::fprintf(stderr, "FAILED (np=%d): %d mismatches\n", size, total);
   }

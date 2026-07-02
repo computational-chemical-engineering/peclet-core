@@ -3,25 +3,25 @@
 // Build the halo topology on the host, then run the SAME logical exchange two ways: on the CPU
 // (GridHaloTopology::exchangeNbx) and on the device via Kokkos (GridHalo). The device result
 // must match the CPU result bit-for-bit, and both must equal the analytic global field at every
-// ghost cell. Validates the pack/unpack/self-copy parallel_for kernels + the host-staging path across
-// ranks (all sharing one device). Mirrors test_grid_halo_cuda.cu but on the Kokkos backend.
+// ghost cell. Validates the pack/unpack/self-copy parallel_for kernels + the host-staging path
+// across ranks (all sharing one device). Mirrors test_grid_halo_cuda.cu but on the Kokkos backend.
 #include <mpi.h>
 
-#include <Kokkos_Core.hpp>
 #include <array>
 #include <cstdio>
+#include <Kokkos_Core.hpp>
 #include <vector>
 
 #include "peclet/core/common/types.hpp"
 #include "peclet/core/common/view.hpp"
 #include "peclet/core/decomp/block_decomposer.hpp"
-#include "peclet/core/halo/grid_halo_topology.hpp"
 #include "peclet/core/halo/grid_halo.hpp"
+#include "peclet/core/halo/grid_halo_topology.hpp"
 
 using namespace peclet::core;
 using peclet::core::decomp::BlockDecomposer;
-using peclet::core::halo::GridHalo;
 using peclet::core::halo::GridFieldView;
+using peclet::core::halo::GridHalo;
 using peclet::core::halo::GridHaloTopology;
 
 static constexpr int kDim = 3;
@@ -50,7 +50,8 @@ int main(int argc, char** argv) {
     std::vector<double> a0(n, kSentinel);
     idx.forEachInner([&](const IVec<kDim>& lmd) {
       IVec<kDim> g{};
-      for (int i = 0; i < kDim; ++i) g[i] = lmd[i] + idx.originInclGhost()[i];
+      for (int i = 0; i < kDim; ++i)
+        g[i] = lmd[i] + idx.originInclGhost()[i];
       a0[idx.localMdToLocal(lmd)] = static_cast<double>(dec.linearGlobal(g));
     });
 
@@ -63,7 +64,8 @@ int main(int argc, char** argv) {
     View<double> dField(Kokkos::view_alloc("field", Kokkos::WithoutInitializing),
                         static_cast<std::size_t>(n));
     auto hField = Kokkos::create_mirror_view(dField);
-    for (Index c = 0; c < n; ++c) hField(c) = a0[c];
+    for (Index c = 0; c < n; ++c)
+      hField(c) = a0[c];
     Kokkos::deep_copy(dField, hField);
 
     GridHalo<double> dev;
@@ -74,9 +76,11 @@ int main(int argc, char** argv) {
 
     // Compare: device == CPU everywhere, and ghosts == analytic.
     for (Index c = 0; c < n; ++c)
-      if (hField(c) != aCpu[c]) ++fail;
+      if (hField(c) != aCpu[c])
+        ++fail;
     idx.forEachAll([&](const IVec<kDim>& lmd) {
-      if (idx.isInner(lmd)) return;
+      if (idx.isInner(lmd))
+        return;
       IVec<kDim> gw{};
       bool skip = false;
       for (int i = 0; i < kDim; ++i) {
@@ -91,9 +95,11 @@ int main(int argc, char** argv) {
         }
         gw[i] = ci;
       }
-      if (skip) return;
+      if (skip)
+        return;
       double expect = static_cast<double>(dec.linearGlobal(gw));
-      if (hField(idx.localMdToLocal(lmd)) != expect) ++fail;
+      if (hField(idx.localMdToLocal(lmd)) != expect)
+        ++fail;
     });
   }
 

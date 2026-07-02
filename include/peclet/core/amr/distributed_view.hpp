@@ -1,24 +1,25 @@
 // core — device-resident distributed AMR Poisson + multigrid (C2).
 //
 // The host DistributedPoisson / DistributedMultigrid (distributed_poisson.hpp) run every per-cell
-// apply / jacobi / residual / restrict / prolong on host std::vector, gathering cross-block ghosts by
-// re-issuing an owner request/reply each matvec. Only the MPI byte exchange truly needs the host; the
-// compute is embarrassingly parallel per cell. This header keeps the field on the device and runs all
-// of it as Kokkos kernels, mirroring only the compact ghost buffer across MPI — the octree analogue of
-// grid_halo.hpp's GridHalo.
+// apply / jacobi / residual / restrict / prolong on host std::vector, gathering cross-block ghosts
+// by re-issuing an owner request/reply each matvec. Only the MPI byte exchange truly needs the
+// host; the compute is embarrassingly parallel per cell. This header keeps the field on the device
+// and runs all of it as Kokkos kernels, mirroring only the compact ghost buffer across MPI — the
+// octree analogue of grid_halo.hpp's GridHalo.
 //
 //   DistributedGatherHalo — value-only face-neighbour gather over a topology established ONCE
-//     (DistributedOctree::buildGatherHaloTopology): device pack/scatter kernels + a host-staged compact
-//     MPI values exchange. No per-matvec coord exchange / locateGlobal.
+//     (DistributedOctree::buildGatherHaloTopology): device pack/scatter kernels + a host-staged
+//     compact MPI values exchange. No per-matvec coord exchange / locateGlobal.
 //   DistributedPoissonView — apply / jacobi / residual as parallel_for over the device field.
 //   DistributedMultigridView — the V-cycle: device jacobi + the (local) child-CSR restrict /
 //     piecewise-constant prolong reused from multigrid.hpp (bit-exact, deterministic).
 //
-// Bit-exactness contract (the suite's distributed lock): the SOLUTION is bit-for-bit identical across
-// rank counts and to the single-block MPI_COMM_SELF reference — apply/jacobi are per-cell, restrict is a
-// fixed-order child-CSR gather (no atomics), so floating-point order is preserved. (The residual L2 norm
-// uses a parallel reduction whose order differs, but the norm is only a convergence scalar, never the
-// solution.) GPU is tolerance-not-bit-exact (FMA) by the documented convention.
+// Bit-exactness contract (the suite's distributed lock): the SOLUTION is bit-for-bit identical
+// across rank counts and to the single-block MPI_COMM_SELF reference — apply/jacobi are per-cell,
+// restrict is a fixed-order child-CSR gather (no atomics), so floating-point order is preserved.
+// (The residual L2 norm uses a parallel reduction whose order differs, but the norm is only a
+// convergence scalar, never the solution.) GPU is tolerance-not-bit-exact (FMA) by the documented
+// convention.
 //
 // Requires a Kokkos build + MPI + the morton checkout (PECLET_CORE_HAVE_MORTON).
 #ifndef PECLET_CORE_AMR_DISTRIBUTED_VIEW_HPP
@@ -31,7 +32,7 @@
 #include <vector>
 
 #include "peclet/core/amr/distributed_poisson.hpp"  // DistributedOctree, AmrGeometry, DistributedMultigrid (ref)
-#include "peclet/core/amr/multigrid.hpp"            // restrictField / prolongAdd (bit-exact, reused)
+#include "peclet/core/amr/multigrid.hpp"  // restrictField / prolongAdd (bit-exact, reused)
 #include "peclet/core/common/mpi.hpp"
 #include "peclet/core/common/view.hpp"
 #include "peclet/core/halo/grid_halo.hpp"  // detail::gpuAwareMpi() (PECLET_CORE_GPU_AWARE_MPI opt-in, H1)
@@ -39,8 +40,8 @@
 namespace peclet::core::amr {
 
 /// Value-only, device-resident face-neighbour gather over a fixed topology (C2). Built once from a
-/// DistributedOctree::GatherHaloTopology; thereafter `gather(x, g)` moves only the compact send/recv
-/// `double` buffers across MPI (host-staged), with device pack/scatter kernels.
+/// DistributedOctree::GatherHaloTopology; thereafter `gather(x, g)` moves only the compact
+/// send/recv `double` buffers across MPI (host-staged), with device pack/scatter kernels.
 template <int Dim, unsigned Bits>
 class DistributedGatherHalo {
  public:
@@ -61,9 +62,11 @@ class DistributedGatherHalo {
     recvRanks_ = t.recvRanks;
     recvCounts_ = t.recvCounts;
     sendOff_.assign(sendCounts_.size() + 1, 0);
-    for (std::size_t k = 0; k < sendCounts_.size(); ++k) sendOff_[k + 1] = sendOff_[k] + sendCounts_[k];
+    for (std::size_t k = 0; k < sendCounts_.size(); ++k)
+      sendOff_[k + 1] = sendOff_[k] + sendCounts_[k];
     recvOff_.assign(recvCounts_.size() + 1, 0);
-    for (std::size_t k = 0; k < recvCounts_.size(); ++k) recvOff_[k + 1] = recvOff_[k] + recvCounts_[k];
+    for (std::size_t k = 0; k < recvCounts_.size(); ++k)
+      recvOff_[k + 1] = recvOff_[k] + recvCounts_[k];
     d_sendBuf_ = View<double>(Kokkos::view_alloc("dgh::sendBuf", Kokkos::WithoutInitializing),
                               static_cast<std::size_t>(nSend_));
     d_recvBuf_ = View<double>(Kokkos::view_alloc("dgh::recvBuf", Kokkos::WithoutInitializing),
@@ -74,14 +77,16 @@ class DistributedGatherHalo {
 
   Index nFaces() const { return nFaces_; }
 
-  /// g (size nFaces) := the face-neighbour values of x. Local faces fill on device; cross-rank faces
-  /// cross MPI as a compact host-staged values buffer (no coords). Bit-identical to the host
+  /// g (size nFaces) := the face-neighbour values of x. Local faces fill on device; cross-rank
+  /// faces cross MPI as a compact host-staged values buffer (no coords). Bit-identical to the host
   /// faceNeighborGather over the same field (periodic ⇒ every slot is filled; no sentinels).
   void gather(View<const double> x, View<double> g, int tag = 41) const {
-    const double sentinel = -1e300;  // == DistributedOctree::kNoNeighbor; unused in the periodic case
-    // GPU-aware MPI (H1): when enabled (PECLET_CORE_GPU_AWARE_MPI) hand the device send/recv buffer pointers
-    // straight to MPI — the field never touches the host even for the compact buffers. Default is the
-    // portable host-staged path (deep_copy to a host mirror), exactly as GridHalo does.
+    const double sentinel =
+        -1e300;  // == DistributedOctree::kNoNeighbor; unused in the periodic case
+    // GPU-aware MPI (H1): when enabled (PECLET_CORE_GPU_AWARE_MPI) hand the device send/recv buffer
+    // pointers straight to MPI — the field never touches the host even for the compact buffers.
+    // Default is the portable host-staged path (deep_copy to a host mirror), exactly as GridHalo
+    // does.
     const bool aware = peclet::core::halo::detail::gpuAwareMpi();
     Kokkos::deep_copy(g, sentinel);
     if (nLocal_) {
@@ -97,7 +102,8 @@ class DistributedGatherHalo {
       Kokkos::parallel_for(
           "dgh::pack", Kokkos::RangePolicy<ExecSpace>(0, nSend_),
           KOKKOS_LAMBDA(const Index p) { buf(p) = (sl(p) >= 0) ? x(sl(p)) : sentinel; });
-      if (!aware) Kokkos::deep_copy(h_sendBuf_, d_sendBuf_);
+      if (!aware)
+        Kokkos::deep_copy(h_sendBuf_, d_sendBuf_);
     }
     Kokkos::fence();  // send buffer (host-staged or device) ready before MPI reads it
     double* sendBase = aware ? d_sendBuf_.data() : h_sendBuf_.data();
@@ -114,9 +120,11 @@ class DistributedGatherHalo {
       MPI_Isend(sendBase + sendOff_[k], sendCounts_[k] * static_cast<int>(sizeof(double)), MPI_BYTE,
                 sendRanks_[k], tag, comm_, &reqs.back());
     }
-    if (!reqs.empty()) MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
+    if (!reqs.empty())
+      MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
     if (nRecv_) {
-      if (!aware) Kokkos::deep_copy(d_recvBuf_, h_recvBuf_);
+      if (!aware)
+        Kokkos::deep_copy(d_recvBuf_, h_recvBuf_);
       IndexView rs = d_recvSlot_;
       View<double> buf = d_recvBuf_, gv = g;
       Kokkos::parallel_for(
@@ -135,8 +143,9 @@ class DistributedGatherHalo {
   HostView<double> h_sendBuf_, h_recvBuf_;
 };
 
-/// Device-resident distributed plain-Laplacian Poisson operator: y = ∇²x with cross-block neighbours
-/// from the device gather halo. apply / jacobi / residual run as Kokkos kernels over the device field.
+/// Device-resident distributed plain-Laplacian Poisson operator: y = ∇²x with cross-block
+/// neighbours from the device gather halo. apply / jacobi / residual run as Kokkos kernels over the
+/// device field.
 template <int Dim, unsigned Bits = (Dim == 2 ? 32u : (Dim == 3 ? 21u : 16u))>
 class DistributedPoissonView {
  public:
@@ -164,7 +173,8 @@ class DistributedPoissonView {
     Kokkos::parallel_for(
         "dpd::apply", Kokkos::RangePolicy<ExecSpace>(0, n_), KOKKOS_LAMBDA(const Index i) {
           double s = 0.0;
-          for (int f = 0; f < F; ++f) s += gv(i * F + f) - x(i);
+          for (int f = 0; f < F; ++f)
+            s += gv(i * F + f) - x(i);
           y(i) = inv * s;
         });
   }
@@ -224,17 +234,17 @@ class DistributedPoissonView {
   mutable View<double> g_, scratch_;
 };
 
-/// Device-resident distributed geometric multigrid for the plain Laplacian (the device analogue of the
-/// host DistributedMultigrid). Hierarchy + nesting maps mirror the host build; smoother is the device
-/// distributed Jacobi; restriction (child-CSR gather) and prolongation (piecewise-constant) are the
-/// local, bit-exact device kernels from multigrid.hpp.
+/// Device-resident distributed geometric multigrid for the plain Laplacian (the device analogue of
+/// the host DistributedMultigrid). Hierarchy + nesting maps mirror the host build; smoother is the
+/// device distributed Jacobi; restriction (child-CSR gather) and prolongation (piecewise-constant)
+/// are the local, bit-exact device kernels from multigrid.hpp.
 template <int Dim, unsigned Bits = (Dim == 2 ? 32u : (Dim == 3 ? 21u : 16u))>
 class DistributedMultigridView {
  public:
   using Octree = DistributedOctree<Dim, Bits>;
 
-  void build(const IVec<Dim>& g0, const AmrGeometry<Dim>& geo, const std::array<bool, Dim>& periodic,
-             MPI_Comm comm) {
+  void build(const IVec<Dim>& g0, const AmrGeometry<Dim>& geo,
+             const std::array<bool, Dim>& periodic, MPI_Comm comm) {
     levels_.clear();
     int size = 1;
     MPI_Comm_size(comm, &size);
@@ -255,16 +265,19 @@ class DistributedMultigridView {
       long prod = 1;
       IVec<Dim> ng{};
       for (int d = 0; d < Dim; ++d) {
-        if (g[d] % 2 != 0 || g[d] / 2 < 2) ok = false;
+        if (g[d] % 2 != 0 || g[d] / 2 < 2)
+          ok = false;
         ng[d] = g[d] / 2;
         prod *= ng[d];
       }
-      if (!ok || prod < size) break;
+      if (!ok || prod < size)
+        break;
       g = ng;
       h *= 2.0;
     }
-    // Nested fine→coarse maps + the coarse→children CSR (fine-index order ⇒ the restrict gather sums in
-    // the same order as the host serial accumulation, hence bit-exact). All local (ORB nests).
+    // Nested fine→coarse maps + the coarse→children CSR (fine-index order ⇒ the restrict gather
+    // sums in the same order as the host serial accumulation, hence bit-exact). All local (ORB
+    // nests).
     for (std::size_t L = 0; L + 1 < levels_.size(); ++L) {
       auto& fine = levels_[L]->d;
       auto& coarse = levels_[L + 1]->d;
@@ -274,19 +287,23 @@ class DistributedMultigridView {
       std::vector<Index> cnt(static_cast<std::size_t>(nc), 0);
       for (Index i = 0; i < nf; ++i) {
         IVec<Dim> gf = fine.globalRootOf(i), gc{};
-        for (int d = 0; d < Dim; ++d) gc[d] = gf[d] / 2;
+        for (int d = 0; d < Dim; ++d)
+          gc[d] = gf[d] / 2;
         Index p = coarse.findGlobalRoot(gc);
         c2p[static_cast<std::size_t>(i)] = p;
-        if (p >= 0) ++cnt[static_cast<std::size_t>(p)];
+        if (p >= 0)
+          ++cnt[static_cast<std::size_t>(p)];
       }
       std::vector<Index> start(static_cast<std::size_t>(nc) + 1, 0);
       for (Index p = 0; p < nc; ++p)
-        start[static_cast<std::size_t>(p) + 1] = start[static_cast<std::size_t>(p)] + cnt[static_cast<std::size_t>(p)];
+        start[static_cast<std::size_t>(p) + 1] =
+            start[static_cast<std::size_t>(p)] + cnt[static_cast<std::size_t>(p)];
       std::vector<Index> idx(static_cast<std::size_t>(start[static_cast<std::size_t>(nc)]));
       std::vector<Index> cur(start.begin(), start.end() - 1);
       for (Index i = 0; i < nf; ++i) {  // increasing fine index ⇒ children listed in fine order
         Index p = c2p[static_cast<std::size_t>(i)];
-        if (p >= 0) idx[static_cast<std::size_t>(cur[static_cast<std::size_t>(p)]++)] = i;
+        if (p >= 0)
+          idx[static_cast<std::size_t>(cur[static_cast<std::size_t>(p)]++)] = i;
       }
       levels_[L]->c2p = toDevice(c2p, "dmg::c2p");
       levels_[L]->childStart = toDevice(start, "dmg::cstart");
@@ -301,8 +318,8 @@ class DistributedMultigridView {
   View<double> x(std::size_t L = 0) { return levels_[L]->x; }
   View<double> b(std::size_t L = 0) { return levels_[L]->b; }
 
-  /// One V-cycle of A x = b on level L (correction scheme); entirely device-resident bar the compact
-  /// gather buffers + the residual-norm Allreduce.
+  /// One V-cycle of A x = b on level L (correction scheme); entirely device-resident bar the
+  /// compact gather buffers + the residual-norm Allreduce.
   void vcycle(View<double> x, View<const double> b, int pre = 2, int post = 2, int bottom = 30,
               std::size_t L = 0) {
     Level& lv = *levels_[L];
@@ -314,7 +331,7 @@ class DistributedMultigridView {
     lv.op.residual(View<const double>(x), b, lv.res);
     Level& cl = *levels_[L + 1];
     restrictField(View<const Index>(lv.childStart), View<const Index>(lv.childIdx),
-                   View<const double>(lv.res), cl.b, cl.n);
+                  View<const double>(lv.res), cl.b, cl.n);
     Kokkos::deep_copy(cl.x, 0.0);
     vcycle(cl.x, View<const double>(cl.b), pre, post, bottom, L + 1);
     prolongAdd(View<const Index>(lv.c2p), View<const double>(cl.x), x, lv.n);

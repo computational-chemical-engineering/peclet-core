@@ -46,7 +46,8 @@ double fAt(Code gc, unsigned level) {
 std::vector<double> sampleField(const DO& d) {
   const Index n = d.local().numLeaves();
   std::vector<double> f((std::size_t)n);
-  for (Index i = 0; i < n; ++i) f[(std::size_t)i] = fAt(d.globalCode(i), d.local().level(i));
+  for (Index i = 0; i < n; ++i)
+    f[(std::size_t)i] = fAt(d.globalCode(i), d.local().level(i));
   return f;
 }
 double localMass(const DO& d, const std::vector<double>& f) {
@@ -76,7 +77,8 @@ void run() {
 
   // two distributed adapt steps (re-sample exact between, to drive refinement)
   for (int step = 0; step < 2; ++step) {
-    fw = distributedAdapt(world, fw, /*refineThresh=*/0.2, /*coarsenThresh=*/0.03, /*finestLevel=*/0);
+    fw = distributedAdapt(world, fw, /*refineThresh=*/0.2, /*coarsenThresh=*/0.03,
+                          /*finestLevel=*/0);
     fs = distributedAdapt(self, fs, 0.2, 0.03, 0);
     fw = sampleField(world);
     fs = sampleField(self);
@@ -94,8 +96,10 @@ void run() {
       ++mism;
       continue;
     }
-    if (world.local().level(i) != self.local().level(si)) ++mism;
-    if (fw[(std::size_t)i] != fs[(std::size_t)si]) ++mism;
+    if (world.local().level(i) != self.local().level(si))
+      ++mism;
+    if (fw[(std::size_t)i] != fs[(std::size_t)si])
+      ++mism;
   }
   PECLET_CORE_CHECK_EQ(mism, 0);
 
@@ -109,7 +113,8 @@ void run() {
   MPI_Allreduce(&lm, &gm, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
   PECLET_CORE_CHECK(std::fabs(gm - m0) < 1e-9 * std::fabs(m0));  // conservative remap
   unsigned minL = 99;
-  for (Index i = 0; i < w2.local().numLeaves(); ++i) minL = std::min(minL, w2.local().level(i));
+  for (Index i = 0; i < w2.local().numLeaves(); ++i)
+    minL = std::min(minL, w2.local().level(i));
   long lminL = minL, gminL = 99;
   MPI_Allreduce(&lminL, &gminL, 1, MPI_LONG, MPI_MIN, MPI_COMM_WORLD);
   PECLET_CORE_CHECK(gminL < (long)kLmax);  // refined below the base level

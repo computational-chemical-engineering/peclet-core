@@ -36,7 +36,8 @@ using Coord = BO::Coord;
 // A uniform octree refined to the finest level (a 2^L cube of level-0 leaves).
 BO uniformFine(unsigned L) {
   BO t(IVec<3>{1, 1, 1}, L);
-  for (unsigned k = 0; k < L; ++k) t.refineIf([](Code, unsigned) { return true; });
+  for (unsigned k = 0; k < L; ++k)
+    t.refineIf([](Code, unsigned) { return true; });
   return t;
 }
 
@@ -49,7 +50,8 @@ void test_conservation(const BO& t, Real h0) {
   AmrPoisson<3, kBits> P(t, h0);
   std::vector<double> u(static_cast<std::size_t>(t.numLeaves()));
   std::uint64_t s = 1234567;
-  for (auto& x : u) x = pseudo(s);
+  for (auto& x : u)
+    x = pseudo(s);
   std::vector<double> Lu;
   P.applyLaplacian(u, Lu);
   double integral = 0.0, scale = 0.0;
@@ -66,10 +68,12 @@ void test_conservation(const BO& t, Real h0) {
   P.applyFvShared(u, LuShared);
   double de = 0.0, mg = 0.0;
   for (Index i = 0; i < t.numLeaves(); ++i) {
-    de = std::max(de, std::fabs(Lu[static_cast<std::size_t>(i)] - LuShared[static_cast<std::size_t>(i)]));
+    de = std::max(
+        de, std::fabs(Lu[static_cast<std::size_t>(i)] - LuShared[static_cast<std::size_t>(i)]));
     mg = std::max(mg, std::fabs(Lu[static_cast<std::size_t>(i)]));
   }
-  std::printf("[poisson] shared-CSR vs geometric applyLaplacian: max|Δ| = %.3e (mag %.3e)\n", de, mg);
+  std::printf("[poisson] shared-CSR vs geometric applyLaplacian: max|Δ| = %.3e (mag %.3e)\n", de,
+              mg);
   PECLET_CORE_CHECK(de < 1e-12 * (1.0 + mg));
 }
 
@@ -103,7 +107,8 @@ double solveError(unsigned L, double& residDrop) {
   for (int cyc = 0; cyc < 30; ++cyc) {
     mg.vcycle(0, u, rhs);
     r = P.residual(u, rhs, res);
-    if (r < r0 * 1e-11) break;
+    if (r < r0 * 1e-11)
+      break;
   }
   residDrop = r0 / r;
 
@@ -139,14 +144,16 @@ void test_graded_solvable() {
   // rhs with zero volume-weighted mean (so the periodic system is consistent).
   std::vector<double> rhs(static_cast<std::size_t>(n));
   std::uint64_t s = 42;
-  for (auto& x : rhs) x = pseudo(s);
+  for (auto& x : rhs)
+    x = pseudo(s);
   double m = 0, vol = 0;
   for (Index i = 0; i < n; ++i) {
     m += P.cellVolume(i) * rhs[static_cast<std::size_t>(i)];
     vol += P.cellVolume(i);
   }
   m /= vol;
-  for (Index i = 0; i < n; ++i) rhs[static_cast<std::size_t>(i)] -= m;
+  for (Index i = 0; i < n; ++i)
+    rhs[static_cast<std::size_t>(i)] -= m;
 
   std::vector<double> u(static_cast<std::size_t>(n), 0.0), res;
   double r0 = P.residual(u, rhs, res);

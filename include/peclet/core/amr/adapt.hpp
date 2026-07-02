@@ -37,7 +37,8 @@ namespace peclet::core::amr {
 
 namespace detail {
 inline double minmod(double a, double b) {
-  if (a * b <= 0.0) return 0.0;
+  if (a * b <= 0.0)
+    return 0.0;
   return (std::fabs(a) < std::fabs(b)) ? a : b;
 }
 }  // namespace detail
@@ -58,7 +59,8 @@ std::vector<double> transferField(const BlockOctree<Dim, Bits>& oldT,
     auto o = M::from_code(t.code(i)).decode();
     const double s = static_cast<double>(Coord(1) << t.level(i));
     std::array<double, Dim> c{};
-    for (int d = 0; d < Dim; ++d) c[d] = static_cast<double>(o[d]) + 0.5 * s;
+    for (int d = 0; d < Dim; ++d)
+      c[d] = static_cast<double>(o[d]) + 0.5 * s;
     return c;
   };
 
@@ -73,7 +75,8 @@ std::vector<double> transferField(const BlockOctree<Dim, Bits>& oldT,
       for (int axis = 0; axis < Dim; ++axis) {
         const Index jp = oldT.faceNeighbor(i, axis, +1);
         const Index jm = oldT.faceNeighbor(i, axis, -1);
-        if (jp < 0 || jm < 0) continue;
+        if (jp < 0 || jm < 0)
+          continue;
         auto cp = centroid(oldT, jp);
         auto cm = centroid(oldT, jm);
         const double sp = (oldF[static_cast<std::size_t>(jp)] - ui) / (cp[axis] - ci[axis]);
@@ -90,7 +93,8 @@ std::vector<double> transferField(const BlockOctree<Dim, Bits>& oldT,
     const Code cj = newT.code(j);
     const unsigned Lj = newT.level(j);
     const Index o = oldT.find(cj);
-    if (o < 0) continue;
+    if (o < 0)
+      continue;
     const unsigned Lo = oldT.level(o);
     if (Lo == Lj) {
       nf[static_cast<std::size_t>(j)] = oldF[static_cast<std::size_t>(o)];  // copy
@@ -103,7 +107,8 @@ std::vector<double> transferField(const BlockOctree<Dim, Bits>& oldT,
         auto co = centroid(oldT, o);
         auto cn = centroid(newT, j);
         double v = oldF[static_cast<std::size_t>(o)];
-        for (int d = 0; d < Dim; ++d) v += grad[static_cast<std::size_t>(o)][d] * (cn[d] - co[d]);
+        for (int d = 0; d < Dim; ++d)
+          v += grad[static_cast<std::size_t>(o)][d] * (cn[d] - co[d]);
         nf[static_cast<std::size_t>(j)] = v;
       }
     } else {
@@ -120,7 +125,8 @@ std::vector<double> transferField(const BlockOctree<Dim, Bits>& oldT,
             inside = false;
             break;
           }
-        if (!inside) break;
+        if (!inside)
+          break;
         const double w = std::pow(2.0, static_cast<double>(Dim * static_cast<int>(oldT.level(k))));
         acc += w * oldF[static_cast<std::size_t>(k)];
         vol += w;
@@ -135,19 +141,23 @@ std::vector<double> transferField(const BlockOctree<Dim, Bits>& oldT,
   // non-uniformly (so the symmetric-offset cancellation no longer holds). One scalar
   // shift per source old leaf — preserves the reconstructed shape, fixes the mean.
   if (linear) {
-    std::vector<double> sv(static_cast<std::size_t>(no), 0.0), vv(static_cast<std::size_t>(no), 0.0);
+    std::vector<double> sv(static_cast<std::size_t>(no), 0.0),
+        vv(static_cast<std::size_t>(no), 0.0);
     for (Index j = 0; j < nn; ++j) {
       const Index o = n2o[static_cast<std::size_t>(j)];
-      if (o < 0) continue;
+      if (o < 0)
+        continue;
       const double w = std::pow(2.0, static_cast<double>(Dim * static_cast<int>(newT.level(j))));
       sv[static_cast<std::size_t>(o)] += w * nf[static_cast<std::size_t>(j)];
       vv[static_cast<std::size_t>(o)] += w;
     }
     for (Index j = 0; j < nn; ++j) {
       const Index o = n2o[static_cast<std::size_t>(j)];
-      if (o < 0 || vv[static_cast<std::size_t>(o)] <= 0.0) continue;
+      if (o < 0 || vv[static_cast<std::size_t>(o)] <= 0.0)
+        continue;
       nf[static_cast<std::size_t>(j)] +=
-          oldF[static_cast<std::size_t>(o)] - sv[static_cast<std::size_t>(o)] / vv[static_cast<std::size_t>(o)];
+          oldF[static_cast<std::size_t>(o)] -
+          sv[static_cast<std::size_t>(o)] / vv[static_cast<std::size_t>(o)];
     }
   }
   return nf;
@@ -197,7 +207,8 @@ AdaptResult<Dim, Bits> adaptField(const BlockOctree<Dim, Bits>& t, const std::ve
     for (unsigned oct = 0; oct < (1u << Dim); ++oct) {
       Code cc = M::from_code(parent).child(pl, oct).code();
       Index ci = t.find(cc);
-      if (ci < 0 || flags[static_cast<std::size_t>(ci)] != kCoarsen) return false;
+      if (ci < 0 || flags[static_cast<std::size_t>(ci)] != kCoarsen)
+        return false;
     }
     return true;
   });

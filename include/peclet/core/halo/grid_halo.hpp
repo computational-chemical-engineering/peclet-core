@@ -1,21 +1,21 @@
 // core — portable (Kokkos) GPU-resident ghost-layer exchange.
 //
 // Portable (Kokkos) GPU-resident grid halo: the field lives on the device as a
-// peclet::core::View<T>; pack (gather send cells), unpack (scatter into ghost cells) and the periodic
-// self-copy run as Kokkos::parallel_for on the default execution space (CUDA / HIP / OpenMP), so the
-// full field never crosses the bus — only the compact halo buffers are staged to the host for MPI.
-// A GPU-aware-MPI path (hand device pointers straight to MPI) is opt-in via the env var
-// PECLET_CORE_GPU_AWARE_MPI (the legacy PECLET_CORE_CUDA_AWARE_MPI is still honoured); host-staging is the portable
-// default. Topology comes from a host-built GridHaloTopology<Dim>::flatten(), exactly like the CUDA version,
-// and the result is bit-for-bit identical to the CPU exchange.
+// peclet::core::View<T>; pack (gather send cells), unpack (scatter into ghost cells) and the
+// periodic self-copy run as Kokkos::parallel_for on the default execution space (CUDA / HIP /
+// OpenMP), so the full field never crosses the bus — only the compact halo buffers are staged to
+// the host for MPI. A GPU-aware-MPI path (hand device pointers straight to MPI) is opt-in via the
+// env var PECLET_CORE_GPU_AWARE_MPI (the legacy PECLET_CORE_CUDA_AWARE_MPI is still honoured);
+// host-staging is the portable default. Topology comes from a host-built
+// GridHaloTopology<Dim>::flatten(), exactly like the CUDA version, and the result is bit-for-bit
+// identical to the CPU exchange.
 #ifndef PECLET_CORE_HALO_GRID_HALO_HPP
 #define PECLET_CORE_HALO_GRID_HALO_HPP
-
-#include "peclet/core/common/mpi.hpp"
 
 #include <cstdlib>
 #include <vector>
 
+#include "peclet/core/common/mpi.hpp"
 #include "peclet/core/common/types.hpp"
 #include "peclet/core/common/view.hpp"
 #include "peclet/core/halo/grid_halo_topology.hpp"
@@ -23,12 +23,14 @@
 namespace peclet::core::halo {
 
 namespace detail {
-/// Whether to hand DEVICE pointers straight to MPI (GPU-aware MPI) instead of host-staging. Gated on
-/// an env var (read once) rather than MPIX_Query_cuda_support(), which under-reports on some stacks.
+/// Whether to hand DEVICE pointers straight to MPI (GPU-aware MPI) instead of host-staging. Gated
+/// on an env var (read once) rather than MPIX_Query_cuda_support(), which under-reports on some
+/// stacks.
 inline bool gpuAwareMpi() {
   static const bool v = [] {
     const char* e = std::getenv("PECLET_CORE_GPU_AWARE_MPI");
-    if (!e) e = std::getenv("PECLET_CORE_CUDA_AWARE_MPI");
+    if (!e)
+      e = std::getenv("PECLET_CORE_CUDA_AWARE_MPI");
     return e && std::atoi(e) != 0;
   }();
   return v;
@@ -36,7 +38,8 @@ inline bool gpuAwareMpi() {
 }  // namespace detail
 
 /// GPU ghost-layer exchange for a contiguous device field `peclet::core::View<T>` (one element per
-/// extended-block cell). Build once from a host GridHaloTopology via init(); exchange() runs every step.
+/// extended-block cell). Build once from a host GridHaloTopology via init(); exchange() runs every
+/// step.
 template <class T>
 class GridHalo {
  public:
@@ -68,10 +71,12 @@ class GridHalo {
     d_recvIdx_ = toDevice(t.recvIdx, "peclet::core::halo::recvIdx");
     d_selfSrc_ = toDevice(t.selfSrc, "peclet::core::halo::selfSrc");
     d_selfDst_ = toDevice(t.selfDst, "peclet::core::halo::selfDst");
-    d_sendBuf_ = View<T>(Kokkos::view_alloc("peclet::core::halo::sendBuf", Kokkos::WithoutInitializing),
-                         static_cast<std::size_t>(nSend_));
-    d_recvBuf_ = View<T>(Kokkos::view_alloc("peclet::core::halo::recvBuf", Kokkos::WithoutInitializing),
-                         static_cast<std::size_t>(nRecv_));
+    d_sendBuf_ =
+        View<T>(Kokkos::view_alloc("peclet::core::halo::sendBuf", Kokkos::WithoutInitializing),
+                static_cast<std::size_t>(nSend_));
+    d_recvBuf_ =
+        View<T>(Kokkos::view_alloc("peclet::core::halo::recvBuf", Kokkos::WithoutInitializing),
+                static_cast<std::size_t>(nRecv_));
     h_sendBuf_ = Kokkos::create_mirror_view(d_sendBuf_);
     h_recvBuf_ = Kokkos::create_mirror_view(d_recvBuf_);
   }
@@ -96,9 +101,11 @@ class GridHalo {
       Kokkos::parallel_for(
           "peclet::core::halo::pack", Kokkos::RangePolicy<ExecSpace>(0, nSend_),
           KOKKOS_LAMBDA(const Index i) { buf(i) = f(idx(i)); });
-      if (!aware) Kokkos::deep_copy(h_sendBuf_, d_sendBuf_);
+      if (!aware)
+        Kokkos::deep_copy(h_sendBuf_, d_sendBuf_);
     }
-    // The send buffer (host-staged, or device for the aware path) must be ready before MPI reads it.
+    // The send buffer (host-staged, or device for the aware path) must be ready before MPI reads
+    // it.
     Kokkos::fence();
 
     T* sendBase = aware ? d_sendBuf_.data() : h_sendBuf_.data();
@@ -115,11 +122,13 @@ class GridHalo {
       MPI_Isend(sendBase + sendOff_[k], sendCounts_[k] * static_cast<int>(sizeof(T)), MPI_BYTE,
                 sendRanks_[k], tag, comm_, &reqs.back());
     }
-    if (!reqs.empty()) MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
+    if (!reqs.empty())
+      MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
 
     // Scatter received halo cells back into the field's ghost region.
     if (nRecv_) {
-      if (!aware) Kokkos::deep_copy(d_recvBuf_, h_recvBuf_);
+      if (!aware)
+        Kokkos::deep_copy(d_recvBuf_, h_recvBuf_);
       View<T> f = field;
       IndexView idx = d_recvIdx_;
       View<T> buf = d_recvBuf_;

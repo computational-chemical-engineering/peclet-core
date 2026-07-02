@@ -48,7 +48,8 @@ std::vector<double> lohnerIndicatorDistributed(const DistributedOctree<Dim, Bits
     for (int axis = 0; axis < Dim; ++axis) {
       const double up = g[static_cast<std::size_t>(i) * F + 2 * axis + 0];
       const double um = g[static_cast<std::size_t>(i) * F + 2 * axis + 1];
-      if (up == sentinel || um == sentinel) continue;
+      if (up == sentinel || um == sentinel)
+        continue;
       const double d2 = up - 2.0 * ui + um;
       const double nrm = std::fabs(up - ui) + std::fabs(ui - um) +
                          eps * (std::fabs(up) + 2.0 * std::fabs(ui) + std::fabs(um));
@@ -66,7 +67,8 @@ std::vector<double> lohnerIndicatorDistributed(const DistributedOctree<Dim, Bits
 template <int Dim, unsigned Bits>
 std::vector<double> distributedAdapt(DistributedOctree<Dim, Bits>& d, const std::vector<double>& f,
                                      double refineThresh, double coarsenThresh,
-                                     unsigned finestLevel = 0, double eps = 0.01, bool linear = true) {
+                                     unsigned finestLevel = 0, double eps = 0.01,
+                                     bool linear = true) {
   using BO = typename DistributedOctree<Dim, Bits>::Octree;
   using Code = typename BO::Code;
   using M = typename BO::M;
@@ -80,7 +82,8 @@ std::vector<double> distributedAdapt(DistributedOctree<Dim, Bits>& d, const std:
     for (unsigned oct = 0; oct < (1u << Dim); ++oct) {
       Code cc = M::from_code(parent).child(pl, oct).code();
       Index ci = oldLocal.find(cc);
-      if (ci < 0 || flags[static_cast<std::size_t>(ci)] != kCoarsen) return false;
+      if (ci < 0 || flags[static_cast<std::size_t>(ci)] != kCoarsen)
+        return false;
     }
     return true;
   });

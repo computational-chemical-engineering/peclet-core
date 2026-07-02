@@ -115,7 +115,8 @@ void run(MPI_Comm comm) {
   // ---- (2) face-neighbour gather matches serial faceNeighbor ----
   // field value of a leaf = its global Morton code (exact in double for this size).
   std::vector<double> field(static_cast<std::size_t>(nloc));
-  for (Index i = 0; i < nloc; ++i) field[static_cast<std::size_t>(i)] = static_cast<double>(dist.globalCode(i));
+  for (Index i = 0; i < nloc; ++i)
+    field[static_cast<std::size_t>(i)] = static_cast<double>(dist.globalCode(i));
   std::vector<double> gathered = dist.faceNeighborGather(field);
 
   // serial codes (sorted) for binary-search lookup of a leaf by global code.
@@ -135,7 +136,8 @@ void run(MPI_Comm comm) {
         Index jn = ref.faceNeighbor(js, axis, dir);
         double expect =
             (jn < 0) ? DistributedOctree<3, kBits>::kNoNeighbor : static_cast<double>(ref.code(jn));
-        if (gathered[static_cast<std::size_t>(slot)] != expect) ++mism;
+        if (gathered[static_cast<std::size_t>(slot)] != expect)
+          ++mism;
       }
   }
   PECLET_CORE_CHECK_EQ(mism, 0);

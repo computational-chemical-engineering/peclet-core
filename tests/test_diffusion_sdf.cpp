@@ -1,10 +1,11 @@
 // Composition capstone: distributed scalar diffusion AROUND an SDF-described solid obstacle.
 //
-// This exercises geometry + decomposition + halo together — the suite's actual purpose (transport of
-// a field through a domain containing solids). A sphere (peclet::core::geom, negative inside) sits in the
-// middle of a periodic box; cells inside the solid are held at zero (a simple Dirichlet immersed
-// boundary), fluid cells diffuse with a 7-point stencil. The distributed run (block decomposition +
-// GridHaloTopology each step) must match an independent serial integration cell-for-cell.
+// This exercises geometry + decomposition + halo together — the suite's actual purpose (transport
+// of a field through a domain containing solids). A sphere (peclet::core::geom, negative inside)
+// sits in the middle of a periodic box; cells inside the solid are held at zero (a simple Dirichlet
+// immersed boundary), fluid cells diffuse with a 7-point stencil. The distributed run (block
+// decomposition + GridHaloTopology each step) must match an independent serial integration
+// cell-for-cell.
 #include <mpi.h>
 
 #include <array>
@@ -42,10 +43,12 @@ static bool isSolid(const Sphere& s, const IVec<kDim>& g) {
 static std::vector<double> serialReference(const BlockDecomposer<kDim>& dec, const Sphere& s) {
   const IVec<kDim>& n = dec.globalSize();
   Index total = 1;
-  for (int i = 0; i < kDim; ++i) total *= n[i];
+  for (int i = 0; i < kDim; ++i)
+    total *= n[i];
   std::vector<double> u(total), un(total);
   IVec<kDim> bgn{}, end{};
-  for (int i = 0; i < kDim; ++i) end[i] = n[i];
+  for (int i = 0; i < kDim; ++i)
+    end[i] = n[i];
   forEachInBox<kDim>(bgn, end, [&](const IVec<kDim>& g) {
     u[dec.linearGlobal(g)] = isSolid(s, g) ? 0.0 : initField(dec, g);
   });
@@ -90,7 +93,8 @@ int main(int argc, char** argv) {
   std::vector<double> u(idx.numCellsInclGhost(), 0.0), un(idx.numCellsInclGhost(), 0.0);
   idx.forEachInner([&](const IVec<kDim>& lmd) {
     IVec<kDim> g{};
-    for (int i = 0; i < kDim; ++i) g[i] = lmd[i] + idx.originInclGhost()[i];
+    for (int i = 0; i < kDim; ++i)
+      g[i] = lmd[i] + idx.originInclGhost()[i];
     u[idx.localMdToLocal(lmd)] = isSolid(obstacle, g) ? 0.0 : initField(dec, g);
   });
 
@@ -99,7 +103,8 @@ int main(int argc, char** argv) {
     halo.exchangePersistent(fv);
     idx.forEachInner([&](const IVec<kDim>& lmd) {
       IVec<kDim> g{};
-      for (int i = 0; i < kDim; ++i) g[i] = lmd[i] + idx.originInclGhost()[i];
+      for (int i = 0; i < kDim; ++i)
+        g[i] = lmd[i] + idx.originInclGhost()[i];
       Index c = idx.localMdToLocal(lmd);
       if (isSolid(obstacle, g)) {
         un[c] = 0.0;
@@ -121,8 +126,10 @@ int main(int argc, char** argv) {
   int fail = 0;
   idx.forEachInner([&](const IVec<kDim>& lmd) {
     IVec<kDim> g{};
-    for (int i = 0; i < kDim; ++i) g[i] = lmd[i] + idx.originInclGhost()[i];
-    if (std::fabs(u[idx.localMdToLocal(lmd)] - ref[dec.linearGlobal(g)]) > 1e-9) ++fail;
+    for (int i = 0; i < kDim; ++i)
+      g[i] = lmd[i] + idx.originInclGhost()[i];
+    if (std::fabs(u[idx.localMdToLocal(lmd)] - ref[dec.linearGlobal(g)]) > 1e-9)
+      ++fail;
   });
 
   int totalFail = 0;

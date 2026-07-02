@@ -33,7 +33,8 @@ using Code = BO::Code;
 
 BO uniformFine(unsigned L) {
   BO t(IVec<3>{1, 1, 1}, L);
-  for (unsigned k = 0; k < L; ++k) t.refineIf([](Code, unsigned) { return true; });
+  for (unsigned k = 0; k < L; ++k)
+    t.refineIf([](Code, unsigned) { return true; });
   return t;
 }
 
@@ -51,7 +52,8 @@ void test_poiseuille() {
   fl.setDt(1e6);  // ~steady (divided convention well-conditioned at large dt)
   fl.setBodyForce(G, 0, 0);
   fl.setSolid([&](const Vec<3>& p) { return std::min(p[1] - y0, y1 - p[1]); });
-  for (int s = 0; s < 5; ++s) fl.step(/*momSweeps=*/300, /*presIters=*/5, /*presSweeps=*/2);
+  for (int s = 0; s < 5; ++s)
+    fl.step(/*momSweeps=*/300, /*presIters=*/5, /*presSweeps=*/2);
 
   const auto& ux = fl.velocity(0);
   const Index n = t.numLeaves();
@@ -67,7 +69,8 @@ void test_poiseuille() {
       double d = ux[static_cast<std::size_t>(i)] - uex;
       e += d * d;
       ++nf;
-      if (ux[static_cast<std::size_t>(i)] > 1e-3) fluidPositive = true;
+      if (ux[static_cast<std::size_t>(i)] > 1e-3)
+        fluidPositive = true;
     } else if (std::fabs(ux[static_cast<std::size_t>(i)]) > 1e-12) {
       solidsZero = false;
     }
@@ -104,7 +107,8 @@ void test_projection() {
   auto unorm = [&]() {
     double s = 0;
     for (int c = 0; c < 3; ++c)
-      for (Index i = 0; i < n; ++i) s += U[c][static_cast<std::size_t>(i)] * U[c][static_cast<std::size_t>(i)];
+      for (Index i = 0; i < n; ++i)
+        s += U[c][static_cast<std::size_t>(i)] * U[c][static_cast<std::size_t>(i)];
     return std::sqrt(s);
   };
   double d0 = fl.divNormL2(U), u0 = unorm();
@@ -144,9 +148,11 @@ double advectErr(unsigned L, double& constMax, int sch = 0) {
     e += d * d;
   }
   for (int c = 0; c < 3; ++c)
-    for (Index i = 0; i < n; ++i) U[c][static_cast<std::size_t>(i)] = (c == 0) ? 3.7 : 0.0;
+    for (Index i = 0; i < n; ++i)
+      U[c][static_cast<std::size_t>(i)] = (c == 0) ? 3.7 : 0.0;
   constMax = 0;
-  for (Index i = 0; i < n; ++i) constMax = std::max(constMax, std::fabs(fl.advectTerm(0, i)));
+  for (Index i = 0; i < n; ++i)
+    constMax = std::max(constMax, std::fabs(fl.advectTerm(0, i)));
   return std::sqrt(e / n);
 }
 
@@ -155,7 +161,7 @@ void test_advection() {
   double c5 = 0, c6 = 0;
   double e5 = advectErr(5, c5, /*SOU*/ 0);
   double e6 = advectErr(6, c6, /*SOU*/ 0);
-  PECLET_CORE_CHECK(e5 / e6 > 3.3);              // ~2nd order (vs TVD ~2.8 — limiter clips extrema)
+  PECLET_CORE_CHECK(e5 / e6 > 3.3);  // ~2nd order (vs TVD ~2.8 — limiter clips extrema)
   PECLET_CORE_CHECK(c5 < 1e-12 && c6 < 1e-12);  // Galilean: constant advects to 0
   // TVD (option): also converges, above 1st order (limiter -> ~1.5 order at extrema).
   double t5 = 0, t6 = 0;
@@ -178,7 +184,8 @@ void test_advection() {
   fl.setBodyForce(G, 0, 0);
   fl.setAdvection(true);
   fl.setSolid([&](const Vec<3>& p) { return std::min(p[1] - y0, y1 - p[1]); });
-  for (int s = 0; s < 5; ++s) fl.step(300, 5, 2);
+  for (int s = 0; s < 5; ++s)
+    fl.step(300, 5, 2);
   const auto& ux = fl.velocity(0);
   double err = 0;
   long nf = 0;
@@ -227,7 +234,8 @@ void test_implicit_advection() {
     for (int c = 0; c < 3; ++c)
       for (Index i = 0; i < t.numLeaves(); ++i) {
         double v = fl.velocity(c)[static_cast<std::size_t>(i)];
-        if (!std::isfinite(v)) finite = false;  // NaN/Inf would otherwise hide under std::max
+        if (!std::isfinite(v))
+          finite = false;  // NaN/Inf would otherwise hide under std::max
         m = std::max(m, std::fabs(v));
       }
     return finite ? m : std::numeric_limits<double>::infinity();
@@ -235,17 +243,19 @@ void test_implicit_advection() {
 
   oracle::AmrFlow<21> imp;
   initVortex(imp);  // implicit-FOU (default on)
-  for (int it = 0; it < 25; ++it) imp.step(40, 5, 2);
+  for (int it = 0; it < 25; ++it)
+    imp.step(40, 5, 2);
   double mi = maxU(imp);
 
   oracle::AmrFlow<21> exp_;
   initVortex(exp_);
   exp_.setImplicitAdvection(false);  // fully explicit high-order advection
-  for (int it = 0; it < 25; ++it) exp_.step(40, 5, 2);
+  for (int it = 0; it < 25; ++it)
+    exp_.step(40, 5, 2);
   double me = maxU(exp_);
 
-  PECLET_CORE_CHECK(std::isfinite(mi) && mi < 5.0 * A);   // implicit stays bounded (stable)
-  PECLET_CORE_CHECK(!(std::isfinite(me) && me < 5.0 * A)); // explicit blows up at this CFL
+  PECLET_CORE_CHECK(std::isfinite(mi) && mi < 5.0 * A);     // implicit stays bounded (stable)
+  PECLET_CORE_CHECK(!(std::isfinite(me) && me < 5.0 * A));  // explicit blows up at this CFL
 }
 
 // Graded-interface advection: on a graded mesh (sphere band finest, far field
@@ -274,17 +284,20 @@ void test_graded_advection() {
   for (Index i = 0; i < t.numLeaves(); ++i) {
     auto b = t.bounds(i);
     double s = static_cast<double>(1 << t.level(i));
-    double x = (static_cast<double>(b[0][0]) + 0.5 * s) / N, y = (static_cast<double>(b[0][1]) + 0.5 * s) / N;
+    double x = (static_cast<double>(b[0][0]) + 0.5 * s) / N,
+           y = (static_cast<double>(b[0][1]) + 0.5 * s) / N;
     U[0][static_cast<std::size_t>(i)] = 2.0 * std::sin(k * x) * std::cos(k * y);
     U[1][static_cast<std::size_t>(i)] = -2.0 * std::cos(k * x) * std::sin(k * y);
   }
-  for (int it = 0; it < 30; ++it) fl.step(40, 6, 2);
+  for (int it = 0; it < 30; ++it)
+    fl.step(40, 6, 2);
   double m = 0;
   bool finite = true;
   for (int comp = 0; comp < 3; ++comp)
     for (Index i = 0; i < t.numLeaves(); ++i) {
       double v = fl.velocity(comp)[static_cast<std::size_t>(i)];
-      if (!std::isfinite(v)) finite = false;
+      if (!std::isfinite(v))
+        finite = false;
       m = std::max(m, std::fabs(v));
     }
   PECLET_CORE_CHECK(finite && m < 4.0);  // stable across 2:1 interfaces (bounded, no blow-up)

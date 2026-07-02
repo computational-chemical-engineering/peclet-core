@@ -1,19 +1,21 @@
 // core — device assembly of the FV (pressure) operator (D2), built on the S1 CSR primitive.
 //
 // AmrPoisson::assembleFv walks `forEachFaceNeighbor` on the host (serial) to produce the weight-CSR
-// (invVol / start / nbr / coef=openness·A_f/d_f / bcDiag) that the device MG then applies. For a STATIC
-// geometry that host walk runs once; for a DYNAMIC geometry (moving SDF / adapt) it would run every
-// step and force a host round-trip. This header reproduces that walk as a device functor + a per-cell
-// diagonal kernel, so the FvOp is assembled entirely on the device — no host round-trip — feeding the
-// same shared face_csr.hpp apply kernels.
+// (invVol / start / nbr / coef=openness·A_f/d_f / bcDiag) that the device MG then applies. For a
+// STATIC geometry that host walk runs once; for a DYNAMIC geometry (moving SDF / adapt) it would
+// run every step and force a host round-trip. This header reproduces that walk as a device functor
+// + a per-cell diagonal kernel, so the FvOp is assembled entirely on the device — no host
+// round-trip — feeding the same shared face_csr.hpp apply kernels.
 //
-// Bit-exactness: the device functor emits faces in the exact same axis/dir/sub-face order as the host
-// `forEachFaceNeighbor`, each cell fills its own CSR slice (S1, atomic-free), and every coefficient
-// uses the identical double arithmetic. So on the OpenMP backend the device-assembled FvOp is
-// bit-for-bit equal to the host `assembleFv` / `buildFaceCsr` (the cross-backend anti-drift lock in
-// tests/test_amr_assembly_kokkos). GPU is tolerance-not-bit-exact (FMA), per the convention.
+// Bit-exactness: the device functor emits faces in the exact same axis/dir/sub-face order as the
+// host `forEachFaceNeighbor`, each cell fills its own CSR slice (S1, atomic-free), and every
+// coefficient uses the identical double arithmetic. So on the OpenMP backend the device-assembled
+// FvOp is bit-for-bit equal to the host `assembleFv` / `buildFaceCsr` (the cross-backend anti-drift
+// lock in tests/test_amr_assembly_kokkos). GPU is tolerance-not-bit-exact (FMA), per the
+// convention.
 //
-// Requires a Kokkos build + the morton checkout (PECLET_CORE_HAVE_MORTON ⇒ MORTON_HD == KOKKOS_FUNCTION).
+// Requires a Kokkos build + the morton checkout (PECLET_CORE_HAVE_MORTON ⇒ MORTON_HD ==
+// KOKKOS_FUNCTION).
 #ifndef PECLET_CORE_AMR_ASSEMBLY_HPP
 #define PECLET_CORE_AMR_ASSEMBLY_HPP
 
@@ -30,8 +32,8 @@
 namespace peclet::core::amr {
 
 /// Device-callable reproduction of AmrPoisson's per-cell face walk + geometry. Trivially copyable
-/// (Views are handles, the rest are scalars), so it captures by value into Kokkos kernels. Drives both
-/// the CSR emit (operator()) and the per-cell diagonal (cellVolume/bcDiag).
+/// (Views are handles, the rest are scalars), so it captures by value into Kokkos kernels. Drives
+/// both the CSR emit (operator()) and the per-cell diagonal (cellVolume/bcDiag).
 template <int Dim, unsigned Bits = (Dim == 2 ? 32u : (Dim == 3 ? 21u : 16u))>
 struct FvFaceEmit {
   using View_t = BlockOctreeView<Dim, Bits>;
@@ -39,10 +41,10 @@ struct FvFaceEmit {
   using Code = typename View_t::Code;
   using Coord = typename View_t::Coord;
 
-  View_t ov;                       ///< device octree (codes/levels/locate)
-  View<const double> alpha;        ///< per-leaf·(2·Dim) openness, or empty when !hasOpen
-  Coord fineExt[Dim] = {};         ///< periodic-wrap modulus per axis
-  Real h0 = 1.0;                   ///< finest cell width
+  View_t ov;                 ///< device octree (codes/levels/locate)
+  View<const double> alpha;  ///< per-leaf·(2·Dim) openness, or empty when !hasOpen
+  Coord fineExt[Dim] = {};   ///< periodic-wrap modulus per axis
+  Real h0 = 1.0;             ///< finest cell width
   bool hasOpen = false;
   bool periodic = true;
   bool immersedWall = false;
@@ -52,12 +54,14 @@ struct FvFaceEmit {
     return 2 * axis + (dir > 0 ? 0 : 1);
   }
   KOKKOS_INLINE_FUNCTION double openness(Index leaf, int axis, int dir) const {
-    if (!hasOpen) return 1.0;
+    if (!hasOpen)
+      return 1.0;
     return alpha(static_cast<std::size_t>(leaf) * kFaces + faceIndex(axis, dir));
   }
   KOKKOS_INLINE_FUNCTION Real areaOf(Coord s) const {
     Real a = 1;
-    for (int d = 0; d < Dim - 1; ++d) a *= static_cast<Real>(s) * h0;
+    for (int d = 0; d < Dim - 1; ++d)
+      a *= static_cast<Real>(s) * h0;
     return a;
   }
   KOKKOS_INLINE_FUNCTION Real coeff(Coord si, Coord sj) const {
@@ -73,13 +77,15 @@ struct FvFaceEmit {
   }
   KOKKOS_INLINE_FUNCTION Real cellVolume(Index i) const {
     Real w = cellWidth(i), v = 1;
-    for (int d = 0; d < Dim; ++d) v *= w;
+    for (int d = 0; d < Dim; ++d)
+      v *= w;
     return v;
   }
 
   /// Σ over leaf i's Dirichlet-wall faces of A_f/(½·cellWidth) — mirrors AmrPoisson::boundaryDiag.
   KOKKOS_INLINE_FUNCTION double bcDiag(Index i) const {
-    if (periodic && !immersedWall) return 0.0;
+    if (periodic && !immersedWall)
+      return 0.0;
     std::array<Coord, Dim> lo = M::from_code(ov.codes(i)).decode();
     const Coord si = Coord(Coord(1) << ov.levels(i));
     const double wall = areaOf(si) / (0.5 * static_cast<Real>(si) * h0);
@@ -108,7 +114,8 @@ struct FvFaceEmit {
       for (int dir = -1; dir <= 1; dir += 2) {
         const long pc = (dir > 0) ? static_cast<long>(lo[axis]) + static_cast<long>(si)
                                   : static_cast<long>(lo[axis]) - 1;
-        if (!periodic && (pc < 0 || pc >= static_cast<long>(fineExt[axis]))) continue;
+        if (!periodic && (pc < 0 || pc >= static_cast<long>(fineExt[axis])))
+          continue;
         std::array<Coord, Dim> p = lo;
         p[axis] = wrap(pc, axis);
         const Index j = ov.locate(M::encode(p).code());
@@ -123,7 +130,8 @@ struct FvFaceEmit {
             q[axis] = wrap(pc, axis);
             int bit = 0;
             for (int t = 0; t < Dim; ++t) {
-              if (t == axis) continue;
+              if (t == axis)
+                continue;
               const Coord off = ((k >> bit) & 1) ? sj : Coord(0);
               q[t] = wrap(static_cast<long>(lo[t]) + static_cast<long>(off), t);
               ++bit;
@@ -138,8 +146,8 @@ struct FvFaceEmit {
 
 /// Assemble the FvOp entirely on the device from a host AmrPoisson's geometry (h0, periodicity,
 /// immersed-wall mode, fine extent, and openness) + a device BlockOctreeView. The openness array is
-/// staged to the device once (it is the only host input — the expensive face walk + weight build runs
-/// on device). Result equals the host AmrPoisson::assembleFv CSR bit-for-bit on OpenMP.
+/// staged to the device once (it is the only host input — the expensive face walk + weight build
+/// runs on device). Result equals the host AmrPoisson::assembleFv CSR bit-for-bit on OpenMP.
 template <int Dim, unsigned Bits>
 FvOp assembleFv(const AmrPoisson<Dim, Bits>& ap, const BlockOctreeView<Dim, Bits>& ov) {
   FvFaceEmit<Dim, Bits> emit;
@@ -148,8 +156,10 @@ FvOp assembleFv(const AmrPoisson<Dim, Bits>& ap, const BlockOctreeView<Dim, Bits
   emit.periodic = ap.periodic();
   emit.immersedWall = ap.immersedWall();
   emit.hasOpen = ap.hasOpenness();
-  for (int d = 0; d < Dim; ++d) emit.fineExt[d] = ap.fineExt()[d];
-  if (ap.hasOpenness()) emit.alpha = toDevice(ap.opennessRaw(), "amr::alpha");
+  for (int d = 0; d < Dim; ++d)
+    emit.fineExt[d] = ap.fineExt()[d];
+  if (ap.hasOpenness())
+    emit.alpha = toDevice(ap.opennessRaw(), "amr::alpha");
 
   Csr csr = buildFaceCsr(ov.numLeaves(), emit);
 
