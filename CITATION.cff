@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "peclet-core: shared infrastructure for GPU-accelerated, parallel transport-phenomena simulation"
+abstract: >-
+  Header-only C++20 + MPI infrastructure shared across the peclet suite: ORB block domain decomposition,
+  asynchronous ghost-layer exchange (NBX + persistent neighborhood-collective engines, GPU-resident
+  variant), Lagrangian particle migration and ghosts, SDF geometry with VTI I/O, an AMR octree, and
+  dynamic (weighted-ORB) load balancing. Optional Kokkos GPU backends and Python bindings.
+type: software
+authors:
+  - family-names: Peters
+    given-names: Frank
+    email: e.a.j.f.peters@gmail.com
+    affiliation: "Eindhoven University of Technology"
+version: 0.2.0
+date-released: "2026-07-02"
+license: MIT
+doi: 10.5281/zenodo.21132435
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.21132435
+    description: "Concept DOI (all versions) — always resolves to the latest release"
+  - type: doi
+    value: 10.5281/zenodo.21132436
+    description: "Version DOI for v0.2.0"
+repository-code: "https://github.com/computational-chemical-engineering/peclet-core"
+keywords:
+  - domain decomposition
+  - MPI
+  - ghost-layer exchange
+  - signed distance function
+  - adaptive mesh refinement
+  - load balancing
+  - Kokkos
+  - GPU computing

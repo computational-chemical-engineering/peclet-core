@@ -4,6 +4,7 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/peclet-core.svg)](https://pypi.org/project/peclet-core/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/computational-chemical-engineering/peclet-core/actions/workflows/ci.yml/badge.svg)](https://github.com/computational-chemical-engineering/peclet-core/actions/workflows/ci.yml)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21132435.svg)](https://doi.org/10.5281/zenodo.21132435)
 
 Shared infrastructure for the transport-phenomena simulation suite (see `../docs/` for the suite-wide
 [architecture](../docs/ARCHITECTURE.md), [conventions](../docs/CONVENTIONS.md),
