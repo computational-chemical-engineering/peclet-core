@@ -1,0 +1,24 @@
+name: Bug report
+description: Report a problem with this Peclet package
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what actually happened.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproducer
+      description: Smallest script/inputs that reproduce it (grid size, backend, np).
+      render: shell
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: OS, compiler, Kokkos backend (Serial/OpenMP/CUDA/HIP), GPU/MPI, package version.
+    validations:
+      required: true
