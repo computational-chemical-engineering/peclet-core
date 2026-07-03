@@ -4,6 +4,13 @@ target_link_libraries(test_decomposition PRIVATE tpx_core)
 target_include_directories(test_decomposition PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME decomposition COMMAND test_decomposition)
 
+# Smoothed-aggregation graph-AMG (peclet::core::solver) — host oracle, no Kokkos. Proves the
+# mesh-independent (O(N)) CG iteration count on a model vector-Laplacian.
+add_executable(test_graph_amg test_graph_amg.cpp)
+target_link_libraries(test_graph_amg PRIVATE tpx_core)
+target_include_directories(test_graph_amg PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME graph_amg COMMAND test_graph_amg)
+
 # Morton/Z-order cell indexer (inert unless PECLET_CORE_HAVE_MORTON — set on tpx_core when
 # the morton sibling checkout is present).
 add_executable(test_morton_indexer test_morton_indexer.cpp)
