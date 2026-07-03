@@ -78,6 +78,9 @@ struct AmgParams {
   int pre = 1, post = 1;    ///< smoother sweeps per level (pre == post keeps the V-cycle symmetric)
   int chebDegree = 2;       ///< Chebyshev smoother polynomial degree; 0 ⇒ damped-Jacobi smoother
   double jacobiOmega = 0.6; ///< damped-Jacobi smoother relaxation (used when chebDegree == 0)
+  int coarseSweeps = 0;     ///< coarsest level: 0 ⇒ a near-exact CG solve; >0 ⇒ this many smoother
+                            ///< sweeps instead (with maxLevels=1 this turns GraphAMG into a plain
+                            ///< single-level polynomial/Jacobi preconditioner — no coarse grid)
   int eigIters = 15;        ///< power-iteration steps for the per-level λ_max(D⁻¹A) estimate
 };
 
@@ -460,9 +463,14 @@ class GraphAMG {
   }
 
   void jacobiSweep(const Level& lv) const {
+    // Spectrally-scaled damped Jacobi: step = ω/λ_max(D⁻¹A). Scaling by λ_max is essential — a fixed
+    // ω is only stable when ω·λ_max < 2, which fails on operators with a large D⁻¹A spectrum (e.g. the
+    // Gauss-Newton Hessian JᵀJ), where an unscaled sweep diverges. ω≈1 is a decent smoother; the
+    // optimal high-frequency-damping value is 4/3 (== the 4th-kind Chebyshev degree-1 step).
+    const double step = prm_.jacobiOmega / lv.lmax;
     lv.A.apply(lv.x, lv.res);  // res = A x
     for (std::size_t i = 0; i < lv.x.size(); ++i)
-      lv.x[i] += prm_.jacobiOmega * lv.invDiag[i] * (lv.b[i] - lv.res[i]);
+      lv.x[i] += step * lv.invDiag[i] * (lv.b[i] - lv.res[i]);
   }
 
   // One 4th-kind Chebyshev smoothing pass of degree k on A x = b (in place), Jacobi (D) prec.
@@ -497,6 +505,10 @@ class GraphAMG {
   // Coarsest level: a short unpreconditioned CG (the level is tiny, ≤ coarsest DOFs) — robust even
   // if A_c is only semidefinite (a consistent RHS still converges on the range).
   void coarseSolve(Level& lv) const {
+    if (prm_.coarseSweeps > 0) {  // single-level / cheap-bottom mode: smoother sweeps, no CG
+      smooth(lv, prm_.coarseSweeps);
+      return;
+    }
     const Index n = lv.A.n;
     auto& x = lv.x;
     auto& r = lv.res;
