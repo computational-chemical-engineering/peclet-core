@@ -115,6 +115,12 @@ add_test(NAME amr_transport COMMAND test_amr_transport)
 # must match the host BlockOctree. No MPI needed; linking tpx_core pulls in Kokkos
 # + the morton include (+ MORTON_ENABLE_KOKKOS) under a Kokkos build.
 if(PECLET_CORE_HAVE_KOKKOS)
+  # Named field registry (multiphysics field container).
+  add_executable(test_field_set test_field_set.cpp)
+  target_link_libraries(test_field_set PRIVATE tpx_core)
+  target_include_directories(test_field_set PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME field_set COMMAND test_field_set)
+
   add_executable(test_block_octree_view test_block_octree_view.cpp)
   target_link_libraries(test_block_octree_view PRIVATE tpx_core)
   target_include_directories(test_block_octree_view PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
