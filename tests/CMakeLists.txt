@@ -121,6 +121,12 @@ if(PECLET_CORE_HAVE_KOKKOS)
   target_include_directories(test_field_set PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   add_test(NAME field_set COMMAND test_field_set)
 
+  # Trilinear particle<->grid interpolation (CFD-DEM P2G/G2P primitive).
+  add_executable(test_particle_grid test_particle_grid.cpp)
+  target_link_libraries(test_particle_grid PRIVATE tpx_core)
+  target_include_directories(test_particle_grid PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME particle_grid COMMAND test_particle_grid)
+
   add_executable(test_block_octree_view test_block_octree_view.cpp)
   target_link_libraries(test_block_octree_view PRIVATE tpx_core)
   target_include_directories(test_block_octree_view PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
