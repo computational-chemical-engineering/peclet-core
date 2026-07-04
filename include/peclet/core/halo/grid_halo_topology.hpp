@@ -36,6 +36,12 @@ struct GridFieldView {
   std::size_t bytesPerElem() const { return sizeof(T); }
   void pack(Index localIdx, char* dst) const { std::memcpy(dst, &data[localIdx], sizeof(T)); }
   void unpack(Index localIdx, const char* src) { std::memcpy(&data[localIdx], src, sizeof(T)); }
+  // Accumulate (for reverseAdd — folding ghost-layer deposits back onto the owner).
+  void addFrom(Index localIdx, const char* src) {
+    T v;
+    std::memcpy(&v, src, sizeof(T));
+    data[localIdx] += v;
+  }
 };
 
 template <int Dim>
@@ -210,6 +216,52 @@ class GridHaloTopology {
         field.unpack(recvIdx_[k][i], src + i * es);
       }
     }
+  }
+
+  // Reverse (transpose) exchange with ACCUMULATE — the adjoint of the forward exchange: each rank
+  // sends its GHOST-cell values back to the owners, which ADD them into the matching owned cells
+  // (and the periodic self-copy folds ghost -> inner with +=). This is the fold a scatter/deposit
+  // needs across rank boundaries (CFD-DEM void-fraction / momentum feedback that lands in ghost
+  // cells). The Field must provide addFrom(localIdx, src) in addition to pack. Point-to-point
+  // (Isend/Irecv) so it needs no second graph comm.
+  template <typename Field>
+  void reverseAdd(Field& field, int tag = 0) {
+    const std::size_t es = field.bytesPerElem();
+    // self: owner (selfSrc) += ghost (selfDst)
+    std::vector<char> tmp(es);
+    for (std::size_t i = 0; i < selfSrc_.size(); ++i) {
+      field.pack(selfDst_[i], tmp.data());
+      field.addFrom(selfSrc_[i], tmp.data());
+    }
+    // I receive owner-updates for my SENT cells (sendIdx_) from the ranks I forward-send to.
+    std::vector<std::vector<char>> rbuf(sendRanks_.size());
+    std::vector<MPI_Request> rreq(sendRanks_.size(), MPI_REQUEST_NULL);
+    for (std::size_t k = 0; k < sendRanks_.size(); ++k) {
+      rbuf[k].resize(sendIdx_[k].size() * es);
+      MPI_Irecv(rbuf[k].data(), static_cast<int>(rbuf[k].size()), MPI_BYTE, sendRanks_[k], tag,
+                comm_, &rreq[k]);
+    }
+    // I send my GHOST cells (recvIdx_) back to the owners they came from (recvRanks_).
+    std::vector<std::vector<char>> sbuf(recvRanks_.size());
+    std::vector<MPI_Request> sreq(recvRanks_.size(), MPI_REQUEST_NULL);
+    for (std::size_t k = 0; k < recvRanks_.size(); ++k) {
+      sbuf[k].resize(recvIdx_[k].size() * es);
+      for (std::size_t i = 0; i < recvIdx_[k].size(); ++i)
+        field.pack(recvIdx_[k][i], sbuf[k].data() + i * es);
+      MPI_Isend(sbuf[k].data(), static_cast<int>(sbuf[k].size()), MPI_BYTE, recvRanks_[k], tag,
+                comm_, &sreq[k]);
+    }
+    // As owner-updates arrive, accumulate into my owned (sendIdx_) cells.
+    for (std::size_t done = 0; done < sendRanks_.size(); ++done) {
+      int k = 0;
+      MPI_Waitany(static_cast<int>(rreq.size()), rreq.data(), &k, MPI_STATUS_IGNORE);
+      if (k == MPI_UNDEFINED)
+        break;
+      for (std::size_t i = 0; i < sendIdx_[k].size(); ++i)
+        field.addFrom(sendIdx_[k][i], rbuf[k].data() + i * es);
+    }
+    if (!sreq.empty())
+      MPI_Waitall(static_cast<int>(sreq.size()), sreq.data(), MPI_STATUSES_IGNORE);
   }
 
   // --- Flattened topology (contiguous, device-friendly; consumed by the CUDA exchange) ---

@@ -77,6 +77,35 @@ static int runCase(const BlockDecomposer<kDim>& dec, int rank, int ghost,
   return fail;
 }
 
+// reverseAdd (transpose+accumulate): put 1.0 in every ghost cell that maps to a valid (wrapped)
+// global cell and 0 in the inner cells; fold. Each ghost's 1.0 lands on exactly one owner, so the
+// GLOBAL sum over inner cells must equal the GLOBAL count of valid ghost cells. Returns (localInner
+// sum, localGhost count) via out-params; the caller allreduces + compares.
+static void runReverseAdd(const BlockDecomposer<kDim>& dec, int rank, int ghost,
+                          std::array<bool, kDim> periodic, double& innerSum, double& ghostCount) {
+  GridHaloTopology<kDim> halo;
+  halo.buildTopology(dec, rank, ghost, periodic, MPI_COMM_WORLD);
+  const auto& idx = halo.indexer();
+  const IVec<kDim>& gsize = dec.globalSize();
+  std::vector<double> a(idx.numCellsInclGhost(), 0.0);
+  ghostCount = 0.0;
+  idx.forEachAll([&](const IVec<kDim>& lmd) {
+    if (idx.isInner(lmd))
+      return;
+    for (int i = 0; i < kDim; ++i) {  // only ghosts shadowing a valid (wrapped) global cell
+      Index c = lmd[i] + idx.originInclGhost()[i];
+      if ((c < 0 || c >= gsize[i]) && !periodic[i])
+        return;
+    }
+    a[idx.localMdToLocal(lmd)] = 1.0;
+    ghostCount += 1.0;
+  });
+  GridFieldView<double> field{a.data()};
+  halo.reverseAdd(field);
+  innerSum = 0.0;
+  idx.forEachInner([&](const IVec<kDim>& lmd) { innerSum += a[idx.localMdToLocal(lmd)]; });
+}
+
 int main(int argc, char** argv) {
   MPI_Init(&argc, &argv);
   int rank = 0, size = 1;
@@ -112,9 +141,25 @@ int main(int argc, char** argv) {
     totalFail += globalFail;
   }
 
+  // reverseAdd conservation: global inner sum == global ghost count, for each periodicity.
+  for (auto per : {std::array<bool, kDim>{true, true, true},
+                   std::array<bool, kDim>{true, false, true}}) {
+    double li = 0, lg = 0, gi = 0, gg = 0;
+    runReverseAdd(dec, rank, ghost, per, li, lg);
+    MPI_Allreduce(&li, &gi, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(&lg, &gg, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    if (gi != gg) {
+      ++totalFail;
+      if (rank == 0)
+        std::fprintf(stderr, "  reverseAdd conservation FAILED: inner sum %.0f != ghost count %.0f\n",
+                     gi, gg);
+    }
+  }
+
   if (rank == 0) {
     if (totalFail == 0) {
-      std::printf("OK (np=%d): all %zu cases passed\n", size, sizeof(cases) / sizeof(cases[0]));
+      std::printf("OK (np=%d): all %zu cases + reverseAdd passed\n", size,
+                  sizeof(cases) / sizeof(cases[0]));
     } else {
       std::fprintf(stderr, "FAILED (np=%d): %d total mismatches\n", size, totalFail);
     }

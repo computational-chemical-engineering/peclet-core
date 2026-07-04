@@ -215,6 +215,11 @@ if(MPI_FOUND)
   target_link_libraries(test_particle_rebalance PRIVATE tpx_halo)
   target_include_directories(test_particle_rebalance PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+  # Eulerian load balancing: redistribute grid fields between two ORB decompositions.
+  add_executable(test_grid_redistribute_mpi test_grid_redistribute_mpi.cpp)
+  target_link_libraries(test_grid_redistribute_mpi PRIVATE tpx_halo)
+  target_include_directories(test_grid_redistribute_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
   add_executable(test_diffusion test_diffusion.cpp)
   target_link_libraries(test_diffusion PRIVATE tpx_halo)
   target_include_directories(test_diffusion PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -286,6 +291,9 @@ if(MPI_FOUND)
                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
                        ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_particle_migrator_view_mpi> ${MPIEXEC_POSTFLAGS})
     endif()
+    add_test(NAME grid_redistribute_np${np}
+             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
+                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_grid_redistribute_mpi> ${MPIEXEC_POSTFLAGS})
     add_test(NAME grid_halo_np${np}
              COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
                      ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_grid_halo> ${MPIEXEC_POSTFLAGS})
