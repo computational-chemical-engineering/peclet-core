@@ -64,7 +64,17 @@ std::vector<std::remove_const_t<typename V::value_type>> toVector(const V& view)
   using T = std::remove_const_t<typename V::value_type>;
   std::vector<T> out(view.size());
   if (view.size()) {
-    auto host = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), view);
+    // `view` may be a STRIDED subview (e.g. [0:numReal] of a larger LayoutLeft device View once the
+    // SoA has grown past numReal): a cross-space (device->host) deep_copy of a strided layout has no
+    // valid copy mechanism and aborts. Repack into a CONTIGUOUS buffer in the SOURCE space first
+    // (same-space deep_copy handles the strided->contiguous gather via a kernel), then hop to host.
+    // A no-op memcpy when `view` is already contiguous. Only extent(0) is a runtime dimension for the
+    // suite's particle getters (float* / float*[N]).
+    Kokkos::View<typename V::non_const_data_type, typename V::memory_space> contig(
+        Kokkos::view_alloc(Kokkos::WithoutInitializing, "peclet::core::toVector::contig"),
+        view.extent(0));
+    Kokkos::deep_copy(contig, view);
+    auto host = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), contig);
     Kokkos::LayoutRight layout;
     for (std::size_t i = 0; i < V::rank; ++i)
       layout.dimension[i] = view.extent(i);
