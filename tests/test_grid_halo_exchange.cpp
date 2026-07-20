@@ -78,6 +78,32 @@ int main(int argc, char** argv) {
     for (Index c = 0; c < n; ++c)
       if (hField(c) != aCpu[c])
         ++fail;
+
+    // The split (overlap) path must produce the identical result: reset the device field to the
+    // pre-exchange state, exchangeBegin, run an interior-only kernel while the messages are in
+    // flight, exchangeEnd, and compare bit-for-bit against the blocking exchange.
+    {
+      auto h0 = Kokkos::create_mirror_view(dField);
+      for (Index c = 0; c < n; ++c)
+        h0(c) = a0[c];
+      Kokkos::deep_copy(dField, h0);
+      dev.exchangeBegin(dField);
+      // Overlapped compute touching no exchanged cell: a throwaway reduction over the field's
+      // pre-exchange values (reads are fine; the halo only writes ghost cells on exchangeEnd).
+      double dummy = 0;
+      {
+        View<double> f = dField;
+        Kokkos::parallel_reduce(
+            "interior_work", Kokkos::RangePolicy<peclet::core::ExecSpace>(0, 1),
+            KOKKOS_LAMBDA(const Index, double& acc) { acc += f(0); }, dummy);
+      }
+      dev.exchangeEnd(dField);
+      Kokkos::deep_copy(h0, dField);
+      for (Index c = 0; c < n; ++c)
+        if (h0(c) != aCpu[c])
+          ++fail;
+      (void)dummy;
+    }
     idx.forEachAll([&](const IVec<kDim>& lmd) {
       if (idx.isInner(lmd))
         return;
