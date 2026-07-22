@@ -345,6 +345,13 @@ if(MPI_FOUND)
   # Kokkos was built for (CUDA / HIP / OpenMP). Compiled as CXX — Kokkos routes it to the device
   # compiler via its launch compiler (so this is a .cpp, not a .cu).
   if(PECLET_CORE_HAVE_KOKKOS)
+    # Device GraphAMG apply vs the host oracle (no MPI; serial + device).
+    add_executable(test_graph_amg_device test_graph_amg_device.cpp)
+    target_include_directories(test_graph_amg_device PRIVATE
+      ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(test_graph_amg_device PRIVATE Kokkos::kokkos)
+    add_test(NAME graph_amg_device COMMAND test_graph_amg_device)
+
     add_executable(test_grid_halo_exchange test_grid_halo_exchange.cpp)
     target_include_directories(test_grid_halo_exchange PRIVATE
       ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})

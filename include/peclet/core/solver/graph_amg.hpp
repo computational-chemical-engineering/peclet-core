@@ -129,7 +129,8 @@ class GraphAMG {
     return (nnz0 > 0) ? tot / nnz0 : 0.0;
   }
 
- private:
+  // Hierarchy access for the device mirror (GraphAMGDevice): setup stays here on the host, the
+  // device class copies each level's CSR/transfer/smoother data into Views once at build.
   struct Level {
     HostCsrOp A;
     // Prolongation to the next-coarser level (this level → L+1), row-CSR: fine row i has entries
@@ -144,6 +145,10 @@ class GraphAMG {
     mutable std::vector<double> x, b, res, t0, t1;
   };
 
+  const std::vector<Level>& levels() const { return levels_; }
+  const AmgParams& params() const { return prm_; }
+
+ private:
   AmgParams prm_;
   mutable std::vector<Level> levels_;
 
