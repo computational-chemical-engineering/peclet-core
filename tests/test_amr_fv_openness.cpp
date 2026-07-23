@@ -74,9 +74,17 @@ void run() {
   PECLET_CORE_CHECK(mg.numLevels() == hmg.numLevels());
   PECLET_CORE_CHECK(mg.numLevels() >= 3);
 
-  // ===== (1) device operator == host op(L).applyLaplacian on EVERY level (bit-exact) =====
+  // ===== (1) device operator == host op(L).applyLaplacian on EVERY level. Bit-exact on
+  // host-parallel backends; round-off-scale relative tolerance on GPU backends (FMA contraction
+  // reorders the per-face sums; the assembled per-level CSRs are exact). =====
+#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP)
+  constexpr double kGpuRelTol = 1e-12;
+#else
+  constexpr double kGpuRelTol = 0.0;
+#endif
   std::uint64_t s = 99991;
   int totalMism = 0;
+  double maxRel = 0.0;
   for (std::size_t L = 0; L < hmg.numLevels(); ++L) {
     const Index n = hmg.op(L).octree().numLeaves();
     PECLET_CORE_CHECK(mg.numLeaves(L) == n);
@@ -91,10 +99,19 @@ void run() {
     auto dLh = getDev(dLu, n);
     std::vector<double> hLu;
     hmg.op(L).applyLaplacian(x, hLu);
-    for (Index i = 0; i < n; ++i)
-      if (dLh[(std::size_t)i] != hLu[(std::size_t)i])
+    double scale = 0.0;
+    for (double v : hLu)
+      scale = std::max(scale, std::fabs(v));
+    if (scale == 0.0)
+      scale = 1.0;
+    for (Index i = 0; i < n; ++i) {
+      const double r = std::fabs(dLh[(std::size_t)i] - hLu[(std::size_t)i]) / scale;
+      maxRel = std::max(maxRel, r);
+      if (r > kGpuRelTol)
         ++totalMism;
+    }
   }
+  std::printf("  per-level apply max rel diff = %.2e (tol %.0e)\n", maxRel, kGpuRelTol);
   PECLET_CORE_CHECK_EQ(totalMism, 0);
 
   // ===== (2) openness V-cycle converges on the graded mesh (manufactured RHS) =====

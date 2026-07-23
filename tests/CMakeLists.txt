@@ -372,3 +372,9 @@ if(MPI_FOUND)
     endforeach()
   endif()
 endif()
+
+# A-priori defect study for the AMR collocated projection (ghost-projection port, step 0).
+# A measurement study (printed tables + gates documenting the mode-0 defects), not a ctest.
+add_executable(study_amr_ghost_apriori study_amr_ghost_apriori.cpp)
+target_link_libraries(study_amr_ghost_apriori PRIVATE tpx_core)
+target_include_directories(study_amr_ghost_apriori PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

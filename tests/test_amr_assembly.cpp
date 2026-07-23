@@ -50,6 +50,34 @@ int countMismatch(const std::vector<T>& a, const std::vector<T>& b) {
   return m;
 }
 
+// Device-APPLY comparison: bit-exact on host-parallel backends (OpenMP/Serial run the same
+// arithmetic — determinism lock), tight relative tolerance on GPU backends where FMA contraction
+// reorders the per-face sums (the assembled CSR itself stays bit-exact — checked above).
+#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP)
+constexpr double kApplyRelTol = 1e-12;
+#else
+constexpr double kApplyRelTol = 0.0;
+#endif
+int applyMismatch(const std::vector<double>& a, const std::vector<double>& b) {
+  if (a.size() != b.size())
+    return -1;
+  double scale = 0.0;
+  for (double v : a)
+    scale = std::max(scale, std::fabs(v));
+  if (scale == 0.0)
+    scale = 1.0;
+  int m = 0;
+  double maxRel = 0.0;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    const double r = std::fabs(a[i] - b[i]) / scale;
+    maxRel = std::max(maxRel, r);
+    if (r > kApplyRelTol)
+      ++m;
+  }
+  std::printf("    apply max rel diff = %.2e (tol %.0e)\n", maxRel, kApplyRelTol);
+  return m;
+}
+
 // Assemble FvOp host-side (AmrPoisson::assembleFv) and device-side (assembleFv) and assert every
 // CSR array is bit-identical.
 void checkCase(const char* name, const BO& t, double h0, bool periodic, bool wall, bool withOpen) {
@@ -101,7 +129,7 @@ void checkCase(const char* name, const BO& t, double h0, bool periodic, bool wal
   View<double> dLu("Lu", static_cast<std::size_t>(n));
   applyFv(op, dx, dLu);
   std::vector<double> dout = down(dLu);
-  PECLET_CORE_CHECK_EQ(countMismatch(hout, dout), 0);
+  PECLET_CORE_CHECK_EQ(applyMismatch(hout, dout), 0);
 }
 
 void run() {

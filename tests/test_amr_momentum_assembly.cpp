@@ -124,7 +124,31 @@ void run() {
   View<const double> dx = toDevice(x, "x");
   View<double> dAu("Au", static_cast<std::size_t>(n));
   applyMom(op, dx, dAu);
-  PECLET_CORE_CHECK_EQ(mismatch(hout, down(dAu)), 0);
+  // Bit-exact on host-parallel backends; tight relative tolerance on GPU (FMA contraction in the
+  // per-row sum — the assembled CSR itself is bit-exact, checked above).
+#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP)
+  constexpr double kApplyRelTol = 1e-12;
+#else
+  constexpr double kApplyRelTol = 0.0;
+#endif
+  {
+    std::vector<double> dv = down(dAu);
+    double scale = 0.0;
+    for (double v : hout)
+      scale = std::max(scale, std::fabs(v));
+    if (scale == 0.0)
+      scale = 1.0;
+    int m = 0;
+    double maxRel = 0.0;
+    for (std::size_t i = 0; i < hout.size(); ++i) {
+      const double r = std::fabs(hout[i] - dv[i]) / scale;
+      maxRel = std::max(maxRel, r);
+      if (r > kApplyRelTol)
+        ++m;
+    }
+    std::printf("  apply max rel diff = %.2e (tol %.0e)\n", maxRel, kApplyRelTol);
+    PECLET_CORE_CHECK_EQ(m, 0);
+  }
 }
 
 }  // namespace

@@ -163,6 +163,34 @@ std::vector<double> getDev(View<double> v, Index n) {
   return h;
 }
 
+// Device-vs-host comparison tolerance: bit-exact on host-parallel backends (OpenMP/Serial — the
+// determinism lock), round-off-scale relative tolerance on GPU backends where FMA contraction
+// reorders the per-face sums. The V-cycle accumulates the difference over cycles, so it gets a
+// looser (still round-off-scale) bound.
+#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP)
+constexpr double kGpuRelTol = 1e-12, kGpuVcycRelTol = 1e-9;
+#else
+constexpr double kGpuRelTol = 0.0, kGpuVcycRelTol = 0.0;
+#endif
+int tolMismatch(const std::vector<double>& a, const std::vector<double>& b, double tol,
+                const char* what) {
+  double scale = 0.0;
+  for (double v : b)
+    scale = std::max(scale, std::fabs(v));
+  if (scale == 0.0)
+    scale = 1.0;
+  int m = 0;
+  double maxRel = 0.0;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    const double r = std::fabs(a[i] - b[i]) / scale;
+    maxRel = std::max(maxRel, r);
+    if (r > tol)
+      ++m;
+  }
+  std::printf("  %s max rel diff = %.2e (tol %.0e)\n", what, maxRel, tol);
+  return m;
+}
+
 void run() {
   // Graded multilevel octree: 2×2×2 brick (level 3, domain 16^3), refined uniformly
   // to level 1 then the lower octant to level 0, 2:1-balanced.
@@ -196,11 +224,7 @@ void run() {
     std::vector<double> hLu;
     ap0.applyLaplacian(xr, hLu);
     auto dLh = getDev(dLu, n);
-    int mism = 0;
-    for (Index i = 0; i < n; ++i)
-      if (dLh[(std::size_t)i] != hLu[(std::size_t)i])
-        ++mism;
-    PECLET_CORE_CHECK_EQ(mism, 0);
+    PECLET_CORE_CHECK_EQ(tolMismatch(dLh, hLu, kGpuRelTol, "applyFv"), 0);
   }
 
   // ===== (2) standard V-cycle: device == host bit-for-bit + converges on graded mesh =====
@@ -216,11 +240,7 @@ void run() {
     hr.vcyc(0, 2, 2, 40, 0.8);
   }
   auto dx = getDev(mg.x(0), n);
-  int vmis = 0;
-  for (Index i = 0; i < n; ++i)
-    if (dx[(std::size_t)i] != hr.x[0][(std::size_t)i])
-      ++vmis;
-  PECLET_CORE_CHECK_EQ(vmis, 0);
+  PECLET_CORE_CHECK_EQ(tolMismatch(dx, hr.x[0], kGpuVcycRelTol, "vcycle"), 0);
   // converges on the graded mesh (plain operator stalled here ~0.03)
   std::vector<double> lu;
   ap0.applyLaplacian(dx, lu);
