@@ -226,6 +226,43 @@ inline void grad3(const FaceGeom& g, View<const double> f, View<double> gx, View
       });
 }
 
+/// Ghost-gradient overlay (setGhostGradient): per cut cell, a precomputed 3-point directional
+/// FD stencil per axis replacing the ABC grad3 value — central where both axis-neighbour centers
+/// are fluid, 2nd-order one-sided toward the fluid else (never reads a decoupled solid-centered
+/// value; gradOf's read of the pinned p=0 through partially-open faces is a gauge-dependent
+/// O(1/h) error at cut cells — measured in tests/study_amr_ghost_apriori.cpp). Weights include
+/// the 1/h factors; unused entries carry w=0.
+struct GhostGradOverlay {
+  Index n = 0;                 ///< number of overlay (cut) cells
+  View<Index> cell;            ///< [n] leaf index
+  View<Index> idx;             ///< [n*9] stencil cell, slot s*9 + axis*3 + k
+  View<double> w;              ///< [n*9] stencil weight (0 = unused)
+};
+
+/// Overwrite gx/gy/gz on the overlay cells with the directional stencil applied to `f`.
+inline void applyGhostGrad(const GhostGradOverlay& ov, View<const double> f, View<double> gx,
+                           View<double> gy, View<double> gz) {
+  if (ov.n == 0)
+    return;
+  auto cell = ov.cell;
+  auto idx = ov.idx;
+  auto w = ov.w;
+  Kokkos::parallel_for(
+      "amr::flow_ghostgrad", ov.n, KOKKOS_LAMBDA(const Index s) {
+        const Index i = cell(s);
+        double g[3];
+        for (int a = 0; a < 3; ++a) {
+          double acc = 0.0;
+          for (int k = 0; k < 3; ++k)
+            acc += w(s * 9 + a * 3 + k) * f(idx(s * 9 + a * 3 + k));
+          g[a] = acc;
+        }
+        gx(i) = g[0];
+        gy(i) = g[1];
+        gz(i) = g[2];
+      });
+}
+
 /// Momentum RHS for one component: b_i = fluid ? (idiag·u_i + f_c − gradP_i − adv_i)·rscale_i : 0
 /// (== AmrCutCell::makeRhs of the oracle::AmrFlow predictor source, u_bc = 0). `adv` is the
 /// explicit deferred-correction advection term ρ(SOU−FOU) (zero for Stokes / fully-implicit at
@@ -420,6 +457,15 @@ class AmrFlow {
   void setBodyForce(double fx, double fy, double fz) { f_ = {fx, fy, fz}; }
   /// Use MG-preconditioned CG for the pressure solve (default) vs plain V-cycles.
   void setPressurePCG(bool on) { presPCG_ = on; }
+  /// Directional ghost cell-gradient for the −∇pⁿ predictor and the projection's cell
+  /// correction (the AMR analog of flow's collocated `set_face_interp(9)` hybrid): on cut cells
+  /// the ABC grad3 reads the DECOUPLED p=0 of solid-centered neighbours through partially-open
+  /// faces — a gauge-dependent O(1/h) gradient error (measured in
+  /// tests/study_amr_ghost_apriori.cpp). The directional gradient is central where both axis
+  /// neighbours are fluid-centered and 2nd-order one-sided toward the fluid else — O(h²),
+  /// gauge-exact. The aperture projection (divergence + φ solve + uf) is UNCHANGED (throat-safe).
+  /// Default OFF (bit-identical legacy path). Call before setSolid.
+  void setGhostGradient(bool on) { ghostGrad_ = on; }
   /// Enable momentum advection ∇·(u u) (default OFF ⇒ Stokes). The high-order flux is
   /// second-order upwind (SOU) by default; the first-order-upwind part is solved *implicitly*
   /// (folded into the momentum operator) and the (SOU−FOU) difference is the explicit deferred
@@ -550,6 +596,10 @@ class AmrFlow {
       rs[static_cast<std::size_t>(i)] = mom_.rhsScale(i);
     rscale_ = toDevice(rs, "df_rscale");
     fluid_ = geom_.fluid;
+    if (ghostGrad_)
+      buildGhostGradOverlay();
+    else
+      gc_ = GhostGradOverlay{};
 
     // Device state.
     for (int c = 0; c < 3; ++c) {
@@ -621,6 +671,7 @@ class AmrFlow {
     // −∇p^n is constant across the outer iterations (pressure is projected once, after the loop,
     // like flow's single per-step projection) ⇒ hoist it out.
     grad3(geom_, View<const double>(p_), gx_[0], gx_[1], gx_[2]);
+    applyGhostGrad(gc_, View<const double>(p_), gx_[0], gx_[1], gx_[2]);
     // Picard outer loop over the lagged advection only (the momentum nonlinearity); for
     // outerIters_==1 this is the single lagged predictor, then one projection — bit-identical to
     // before.
@@ -721,6 +772,7 @@ class AmrFlow {
                    View<const double>(u_[2]), View<const double>(phi_), uf_);
     faceFieldBuilt_ = true;
     grad3(geom_, View<const double>(phi_), gx_[0], gx_[1], gx_[2]);
+    applyGhostGrad(gc_, View<const double>(phi_), gx_[0], gx_[1], gx_[2]);
     for (int c = 0; c < 3; ++c)
       correct(u_[c], View<const double>(gx_[c]), View<const char>(fluid_), n);
     presUpdate(p_, View<const double>(phi_), View<const double>(div_), View<const char>(fluid_),
@@ -825,6 +877,77 @@ class AmrFlow {
   int lastOuterIters() const { return lastOuterIters_; }
 
  private:
+  // Host build of the ghost-gradient overlay (setGhostGradient): one row per cut cell (fluid
+  // with a solid face neighbour — the cells where the ABC grad3 is gauge-dependent O(1/h)),
+  // holding a 3-point directional FD stencil per axis. Mirrors oracle::AmrFlow::gradOfDir: cut
+  // cells have same-level face neighbours by the finest-band contract; the ±2 probe falls back
+  // to the 2-point one-sided closure when that cell is solid or not same-level.
+  void buildGhostGradOverlay() {
+    const Index n = t_->numLeaves();
+    std::vector<Index> cells;
+    for (Index i = 0; i < n; ++i)
+      if (mom_.isCut(i))
+        cells.push_back(i);
+    const Index m = static_cast<Index>(cells.size());
+    std::vector<Index> idx(static_cast<std::size_t>(m) * 9, 0);
+    std::vector<double> w(static_cast<std::size_t>(m) * 9, 0.0);
+    auto ok = [&](Index j, Index i) {
+      return j >= 0 && mom_.isFluid(j) && t_->level(j) == t_->level(i);
+    };
+    for (Index s = 0; s < m; ++s) {
+      const Index i = cells[static_cast<std::size_t>(s)];
+      const double h = pres_.cellWidth(i);
+      for (int a = 0; a < 3; ++a) {
+        const std::size_t o = static_cast<std::size_t>(s) * 9 + static_cast<std::size_t>(a) * 3;
+        for (int k = 0; k < 3; ++k)
+          idx[o + static_cast<std::size_t>(k)] = i;  // safe defaults (w = 0)
+        const Index jp = pres_.periodicNeighbor(i, a, +1);
+        const Index jm = pres_.periodicNeighbor(i, a, -1);
+        const bool ap = ok(jp, i), am = ok(jm, i);
+        if (am && ap) {
+          idx[o] = jp;
+          w[o] = 0.5 / h;
+          idx[o + 1] = jm;
+          w[o + 1] = -0.5 / h;
+        } else if (ap) {
+          const Index jpp = pres_.periodicNeighbor(jp, a, +1);
+          if (ok(jpp, i)) {
+            idx[o] = i;
+            w[o] = -1.5 / h;
+            idx[o + 1] = jp;
+            w[o + 1] = 2.0 / h;
+            idx[o + 2] = jpp;
+            w[o + 2] = -0.5 / h;
+          } else {
+            idx[o] = jp;
+            w[o] = 1.0 / h;
+            idx[o + 1] = i;
+            w[o + 1] = -1.0 / h;
+          }
+        } else if (am) {
+          const Index jmm = pres_.periodicNeighbor(jm, a, -1);
+          if (ok(jmm, i)) {
+            idx[o] = i;
+            w[o] = 1.5 / h;
+            idx[o + 1] = jm;
+            w[o + 1] = -2.0 / h;
+            idx[o + 2] = jmm;
+            w[o + 2] = 0.5 / h;
+          } else {
+            idx[o] = i;
+            w[o] = 1.0 / h;
+            idx[o + 1] = jm;
+            w[o + 1] = -1.0 / h;
+          }
+        }  // sandwiched: all weights stay 0
+      }
+    }
+    gc_.n = m;
+    gc_.cell = toDevice(cells, "gc_cell");
+    gc_.idx = toDevice(idx, "gc_idx");
+    gc_.w = toDevice(w, "gc_w");
+  }
+
   // flow ccFractionCore aperture (verbatim from oracle::AmrFlow::faceFrac).
   template <class SdfFn>
   double faceFrac(SdfFn&& sdfFn, const Vec<3>& fc, int axis) const {
@@ -862,6 +985,7 @@ class AmrFlow {
   bool momGS_ = false;  // opt-in: multicolour Gauss–Seidel smoother in the momentum MG
   bool momMGSolver_ =
       false;            // opt-in (P4): velocity-MG as the solver (defect correction), not BiCGStab
+  bool ghostGrad_ = false;  // directional ghost gradient on cut cells (setGhostGradient)
   int outerIters_ = 1;  // Picard outer iterations over the lagged advection (default 1)
   double outerTol_ = 1e-6;   // outer-loop early-stop tolerance on max|Δu|
   double momTol_ = 1e-8;     // per-step momentum BiCGStab relative tolerance (Phase-0 knob)
@@ -882,6 +1006,7 @@ class AmrFlow {
   std::array<View<double>, 3> defc_;  // explicit ρ(SOU−FOU) deferred correction per component
   View<double> advDiag_, advCoef_;    // device-resident implicit-FOU operator (rebuilt each step)
   FaceGeom geom_;
+  GhostGradOverlay gc_;  // directional ghost-gradient overlay (empty unless setGhostGradient)
   View<double> rscale_;
   View<char> fluid_;
   std::array<View<double>, 3> u_, gx_;

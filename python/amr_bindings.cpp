@@ -329,6 +329,7 @@ class Flow : public Releasable {
   Index num_leaves() const { return n_; }
   void set_body_force(double fx, double fy, double fz) { flow_.setBodyForce(fx, fy, fz); }
   void set_advection(bool on) { flow_.setAdvection(on); }
+  void set_ghost_gradient(bool on) { flow_.setGhostGradient(on); }
   void set_advection_scheme(int s) { flow_.setAdvectionScheme(s); }
   void set_implicit_advection(bool on) { flow_.setImplicitAdvection(on); }
 
@@ -640,6 +641,11 @@ NB_MODULE(amr, m) {
            "Set the per-volume body force (e.g. a pressure gradient) driving the flow.")
       .def("set_advection", &Flow::set_advection, nb::arg("on"),
            "Enable explicit momentum advection (Navier-Stokes); off = Stokes.")
+      .def("set_ghost_gradient", &Flow::set_ghost_gradient, nb::arg("on"),
+           "Directional ghost cell-gradient on cut cells for the pressure predictor and the "
+           "projection's cell correction (2nd-order one-sided, never reads decoupled solid "
+           "pressure — removes the gauge-dependent O(1/h) cut-cell gradient error of the plain "
+           "ABC gradient). The aperture projection itself is unchanged. Call before set_solid.")
       .def("set_advection_scheme", &Flow::set_advection_scheme, nb::arg("scheme"),
            "High-order advection flux: 0 = second-order upwind (default), 1 = Koren TVD.")
       .def("set_implicit_advection", &Flow::set_implicit_advection, nb::arg("on"),

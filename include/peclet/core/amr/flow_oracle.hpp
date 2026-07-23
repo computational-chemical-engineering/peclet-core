@@ -73,6 +73,15 @@ class AmrFlow {
   /// difference is explicit — unconditionally stable for advection. OFF ⇒ fully
   /// explicit high-order advection.
   void setImplicitAdvection(bool on) { implicitFou_ = on; }
+  /// Directional ghost cell-gradient for the −∇pⁿ predictor and the projection's cell
+  /// correction (the AMR analog of flow's collocated `set_face_interp(9)` hybrid): on cells with
+  /// a solid-centered axis neighbour, gradOf reads the DECOUPLED p=0 of that neighbour through
+  /// partially-open faces — a gauge-dependent O(1/h) gradient error at cut cells (measured in
+  /// tests/study_amr_ghost_apriori.cpp). The directional gradient is central where both axis
+  /// neighbours are fluid-centered and 2nd-order one-sided toward the fluid else — O(h²) and
+  /// gauge-exact. The aperture projection (divergence + φ solve + face field) is UNCHANGED, so
+  /// this stays throat-safe. Default OFF (bit-identical legacy path). Call before setSolid.
+  void setGhostGradient(bool on) { ghostGrad_ = on; }
 
   /// Conservative Koren-TVD advection term ∇·(u u_comp) at leaf i (physical units;
   /// the explicit momentum advection). Exposed for testing.
@@ -140,7 +149,7 @@ class AmrFlow {
       for (Index i = 0; i < n; ++i)
         if (mom_.isFluid(i)) {
           // incremental predictor: include the old pressure gradient −∇p^n.
-          double s = (rho_ / dt_) * u_[c][static_cast<std::size_t>(i)] + f_[c] - gradOf(p_, i, c);
+          double s = (rho_ / dt_) * u_[c][static_cast<std::size_t>(i)] + f_[c] - gradP(p_, i, c);
           if (advect_)
             s -= adv[c][static_cast<std::size_t>(i)];  // HO (explicit) or HO−FOU (deferred)
           src[static_cast<std::size_t>(i)] = s;
@@ -175,7 +184,7 @@ class AmrFlow {
     for (int c = 0; c < 3; ++c)
       for (Index i = 0; i < n; ++i)
         if (mom_.isFluid(i))
-          u_[c][static_cast<std::size_t>(i)] -= gradOf(phi_, i, c);
+          u_[c][static_cast<std::size_t>(i)] -= gradP(phi_, i, c);
 
     // Rotational incremental pressure update: p += (ρ/dt)φ − μ ∇·u*  (div is ∇·u*).
     // The −μ∇·u* rotational term removes the projection's boundary-layer splitting
@@ -312,6 +321,42 @@ class AmrFlow {
     return out / pres_.cellVolume(i);
   }
 
+  // Predictor/correction cell gradient dispatch: the ABC gradOf everywhere, EXCEPT — with
+  // setGhostGradient — on cut cells (fluid with a solid face neighbour), where gradOf reads the
+  // decoupled solid p through partially-open faces (gauge-dependent O(1/h), measured in
+  // tests/study_amr_ghost_apriori.cpp) and the directional ghost gradient below is used instead.
+  double gradP(const std::vector<double>& fld, Index i, int c) const {
+    if (ghostGrad_ && mom_.isCut(i))
+      return gradOfDir(fld, i, c);
+    return gradOf(fld, i, c);
+  }
+
+  // Directional ghost cell-gradient on a cut-band cell (flow's gpCenterGrad analog). Cut cells
+  // have same-level face neighbours by the finest-band contract, so plain FD applies: central
+  // where both axis-neighbour CENTERS are fluid; 2nd-order one-sided toward the fluid else
+  // ((−3f_i+4f_{+1}−f_{+2})/2h, with a 2-point fallback when the ±2 cell is solid or not
+  // same-level); 0 when sandwiched. Never reads a solid-centered (decoupled) value — O(h²) and
+  // exactly gauge-invariant.
+  double gradOfDir(const std::vector<double>& fld, Index i, int c) const {
+    const double h = pres_.cellWidth(i);
+    auto F = [&](Index j) { return fld[static_cast<std::size_t>(j)]; };
+    auto ok = [&](Index j) { return j >= 0 && mom_.isFluid(j) && t_->level(j) == t_->level(i); };
+    const Index jp = pres_.periodicNeighbor(i, c, +1);
+    const Index jm = pres_.periodicNeighbor(i, c, -1);
+    const bool ap = ok(jp), am = ok(jm);
+    if (am && ap)
+      return (F(jp) - F(jm)) / (2.0 * h);
+    if (ap) {
+      const Index jpp = pres_.periodicNeighbor(jp, c, +1);
+      return ok(jpp) ? (-3.0 * F(i) + 4.0 * F(jp) - F(jpp)) / (2.0 * h) : (F(jp) - F(i)) / h;
+    }
+    if (am) {
+      const Index jmm = pres_.periodicNeighbor(jm, c, -1);
+      return ok(jmm) ? (3.0 * F(i) - 4.0 * F(jm) + F(jmm)) / (2.0 * h) : (F(i) - F(jm)) / h;
+    }
+    return 0.0;
+  }
+
   // ABC (Almgren-Bell-Colella) cell-velocity correction gradient in direction `c`:
   // ½·(g⁻ + g⁺) of the two adjacent FACE pressure-gradients, where a CLOSED face
   // (openness 0 — solid neighbour) contributes a ZERO gradient (it does NOT read
@@ -376,6 +421,7 @@ class AmrFlow {
   Vec<3> origin_{};
   double rho_ = 1.0, mu_ = 1.0, dt_ = 1e6;
   bool advect_ = false;
+  bool ghostGrad_ = false;   // directional ghost gradient on cut cells (setGhostGradient)
   bool implicitFou_ = true;  // implicit-FOU deferred-correction advection (stable)
   int advScheme_ = 0;        // 0 = SOU (default), 1 = Koren TVD
   Vec<3> f_{};
