@@ -42,6 +42,7 @@
 #include "peclet/core/amr/advect_recon.hpp"  // shared high-order face reconstruction (host+device)
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/cut_cell.hpp"
+#include "peclet/core/amr/ghost_projection.hpp"  // directional ghost overlay (setGhostProjection)
 #include "peclet/core/amr/poisson.hpp"
 #include "peclet/core/common/types.hpp"
 
@@ -82,6 +83,20 @@ class AmrFlow {
   /// gauge-exact. The aperture projection (divergence + φ solve + face field) is UNCHANGED, so
   /// this stays throat-safe. Default OFF (bit-identical legacy path). Call before setSolid.
   void setGhostGradient(bool on) { ghostGrad_ = on; }
+  /// FULL directional ghost-cell projection (the AMR port of flow's collocated
+  /// set_ghost_projection): the pressure system becomes rho·(L_bin + Delta) phi = rho·D_g(u*) —
+  /// the BINARY-openness FV Laplacian (preconditioned by the unchanged openness MG) plus the
+  /// wall-anchored closure overlay on the finest-band rows, solved by MG-preconditioned BiCGStab;
+  /// the constraint is the ghost-closed divergence of the ½/½ face-averaged field. Implies
+  /// setGhostGradient (the predictor/correction gradient). (matrixOrder, rhsOrder) = closure
+  /// orders for the implicit matrix vs the RHS divergence; (1, 2) is the validated flow default
+  /// (2nd-order steady constraint on a 7-point near-symmetric matrix). Default OFF. Call before
+  /// setSolid.
+  void setGhostProjection(bool on, int matrixOrder = 1, int rhsOrder = 2) {
+    ghostProj_ = on;
+    gpMatrixOrder_ = matrixOrder;
+    gpRhsOrder_ = rhsOrder;
+  }
 
   /// Conservative Koren-TVD advection term ∇·(u u_comp) at leaf i (physical units;
   /// the explicit momentum advection). Exposed for testing.
@@ -94,9 +109,29 @@ class AmrFlow {
     mom_.build(sdfFn, /*idiag=*/rho_ / dt_, /*beta=*/mu_ / (h0_ * h0_));
     pres_.init(*t_, h0_);
     pres_.setOrigin(origin_);
-    pres_.buildOpenness([&](const Vec<3>& fc, int axis) { return faceFrac(sdfFn, fc, axis); });
     presMG_.build(*t_, h0_);
-    presMG_.setOpenness([&](const Vec<3>& fc, int axis) { return faceFrac(sdfFn, fc, axis); });
+    if (ghostProj_) {
+      // Ghost projection: the pressure geometry is the BINARY openness (a face is open iff both
+      // adjacent centers + the face sample are fluid), on the UNCHANGED MG rails; the closure
+      // physics lives in the overlay. World-coord sampling offset by the origin (the octree's
+      // fine units start at origin_): shift the probe like cellCenter does.
+      auto sdfW = [&](const Vec<3>& p) { return sdfFn(p); };
+      auto binFn = makeBinaryOpenFn(sdfW, h0_);
+      pres_.buildOpenness(binFn);
+      presMG_.setOpenness(binFn);
+      gpOv_ = buildGhostOverlay(*t_, pres_, mom_.sdfCRaw(), gpMatrixOrder_, gpRhsOrder_);
+      ghostGrad_ = true;  // the directional gradient is part of the scheme
+      // Coupled mask (1 = row in the Krylov space): fluid cells minus decoupled overlay rows.
+      maskC_.assign(static_cast<std::size_t>(t_->numLeaves()), 0.0);
+      for (Index i = 0; i < t_->numLeaves(); ++i)
+        maskC_[static_cast<std::size_t>(i)] = mom_.isFluid(i) ? 1.0 : 0.0;
+      for (Index r = 0; r < gpOv_.n; ++r)
+        if (!gpOv_.coupled[static_cast<std::size_t>(r)])
+          maskC_[static_cast<std::size_t>(gpOv_.cell[static_cast<std::size_t>(r)])] = 0.0;
+    } else {
+      pres_.buildOpenness([&](const Vec<3>& fc, int axis) { return faceFrac(sdfFn, fc, axis); });
+      presMG_.setOpenness([&](const Vec<3>& fc, int axis) { return faceFrac(sdfFn, fc, axis); });
+    }
     const Index n = t_->numLeaves();
     for (int c = 0; c < 3; ++c)
       u_[c].assign(static_cast<std::size_t>(n), 0.0);
@@ -168,15 +203,23 @@ class AmrFlow {
     for (Index i = 0; i < n; ++i)
       if (mom_.isFluid(i))
         div[static_cast<std::size_t>(i)] = divergence(u_, i);
+    if (ghostProj_)  // ghost-closed constraint: binary div (above, binary α) + closure overlay
+      ghostDivergDeltaHost(gpOv_, u_, div);
 
     std::fill(phi_.begin(), phi_.end(), 0.0);
     (void)presSweeps;
-    // Standard (not quadratic) openness V-cycles: the operator L = div(α grad) is
-    // consistent with the FV divergence / ABC gradient above (D, G, L share the
-    // same face enumeration), so the collocated projection is stable across 2:1
-    // interfaces. (The quadratic C/F flux is for pure-Poisson accuracy, not here.)
-    for (int it = 0; it < presIters; ++it)
-      presMG_.vcycle(0, phi_, div);
+    if (ghostProj_) {
+      // Nonsymmetric ghost operator rho·(L_bin + Delta): MG-preconditioned BiCGStab on the
+      // coupled subspace (decoupled rows pinned 0, coupled volume-weighted mean removed).
+      solveGhostBiCGStab(phi_, div, presIters);
+    } else {
+      // Standard (not quadratic) openness V-cycles: the operator L = div(α grad) is
+      // consistent with the FV divergence / ABC gradient above (D, G, L share the
+      // same face enumeration), so the collocated projection is stable across 2:1
+      // interfaces. (The quadratic C/F flux is for pure-Poisson accuracy, not here.)
+      for (int it = 0; it < presIters; ++it)
+        presMG_.vcycle(0, phi_, div);
+    }
 
     // Build the divergence-free FACE field from u* (still in u_) + φ, before the cell correction.
     buildFaceField();
@@ -321,6 +364,108 @@ class AmrFlow {
     return out / pres_.cellVolume(i);
   }
 
+  // Project onto the coupled subspace: pin decoupled rows (solid-centered + overlay rows with no
+  // phi coupling) to 0, remove the volume-weighted mean over the coupled cells (the constant null
+  // mode of the connected fluid region — computed over coupled cells ONLY, like maskSolid).
+  void gpProject(std::vector<double>& v) const {
+    const Index n = t_->numLeaves();
+    double su = 0.0, sv = 0.0;
+    for (Index i = 0; i < n; ++i) {
+      const std::size_t s = static_cast<std::size_t>(i);
+      v[s] *= maskC_[s];
+      if (maskC_[s] > 0.0) {
+        const double V = pres_.cellVolume(i);
+        su += V * v[s];
+        sv += V;
+      }
+    }
+    const double m = (sv > 0.0) ? su / sv : 0.0;
+    for (Index i = 0; i < n; ++i)
+      v[static_cast<std::size_t>(i)] -= maskC_[static_cast<std::size_t>(i)] * m;
+  }
+
+  // MG-preconditioned BiCGStab on the nonsymmetric ghost pressure operator
+  // A(x) = P[rho·(L_bin x + Delta x)] with P the coupled-subspace projection; preconditioner =
+  // two binary-openness V-cycles + P. Stagnation guard: stop when the residual makes no new best
+  // for 6 iterations (the ghost system has a small attainable-residual floor — flow's measured
+  // compatibility gap).
+  void solveGhostBiCGStab(std::vector<double>& x, const std::vector<double>& b, int maxIters,
+                          double tol = 1e-10) {
+    const Index n = t_->numLeaves();
+    const std::size_t ns = static_cast<std::size_t>(n);
+    auto applyA = [&](const std::vector<double>& v, std::vector<double>& y) {
+      pres_.applyLaplacian(v, y);  // binary-openness L (ghost mode geometry)
+      ghostApplyDeltaHost(gpOv_, v, y);
+      gpProject(y);
+    };
+    auto prec = [&](const std::vector<double>& r, std::vector<double>& z) {
+      std::fill(z.begin(), z.end(), 0.0);
+      presMG_.vcycle(0, z, r);
+      presMG_.vcycle(0, z, r);
+      gpProject(z);
+    };
+    auto dot = [&](const std::vector<double>& a, const std::vector<double>& c) {
+      double s = 0.0;
+      for (std::size_t i = 0; i < ns; ++i)
+        s += a[i] * c[i];
+      return s;
+    };
+    std::vector<double> r(ns), rhat(ns), p(ns, 0.0), phat(ns), v(ns, 0.0), s(ns), shat(ns), t(ns);
+    applyA(x, r);
+    for (std::size_t i = 0; i < ns; ++i)
+      r[i] = b[i] - r[i];
+    gpProject(r);
+    rhat = r;
+    const double res0 = std::sqrt(dot(r, r));
+    if (res0 == 0.0)
+      return;
+    double rho = 1, alpha = 1, omega = 1, best = res0;
+    int noImprove = 0;
+    for (int it = 0; it < maxIters; ++it) {
+      const double rhoNew = dot(rhat, r);
+      if (rhoNew == 0.0)
+        break;
+      const double beta = (rhoNew / rho) * (alpha / omega);
+      for (std::size_t i = 0; i < ns; ++i)
+        p[i] = r[i] + beta * (p[i] - omega * v[i]);
+      prec(p, phat);
+      applyA(phat, v);
+      const double rhatV = dot(rhat, v);
+      if (rhatV == 0.0)
+        break;
+      alpha = rhoNew / rhatV;
+      for (std::size_t i = 0; i < ns; ++i)
+        s[i] = r[i] - alpha * v[i];
+      double snorm = std::sqrt(dot(s, s));
+      if (snorm <= tol * res0) {
+        for (std::size_t i = 0; i < ns; ++i)
+          x[i] += alpha * phat[i];
+        break;
+      }
+      prec(s, shat);
+      applyA(shat, t);
+      const double tt = dot(t, t);
+      omega = (tt != 0.0) ? dot(t, s) / tt : 0.0;
+      for (std::size_t i = 0; i < ns; ++i) {
+        x[i] += alpha * phat[i] + omega * shat[i];
+        r[i] = s[i] - omega * t[i];
+      }
+      const double rnorm = std::sqrt(dot(r, r));
+      if (rnorm <= tol * res0)
+        break;
+      if (rnorm < 0.999 * best) {
+        best = rnorm;
+        noImprove = 0;
+      } else if (++noImprove >= 6) {
+        break;  // attainable-residual floor (compatibility gap) — stagnation guard
+      }
+      rho = rhoNew;
+      if (omega == 0.0)
+        break;
+    }
+    gpProject(x);
+  }
+
   // Predictor/correction cell gradient dispatch: the ABC gradOf everywhere, EXCEPT — with
   // setGhostGradient — on cut cells (fluid with a solid face neighbour), where gradOf reads the
   // decoupled solid p through partially-open faces (gauge-dependent O(1/h), measured in
@@ -422,6 +567,10 @@ class AmrFlow {
   double rho_ = 1.0, mu_ = 1.0, dt_ = 1e6;
   bool advect_ = false;
   bool ghostGrad_ = false;   // directional ghost gradient on cut cells (setGhostGradient)
+  bool ghostProj_ = false;   // full directional ghost projection (setGhostProjection)
+  int gpMatrixOrder_ = 1, gpRhsOrder_ = 2;  // closure orders: implicit matrix / RHS divergence
+  GhostOverlay gpOv_;                       // closure overlay (finest-band rows)
+  std::vector<double> maskC_;               // 1 = coupled row (Krylov subspace), 0 = pinned
   bool implicitFou_ = true;  // implicit-FOU deferred-correction advection (stable)
   int advScheme_ = 0;        // 0 = SOU (default), 1 = Koren TVD
   Vec<3> f_{};

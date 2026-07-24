@@ -330,6 +330,9 @@ class Flow : public Releasable {
   void set_body_force(double fx, double fy, double fz) { flow_.setBodyForce(fx, fy, fz); }
   void set_advection(bool on) { flow_.setAdvection(on); }
   void set_ghost_gradient(bool on) { flow_.setGhostGradient(on); }
+  void set_ghost_projection(bool on, int matrix_order, int rhs_order) {
+    flow_.setGhostProjection(on, matrix_order, rhs_order);
+  }
   void set_advection_scheme(int s) { flow_.setAdvectionScheme(s); }
   void set_implicit_advection(bool on) { flow_.setImplicitAdvection(on); }
 
@@ -646,6 +649,15 @@ NB_MODULE(amr, m) {
            "projection's cell correction (2nd-order one-sided, never reads decoupled solid "
            "pressure — removes the gauge-dependent O(1/h) cut-cell gradient error of the plain "
            "ABC gradient). The aperture projection itself is unchanged. Call before set_solid.")
+      .def("set_ghost_projection", &Flow::set_ghost_projection, nb::arg("on"),
+           nb::arg("matrix_order") = 1, nb::arg("rhs_order") = 2,
+           "FULL directional ghost-cell projection (the AMR port of flow's collocated "
+           "set_ghost_projection): binary-openness pressure operator + wall-anchored closure "
+           "overlay on the finest-band rows, MG-preconditioned BiCGStab, ghost-closed divergence "
+           "constraint; implies set_ghost_gradient. (matrix_order, rhs_order) = closure orders "
+           "for the implicit matrix vs the RHS divergence — (1, 2) is the validated default. "
+           "Raises if the finest band is too thin (a closure would cross a 2:1 boundary). Call "
+           "before set_solid.")
       .def("set_advection_scheme", &Flow::set_advection_scheme, nb::arg("scheme"),
            "High-order advection flux: 0 = second-order upwind (default), 1 = Koren TVD.")
       .def("set_implicit_advection", &Flow::set_implicit_advection, nb::arg("on"),

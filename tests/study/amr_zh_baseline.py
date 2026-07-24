@@ -22,7 +22,7 @@ K_ZH = 4.292
 PHI = 0.125
 
 
-def drag_k(N, ghost, tol=1e-7, max_steps=6000, mom_iters=100, pres_iters=60):
+def drag_k(N, ghost, ghostproj=False, tol=1e-7, max_steps=6000, mom_iters=100, pres_iters=60):
     lmax = int(math.log2(N))
     assert 2 ** lmax == N
     t0 = time.time()
@@ -34,7 +34,9 @@ def drag_k(N, ghost, tol=1e-7, max_steps=6000, mom_iters=100, pres_iters=60):
     fl = amr.Flow(t, 1.0, mu, 60.0)
     fl.set_body_force(f, 0.0, 0.0)
     fl.set_advection(False)
-    if ghost:
+    if ghostproj:
+        fl.set_ghost_projection(True, 1, 2)
+    elif ghost:
         fl.set_ghost_gradient(True)
     fl.set_solid(lambda x, y, z:
                  math.sqrt((x - c) ** 2 + (y - c) ** 2 + (z - c) ** 2) - R)
@@ -67,10 +69,11 @@ def drag_k(N, ghost, tol=1e-7, max_steps=6000, mom_iters=100, pres_iters=60):
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:]]
     ghost = "--ghost" in args
+    ghostproj = "--ghostproj" in args
     Ns = [int(a) for a in args if not a.startswith("--")] or [32, 64]
-    print(f"ghost_gradient={ghost}", flush=True)
+    print(f"ghost_gradient={ghost} ghost_projection={ghostproj}", flush=True)
     print(f"{'N':>5} {'K':>10} {'err%':>8} {'steps':>6} {'mom':>5} {'pres':>5}", flush=True)
     for N in Ns:
-        k, s, mi, pi = drag_k(N, ghost)
+        k, s, mi, pi = drag_k(N, ghost, ghostproj)
         print(f"{N:>5} {k:>10.4f} {100 * (k - K_ZH) / K_ZH:>8.3f} {s:>6} {mi:>5} {pi:>5}",
               flush=True)

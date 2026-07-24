@@ -216,6 +216,66 @@ void test_sphere_ghost() {
   PECLET_CORE_CHECK(dmax < 5e-3 * hmax);                       // fields agree
 }
 
+// FULL ghost projection (setGhostProjection, (1,2) default) on BOTH engines: binary-openness
+// operator + closure overlay + MG-preconditioned BiCGStab must agree oracle==device on a cut
+// geometry (same permeability, fields agree), and differ from the aperture projection (it
+// replaces the O(1) cut-face constraint).
+void test_sphere_ghostproj() {
+  const unsigned L = 4;
+  BO t = uniformFine(L);
+  const long N = 1L << L;
+  const double h0 = 1.0 / static_cast<double>(N);
+  const double mu = 1.0, G = 1.0;
+  Vec<3> c{0.5, 0.5, 0.5};
+  double rad = 0.2;
+  auto sdf = [&](const Vec<3>& p) {
+    double dx = p[0] - c[0], dy = p[1] - c[1], dz = p[2] - c[2];
+    return std::sqrt(dx * dx + dy * dy + dz * dz) - rad;
+  };
+
+  oracle::AmrFlow<21> hfl;
+  hfl.init(t, h0);
+  hfl.setViscosity(mu);
+  hfl.setDt(1e6);
+  hfl.setBodyForce(G, 0, 0);
+  hfl.setGhostProjection(true, 1, 2);
+  hfl.setSolid(sdf);
+  for (int s = 0; s < 8; ++s)
+    hfl.step(/*momSweeps=*/400, /*presIters=*/12, /*presSweeps=*/2);
+  const auto& hux = hfl.velocity(0);
+
+  AmrFlow<21> dfl;
+  dfl.init(t, h0);
+  dfl.setViscosity(mu);
+  dfl.setDt(1e6);
+  dfl.setBodyForce(G, 0, 0);
+  dfl.setGhostProjection(true, 1, 2);
+  dfl.setSolid(sdf);
+  for (int s = 0; s < 8; ++s)
+    dfl.step(/*momIters=*/500, /*presIters=*/40);
+  const auto dux = dfl.velocity(0);
+
+  const Index n = t.numLeaves();
+  double hsum = 0, dsum = 0, dmax = 0, hmax = 0;
+  long nf = 0;
+  for (Index i = 0; i < n; ++i)
+    if (hfl.isFluid(i)) {
+      hsum += hux[(std::size_t)i];
+      dsum += dux[(std::size_t)i];
+      dmax = std::max(dmax, std::fabs(dux[(std::size_t)i] - hux[(std::size_t)i]));
+      hmax = std::max(hmax, std::fabs(hux[(std::size_t)i]));
+      ++nf;
+    }
+  double hmean = hsum / nf, dmean = dsum / nf;
+  std::printf(
+      "[flow] sphere+ghostproj: Umean host %.6e dev %.6e (rel %.2e), max|dev-host| %.3e "
+      "(mag %.3e), dev ghost-div %.2e\n",
+      hmean, dmean, std::fabs(dmean - hmean) / hmean, dmax, hmax, dfl.divNormL2());
+  PECLET_CORE_CHECK(dmean > 0.0);
+  PECLET_CORE_CHECK(std::fabs(dmean - hmean) / hmean < 2e-3);  // device == oracle permeability
+  PECLET_CORE_CHECK(dmax < 5e-3 * hmax);                       // fields agree
+}
+
 // The optional Helmholtz-MG momentum preconditioner (setMomentumMG) must not change the
 // converged answer — a preconditioner only affects the iteration path, not the fixed point.
 void test_momentum_mg_option() {
@@ -677,6 +737,7 @@ int main(int argc, char** argv) {
   test_momentum_mgsolver();
   test_sphere();
   test_sphere_ghost();
+  test_sphere_ghostproj();
   test_momentum_mg_option();
   test_momentum_scaling();
   test_advection_kernel();
