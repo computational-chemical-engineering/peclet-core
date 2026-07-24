@@ -159,3 +159,81 @@ flow collocated reference run lived at `/tmp/sdflow_coloc_gpu.py` (single SC sph
 
 Related memories: [[device-naming-retirement]] (the umbrella record of this whole arc),
 [[amr-gpu-smoother-flow-port]], [[flow-collocated-solver]], [[amr-octree-status]].
+
+---
+
+# Addendum (2026-07-24): directional ghost-cell projection — 2nd-order cut cells on the octree
+
+Status: **done, validated, committed** (ladder steps 0–3 of the ghost-projection port; see the
+`amr-ghost-collocated-ns-plan` memory + flow/doc/collocated_second_order_open_problem.md §9 for
+the uniform-grid original). Everything below is measured on the device engine (RTX 5080), with
+the host oracle in lock-step (parity ctests).
+
+## The two measured defects (step 0 — tests/study_amr_ghost_apriori.cpp, 6/6 gates)
+
+The aperture projection above is first-order at cut cells for exactly flow's collocated mode-0
+reasons, measured on the real `AmrPoisson` operators:
+
+- `gradOf` (the ABC ½(g⁻+g⁺) cell gradient, feeding the −∇pⁿ predictor and the cell correction)
+  reads the DECOUPLED p=0 of solid-centered neighbours through partially-open faces: O(1/h) at
+  cut cells (11.3 → 91.1 over N=16..128, order −1.0) and gauge-dependent (+5 on p ⇒ O(5/h)
+  gradient error; 13 869 open-solid-centered faces at N=128).
+- The α-weighted ½/½ face-average constraint has O(1) local truncation at cut faces (O(h²) bulk).
+
+## The fix, two stages
+
+1. **`setGhostGradient`** (the mode-9 hybrid, cheap win): directional cell gradient on cut cells
+   only — central where both axis-neighbour centers are fluid, 2nd-order one-sided toward the
+   fluid else; O(h²), gauge-exact. Aperture projection untouched (throat-safe).
+2. **`setGhostProjection(on, matrix_order=1, rhs_order=2)`** (the full scheme): the pressure
+   system becomes ρ·(L_bin + Δ)φ = ρ·D_g(u*) — the BINARY-openness FV Laplacian (face open iff
+   its sample + both adjacent centers are fluid) on the *unchanged* openness-MG rails
+   (preconditioner + matvec base) plus the wall-anchored closure overlay
+   (`amr/ghost_projection.hpp`, sharing `peclet::core::scheme` closures verbatim with flow),
+   solved by MG-preconditioned BiCGStab on the coupled subspace. Implies the ghost gradient.
+   **Sign note:** the suite operator is +L (negative-definite), so the matrix delta is the
+   NEGATIVE of flow's `gpApplyDelta` expression; the divergence delta keeps flow's orientation.
+
+**The octree enabler:** cut cells live in a uniformly-finest band (the `AmrCutCell` same-level
+contract), so no closure ever crosses a 2:1 boundary — `buildGhostOverlay` THROWS if an overlay
+row's ±2 reach touches a different-level leaf (widen the `refineToSdf` band, don't weaken this).
+
+## Uniform Z&H (SC sphere, φ=0.125, K=4.292) — the headline
+
+| N   | aperture (baseline) | + ghost gradient | full ghost projection | flow collocated ghost |
+|-----|--------------------:|-----------------:|----------------------:|----------------------:|
+| 32  | +0.302%             | +0.045%          | **−0.175%**           | −0.175%               |
+| 64  | +0.135%             | −0.003%          | **−0.056%**           | −0.056%               |
+| 128 | +0.054%             | +0.009%          | **−0.021%**           | −0.018%               |
+
+The unrefined octree reproduces flow's collocated ghost to the 3rd decimal (bit-comparable
+scheme, different engine) — the step-2 gate. BiCGStab stays flat at 6/7/8 iterations
+(momentum/pressure iteration counts otherwise unchanged). Both ghost variants sit at or below
+the Z&H table's own precision from N=32 on.
+
+## Graded meshes (step 3): the machinery works; the C/F flux is now the limiter
+
+Finest band at the sphere + coarse far field (`tests/study/amr_zh_graded.py`, `amr_zh_dilute.py`,
+volume-weighted superficial velocity):
+
+- φ=0.125, finest 64, ghost: band 3/5/8 → +8.8/+7.9/+6.4% at 20/29/42% of the cells; uniform
+  reproduces −0.056% exactly through the graded machinery. The dense SC array has shear in every
+  inter-sphere channel — a poor AMR showcase (as noted above for the aperture path).
+- Dilute sphere (same R in a 4× box, φ≈0.002), finest 128: graded band 4 at **0.9% of the
+  cells** runs stable with BiCGStab flat at 8 (the aperture MG-PCG caps at 60 on the same mesh),
+  but sits +9.2% above the uniform K. **Attribution (measured, not assumed):** the aperture
+  scheme shows the SAME +9.2% graded offset (ghost +9.3%) and the two uniform limits agree to 4
+  digits — the graded error is entirely the far-field/level-boundary treatment (1st-order C/F
+  flux where the 1/r Stokes disturbance still varies), independent of the ghost band.
+
+**Consequence / next lever:** the cut-cell band is no longer the accuracy limiter — the 2:1
+level-boundary flux is. The quadratic Martin–Cartwright C/F machinery already exists on the
+Poisson rails (`applyLaplacianQuad`/`coarseStar`, P5b) but the projection deliberately uses the
+standard consistent operator, and the momentum diffusion C/F is first-order too. Making the
+*projection + momentum* C/F treatment 2nd-order (or simply placing level boundaries further into
+the smooth field) is the open item for graded accuracy.
+
+Guards: `test_amr_flow_solver::{test_sphere_ghost, test_sphere_ghostproj, test_graded_ghostproj}`
+(oracle==device parity CUDA+OpenMP; thin-band throw; graded stability). Deferred, as in flow:
+the tight-throat fragmentation guard, NS advection with the ghost uf, MPI (halo ±2 + BiCGStab
+reductions).

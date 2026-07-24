@@ -22,6 +22,7 @@
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/flow.hpp"
 #include "peclet/core/amr/flow_oracle.hpp"
+#include "peclet/core/amr/refine.hpp"
 #include "peclet/core/common/types.hpp"
 
 using namespace peclet::core;
@@ -274,6 +275,72 @@ void test_sphere_ghostproj() {
   PECLET_CORE_CHECK(dmean > 0.0);
   PECLET_CORE_CHECK(std::fabs(dmean - hmean) / hmean < 2e-3);  // device == oracle permeability
   PECLET_CORE_CHECK(dmax < 5e-3 * hmax);                       // fields agree
+}
+
+// Ghost projection on a GRADED octree: (a) a too-thin finest band must THROW in setSolid (the
+// band-margin invariant — an overlay row's ±2 reach may never cross a 2:1 boundary); (b) with an
+// adequate band the graded solve is stable and produces a sane drag (the graded ACCURACY on the
+// dense SC array is band-dominated — measured in tests/study/amr_zh_graded.py — so this is a
+// machinery lock, not an accuracy gate).
+void test_graded_ghostproj() {
+  const long N = 32;
+  const double phi = 0.125;
+  const double R = std::pow(phi * 3.0 / (4.0 * M_PI), 1.0 / 3.0) * static_cast<double>(N);
+  const double c = N / 2.0;
+  auto sdf = [&](const Vec<3>& p) {
+    double dx = p[0] - c, dy = p[1] - c, dz = p[2] - c;
+    return std::sqrt(dx * dx + dy * dy + dz * dz) - R;
+  };
+  auto makeTree = [&](double band) {
+    BO t(IVec<3>{1, 1, 1}, 5);
+    AmrGeometry<3> geo;
+    geo.h0 = 1.0;
+    refineToSdf(t, geo, sdf, /*target*/ 0, band, /*balance*/ true);
+    return t;
+  };
+
+  {  // (a) thin band -> the overlay build must throw (never silently mis-close a face)
+    BO t = makeTree(0.5);
+    AmrFlow<21> fl;
+    fl.init(t, 1.0, Vec<3>{0, 0, 0});
+    fl.setViscosity(0.1);
+    fl.setDt(60.0);
+    fl.setGhostProjection(true, 1, 2);
+    bool threw = false;
+    try {
+      fl.setSolid(sdf);
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    PECLET_CORE_CHECK(threw);
+  }
+
+  {  // (b) adequate band: stable graded solve, sane drag, genuinely coarsened mesh
+    BO t = makeTree(3.0);
+    PECLET_CORE_CHECK(t.numLeaves() < N * N * N);
+    AmrFlow<21> fl;
+    fl.init(t, 1.0, Vec<3>{0, 0, 0});
+    fl.setViscosity(0.1);
+    fl.setDt(60.0);
+    fl.setBodyForce(1e-3, 0, 0);
+    fl.setGhostProjection(true, 1, 2);
+    fl.setSolid(sdf);
+    for (int s = 0; s < 200; ++s)
+      fl.step(100, 60);
+    double usup = 0;
+    const auto u = fl.velocity(0);
+    for (Index i = 0; i < t.numLeaves(); ++i) {
+      const double w = static_cast<double>(1L << t.level(i));
+      usup += u[(std::size_t)i] * w * w * w;
+    }
+    usup /= static_cast<double>(N * N * N);
+    PECLET_CORE_CHECK(std::isfinite(usup) && usup > 0.0 && usup < 1.0);  // stable
+    const double k = 1e-3 * N * N * N / (6.0 * M_PI * 0.1 * R * usup);
+    std::printf("[flow] graded ghostproj (band 3): K=%.4f (Z&H 4.292; band-dominated), "
+                "leaves=%lld/%lld\n",
+                k, static_cast<long long>(t.numLeaves()), static_cast<long long>(N * N * N));
+    PECLET_CORE_CHECK(k > 3.0 && k < 6.5);  // sane drag (machinery lock, not accuracy)
+  }
 }
 
 // The optional Helmholtz-MG momentum preconditioner (setMomentumMG) must not change the
@@ -738,6 +805,7 @@ int main(int argc, char** argv) {
   test_sphere();
   test_sphere_ghost();
   test_sphere_ghostproj();
+  test_graded_ghostproj();
   test_momentum_mg_option();
   test_momentum_scaling();
   test_advection_kernel();
