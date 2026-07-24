@@ -152,10 +152,12 @@ class AmrFlow {
       cfMom_ = buildCfLapDelta(mom_.lap(), *t_, mu_, rowRegular, fluidOk, cfScheme_);
       cfDiv_ = buildCfDivDelta(pres_, *t_, rowFluid, fluidOk, cfScheme_);
       cfGrad_ = buildCfGradDelta(pres_, *t_, rowFluid, fluidOk, cfScheme_);
+      cfUf_ = buildCfUfDelta(pres_, *t_, fluidOk, cfScheme_);
     } else {
       cfMom_ = CfCsr{};
       cfDiv_ = CfCompCsr{};
       cfGrad_ = {};
+      cfUf_ = CfUfDelta{};
     }
     const Index n = t_->numLeaves();
     for (int c = 0; c < 3; ++c)
@@ -320,6 +322,12 @@ class AmrFlow {
                 : (phi_[static_cast<std::size_t>(i)] - phi_[static_cast<std::size_t>(j)]) / dist;
         uf_[static_cast<std::size_t>(s++)] = uface - gphi;
       });
+    }
+    // 2nd-order C/F face values (setCfScheme): distance-weighted average + coarse* substitution
+    // on the 2:1 sub-faces — the advecting flux matches the (quad) divergence constraint.
+    if (cfScheme_ != CfScheme::standard && !cfUf_.vel.start.empty()) {
+      cfApplyCompHost(cfUf_.vel, u_, uf_);
+      cfApplyHost(cfUf_.phi, phi_, uf_);
     }
     faceFieldBuilt_ = true;
   }
@@ -620,6 +628,7 @@ class AmrFlow {
   CfCsr cfMom_;                             // +μ(∇²_scheme − ∇²_std) momentum RHS overlay
   CfCompCsr cfDiv_;                         // (D_scheme − D_std) divergence overlay
   std::array<CfCsr, 3> cfGrad_;             // (G_scheme − G_std) per gradient axis
+  CfUfDelta cfUf_;                          // (uf_scheme − uf_std) face-field overlay (slots)
   bool implicitFou_ = true;  // implicit-FOU deferred-correction advection (stable)
   int advScheme_ = 0;        // 0 = SOU (default), 1 = Koren TVD
   Vec<3> f_{};

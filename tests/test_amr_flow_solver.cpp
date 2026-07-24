@@ -414,6 +414,77 @@ void test_graded_cf_quadratic() {
   PECLET_CORE_CHECK(std::fabs(dsum - d0sum) / std::fabs(d0sum) > 1e-4);  // the scheme acts
 }
 
+// NAVIER–STOKES with the ghost projection (ladder step 4): the immersed sphere at finite Re
+// (the aperture advection test's setup) with setGhostProjection on BOTH engines. Checks:
+// oracle==device parity, the ghost NS steady state is close to the aperture NS steady state
+// (same physics, different cut-cell scheme), and the ghost-closed divergence stays small.
+void test_sphere_ghostproj_adv() {
+  const unsigned L = 4;
+  BO t = uniformFine(L);
+  const double h0 = 1.0 / (double)(1L << L);
+  const double mu = 0.5, G = 1.0;  // finite Re: advection matters, both converge
+  Vec<3> c{0.5, 0.5, 0.5};
+  double rad = 0.2;
+  auto sdf = [&](const Vec<3>& p) {
+    double dx = p[0] - c[0], dy = p[1] - c[1], dz = p[2] - c[2];
+    return std::sqrt(dx * dx + dy * dy + dz * dz) - rad;
+  };
+  const double dt = 2.0;  // NS needs finite dt (the (ρ/dt) mass damps the lagged advection)
+  auto setup = [&](auto& f, bool ghost) {
+    f.init(t, h0);
+    f.setViscosity(mu);
+    f.setDt(dt);
+    f.setBodyForce(G, 0, 0);
+    f.setAdvection(true);
+    if (ghost)
+      f.setGhostProjection(true, 1, 2);
+    f.setSolid(sdf);
+  };
+  oracle::AmrFlow<21> hfl;
+  setup(hfl, true);
+  AmrFlow<21> dfl;
+  setup(dfl, true);
+  AmrFlow<21> afl;  // device aperture reference (cross-scheme closeness)
+  setup(afl, false);
+  for (int s = 0; s < 50; ++s) {
+    hfl.step(300, 12, 2);
+    dfl.step(200, 60);
+    afl.step(200, 80);
+  }
+  const auto& hux = hfl.velocity(0);
+  const auto dux = dfl.velocity(0);
+  const auto aux = afl.velocity(0);
+  const Index n = t.numLeaves();
+  double hsum = 0, dsum = 0, asum = 0, dmax = 0, hmax = 0;
+  long nf = 0;
+  for (Index i = 0; i < n; ++i)
+    if (hfl.isFluid(i)) {
+      hsum += hux[(std::size_t)i];
+      dsum += dux[(std::size_t)i];
+      asum += aux[(std::size_t)i];
+      dmax = std::max(dmax, std::fabs(dux[(std::size_t)i] - hux[(std::size_t)i]));
+      hmax = std::max(hmax, std::fabs(hux[(std::size_t)i]));
+      ++nf;
+    }
+  const double hmean = hsum / nf, dmean = dsum / nf, amean = asum / nf;
+  // Residual divergence comparison in MATCHED units: the ghost-closed divergence of the ghost
+  // solve vs the aperture divergence of the aperture solve (the collocated approximate
+  // projection leaves an O(h²) cell-divergence residual on both paths; the (1,2) ghost adds a
+  // per-step lag that decays through stepping).
+  const double gdiv = dfl.divNormL2();
+  const double adiv = afl.divNormL2();
+  std::printf(
+      "[flow] sphere+ghostproj+adv: Umean host %.6e dev %.6e (rel %.2e) aperture %.6e "
+      "(scheme gap %.2e rel), max|dev-host| %.3e (mag %.3e), div ghost %.2e aperture %.2e\n",
+      hmean, dmean, std::fabs(dmean - hmean) / hmean, amean, std::fabs(dmean - amean) / amean,
+      dmax, hmax, gdiv, adiv);
+  PECLET_CORE_CHECK(dmean > 0.0 && std::isfinite(dmean));
+  PECLET_CORE_CHECK(std::fabs(dmean - hmean) / hmean < 2e-3);  // device == oracle
+  PECLET_CORE_CHECK(dmax < 5e-3 * hmax);                       // fields agree
+  PECLET_CORE_CHECK(std::fabs(dmean - amean) / amean < 5e-2);  // ghost ≈ aperture NS physics
+  PECLET_CORE_CHECK(std::isfinite(gdiv) && gdiv < 10.0 * adiv);  // same residual class
+}
+
 // The optional Helmholtz-MG momentum preconditioner (setMomentumMG) must not change the
 // converged answer — a preconditioner only affects the iteration path, not the fixed point.
 void test_momentum_mg_option() {
@@ -878,6 +949,7 @@ int main(int argc, char** argv) {
   test_sphere_ghostproj();
   test_graded_ghostproj();
   test_graded_cf_quadratic();
+  test_sphere_ghostproj_adv();
   test_momentum_mg_option();
   test_momentum_scaling();
   test_advection_kernel();

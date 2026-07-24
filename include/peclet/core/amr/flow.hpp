@@ -653,11 +653,16 @@ class AmrFlow {
       for (int a = 0; a < 3; ++a)
         cfGrad_[static_cast<std::size_t>(a)] =
             uploadCfCsr(gd[static_cast<std::size_t>(a)], "cf_grad");
+      auto ufd = buildCfUfDelta(pres_, *t_, fluidOk, cfScheme_);
+      cfUfVel_ = uploadCfCompCsr(ufd.vel, "cf_ufvel");
+      cfUfPhi_ = uploadCfCsr(ufd.phi, "cf_ufphi");
     } else {
       cfMom_ = CfCsrDev{};
       cfDiv_ = CfCompCsrDev{};
       for (int a = 0; a < 3; ++a)
         cfGrad_[static_cast<std::size_t>(a)] = CfCsrDev{};
+      cfUfVel_ = CfCompCsrDev{};
+      cfUfPhi_ = CfCsrDev{};
     }
     if (ghostProj_) {
       // Closure overlay over the finest-band rows (throws if the band margin is violated) + the
@@ -872,6 +877,11 @@ class AmrFlow {
   void finishProjection(Index n) {
     buildFaceField(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
                    View<const double>(u_[2]), View<const double>(phi_), uf_);
+    // 2nd-order C/F face values (setCfScheme): distance-weighted average + coarse* substitution
+    // on the 2:1 sub-faces — the advecting flux matches the (quad) divergence constraint.
+    cfApplyComp(cfUfVel_, View<const double>(u_[0]), View<const double>(u_[1]),
+                View<const double>(u_[2]), uf_);
+    cfApply(cfUfPhi_, View<const double>(phi_), uf_);
     faceFieldBuilt_ = true;
     grad3(geom_, View<const double>(phi_), gx_[0], gx_[1], gx_[2]);
     for (int a = 0; a < 3; ++a)  // 2nd-order C/F face gradients (level-boundary rows)
@@ -1222,6 +1232,8 @@ class AmrFlow {
   CfCsrDev cfMom_;                  // +μ(∇²_scheme − ∇²_std) momentum RHS overlay
   CfCompCsrDev cfDiv_;              // (D_scheme − D_std) divergence overlay
   std::array<CfCsrDev, 3> cfGrad_;  // (G_scheme − G_std) per gradient axis
+  CfCompCsrDev cfUfVel_;            // (uf_scheme − uf_std) face-field overlay: velocity part
+  CfCsrDev cfUfPhi_;                //                                          φ part
   View<double> maskC_;    // 1 = coupled row (Krylov subspace), 0 = pinned
   View<double> gpr_, gprh_, gpp_, gpph_, gpv_, gps_, gpsh_, gpt_;  // ghost BiCGStab scratch
   View<double> rscale_;

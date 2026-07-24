@@ -284,3 +284,38 @@ falls fast with band. Uniform meshes are an exact no-op (no C/F faces). Oracle==
 tangential stencil gates out (a tangential neighbour is itself finer — the P5b robustness
 fallback), leaving locally 1st-order rows; interpolating those from the fine side is the natural
 next scheme refinement if the remaining offset matters.
+
+## Update (2026-07-24, later still): Navier–Stokes with the ghost projection (ladder step 4)
+
+Advection (implicit-FOU + deferred SOU, advected by the uf face field) now runs under the ghost
+projection with **no change to the advection scheme itself** — same fluid-fluid face gates, same
+raw-area fluxes, uf built from the ghost φ. The uf design decision: uf keeps the ½(uᵢ+uⱼ) − ∇φ
+form; it is exactly divergence-free in the bulk (binary D), residual-small in the cut band, and
+equal to the pure face average at steady state. With `setCfScheme(1)`, uf additionally gets its
+C/F delta (`buildCfUfDelta`): the distance-weighted + coarse*-substituted face average (matching
+the divergence constraint — the steady advecting velocity is ~2nd order at 2:1 sub-faces,
+measured ~3rd on smooth fields) while the φ-gradient part keeps the P5b flux form (an O(h)
+normal sample offset that is conservative, telescoping, and vanishes at steady state where φ→0
+— measured and gated in `test_amr_cf_vector` section 5).
+
+**Measured (tests/study/amr_ns_ghost.py, Z&H geometry at Re≈9.7, RTX 5080):**
+
+- steady apparent K: aperture 4.4407/4.4209 at N=32/64 vs ghost 4.4132/4.4090 — scheme gap
+  −0.62% → −0.27% (halving with N), and the ghost value moves 4× less between resolutions (the
+  Stokes accuracy hierarchy carries to finite Re);
+- **solver economics reverse under advection**: the aperture path must run the bounded V-cycle
+  (60 cycles/step — MG-PCG excluded by the transient near-nullspace issue) while the ghost
+  BiCGStab stays at 6–7 iterations: 18 s vs 341 s (N=32), 52 s vs 586 s (N=64) to converge;
+- unsteady impulsive start (600 steps, N=64): the two trajectories track within 0.24% —
+  exactly the steady scheme gap, no transient drift or instability; the ghost residual
+  divergence trace (max 1.1e-4, final 5.6e-6) sits an order of magnitude BELOW the aperture's
+  own (1.3e-3 / 2.1e-4) — the (1,2) per-step lag is empirically a non-issue with advection;
+- graded NS (finest 64, band 5, ghost + cf-quadratic + advection): stable, BiCGStab flat 7,
+  div 2e-6, K_app +4.9% vs uniform ghost at 29% of the cells (consistent with the Stokes graded
+  result; far-field-resolution-limited).
+
+Parity ctest `test_sphere_ghostproj_adv` (finite-Re sphere, both engines + device aperture
+cross-check): oracle==device rel 8.8e-5, ghost≈aperture 0.24%, ghost residual divergence 2.6×
+below the aperture's. Remaining from the original ladder: adaptivity-during-run (overlay/CSR
+rebuild hooks), distributed MPI, and the optional accuracy refinements (island-corner scheme,
+fragmentation guard, exact crossings).

@@ -288,6 +288,92 @@ void run() {
       eLs = std::max(eLs, std::fabs(uS[static_cast<std::size_t>(i)] - ex));
       eLq = std::max(eLq, std::fabs(uQ[static_cast<std::size_t>(i)] - ex));
     }
+    // (5) uf face field: value truncation at the 2:1 sub-faces. uf_k = ½(u_i+u_j) − (φ₊−φ₋)/d
+    // samples the face value; standard is normally offset at C/F (O(h)); the scheme's
+    // distance-weighted + coarse*-substituted value is ~2nd order at the sub-face centroid.
+    {
+      CfUfDelta ufd = buildCfUfDelta(g.ap, g.t, all, CfScheme::quadratic);
+      Index nSlots = 0;
+      for (Index i = 0; i < g.n; ++i)
+        g.ap.forEachFaceFull(i, [&](Index, int, int, double, double, double) { ++nSlots; });
+      std::vector<double> ufS(static_cast<std::size_t>(nSlots));
+      std::vector<Vec<3>> fc(static_cast<std::size_t>(nSlots));
+      std::vector<int8_t> fAxis(static_cast<std::size_t>(nSlots));
+      std::vector<char> fCf(static_cast<std::size_t>(nSlots), 0);
+      Index slot = 0;
+      for (Index i = 0; i < g.n; ++i) {
+        const unsigned Li = g.t.level(i);
+        g.ap.forEachFaceFull(i, [&](Index j, int axis, int dir, double, double dist, double) {
+          const double ui = u[static_cast<std::size_t>(axis)][static_cast<std::size_t>(i)];
+          const double uj = u[static_cast<std::size_t>(axis)][static_cast<std::size_t>(j)];
+          const double gphi = (dir > 0) ? (phi[static_cast<std::size_t>(j)] -
+                                           phi[static_cast<std::size_t>(i)]) /
+                                              dist
+                                        : (phi[static_cast<std::size_t>(i)] -
+                                           phi[static_cast<std::size_t>(j)]) /
+                                              dist;
+          ufS[static_cast<std::size_t>(slot)] = 0.5 * (ui + uj) - gphi;
+          const unsigned Lj = g.t.level(j);
+          fCf[static_cast<std::size_t>(slot)] = (Lj != Li) ? 1 : 0;
+          fAxis[static_cast<std::size_t>(slot)] = static_cast<int8_t>(axis);
+          // sub-face centroid = the FINER cell's face center toward the other cell.
+          const Index fine = (Lj < Li) ? j : i;
+          const double sgn = (fine == i) ? 1.0 : -1.0;  // dir points i→j
+          Vec<3> c = g.cen[static_cast<std::size_t>(fine)];
+          c[axis] += sgn * dir * 0.5 * g.ap.cellWidth(fine);
+          fc[static_cast<std::size_t>(slot)] = c;
+          ++slot;
+        });
+      }
+      // The φ-gradient part keeps the P5b flux form (sampled at the 2-point midpoint, an O(h)
+      // normal offset at C/F — conservative, telescoping, and VANISHING at steady state where
+      // φ→0). So the whole uf is O(h) at C/F faces during transients, while the face-AVERAGE
+      // part — the steady advecting velocity — must be ~2nd order. Gate both separately.
+      std::vector<double> ufQ = ufS;
+      cfApplyCompHost(ufd.vel, u, ufQ);
+      cfApplyHost(ufd.phi, phi, ufQ);
+      std::vector<double> avS(static_cast<std::size_t>(nSlots), 0.0), avQ;
+      {
+        Index k = 0;
+        for (Index i = 0; i < g.n; ++i)
+          g.ap.forEachFaceFull(i, [&](Index j, int axis, int, double, double, double) {
+            avS[static_cast<std::size_t>(k++)] =
+                0.5 * (u[static_cast<std::size_t>(axis)][static_cast<std::size_t>(i)] +
+                       u[static_cast<std::size_t>(axis)][static_cast<std::size_t>(j)]);
+          });
+        avQ = avS;
+        cfApplyCompHost(ufd.vel, u, avQ);
+      }
+      double eUs = 0, eUq = 0, eAs = 0, eAq = 0;
+      for (Index k = 0; k < nSlots; ++k) {
+        if (!fCf[static_cast<std::size_t>(k)])
+          continue;
+        const Vec<3>& c = fc[static_cast<std::size_t>(k)];
+        const int a = fAxis[static_cast<std::size_t>(k)];
+        const double exA = velMan(c)[a];
+        const double ex = exA - phiManGrad(c)[a];
+        eUs = std::max(eUs, std::fabs(ufS[static_cast<std::size_t>(k)] - ex));
+        eUq = std::max(eUq, std::fabs(ufQ[static_cast<std::size_t>(k)] - ex));
+        eAs = std::max(eAs, std::fabs(avS[static_cast<std::size_t>(k)] - exA));
+        eAq = std::max(eAq, std::fabs(avQ[static_cast<std::size_t>(k)] - exA));
+      }
+      static double pUq = 0, pAq = 0, pAs = 0;
+      static double oUq = 0, oAq = 0, oAs = 0;
+      oUq = pN ? orderOf(pUq, eUq, pN, N) : 0;
+      oAq = pN ? orderOf(pAq, eAq, pN, N) : 0;
+      oAs = pN ? orderOf(pAs, eAs, pN, N) : 0;
+      std::printf("      | uf: whole std %.3e quad %.3e ord %5.2f | avg std %.3e ord %5.2f "
+                  "quad %.3e ord %5.2f\n",
+                  eUs, eUq, oUq, eAs, oAs, eAq, oAq);
+      pUq = eUq;
+      pAq = eAq;
+      pAs = eAs;
+      if (N == 64) {
+        PECLET_CORE_CHECK(oAq >= 1.7);         // steady advecting velocity ~2nd order
+        PECLET_CORE_CHECK(oAs <= oAq - 0.5);   // standard average is lower order
+        PECLET_CORE_CHECK(oUq >= 0.9);         // whole uf ≥ O(h) (φ part, transient-only)
+      }
+    }
     oDs = pN ? orderOf(pDs, eDs, pN, N) : 0;
     oDq = pN ? orderOf(pDq, eDq, pN, N) : 0;
     oGs = pN ? orderOf(pGs, eGs, pN, N) : 0;

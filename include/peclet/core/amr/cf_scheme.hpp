@@ -317,6 +317,79 @@ inline std::array<CfCsr, 3> buildCfGradDelta(const AmrPoisson<3, Bits>& ap,
   return out;
 }
 
+/// (uf_scheme − uf_std) for the div-free FACE field uf_k = ½(u_i+u_j) − (φ₊−φ₋)/d, one delta row
+/// per forEachFaceFull SLOT (cell-major enumeration — the FaceGeom / oracle faceStart CSR order,
+/// identical on both engines). At a 2:1 sub-face:
+///   face average → the distance-weighted {u_fine, u_coarse*} interpolation (as in
+///     buildCfDivDelta, so the advecting flux matches the divergence constraint):
+///       Δvel = (wF−½)·u_F + (wC−½)·u_C + wC·(u_C* − u_C)      [face-normal component]
+///   face gradient → coarse* substitution in the compact (φ₊−φ₋)/d (the P5b flux form):
+///       Δphi = −sideSign·(φ_C* − φ_C)/d,  sideSign = +1 iff the coarse cell is on the + side.
+/// Both incident slots of a shared sub-face produce the identical value (conservative). Emitted
+/// only for faces whose BOTH centers are fluid (the advection gate; closed faces' uf is unused).
+/// The vel/phi parts apply with the standard cfApplyComp / cfApply over uf's slot array.
+struct CfUfDelta {
+  CfCompCsr vel;  ///< reads the velocity components, rows = face slots
+  CfCsr phi;      ///< reads the projection potential φ, rows = face slots
+};
+
+template <unsigned Bits, class FluidFn>
+inline CfUfDelta buildCfUfDelta(const AmrPoisson<3, Bits>& ap, const BlockOctree<3, Bits>& t,
+                                FluidFn&& fluidOk, CfScheme scheme) {
+  const Index n = t.numLeaves();
+  Index nSlots = 0;
+  for (Index i = 0; i < n; ++i)
+    ap.forEachFaceFull(i, [&](Index, int, int, double, double, double) { ++nSlots; });
+  CfUfDelta d;
+  d.vel.start.assign(static_cast<std::size_t>(nSlots) + 1, 0);
+  d.phi.start.assign(static_cast<std::size_t>(nSlots) + 1, 0);
+  if (scheme == CfScheme::standard)
+    return d;
+  Index slot = 0;
+  for (Index i = 0; i < n; ++i) {
+    const unsigned Li = t.level(i);
+    ap.forEachFaceFull(i, [&](Index j, int axis, int dir, double, double dist, double) {
+      d.vel.start[static_cast<std::size_t>(slot) + 1] = d.vel.start[static_cast<std::size_t>(slot)];
+      d.phi.start[static_cast<std::size_t>(slot) + 1] = d.phi.start[static_cast<std::size_t>(slot)];
+      const unsigned Lj = t.level(j);
+      if (Lj != Li && fluidOk(i) && fluidOk(j)) {
+        const Index coarse = (Lj > Li) ? j : i;
+        const Index fine = (Lj > Li) ? i : j;
+        const double H = ap.cellWidth(coarse), h = ap.cellWidth(fine);
+        const double wF = (0.5 * H) / dist, wC = (0.5 * h) / dist;
+        std::vector<detail::CompEnt> ve;
+        detail::CompEnt proto;
+        proto.comp = static_cast<int8_t>(axis);
+        detail::CompEnt eF = proto, eC = proto;
+        eF.cell = fine;
+        eF.w = wF - 0.5;
+        eC.cell = coarse;
+        eC.w = wC - 0.5;
+        ve.push_back(eF);
+        ve.push_back(eC);
+        detail::cfAppendStencil(ap, t, ve, coarse, fine, axis, wC, fluidOk, scheme, proto);
+        for (const auto& e : ve) {
+          d.vel.slot.push_back(e.cell);
+          d.vel.coef.push_back(e.w);
+          d.vel.comp.push_back(e.comp);
+          ++d.vel.start[static_cast<std::size_t>(slot) + 1];
+        }
+        // φ part: uf −= (φ₊−φ₋)/d; the coarse cell's φ is substituted with coarse*.
+        const double sideSign = ((dir > 0) == (coarse == j)) ? 1.0 : -1.0;
+        std::vector<detail::ScalarEnt> pe;
+        detail::cfAppendStencil(ap, t, pe, coarse, fine, axis, -sideSign / dist, fluidOk, scheme);
+        for (const auto& e : pe) {
+          d.phi.slot.push_back(e.cell);
+          d.phi.coef.push_back(e.w);
+          ++d.phi.start[static_cast<std::size_t>(slot) + 1];
+        }
+      }
+      ++slot;
+    });
+  }
+  return d;
+}
+
 // ---- host applies (the oracle path; the device uses the same CSRs uploaded + SpMV kernels) ----
 
 /// out(i) += Σ coef·f(slot) (the scalar overlay: momentum ∇² delta, gradient delta per axis).
