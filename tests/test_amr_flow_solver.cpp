@@ -343,6 +343,77 @@ void test_graded_ghostproj() {
   }
 }
 
+// Graded sphere with ghost projection + the Martin–Cartwright C/F scheme (setCfScheme(1)) on
+// BOTH engines: the three C/F overlays (momentum deferred correction, divergence, gradients) are
+// built by the shared host builders, so oracle==device to solver tolerance. Also guards that the
+// scheme actually changes the graded solution (it replaces the 1st-order C/F treatment).
+void test_graded_cf_quadratic() {
+  const long N = 32;
+  const double phi = 0.125;
+  const double R = std::pow(phi * 3.0 / (4.0 * M_PI), 1.0 / 3.0) * static_cast<double>(N);
+  const double c = N / 2.0;
+  auto sdf = [&](const Vec<3>& p) {
+    double dx = p[0] - c, dy = p[1] - c, dz = p[2] - c;
+    return std::sqrt(dx * dx + dy * dy + dz * dz) - R;
+  };
+  BO t(IVec<3>{1, 1, 1}, 5);
+  AmrGeometry<3> geo;
+  geo.h0 = 1.0;
+  refineToSdf(t, geo, sdf, /*target*/ 0, /*band*/ 3.0, /*balance*/ true);
+  PECLET_CORE_CHECK(t.numLeaves() < N * N * N);
+
+  auto runDev = [&](int cf) {
+    AmrFlow<21> fl;
+    fl.init(t, 1.0, Vec<3>{0, 0, 0});
+    fl.setViscosity(0.1);
+    fl.setDt(60.0);
+    fl.setBodyForce(1e-3, 0, 0);
+    fl.setGhostProjection(true, 1, 2);
+    fl.setCfScheme(cf);
+    fl.setSolid(sdf);
+    for (int s = 0; s < 40; ++s)
+      fl.step(100, 60);
+    return fl.velocity(0);
+  };
+  oracle::AmrFlow<21> hfl;
+  hfl.init(t, 1.0, Vec<3>{0, 0, 0});
+  hfl.setViscosity(0.1);
+  hfl.setDt(60.0);
+  hfl.setBodyForce(1e-3, 0, 0);
+  hfl.setGhostProjection(true, 1, 2);
+  hfl.setCfScheme(1);
+  hfl.setSolid(sdf);
+  for (int s = 0; s < 40; ++s)
+    hfl.step(/*momSweeps=*/250, /*presIters=*/12, /*presSweeps=*/2);
+  const auto& hux = hfl.velocity(0);
+  const auto dux = runDev(1);
+  const auto dux0 = runDev(0);
+
+  const Index n = t.numLeaves();
+  double hsum = 0, dsum = 0, d0sum = 0, dmax = 0, hmax = 0;
+  long nf = 0;
+  for (Index i = 0; i < n; ++i)
+    if (hfl.isFluid(i)) {
+      const double w = static_cast<double>(1L << t.level(i));
+      const double w3 = w * w * w;
+      hsum += hux[(std::size_t)i] * w3;
+      dsum += dux[(std::size_t)i] * w3;
+      d0sum += dux0[(std::size_t)i] * w3;
+      dmax = std::max(dmax, std::fabs(dux[(std::size_t)i] - hux[(std::size_t)i]));
+      hmax = std::max(hmax, std::fabs(hux[(std::size_t)i]));
+      ++nf;
+    }
+  std::printf(
+      "[flow] graded cf-quadratic: Usup host %.6e dev %.6e (rel %.2e), max|dev-host| %.3e "
+      "(mag %.3e); dev cf0 Usup %.6e (cf1 shift %.2e rel)\n",
+      hsum, dsum, std::fabs(dsum - hsum) / std::fabs(hsum), dmax, hmax, d0sum,
+      std::fabs(dsum - d0sum) / std::fabs(d0sum));
+  PECLET_CORE_CHECK(std::isfinite(dsum) && dsum > 0.0);
+  PECLET_CORE_CHECK(std::fabs(dsum - hsum) / std::fabs(hsum) < 2e-3);  // device == oracle
+  PECLET_CORE_CHECK(dmax < 5e-3 * hmax);
+  PECLET_CORE_CHECK(std::fabs(dsum - d0sum) / std::fabs(d0sum) > 1e-4);  // the scheme acts
+}
+
 // The optional Helmholtz-MG momentum preconditioner (setMomentumMG) must not change the
 // converged answer — a preconditioner only affects the iteration path, not the fixed point.
 void test_momentum_mg_option() {
@@ -806,6 +877,7 @@ int main(int argc, char** argv) {
   test_sphere_ghost();
   test_sphere_ghostproj();
   test_graded_ghostproj();
+  test_graded_cf_quadratic();
   test_momentum_mg_option();
   test_momentum_scaling();
   test_advection_kernel();

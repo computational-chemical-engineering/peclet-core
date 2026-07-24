@@ -19,7 +19,7 @@ from peclet.core import amr  # noqa: E402
 PHI_REF = 0.125  # the sphere of the N/4-cell reference case, in an N-cell box
 
 
-def drag_dilute(N, band, ghostproj=True, tol=1e-7, max_steps=8000):
+def drag_dilute(N, band, ghostproj=True, cf=0, tol=1e-7, max_steps=8000):
     lmax = int(math.log2(N))
     t = amr.Octree([1, 1, 1], lmax, [0.0, 0.0, 0.0], 1.0)
     R = (PHI_REF * 3.0 / (4.0 * math.pi)) ** (1.0 / 3.0) * (N / 4.0)  # ~9.93 cells at N=128
@@ -35,6 +35,8 @@ def drag_dilute(N, band, ghostproj=True, tol=1e-7, max_steps=8000):
     fl.set_advection(False)
     if ghostproj:
         fl.set_ghost_projection(True, 1, 2)
+    if cf:
+        fl.set_cf_scheme(cf)
     fl.set_solid(lambda x, y, z:
                  math.sqrt((x - c) ** 2 + (y - c) ** 2 + (z - c) ** 2) - R)
     w = np.asarray(t.sizes()) ** 3
@@ -62,6 +64,7 @@ def drag_dilute(N, band, ghostproj=True, tol=1e-7, max_steps=8000):
 
 if __name__ == "__main__":
     ghostproj = "--base" not in sys.argv
+    cf = 1 if "--cf" in sys.argv else 0
     vals = [float(a) for a in sys.argv[1:] if not a.startswith("--")]
     N = int(vals[0]) if vals else 128
     bands = vals[1:] or [4.0, 1e30]
@@ -71,7 +74,7 @@ if __name__ == "__main__":
           flush=True)
     ks = {}
     for b in bands:
-        k, frac, nl, s, pi = drag_dilute(N, b, ghostproj)
+        k, frac, nl, s, pi = drag_dilute(N, b, ghostproj, cf)
         ks[b] = k
         print(f"{b:>7.1f} {k:>10.4f} {100 * frac:>8.2f} {nl:>9} {s:>6} {pi:>5}", flush=True)
     if 1e30 in ks:

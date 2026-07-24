@@ -41,6 +41,7 @@
 
 #include "peclet/core/amr/advect_recon.hpp"  // shared high-order face reconstruction (host+device)
 #include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/cf_scheme.hpp"  // pluggable 2:1 C/F interface schemes (setCfScheme)
 #include "peclet/core/amr/cut_cell.hpp"
 #include "peclet/core/amr/ghost_projection.hpp"  // directional ghost overlay (setGhostProjection)
 #include "peclet/core/amr/poisson.hpp"
@@ -97,6 +98,14 @@ class AmrFlow {
     gpMatrixOrder_ = matrixOrder;
     gpRhsOrder_ = rhsOrder;
   }
+  /// Coarse/fine (2:1) interface scheme (cf_scheme.hpp): 0 = standard two-point flux (default,
+  /// 1st-order at level boundaries, bit-identical legacy path), 1 = Martin–Cartwright tangential
+  /// quadratic (2nd-order). Applied to everything the STEADY solution feels: the momentum
+  /// diffusion (as a lagged deferred-correction RHS term), the RHS divergence constraint, and
+  /// the pressure gradients (predictor + cell correction). The pressure MATRIX / MG hierarchy
+  /// stays on the standard consistent operator (the (1,2)-mixed philosophy: at the fixed point
+  /// φ→0, the matrix C/F order does not move the steady solution). Call before setSolid.
+  void setCfScheme(int scheme) { cfScheme_ = static_cast<CfScheme>(scheme); }
 
   /// Conservative Koren-TVD advection term ∇·(u u_comp) at leaf i (physical units;
   /// the explicit momentum advection). Exposed for testing.
@@ -131,6 +140,22 @@ class AmrFlow {
     } else {
       pres_.buildOpenness([&](const Vec<3>& fc, int axis) { return faceFrac(sdfFn, fc, axis); });
       presMG_.setOpenness([&](const Vec<3>& fc, int axis) { return faceFrac(sdfFn, fc, axis); });
+    }
+    // C/F interface scheme overlays (cf_scheme.hpp), built from the SAME host CSR builders the
+    // device uses (parity by construction). Rows: fluid; substitution stencils gated on fluid
+    // tangential neighbours. The momentum delta uses the α=1 velocity geometry (mom_.lap()),
+    // ×μ, on regular (non-cut) fluid rows only (cut rows are finest-band: no C/F faces).
+    if (cfScheme_ != CfScheme::standard) {
+      auto fluidOk = [&](Index j) { return mom_.isFluid(j); };
+      auto rowFluid = [&](Index i) { return mom_.isFluid(i); };
+      auto rowRegular = [&](Index i) { return mom_.isFluid(i) && !mom_.isCut(i); };
+      cfMom_ = buildCfLapDelta(mom_.lap(), *t_, mu_, rowRegular, fluidOk, cfScheme_);
+      cfDiv_ = buildCfDivDelta(pres_, *t_, rowFluid, fluidOk, cfScheme_);
+      cfGrad_ = buildCfGradDelta(pres_, *t_, rowFluid, fluidOk, cfScheme_);
+    } else {
+      cfMom_ = CfCsr{};
+      cfDiv_ = CfCompCsr{};
+      cfGrad_ = {};
     }
     const Index n = t_->numLeaves();
     for (int c = 0; c < 3; ++c)
@@ -180,6 +205,13 @@ class AmrFlow {
 
     // --- momentum predictor: implicit viscous (+ implicit FOU) + body force − advection ---
     for (int c = 0; c < 3; ++c) {
+      // C/F-scheme deferred correction on the velocity diffusion: +μ(∇²_scheme − ∇²_std)(uⁿ_c),
+      // lagged like the SOU deferred correction ⇒ the steady operator carries the 2nd-order flux.
+      std::vector<double> cfm;
+      if (cfScheme_ != CfScheme::standard) {
+        cfm.assign(static_cast<std::size_t>(n), 0.0);
+        cfApplyHost(cfMom_, u_[c], cfm);
+      }
       std::vector<double> src(static_cast<std::size_t>(n), 0.0);
       for (Index i = 0; i < n; ++i)
         if (mom_.isFluid(i)) {
@@ -187,6 +219,8 @@ class AmrFlow {
           double s = (rho_ / dt_) * u_[c][static_cast<std::size_t>(i)] + f_[c] - gradP(p_, i, c);
           if (advect_)
             s -= adv[c][static_cast<std::size_t>(i)];  // HO (explicit) or HO−FOU (deferred)
+          if (!cfm.empty())
+            s += cfm[static_cast<std::size_t>(i)];
           src[static_cast<std::size_t>(i)] = s;
         }
       std::vector<double> b = mom_.makeRhs(src, /*u_bc=*/0.0);
@@ -203,6 +237,8 @@ class AmrFlow {
     for (Index i = 0; i < n; ++i)
       if (mom_.isFluid(i))
         div[static_cast<std::size_t>(i)] = divergence(u_, i);
+    if (cfScheme_ != CfScheme::standard)  // 2nd-order C/F face averages in the constraint
+      cfApplyCompHost(cfDiv_, u_, div);
     if (ghostProj_)  // ghost-closed constraint: binary div (above, binary α) + closure overlay
       ghostDivergDeltaHost(gpOv_, u_, div);
 
@@ -472,8 +508,17 @@ class AmrFlow {
   // tests/study_amr_ghost_apriori.cpp) and the directional ghost gradient below is used instead.
   double gradP(const std::vector<double>& fld, Index i, int c) const {
     if (ghostGrad_ && mom_.isCut(i))
-      return gradOfDir(fld, i, c);
-    return gradOf(fld, i, c);
+      return gradOfDir(fld, i, c);  // cut band: no C/F faces (band contract) ⇒ no cf delta
+    double g = gradOf(fld, i, c);
+    // 2nd-order C/F face gradients (level-boundary rows); empty unless built by setSolid.
+    if (cfScheme_ != CfScheme::standard && !cfGrad_[static_cast<std::size_t>(c)].start.empty()) {
+      const CfCsr& cs = cfGrad_[static_cast<std::size_t>(c)];
+      for (Index k = cs.start[static_cast<std::size_t>(i)];
+           k < cs.start[static_cast<std::size_t>(i) + 1]; ++k)
+        g += cs.coef[static_cast<std::size_t>(k)] *
+             fld[static_cast<std::size_t>(cs.slot[static_cast<std::size_t>(k)])];
+    }
+    return g;
   }
 
   // Directional ghost cell-gradient on a cut-band cell (flow's gpCenterGrad analog). Cut cells
@@ -571,6 +616,10 @@ class AmrFlow {
   int gpMatrixOrder_ = 1, gpRhsOrder_ = 2;  // closure orders: implicit matrix / RHS divergence
   GhostOverlay gpOv_;                       // closure overlay (finest-band rows)
   std::vector<double> maskC_;               // 1 = coupled row (Krylov subspace), 0 = pinned
+  CfScheme cfScheme_ = CfScheme::standard;  // 2:1 C/F interface scheme (setCfScheme)
+  CfCsr cfMom_;                             // +μ(∇²_scheme − ∇²_std) momentum RHS overlay
+  CfCompCsr cfDiv_;                         // (D_scheme − D_std) divergence overlay
+  std::array<CfCsr, 3> cfGrad_;             // (G_scheme − G_std) per gradient axis
   bool implicitFou_ = true;  // implicit-FOU deferred-correction advection (stable)
   int advScheme_ = 0;        // 0 = SOU (default), 1 = Koren TVD
   Vec<3> f_{};

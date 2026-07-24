@@ -237,3 +237,50 @@ Guards: `test_amr_flow_solver::{test_sphere_ghost, test_sphere_ghostproj, test_g
 (oracle==device parity CUDA+OpenMP; thin-band throw; graded stability). Deferred, as in flow:
 the tight-throat fragmentation guard, NS advection with the ghost uf, MPI (halo ±2 + BiCGStab
 reductions).
+
+## Update (2026-07-24, later): pluggable C/F schemes — Martin–Cartwright for the velocities too
+
+`setCfScheme(scheme)` (`amr/cf_scheme.hpp`, oracle + device + Python `set_cf_scheme`) makes the
+2:1 interface treatment a pluggable scheme: 0 = the standard two-point flux (default,
+bit-identical), 1 = the Martin–Cartwright tangential quadratic, now applied to **everything the
+steady solution feels**:
+
+- the **momentum (velocity) diffusion** — the coarseStar substitution CSR ×μ on the α=1 velocity
+  geometry, applied as a lagged deferred-correction RHS term (the implicit-FOU/SOU pattern; the
+  steady operator carries the quadratic flux exactly);
+- the **divergence constraint** — the ½/½ face average at a 2:1 sub-face is *normally* offset
+  from the face (an error the tangential fix alone cannot remove), so the scheme's face value is
+  the distance-weighted interpolation of {u_fine, u_coarse*}: exactly conservative, both incident
+  rows share the value;
+- the **pressure gradients** (−∇pⁿ predictor + cell correction) — coarse* substitution in the
+  C/F face gradients *plus* side-reweighting of the ½(g⁻+g⁺) recombination so the sampled
+  gradient lands on the cell center.
+
+The pressure MATRIX / MG hierarchy / PCG / ghost BiCGStab stay on the standard consistent
+operator — at the projection's fixed point φ→0, the matrix C/F order does not move the steady
+solution (the (1,2)-mixed philosophy). Adding another scheme later = a new `CfScheme` value + a
+branch in `cfAppendStencil`; every operator delta picks it up.
+
+**A-priori (test_amr_cf_vector, graded mesh, C/F rows; the L delta is bit-parity with the
+validated P5b quad correction):** divergence order 0 → **1.95** (+ exact conservation), cell
+gradient 0 → **1.95**, momentum Helmholtz SOLUTION 0.8 → **2.0** (the flux has O(1) *pointwise*
+row truncation at C/F faces by design — it telescopes; pointwise truncation is the wrong metric
+for a conservative flux, cf. P5b).
+
+**Graded drag (ghost projection, offsets vs the same-finest uniform):**
+
+| case | band | standard C/F | quadratic C/F | cells |
+|------|-----:|-------------:|--------------:|------:|
+| SC φ=0.125, finest 64 | 3 | +8.8% | **+4.7%** | 20% |
+| | 5 | +7.9% | **+3.5%** | 29% |
+| | 8 | +6.4% | **+2.6%** | 42% |
+| dilute φ≈0.002, finest 128 | 4 | +9.3% | **+2.9%** | 0.9% |
+| | 6 | +8.3% | **+1.7%** | 1.2% |
+
+The qualitative change: under the standard flux the graded error was scheme-floor-limited
+(band-widening barely helped); under the quadratic scheme it is genuinely resolution-limited and
+falls fast with band. Uniform meshes are an exact no-op (no C/F faces). Oracle==device locked by
+`test_graded_cf_quadratic` (rel 2e-11). Residual limiter: at corners/edges of level islands the
+tangential stencil gates out (a tangential neighbour is itself finer — the P5b robustness
+fallback), leaving locally 1st-order rows; interpolating those from the fine side is the natural
+next scheme refinement if the remaining offset matters.

@@ -31,6 +31,7 @@
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/cut_cell.hpp"
 #include "peclet/core/amr/face_geom.hpp"          // FaceGeom (shared with the device assembler)
+#include "peclet/core/amr/cf_scheme.hpp"          // pluggable 2:1 C/F schemes (setCfScheme)
 #include "peclet/core/amr/facegeom_assembly.hpp"  // assembleFaceGeom (D4/D6)
 #include "peclet/core/amr/ghost_projection.hpp"   // directional ghost overlay (setGhostProjection)
 #include "peclet/core/amr/momentum.hpp"
@@ -484,6 +485,16 @@ class AmrFlow {
     gpMatrixOrder_ = matrixOrder;
     gpRhsOrder_ = rhsOrder;
   }
+  /// Coarse/fine (2:1) interface scheme (cf_scheme.hpp): 0 = standard two-point flux (default,
+  /// 1st-order at level boundaries, bit-identical legacy path), 1 = Martin–Cartwright tangential
+  /// quadratic (2nd-order — measured at C/F rows: divergence 1.95, cell gradient 1.95, momentum
+  /// SOLUTION 2.0 in test_amr_cf_vector). Applied to everything the STEADY solution feels: the
+  /// momentum diffusion (lagged deferred-correction RHS term), the RHS divergence constraint,
+  /// and the pressure gradients (predictor + cell correction). The pressure MATRIX / MG rails /
+  /// PCG / ghost BiCGStab stay on the standard consistent operator (at the fixed point φ→0, the
+  /// matrix C/F order does not move the steady solution — the (1,2)-mixed philosophy). Works in
+  /// both aperture and ghost-projection modes. Call before setSolid.
+  void setCfScheme(int scheme) { cfScheme_ = static_cast<CfScheme>(scheme); }
   /// Enable momentum advection ∇·(u u) (default OFF ⇒ Stokes). The high-order flux is
   /// second-order upwind (SOU) by default; the first-order-upwind part is solved *implicitly*
   /// (folded into the momentum operator) and the (SOU−FOU) difference is the explicit deferred
@@ -627,6 +638,27 @@ class AmrFlow {
       buildGhostGradOverlay();
     else
       gc_ = GhostGradOverlay{};
+    // C/F interface scheme overlays (cf_scheme.hpp): the same host builders the oracle uses
+    // (parity by construction), uploaded once. Momentum delta = ×μ on the α=1 velocity geometry
+    // (regular fluid rows; cut rows are finest-band: no C/F faces).
+    if (cfScheme_ != CfScheme::standard) {
+      auto fluidOk = [&](Index i) { return mom_.isFluid(i); };
+      auto rowFluid = [&](Index i) { return mom_.isFluid(i); };
+      auto rowRegular = [&](Index i) { return mom_.isFluid(i) && !mom_.isCut(i); };
+      cfMom_ = uploadCfCsr(buildCfLapDelta(mom_.lap(), *t_, mu_, rowRegular, fluidOk, cfScheme_),
+                           "cf_mom");
+      cfDiv_ = uploadCfCompCsr(buildCfDivDelta(pres_, *t_, rowFluid, fluidOk, cfScheme_),
+                               "cf_div");
+      auto gd = buildCfGradDelta(pres_, *t_, rowFluid, fluidOk, cfScheme_);
+      for (int a = 0; a < 3; ++a)
+        cfGrad_[static_cast<std::size_t>(a)] =
+            uploadCfCsr(gd[static_cast<std::size_t>(a)], "cf_grad");
+    } else {
+      cfMom_ = CfCsrDev{};
+      cfDiv_ = CfCompCsrDev{};
+      for (int a = 0; a < 3; ++a)
+        cfGrad_[static_cast<std::size_t>(a)] = CfCsrDev{};
+    }
     if (ghostProj_) {
       // Closure overlay over the finest-band rows (throws if the band margin is violated) + the
       // coupled-subspace mask for the BiCGStab projection.
@@ -720,6 +752,8 @@ class AmrFlow {
     // −∇p^n is constant across the outer iterations (pressure is projected once, after the loop,
     // like flow's single per-step projection) ⇒ hoist it out.
     grad3(geom_, View<const double>(p_), gx_[0], gx_[1], gx_[2]);
+    for (int a = 0; a < 3; ++a)  // 2nd-order C/F face gradients (level-boundary rows)
+      cfApply(cfGrad_[static_cast<std::size_t>(a)], View<const double>(p_), gx_[a]);
     applyGhostGrad(gc_, View<const double>(p_), gx_[0], gx_[1], gx_[2]);
     // Picard outer loop over the lagged advection only (the momentum nonlinearity); for
     // outerIters_==1 this is the single lagged predictor, then one projection — bit-identical to
@@ -762,6 +796,9 @@ class AmrFlow {
       for (int c = 0; c < 3; ++c) {
         momRhs(View<const double>(u0_[c]), View<const double>(gx_[c]), View<const double>(defc_[c]),
                View<const double>(rscale_), View<const char>(fluid_), idiag, f_[c], bmom_, n);
+        // C/F-scheme deferred correction on the velocity diffusion: b += μ(∇²_scheme − ∇²_std)
+        // of the lagged component (regular rows only, rscale = 1 there).
+        cfApply(cfMom_, View<const double>(u_[c]), bmom_);
         // P4 (opt-in): the velocity-MG used as the *solver* — MG-preconditioned defect correction,
         // no Krylov (the flow RB-GS/velocity-MG mirror; cannot break down on the non-symmetric
         // operator) — vs the default MG-preconditioned BiCGStab. Both reach the same solution (the
@@ -798,6 +835,8 @@ class AmrFlow {
     const Index n = n_;
     divergence(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
                View<const double>(u_[2]), div_);
+    cfApplyComp(cfDiv_, View<const double>(u_[0]), View<const double>(u_[1]),
+                View<const double>(u_[2]), div_);  // 2nd-order C/F face averages (setCfScheme)
     if (ghostProj_)  // ghost-closed constraint: binary div (geom_ carries binary α) + overlay
       ghostDivergDelta(gpOv_, View<const double>(u_[0]), View<const double>(u_[1]),
                        View<const double>(u_[2]), div_);
@@ -835,6 +874,8 @@ class AmrFlow {
                    View<const double>(u_[2]), View<const double>(phi_), uf_);
     faceFieldBuilt_ = true;
     grad3(geom_, View<const double>(phi_), gx_[0], gx_[1], gx_[2]);
+    for (int a = 0; a < 3; ++a)  // 2nd-order C/F face gradients (level-boundary rows)
+      cfApply(cfGrad_[static_cast<std::size_t>(a)], View<const double>(phi_), gx_[a]);
     applyGhostGrad(gc_, View<const double>(phi_), gx_[0], gx_[1], gx_[2]);
     for (int c = 0; c < 3; ++c)
       correct(u_[c], View<const double>(gx_[c]), View<const char>(fluid_), n);
@@ -922,6 +963,8 @@ class AmrFlow {
   double divNormL2() {
     divergence(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
                View<const double>(u_[2]), div_);
+    cfApplyComp(cfDiv_, View<const double>(u_[0]), View<const double>(u_[1]),
+                View<const double>(u_[2]), div_);
     if (ghostProj_)
       ghostDivergDelta(gpOv_, View<const double>(u_[0]), View<const double>(u_[1]),
                        View<const double>(u_[2]), div_);
@@ -1153,6 +1196,7 @@ class AmrFlow {
   bool ghostGrad_ = false;  // directional ghost gradient on cut cells (setGhostGradient)
   bool ghostProj_ = false;  // full directional ghost projection (setGhostProjection)
   int gpMatrixOrder_ = 1, gpRhsOrder_ = 2;  // closure orders: implicit matrix / RHS divergence
+  CfScheme cfScheme_ = CfScheme::standard;  // 2:1 C/F interface scheme (setCfScheme)
   int outerIters_ = 1;  // Picard outer iterations over the lagged advection (default 1)
   double outerTol_ = 1e-6;   // outer-loop early-stop tolerance on max|Δu|
   double momTol_ = 1e-8;     // per-step momentum BiCGStab relative tolerance (Phase-0 knob)
@@ -1175,6 +1219,9 @@ class AmrFlow {
   FaceGeom geom_;
   GhostGradOverlay gc_;  // directional ghost-gradient overlay (empty unless setGhostGradient)
   GhostOverlayDev gpOv_;  // closure overlay (empty unless setGhostProjection)
+  CfCsrDev cfMom_;                  // +μ(∇²_scheme − ∇²_std) momentum RHS overlay
+  CfCompCsrDev cfDiv_;              // (D_scheme − D_std) divergence overlay
+  std::array<CfCsrDev, 3> cfGrad_;  // (G_scheme − G_std) per gradient axis
   View<double> maskC_;    // 1 = coupled row (Krylov subspace), 0 = pinned
   View<double> gpr_, gprh_, gpp_, gpph_, gpv_, gps_, gpsh_, gpt_;  // ghost BiCGStab scratch
   View<double> rscale_;

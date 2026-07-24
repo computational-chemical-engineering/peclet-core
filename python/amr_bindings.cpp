@@ -333,6 +333,7 @@ class Flow : public Releasable {
   void set_ghost_projection(bool on, int matrix_order, int rhs_order) {
     flow_.setGhostProjection(on, matrix_order, rhs_order);
   }
+  void set_cf_scheme(int scheme) { flow_.setCfScheme(scheme); }
   void set_advection_scheme(int s) { flow_.setAdvectionScheme(s); }
   void set_implicit_advection(bool on) { flow_.setImplicitAdvection(on); }
 
@@ -658,6 +659,12 @@ NB_MODULE(amr, m) {
            "for the implicit matrix vs the RHS divergence — (1, 2) is the validated default. "
            "Raises if the finest band is too thin (a closure would cross a 2:1 boundary). Call "
            "before set_solid.")
+      .def("set_cf_scheme", &Flow::set_cf_scheme, nb::arg("scheme"),
+           "Coarse/fine (2:1) interface scheme: 0 = standard two-point flux (default, 1st-order "
+           "at level boundaries), 1 = Martin-Cartwright tangential quadratic (2nd-order; applied "
+           "to the momentum diffusion, the divergence constraint, and the pressure gradients — "
+           "the pressure matrix/MG stays standard, which does not move the steady solution). "
+           "Works with both the aperture and the ghost projection. Call before set_solid.")
       .def("set_advection_scheme", &Flow::set_advection_scheme, nb::arg("scheme"),
            "High-order advection flux: 0 = second-order upwind (default), 1 = Koren TVD.")
       .def("set_implicit_advection", &Flow::set_implicit_advection, nb::arg("on"),

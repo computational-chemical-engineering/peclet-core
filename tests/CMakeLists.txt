@@ -378,3 +378,11 @@ endif()
 add_executable(study_amr_ghost_apriori study_amr_ghost_apriori.cpp)
 target_link_libraries(study_amr_ghost_apriori PRIVATE tpx_core)
 target_include_directories(study_amr_ghost_apriori PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+# C/F interface schemes (cf_scheme.hpp): Martin–Cartwright quadratic deltas for the collocated
+# flow operators (divergence / cell gradient / momentum Laplacian) — a-priori truncation on a
+# graded mesh + bit-parity of the L delta vs applyLaplacianQuad.
+add_executable(test_amr_cf_vector test_amr_cf_vector.cpp)
+target_link_libraries(test_amr_cf_vector PRIVATE tpx_core)
+target_include_directories(test_amr_cf_vector PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME amr_cf_vector COMMAND test_amr_cf_vector)

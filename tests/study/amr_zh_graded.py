@@ -20,7 +20,7 @@ K_ZH = 4.292
 PHI = 0.125
 
 
-def drag_graded(N, band, ghostproj, tol=1e-7, max_steps=6000):
+def drag_graded(N, band, ghostproj, cf=0, tol=1e-7, max_steps=6000):
     lmax = int(math.log2(N))
     t = amr.Octree([1, 1, 1], lmax, [0.0, 0.0, 0.0], 1.0)
     R = (PHI * 3.0 / (4.0 * math.pi)) ** (1.0 / 3.0) * N
@@ -36,6 +36,8 @@ def drag_graded(N, band, ghostproj, tol=1e-7, max_steps=6000):
     fl.set_advection(False)
     if ghostproj:
         fl.set_ghost_projection(True, 1, 2)
+    if cf:
+        fl.set_cf_scheme(cf)
     fl.set_solid(lambda x, y, z:
                  math.sqrt((x - c) ** 2 + (y - c) ** 2 + (z - c) ** 2) - R)
     w = np.asarray(t.sizes()) ** 3  # cell volumes (grid units)
@@ -64,13 +66,14 @@ def drag_graded(N, band, ghostproj, tol=1e-7, max_steps=6000):
 if __name__ == "__main__":
     args = sys.argv[1:]
     ghostproj = "--base" not in args
+    cf = 1 if "--cf" in args else 0
     vals = [float(a) for a in args if not a.startswith("--")]
     N = int(vals[0]) if vals else 64
     bands = vals[1:] or [3.0, 5.0, 8.0, 1e30]
-    print(f"N={N} ghost_projection={ghostproj}  (band=1e30 -> uniform reference)", flush=True)
+    print(f"N={N} ghost_projection={ghostproj} cf={cf}  (band=1e30 -> uniform reference)", flush=True)
     print(f"{'band':>7} {'K':>10} {'err%':>8} {'cells%':>8} {'leaves':>9} {'steps':>6} "
           f"{'pres':>5}", flush=True)
     for b in bands:
-        k, frac, nl, s, pi = drag_graded(N, b, ghostproj)
+        k, frac, nl, s, pi = drag_graded(N, b, ghostproj, cf)
         print(f"{b:>7.1f} {k:>10.4f} {100 * (k - K_ZH) / K_ZH:>8.3f} {100 * frac:>8.1f} "
               f"{nl:>9} {s:>6} {pi:>5}", flush=True)
