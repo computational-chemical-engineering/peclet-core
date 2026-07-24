@@ -430,26 +430,32 @@ void test_sphere_ghostproj_adv() {
     return std::sqrt(dx * dx + dy * dy + dz * dz) - rad;
   };
   const double dt = 2.0;  // NS needs finite dt (the (ρ/dt) mass damps the lagged advection)
-  auto setup = [&](auto& f, bool ghost) {
+  // mode: 0 = explicit aperture, 1 = explicit ghost, 2 = AUTO (nothing set — the NS default).
+  auto setup = [&](auto& f, int mode) {
     f.init(t, h0);
     f.setViscosity(mu);
     f.setDt(dt);
     f.setBodyForce(G, 0, 0);
     f.setAdvection(true);
-    if (ghost)
+    if (mode == 1)
       f.setGhostProjection(true, 1, 2);
+    else if (mode == 0)
+      f.setGhostProjection(false);  // explicit: the aperture NS reference (auto would pick ghost)
     f.setSolid(sdf);
   };
   oracle::AmrFlow<21> hfl;
-  setup(hfl, true);
+  setup(hfl, 1);
   AmrFlow<21> dfl;
-  setup(dfl, true);
+  setup(dfl, 1);
   AmrFlow<21> afl;  // device aperture reference (cross-scheme closeness)
-  setup(afl, false);
+  setup(afl, 0);
+  AmrFlow<21> ufl;  // AUTO: with advection on, the default must resolve to the ghost projection
+  setup(ufl, 2);
   for (int s = 0; s < 50; ++s) {
     hfl.step(300, 12, 2);
     dfl.step(200, 60);
     afl.step(200, 80);
+    ufl.step(200, 60);
   }
   const auto& hux = hfl.velocity(0);
   const auto dux = dfl.velocity(0);
@@ -483,6 +489,84 @@ void test_sphere_ghostproj_adv() {
   PECLET_CORE_CHECK(dmax < 5e-3 * hmax);                       // fields agree
   PECLET_CORE_CHECK(std::fabs(dmean - amean) / amean < 5e-2);  // ghost ≈ aperture NS physics
   PECLET_CORE_CHECK(std::isfinite(gdiv) && gdiv < 10.0 * adiv);  // same residual class
+  {  // the AUTO default must have resolved to the ghost projection (== the explicit-ghost run)
+    const auto uux = ufl.velocity(0);
+    double umax = 0.0;
+    for (Index i = 0; i < n; ++i)
+      umax = std::max(umax, std::fabs(uux[(std::size_t)i] - dux[(std::size_t)i]));
+    std::printf("[flow] NS auto-default: max|auto-ghost| = %.2e\n", umax);
+    PECLET_CORE_CHECK(umax < 1e-10 * hmax);  // identical configuration, identical kernels
+  }
+}
+
+// Adaptivity DURING a run (ladder step 5): run on a band-3 graded mesh, beginAdapt, widen the
+// finest band to 5 (mutating the SAME octree), finishAdapt (conservative u/p transfer + full
+// rebuild), continue — the continued run must land on the SAME steady state as a cold start on
+// the identical final mesh (same fixed point), and stay finite throughout.
+void test_adapt_midrun() {
+  const long N = 32;
+  const double phi = 0.125;
+  const double R = std::pow(phi * 3.0 / (4.0 * M_PI), 1.0 / 3.0) * static_cast<double>(N);
+  const double c = N / 2.0;
+  auto sdf = [&](const Vec<3>& p) {
+    double dx = p[0] - c, dy = p[1] - c, dz = p[2] - c;
+    return std::sqrt(dx * dx + dy * dy + dz * dz) - R;
+  };
+  AmrGeometry<3> geo;
+  geo.h0 = 1.0;
+  auto usup = [&](const BO& t, const AmrFlow<21>& fl) {
+    const auto u = fl.velocity(0);
+    double s = 0;
+    for (Index i = 0; i < t.numLeaves(); ++i) {
+      const double w = static_cast<double>(1L << t.level(i));
+      s += u[(std::size_t)i] * w * w * w;
+    }
+    return s / static_cast<double>(N * N * N);
+  };
+  auto configure = [&](AmrFlow<21>& fl, const BO& t) {
+    fl.init(t, 1.0, Vec<3>{0, 0, 0});
+    fl.setViscosity(0.1);
+    fl.setDt(60.0);
+    fl.setBodyForce(1e-3, 0, 0);
+    fl.setGhostProjection(true, 1, 2);
+  };
+
+  // Continued run: band 3 -> (mid-run) band 5.
+  BO t(IVec<3>{1, 1, 1}, 5);
+  refineToSdf(t, geo, sdf, 0, 3.0, true);
+  const Index leaves3 = t.numLeaves();
+  AmrFlow<21> fl;
+  configure(fl, t);
+  fl.setSolid(sdf);
+  for (int s = 0; s < 200; ++s)
+    fl.step(100, 60);
+  const double uMid = usup(t, fl);
+  fl.beginAdapt();
+  refineToSdf(t, geo, sdf, 0, 5.0, true);  // widen the band ON THE SAME octree
+  PECLET_CORE_CHECK(t.numLeaves() > leaves3);
+  fl.finishAdapt(sdf);
+  const double uAfter = usup(t, fl);  // transferred state, before any new step
+  for (int s = 0; s < 400; ++s)
+    fl.step(100, 60);
+  const double uCont = usup(t, fl);
+
+  // Cold start on the identical final mesh.
+  AmrFlow<21> fc;
+  configure(fc, t);
+  fc.setSolid(sdf);
+  for (int s = 0; s < 600; ++s)
+    fc.step(100, 60);
+  const double uCold = usup(t, fc);
+
+  std::printf(
+      "[flow] adapt-midrun: usup mid %.6e -> transferred %.6e -> continued %.6e, cold %.6e "
+      "(rel %.2e); leaves %lld -> %lld\n",
+      uMid, uAfter, uCont, uCold, std::fabs(uCont - uCold) / uCold,
+      static_cast<long long>(leaves3), static_cast<long long>(t.numLeaves()));
+  PECLET_CORE_CHECK(std::isfinite(uAfter) && uAfter > 0.0);
+  PECLET_CORE_CHECK(std::fabs(uAfter - uMid) / uMid < 0.05);  // transfer preserves the state
+  PECLET_CORE_CHECK(std::isfinite(uCont) && uCont > 0.0);
+  PECLET_CORE_CHECK(std::fabs(uCont - uCold) / uCold < 1e-3);  // same fixed point
 }
 
 // The optional Helmholtz-MG momentum preconditioner (setMomentumMG) must not change the
@@ -634,6 +718,7 @@ void test_advection() {
     hfl.setDt(1e6);
     hfl.setBodyForce(G, 0, 0);
     hfl.setAdvection(true);  // SOU + implicit FOU (defaults)
+    hfl.setGhostProjection(false);  // explicit: this test validates the APERTURE NS path
     hfl.setSolid(sdf);
     for (int s = 0; s < 6; ++s)
       hfl.step(300, 5, 2);
@@ -645,6 +730,7 @@ void test_advection() {
     dfl.setDt(1e6);
     dfl.setBodyForce(G, 0, 0);
     dfl.setAdvection(true);
+    dfl.setGhostProjection(false);
     dfl.setSolid(sdf);
     for (int s = 0; s < 6; ++s)
       dfl.step(400, 80);
@@ -689,6 +775,7 @@ void test_advection() {
       f.setDt(dt);
       f.setBodyForce(G, 0, 0);
       f.setAdvection(true);
+      f.setGhostProjection(false);  // explicit: the aperture NS parity case
       f.setSolid(sdf);
     };
     oracle::AmrFlow<21> hfl;
@@ -917,6 +1004,7 @@ void test_picard_outer() {
       f.setDt(dt);
       f.setBodyForce(G, 0, 0);
       f.setAdvection(true);
+      f.setGhostProjection(false);  // explicit: the validated aperture Picard case
       f.setOuterIterations(outer, 1e-7);
       f.setSolid(sdf);
       for (int s = 0; s < 50; ++s)
@@ -950,6 +1038,7 @@ int main(int argc, char** argv) {
   test_graded_ghostproj();
   test_graded_cf_quadratic();
   test_sphere_ghostproj_adv();
+  test_adapt_midrun();
   test_momentum_mg_option();
   test_momentum_scaling();
   test_advection_kernel();

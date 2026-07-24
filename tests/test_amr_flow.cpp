@@ -183,6 +183,7 @@ void test_advection() {
   fl.setDt(1e6);
   fl.setBodyForce(G, 0, 0);
   fl.setAdvection(true);
+  fl.setGhostProjection(false);  // explicit aperture (NS auto-default is ghost)
   fl.setSolid([&](const Vec<3>& p) { return std::min(p[1] - y0, y1 - p[1]); });
   for (int s = 0; s < 5; ++s)
     fl.step(300, 5, 2);
@@ -215,6 +216,7 @@ void test_implicit_advection() {
     fl.setViscosity(0.005);
     fl.setDt(0.1);  // CFL = A*dt/h ≈ 6.4 -> explicit advection blows up (NaN)
     fl.setAdvection(true);
+    fl.setGhostProjection(false);  // explicit aperture
     fl.setSolid([](const Vec<3>&) { return 1.0; });  // all fluid, periodic
     auto ctr = [&](Index i, int d) {
       auto b = t.bounds(i);
@@ -279,6 +281,7 @@ void test_graded_advection() {
   fl.setViscosity(0.02);
   fl.setDt(0.1);
   fl.setAdvection(true);                           // implicit-FOU (default on)
+  fl.setGhostProjection(false);  // explicit aperture (NS auto-default is ghost)
   fl.setSolid([](const Vec<3>&) { return 1.0; });  // all fluid, periodic
   auto& U = fl.velocityRef();
   for (Index i = 0; i < t.numLeaves(); ++i) {

@@ -319,3 +319,31 @@ cross-check): oracle==device rel 8.8e-5, ghost≈aperture 0.24%, ghost residual 
 below the aperture's. Remaining from the original ladder: adaptivity-during-run (overlay/CSR
 rebuild hooks), distributed MPI, and the optional accuracy refinements (island-corner scheme,
 fragmentation guard, exact crossings).
+
+## Update (2026-07-25): ghost projection is the NS default; adaptivity during a run (step 5)
+
+**NS default.** `setGhostProjection` is now a tri-state: explicit on/off wins; the DEFAULT is
+AUTO — the ghost projection engages when advection is on at `setSolid` time (it is both the more
+accurate and the ~10–19× cheaper NS projection, since the aperture path must run the bounded
+V-cycle under advection while the ghost BiCGStab stays at 6–7 iterations). In auto mode a
+too-thin finest band falls back to the aperture with a stderr warning instead of throwing;
+explicit ghost still throws. Stokes (advection off) keeps the aperture default unchanged.
+Call `setAdvection` and any explicit projection choice BEFORE `setSolid`. Guarded by the
+auto-arm in `test_sphere_ghostproj_adv` (bit-identical to the explicit-ghost run) and by
+explicit `setGhostProjection(false)` at every aperture-intent test/study site.
+
+**Adaptivity during a run** (`beginAdapt`/`finishAdapt`, Python `begin_adapt`/`finish_adapt`):
+the octree is mutated EXTERNALLY between the two calls (solution-driven `adapt`, `refine_to_*`,
+`balance` — any mutation of the same Octree object). `beginAdapt` snapshots the topology and
+(u, p); `finishAdapt(sdf)` conservatively remaps both onto the new mesh (minmod-limited linear
+`transferField`), zeroes cells that became solid, and rebuilds every solver structure via
+`setSolid` (operators, MG hierarchies, ghost/cf overlays, masks — the band-margin rules apply to
+the NEW mesh; keep the geometry band finest after a solution-driven adapt). uf restarts from the
+½-average fallback for one step; the transferred incremental pressure keeps the predictor warm.
+
+Validated (`test_adapt_midrun`, CUDA + OpenMP; binding demo on GPU): a band-3 run widened to
+band 5 mid-run transfers its state exactly (volume-weighted superficial velocity preserved to
+print precision — the remap is conservative) and the continued run lands on the SAME steady
+state as a cold start on the identical final mesh to rel 2.6e-5. The Python surface refreshes
+`num_leaves` after `finish_adapt`; the NS auto-default composes with adaptivity (demo runs
+advection + auto-ghost through a mid-run band change).

@@ -334,6 +334,14 @@ class Flow : public Releasable {
     flow_.setGhostProjection(on, matrix_order, rhs_order);
   }
   void set_cf_scheme(int scheme) { flow_.setCfScheme(scheme); }
+
+  // Adaptivity during a run: snapshot -> (externally mutate the Octree: adapt / refine_to_* /
+  // balance) -> rebuild + conservative field transfer. num_leaves is refreshed.
+  void begin_adapt() { flow_.beginAdapt(); }
+  void finish_adapt(std::function<double(double, double, double)> sdf) {
+    flow_.finishAdapt([&](const Vec<3>& p) { return sdf(p[0], p[1], p[2]); });
+    n_ = flow_.numLeaves();
+  }
   void set_advection_scheme(int s) { flow_.setAdvectionScheme(s); }
   void set_implicit_advection(bool on) { flow_.setImplicitAdvection(on); }
 
@@ -659,6 +667,17 @@ NB_MODULE(amr, m) {
            "for the implicit matrix vs the RHS divergence — (1, 2) is the validated default. "
            "Raises if the finest band is too thin (a closure would cross a 2:1 boundary). Call "
            "before set_solid.")
+      .def("begin_adapt", &Flow::begin_adapt,
+           "Snapshot the octree topology + (u, p) ahead of an external mesh mutation (adapt / "
+           "refine_to_sphere / refine_to_sdf / balance on the SAME Octree object). Pair with "
+           "finish_adapt.")
+      .def("finish_adapt", &Flow::finish_adapt, nb::arg("sdf"),
+           "Rebuild the solver on the mutated octree and conservatively transfer the snapshotted "
+           "u and p onto it (minmod-limited linear remap). `sdf` is re-sampled on the new leaves "
+           "(pass the same geometry callable as set_solid); keep the cut band at the finest "
+           "level on the new mesh (re-run refine_to_sdf on the geometry band after a "
+           "solution-driven adapt). The advecting face field restarts from the cell average for "
+           "one step.")
       .def("set_cf_scheme", &Flow::set_cf_scheme, nb::arg("scheme"),
            "Coarse/fine (2:1) interface scheme: 0 = standard two-point flux (default, 1st-order "
            "at level boundaries), 1 = Martin-Cartwright tangential quadratic (2nd-order; applied "

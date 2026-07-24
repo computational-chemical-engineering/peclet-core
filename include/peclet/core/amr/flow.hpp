@@ -24,8 +24,12 @@
 
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <vector>
+
+#include "peclet/core/amr/adapt.hpp"  // transferField (conservative remap for finishAdapt)
 
 #include "peclet/core/amr/advect_recon.hpp"  // shared high-order face reconstruction (host+device)
 #include "peclet/core/amr/block_octree.hpp"
@@ -479,9 +483,16 @@ class AmrFlow {
   /// (1, 2) is the validated flow default (2nd-order steady constraint on a 7-point
   /// near-symmetric matrix; the operator mismatch converges through the time stepping). Throws in
   /// setSolid if an overlay row's ±2 reach crosses a 2:1 level boundary (finest-band margin).
-  /// Default OFF (bit-identical legacy path). Call before setSolid.
+  ///
+  /// DEFAULT (neither setGhostProjection value forced): AUTO — the ghost projection engages when
+  /// ADVECTION is on at setSolid time (it is both the more accurate and the much cheaper NS
+  /// projection: the aperture path must run the bounded V-cycle under advection, ~60 cycles/step,
+  /// while the ghost BiCGStab stays at 6–7 iterations — measured 10–19× wall-clock). In auto
+  /// mode a too-thin finest band falls back to the aperture projection with a warning instead of
+  /// throwing. Stokes (advection off) defaults to the aperture projection unchanged. Call
+  /// setAdvection AND this before setSolid.
   void setGhostProjection(bool on, int matrixOrder = 1, int rhsOrder = 2) {
-    ghostProj_ = on;
+    ghostProjReq_ = on ? 1 : 0;
     gpMatrixOrder_ = matrixOrder;
     gpRhsOrder_ = rhsOrder;
   }
@@ -575,9 +586,27 @@ class AmrFlow {
     mom_.build(sdfFn, /*idiag=*/rho_ / dt_, /*beta=*/mu_ / (h0_ * h0_));
     pres_.init(*t_, h0_);
     pres_.setOrigin(origin_);
+    // Resolve the projection mode: explicit request wins; AUTO (default) = ghost when advection
+    // is on (the better AND cheaper NS projection — see setGhostProjection). The overlay is
+    // built here (it needs only mom_'s sdf samples + pres_'s topology walk, no openness); in
+    // auto mode a band-margin violation falls back to the aperture projection with a warning.
+    ghostProj_ = (ghostProjReq_ == 1) || (ghostProjReq_ == -1 && advect_);
+    GhostOverlay hov;
+    if (ghostProj_) {
+      try {
+        hov = buildGhostOverlay(*t_, pres_, mom_.sdfCRaw(), gpMatrixOrder_, gpRhsOrder_);
+      } catch (const std::runtime_error&) {
+        if (ghostProjReq_ == 1)
+          throw;
+        std::fprintf(stderr,
+                     "[peclet.core.amr] NS ghost-projection auto-default: the finest band is too "
+                     "thin for the closure overlay — falling back to the aperture projection\n");
+        ghostProj_ = false;
+      }
+    }
     if (ghostProj_) {
       // Ghost projection: the pressure geometry is the BINARY openness on the unchanged MG
-      // rails; the closure physics lives in the overlay (built below, after the fluid masks).
+      // rails; the closure physics lives in the overlay (built above).
       auto binFn = makeBinaryOpenFn([&sdfFn](const Vec<3>& p) { return sdfFn(p); }, h0_);
       pres_.buildOpenness(binFn);
       presMG_.build(*t_, h0_, binFn, /*periodic=*/true);
@@ -665,9 +694,8 @@ class AmrFlow {
       cfUfPhi_ = CfCsrDev{};
     }
     if (ghostProj_) {
-      // Closure overlay over the finest-band rows (throws if the band margin is violated) + the
-      // coupled-subspace mask for the BiCGStab projection.
-      GhostOverlay hov = buildGhostOverlay(*t_, pres_, mom_.sdfCRaw(), gpMatrixOrder_, gpRhsOrder_);
+      // Closure overlay (pre-built in the mode-resolve step above) + the coupled-subspace mask
+      // for the BiCGStab projection.
       gpOv_ = uploadGhostOverlay(hov);
       std::vector<double> mc(static_cast<std::size_t>(n), 0.0);
       for (Index i = 0; i < n; ++i)
@@ -891,6 +919,64 @@ class AmrFlow {
       correct(u_[c], View<const double>(gx_[c]), View<const char>(fluid_), n);
     presUpdate(p_, View<const double>(phi_), View<const double>(div_), View<const char>(fluid_),
                rho_ / dt_, mu_, n);
+  }
+
+  // ---- adaptivity during a run (ladder step 5) -------------------------------------------------
+  // The octree is borrowed by pointer and mutated EXTERNALLY (refine/coarsen/balance/adapt on the
+  // same object). beginAdapt snapshots the current topology + fields; after the mutation,
+  // finishAdapt conservatively remaps u and the accumulated rotational p onto the new mesh
+  // (minmod-limited linear transferField) and rebuilds every solver structure via setSolid. The
+  // caller must keep the cut band at the finest level on the new mesh (refineToSdf the geometry
+  // band again after a solution-driven adapt): the ghost overlay build throws / auto-falls-back
+  // exactly as in setSolid. uf restarts from the ½-average fallback for one step.
+
+  /// Snapshot the octree topology + (u, p) ahead of an external mesh mutation.
+  void beginAdapt() {
+    adaptOldT_ = std::make_unique<Octree>(*t_);
+    for (int c = 0; c < 3; ++c)
+      adaptU_[static_cast<std::size_t>(c)] = velocity(c);
+    adaptP_ = pressure();
+  }
+
+  /// Rebuild on the mutated octree and transfer the snapshotted fields onto it.
+  template <class SdfFn>
+  void finishAdapt(SdfFn&& sdfFn) {
+    if (!adaptOldT_)
+      throw std::runtime_error("amr::AmrFlow::finishAdapt called without beginAdapt");
+    std::array<std::vector<double>, 3> nu;
+    for (int c = 0; c < 3; ++c)
+      nu[static_cast<std::size_t>(c)] =
+          transferField(*adaptOldT_, adaptU_[static_cast<std::size_t>(c)], *t_, /*linear=*/true);
+    std::vector<double> np = transferField(*adaptOldT_, adaptP_, *t_, /*linear=*/true);
+    setSolid(sdfFn);  // full operator/overlay rebuild on the new topology (zeroes the fields)
+    for (int c = 0; c < 3; ++c) {
+      setVelocity(c, nu[static_cast<std::size_t>(c)]);
+      zeroSolid(u_[c]);  // cells that became solid on the new mesh hold 0 (no-slip state)
+    }
+    setPressure(np);
+    zeroSolid(p_);  // solid p is pinned/decoupled
+    adaptOldT_.reset();
+    for (int c = 0; c < 3; ++c)
+      adaptU_[static_cast<std::size_t>(c)].clear();
+    adaptP_.clear();
+  }
+
+  /// Write the accumulated rotational pressure from host (restart / finishAdapt).
+  void setPressure(const std::vector<double>& h) {
+    auto m = Kokkos::create_mirror_view(p_);
+    for (Index i = 0; i < n_; ++i)
+      m(i) = h[static_cast<std::size_t>(i)];
+    Kokkos::deep_copy(p_, m);
+  }
+
+  /// Zero a per-leaf field on non-fluid cells (the transferred fields' solid cleanup).
+  void zeroSolid(View<double> v) {
+    auto fl = fluid_;
+    Kokkos::parallel_for(
+        "amr::flow_zerosolid", n_, KOKKOS_LAMBDA(const Index i) {
+          if (!fl(i))
+            v(i) = 0.0;
+        });
   }
 
   /// DEBUG: the raw high-order advection ∇·(u u_comp) per cell from the current velocity
@@ -1204,7 +1290,8 @@ class AmrFlow {
   bool momMGSolver_ =
       false;            // opt-in (P4): velocity-MG as the solver (defect correction), not BiCGStab
   bool ghostGrad_ = false;  // directional ghost gradient on cut cells (setGhostGradient)
-  bool ghostProj_ = false;  // full directional ghost projection (setGhostProjection)
+  bool ghostProj_ = false;    // RESOLVED projection mode (set by setSolid from the request)
+  int8_t ghostProjReq_ = -1;  // -1 = auto (ghost iff advection), 0/1 = explicit request
   int gpMatrixOrder_ = 1, gpRhsOrder_ = 2;  // closure orders: implicit matrix / RHS divergence
   CfScheme cfScheme_ = CfScheme::standard;  // 2:1 C/F interface scheme (setCfScheme)
   int outerIters_ = 1;  // Picard outer iterations over the lagged advection (default 1)
@@ -1245,6 +1332,9 @@ class AmrFlow {
   View<double> uf_;  // ABC/Basilisk divergence-free face field (one per CSR (sub)face)
   bool faceFieldBuilt_ =
       false;  // uf_ populated by a projection (else advection falls back to ½(u_i+u_j))
+  std::unique_ptr<Octree> adaptOldT_;      // beginAdapt topology snapshot
+  std::array<std::vector<double>, 3> adaptU_;  // beginAdapt field snapshots
+  std::vector<double> adaptP_;
 };
 
 }  // namespace peclet::core::amr
