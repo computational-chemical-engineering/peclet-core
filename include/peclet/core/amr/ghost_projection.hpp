@@ -184,6 +184,63 @@ inline auto makeBinaryOpenFn(SdfFn sdfFn, double h0) {
   };
 }
 
+/// Fragmentation guard (the AMR port of flow's host-BFS pocket guard): the BINARY coupled-face
+/// graph (a face couples two cells iff its binary openness is 1) can FRAGMENT on tight-throat /
+/// enclosed geometries — each pocket then carries its own constant null vector and BiCGStab
+/// breaks down (fields → 1e152, measured in flow on RCP packings). Returns a per-leaf flag:
+/// 1 = fluid cell OUTSIDE the largest connected component (a pocket). Pocket cells are
+/// projection-DECOUPLED by the caller (pinned φ=0, excluded from the mean and from the
+/// directional gradients). Scope note (deferred, as in flow's first version): closure rows
+/// adjacent to a pocket may still use pocket-cell velocities as sliver sources — physical
+/// (sealed-pocket u ≈ 0) and local.
+template <unsigned Bits>
+inline std::vector<char> findPocketCells(const BlockOctree<3, Bits>& t,
+                                         const AmrPoisson<3, Bits>& pres,
+                                         const std::vector<double>& sdfC) {
+  const Index n = t.numLeaves();
+  std::vector<char> pocket(static_cast<std::size_t>(n), 0);
+  std::vector<int> comp(static_cast<std::size_t>(n), -1);
+  auto fluid = [&](Index i) { return sdfC[static_cast<std::size_t>(i)] > 0.0; };
+  int nc = 0;
+  std::vector<Index> stack, compSize;
+  for (Index s = 0; s < n; ++s) {
+    if (!fluid(s) || comp[static_cast<std::size_t>(s)] >= 0)
+      continue;
+    const int id = nc++;
+    compSize.push_back(0);
+    stack.assign(1, s);
+    comp[static_cast<std::size_t>(s)] = id;
+    while (!stack.empty()) {
+      const Index i = stack.back();
+      stack.pop_back();
+      ++compSize[static_cast<std::size_t>(id)];
+      pres.forEachFaceNeighbor(i, [&](Index j, Real, int, double alpha) {
+        if (alpha > 0.5 && fluid(j) && comp[static_cast<std::size_t>(j)] < 0) {
+          comp[static_cast<std::size_t>(j)] = id;
+          stack.push_back(j);
+        }
+      });
+    }
+  }
+  if (nc <= 1)
+    return pocket;
+  int mainId = 0;
+  for (int c = 1; c < nc; ++c)
+    if (compSize[static_cast<std::size_t>(c)] > compSize[static_cast<std::size_t>(mainId)])
+      mainId = c;
+  Index nPocket = 0;
+  for (Index i = 0; i < n; ++i)
+    if (fluid(i) && comp[static_cast<std::size_t>(i)] != mainId) {
+      pocket[static_cast<std::size_t>(i)] = 1;
+      ++nPocket;
+    }
+  std::fprintf(stderr,
+               "[peclet.core.amr] ghost projection: binary coupled-face graph fragments into %d "
+               "components — decoupling %lld pocket cells outside the main component\n",
+               nc, static_cast<long long>(nPocket));
+  return pocket;
+}
+
 // ---- host (oracle) delta appliers --------------------------------------------------------------
 
 /// Matrix overlay: y currently holds the BINARY L matvec; overwrite the overlay rows with

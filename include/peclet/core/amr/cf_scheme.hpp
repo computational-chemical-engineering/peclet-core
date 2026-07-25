@@ -103,13 +103,66 @@ inline void cfAppendStencil(const AmrPoisson<3, Bits>& ap, const BlockOctree<3, 
     const double dt = ((static_cast<double>(bf[0][tt]) + 0.5 * sf) -
                        (static_cast<double>(bc[0][tt]) + 0.5 * sc)) *
                       ap.h0();
-    const Index cp = ap.periodicNeighbor(coarse, tt, +1);
-    const Index cm = ap.periodicNeighbor(coarse, tt, -1);
-    if (cp < 0 || cm < 0)
-      continue;
-    if (t.level(cp) != t.level(coarse) || t.level(cm) != t.level(coarse))
-      continue;
-    if (!fluidOk(cp) || !fluidOk(cm))
+    // Tangential samples at the coarse cell's ± neighbours. Same-level neighbours contribute
+    // directly. A FINER neighbour (an island corner/edge: the region across the tangential face
+    // is refined — by 2:1 exactly one level finer) is sampled by the volume average of the 2^Dim
+    // leaves covering the coarse-size region: a 2nd-order sample of the region-center value, so
+    // the corner rows keep the quadratic closure instead of falling back to the raw coarse value
+    // (the old P5b-style skip, which left them locally 1st-order). A COARSER neighbour (or any
+    // non-fluid / irregular cover) still falls back to the skip (robust).
+    struct Samp {
+      Index cell[1 << 3];
+      double w[1 << 3];
+      int n = 0;
+      bool ok = false;
+    };
+    auto sampleTangential = [&](int dir) {
+      Samp sm;
+      const Index nb = ap.periodicNeighbor(coarse, tt, dir);
+      if (nb < 0)
+        return sm;
+      if (t.level(nb) == t.level(coarse)) {
+        if (!fluidOk(nb))
+          return sm;
+        sm.cell[0] = nb;
+        sm.w[0] = 1.0;
+        sm.n = 1;
+        sm.ok = true;
+        return sm;
+      }
+      if (t.level(nb) + 1 != t.level(coarse))
+        return sm;  // coarser neighbour: keep the fallback
+      // Finer neighbour: enumerate the 2^Dim children covering the coarse-size region.
+      auto bc2 = t.bounds(coarse);
+      const auto sc2 = typename BlockOctree<3, Bits>::Coord(
+          typename BlockOctree<3, Bits>::Coord(1) << t.level(coarse));
+      const auto sh = typename BlockOctree<3, Bits>::Coord(sc2 >> 1);
+      long ext[3];
+      for (int d = 0; d < 3; ++d)
+        ext[d] = static_cast<long>(t.brick()[d]) * (1L << t.lmax());
+      std::array<typename BlockOctree<3, Bits>::Coord, 3> lo = bc2[0];
+      const long shifted = static_cast<long>(lo[tt]) + (dir > 0 ? static_cast<long>(sc2) : -static_cast<long>(sc2));
+      lo[tt] = static_cast<typename BlockOctree<3, Bits>::Coord>(((shifted % ext[tt]) + ext[tt]) %
+                                                                 ext[tt]);
+      for (int oct2 = 0; oct2 < (1 << 3); ++oct2) {
+        std::array<typename BlockOctree<3, Bits>::Coord, 3> q = lo;
+        for (int d = 0; d < 3; ++d)
+          if ((oct2 >> d) & 1)
+            q[d] = static_cast<typename BlockOctree<3, Bits>::Coord>(
+                (static_cast<long>(q[d]) + static_cast<long>(sh)) % ext[d]);
+        const Index ch = t.find(q);
+        if (ch < 0 || t.level(ch) + 1 != t.level(coarse) || !fluidOk(ch))
+          return Samp{};  // irregular cover or solid child: fall back
+        sm.cell[sm.n] = ch;
+        sm.w[sm.n] = 1.0 / static_cast<double>(1 << 3);
+        ++sm.n;
+      }
+      sm.ok = true;
+      return sm;
+    };
+    const Samp sp = sampleTangential(+1);
+    const Samp smi = sampleTangential(-1);
+    if (!sp.ok || !smi.ok)
       continue;
     if (ap.faceOpenness(coarse, tt, +1) < 0.5 || ap.faceOpenness(coarse, tt, -1) < 0.5)
       continue;
@@ -117,8 +170,10 @@ inline void cfAppendStencil(const AmrPoisson<3, Bits>& ap, const BlockOctree<3, 
     const double cUm = -dt / (2.0 * H) + 0.5 * dt * dt / (H * H);
     const double cUc = -dt * dt / (H * H);
     push(coarse, scale * cUc);
-    push(cp, scale * cUp);
-    push(cm, scale * cUm);
+    for (int k2 = 0; k2 < sp.n; ++k2)
+      push(sp.cell[k2], scale * cUp * sp.w[k2]);
+    for (int k2 = 0; k2 < smi.n; ++k2)
+      push(smi.cell[k2], scale * cUm * smi.w[k2]);
   }
 }
 

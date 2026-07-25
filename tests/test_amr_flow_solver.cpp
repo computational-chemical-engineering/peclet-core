@@ -569,6 +569,61 @@ void test_adapt_midrun() {
   PECLET_CORE_CHECK(std::fabs(uCont - uCold) / uCold < 1e-3);  // same fixed point
 }
 
+// Fragmentation guard: a hollow solid shell seals an interior fluid pocket — the binary
+// coupled-face graph fragments (the pocket carries its own null vector; without the guard the
+// ghost BiCGStab breaks down, fields → 1e152 in flow's RCP measurement). With findPocketCells
+// the pocket rows are decoupled: the solve stays healthy, the outer flow is sane, and the
+// sealed pocket's velocity stays ~0 (its no-slip enclosure).
+void test_pocket_guard() {
+  const unsigned L = 5;  // 32^3
+  BO t = uniformFine(L);
+  const long N = 1L << L;
+  const double h0 = 1.0 / static_cast<double>(N);
+  Vec<3> c{0.5, 0.5, 0.5};
+  const double Rs = 0.3, half = 3.0 * h0;  // shell |r-Rs| < half is solid (6 cells thick)
+  auto sdf = [&](const Vec<3>& p) {
+    double dx = p[0] - c[0], dy = p[1] - c[1], dz = p[2] - c[2];
+    return std::fabs(std::sqrt(dx * dx + dy * dy + dz * dz) - Rs) - half;
+  };
+  AmrFlow<21> fl;
+  fl.init(t, h0);
+  fl.setViscosity(0.1);
+  fl.setDt(60.0);
+  fl.setBodyForce(1e-3, 0, 0);
+  fl.setGhostProjection(true, 1, 2);
+  fl.setSolid(sdf);  // prints the fragmentation notice (2 components expected)
+  for (int s = 0; s < 100; ++s)
+    fl.step(100, 60);
+  const auto u = fl.velocity(0);
+  double outMax = 0, inMax = 0, mean = 0;
+  long nf = 0;
+  const Index n = t.numLeaves();
+  for (Index i = 0; i < n; ++i) {
+    if (!fl.isFluid(i))
+      continue;
+    const double x = cellCoord(t, i, 0, h0) - c[0];
+    const double y = cellCoord(t, i, 1, h0) - c[1];
+    const double z = cellCoord(t, i, 2, h0) - c[2];
+    const double r = std::sqrt(x * x + y * y + z * z);
+    const double v = std::fabs(u[(std::size_t)i]);
+    if (r < Rs - half)
+      inMax = std::max(inMax, v);
+    else
+      outMax = std::max(outMax, v);
+    mean += u[(std::size_t)i];
+    ++nf;
+  }
+  mean /= nf;
+  std::printf("[flow] pocket-guard: Umean %.6e, outer max %.3e, sealed-pocket max %.3e\n", mean,
+              outMax, inMax);
+  PECLET_CORE_CHECK(std::isfinite(mean) && mean > 0.0);  // no breakdown / blow-up
+  PECLET_CORE_CHECK(outMax < 1.0);                       // bounded outer flow
+  // The decoupled pocket cannot build a counter-pressure, so the body force drives a small
+  // viscous-limited creep (~f·L²/μ) — bounded and well below the outer flow, not exactly zero
+  // (the guard sacrifices pocket physics for solvability, as in flow).
+  PECLET_CORE_CHECK(inMax < 0.05 * outMax);
+}
+
 // The optional Helmholtz-MG momentum preconditioner (setMomentumMG) must not change the
 // converged answer — a preconditioner only affects the iteration path, not the fixed point.
 void test_momentum_mg_option() {
@@ -1039,6 +1094,7 @@ int main(int argc, char** argv) {
   test_graded_cf_quadratic();
   test_sphere_ghostproj_adv();
   test_adapt_midrun();
+  test_pocket_guard();
   test_momentum_mg_option();
   test_momentum_scaling();
   test_advection_kernel();

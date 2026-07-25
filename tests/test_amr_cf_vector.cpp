@@ -391,6 +391,84 @@ void run() {
     pLq = eLq;
     pN = N;
   }
+  // (6) island corners: a fine BALL in a coarse sea curves, so coarse cells at the interface
+  // have FINER tangential neighbours — the rows where P5b's coarseStar falls back to the raw
+  // value (locally 1st-order). The upgraded stencil samples the fine cover (2^Dim-child volume
+  // average) instead. Assert the branch actually fires (the delta differs from
+  // applyLaplacianQuad, which still skips those axes) and that it does not degrade — and
+  // improves the max — the C/F truncation of the gradient.
+  {
+    std::printf("  [corners] fine-ball mesh:\n");
+    double pC = 0, pP = 0;
+    long pNc = 0;
+    for (long N : {16L, 32L, 64L}) {
+      Geo g;
+      unsigned L = 0;
+      while ((1L << L) < N)
+        ++L;
+      g.t = BO(IVec<3>{1, 1, 1}, L);
+      for (unsigned k = 0; k + 1 < L; ++k)
+        g.t.refineIf([](Code, unsigned l) { return l > 1; });
+      const double rad = 0.27, cx = 0.51, cy = 0.49, cz = 0.52;
+      g.h = 1.0 / static_cast<double>(N);
+      g.t.refineIf([&](Code c, unsigned l) {
+        if (l != 1)
+          return false;
+        auto o = BO::M::from_code(c).decode();
+        const double x = (static_cast<double>(o[0]) + 1.0) * g.h;  // level-1 cell center
+        const double y = (static_cast<double>(o[1]) + 1.0) * g.h;
+        const double z = (static_cast<double>(o[2]) + 1.0) * g.h;
+        return (x - cx) * (x - cx) + (y - cy) * (y - cy) + (z - cz) * (z - cz) < rad * rad;
+      });
+      g.t.balance2to1();
+      g.ap.init(g.t, g.h);
+      g.n = g.t.numLeaves();
+      g.cen.resize(static_cast<std::size_t>(g.n));
+      g.cfRow.assign(static_cast<std::size_t>(g.n), 0);
+      for (Index i = 0; i < g.n; ++i) {
+        auto b = g.t.bounds(i);
+        double s = static_cast<double>(Index(1) << g.t.level(i));
+        for (int d = 0; d < 3; ++d)
+          g.cen[static_cast<std::size_t>(i)][d] = (static_cast<double>(b[0][d]) + 0.5 * s) * g.h;
+        const unsigned Li = g.t.level(i);
+        g.ap.forEachFaceFull(i, [&](Index j, int, int, double, double, double) {
+          if (g.t.level(j) != Li)
+            g.cfRow[static_cast<std::size_t>(i)] = 1;
+        });
+      }
+      std::vector<double> phi(static_cast<std::size_t>(g.n));
+      for (Index i = 0; i < g.n; ++i)
+        phi[static_cast<std::size_t>(i)] = phiMan(g.cen[static_cast<std::size_t>(i)]);
+      std::vector<double> ls, lq, dl(static_cast<std::size_t>(g.n), 0.0);
+      g.ap.applyLaplacian(phi, ls);
+      g.ap.applyLaplacianQuad(phi, lq);  // the P5b form (corner axes fall back)
+      CfCsr cs = buildCfLapDelta(g.ap, g.t, 1.0, all, all, CfScheme::quadratic);
+      cfApplyHost(cs, phi, dl);
+      double branch = 0.0, eCorner = 0.0, eP5b = 0.0;
+      for (Index i = 0; i < g.n; ++i) {
+        branch = std::max(branch, std::fabs(dl[static_cast<std::size_t>(i)] -
+                                            (lq[static_cast<std::size_t>(i)] -
+                                             ls[static_cast<std::size_t>(i)])));
+        if (!g.cfRow[static_cast<std::size_t>(i)])
+          continue;
+        const double ex = phiManLap(g.cen[static_cast<std::size_t>(i)]);
+        eCorner = std::max(eCorner, std::fabs(ls[static_cast<std::size_t>(i)] +
+                                              dl[static_cast<std::size_t>(i)] - ex));
+        eP5b = std::max(eP5b, std::fabs(lq[static_cast<std::size_t>(i)] - ex));
+      }
+      const double oC = pNc ? orderOf(pC, eCorner, pNc, N) : 0;
+      const double oP = pNc ? orderOf(pP, eP5b, pNc, N) : 0;
+      std::printf("  [corners] N=%3ld branch |delta-p5b| = %.2e; L trunc: upgraded %.3e "
+                  "(ord %5.2f) vs p5b-fallback %.3e (ord %5.2f)\n",
+                  N, branch, eCorner, oC, eP5b, oP);
+      PECLET_CORE_CHECK(branch > 0.0);        // the corner branch fires on this mesh
+      PECLET_CORE_CHECK(eCorner <= eP5b * 1.02);  // upgraded stencil never worse, at worst ties
+      pC = eCorner;
+      pP = eP5b;
+      pNc = N;
+    }
+  }
+
   // Gates: the scheme restores ~2nd order at C/F rows for all three operators; the standard
   // treatment is measurably lower order there.
   PECLET_CORE_CHECK(oDq >= 1.7);

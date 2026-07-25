@@ -611,7 +611,11 @@ class AmrFlow {
       pres_.buildOpenness(binFn);
       presMG_.build(*t_, h0_, binFn, /*periodic=*/true);
       ghostGrad_ = true;  // the directional gradient is part of the scheme
+      // Fragmentation guard: pockets outside the main binary component are decoupled (see
+      // findPocketCells) — folded into maskC_ below and hidden from the directional gradients.
+      gpPocket_ = findPocketCells(*t_, pres_, mom_.sdfCRaw());
     } else {
+      gpPocket_.clear();
       auto openFn = [&](const Vec<3>& fc, int axis) { return faceFrac(sdfFn, fc, axis); };
       pres_.buildOpenness(openFn);
       presMG_.build(*t_, h0_, openFn, /*periodic=*/true);
@@ -699,7 +703,10 @@ class AmrFlow {
       gpOv_ = uploadGhostOverlay(hov);
       std::vector<double> mc(static_cast<std::size_t>(n), 0.0);
       for (Index i = 0; i < n; ++i)
-        mc[static_cast<std::size_t>(i)] = mom_.isFluid(i) ? 1.0 : 0.0;
+        mc[static_cast<std::size_t>(i)] =
+            (mom_.isFluid(i) && !(!gpPocket_.empty() && gpPocket_[static_cast<std::size_t>(i)]))
+                ? 1.0
+                : 0.0;
       for (Index r = 0; r < hov.n; ++r)
         if (!hov.coupled[static_cast<std::size_t>(r)])
           mc[static_cast<std::size_t>(hov.cell[static_cast<std::size_t>(r)])] = 0.0;
@@ -1195,8 +1202,12 @@ class AmrFlow {
     const Index m = static_cast<Index>(cells.size());
     std::vector<Index> idx(static_cast<std::size_t>(m) * 9, 0);
     std::vector<double> w(static_cast<std::size_t>(m) * 9, 0.0);
+    // Pocket cells (fragmentation guard) count as solid for the directional gradient: their φ is
+    // pinned/decoupled, and reading the pinned 0 is the gauge-dependent defect the ghost
+    // gradient exists to avoid.
     auto ok = [&](Index j, Index i) {
-      return j >= 0 && mom_.isFluid(j) && t_->level(j) == t_->level(i);
+      return j >= 0 && mom_.isFluid(j) && t_->level(j) == t_->level(i) &&
+             !(!gpPocket_.empty() && gpPocket_[static_cast<std::size_t>(j)]);
     };
     for (Index s = 0; s < m; ++s) {
       const Index i = cells[static_cast<std::size_t>(s)];
@@ -1316,6 +1327,7 @@ class AmrFlow {
   FaceGeom geom_;
   GhostGradOverlay gc_;  // directional ghost-gradient overlay (empty unless setGhostGradient)
   GhostOverlayDev gpOv_;  // closure overlay (empty unless setGhostProjection)
+  std::vector<char> gpPocket_;  // fragmentation guard: 1 = decoupled pocket cell (ghost mode)
   CfCsrDev cfMom_;                  // +μ(∇²_scheme − ∇²_std) momentum RHS overlay
   CfCompCsrDev cfDiv_;              // (D_scheme − D_std) divergence overlay
   std::array<CfCsrDev, 3> cfGrad_;  // (G_scheme − G_std) per gradient axis

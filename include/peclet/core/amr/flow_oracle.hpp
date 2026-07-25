@@ -150,14 +150,19 @@ class AmrFlow {
       pres_.buildOpenness(binFn);
       presMG_.setOpenness(binFn);
       ghostGrad_ = true;  // the directional gradient is part of the scheme
-      // Coupled mask (1 = row in the Krylov space): fluid cells minus decoupled overlay rows.
+      // Fragmentation guard (pockets decoupled) + coupled mask (1 = row in the Krylov space).
+      gpPocket_ = findPocketCells(*t_, pres_, mom_.sdfCRaw());
       maskC_.assign(static_cast<std::size_t>(t_->numLeaves()), 0.0);
       for (Index i = 0; i < t_->numLeaves(); ++i)
-        maskC_[static_cast<std::size_t>(i)] = mom_.isFluid(i) ? 1.0 : 0.0;
+        maskC_[static_cast<std::size_t>(i)] =
+            (mom_.isFluid(i) && !(!gpPocket_.empty() && gpPocket_[static_cast<std::size_t>(i)]))
+                ? 1.0
+                : 0.0;
       for (Index r = 0; r < gpOv_.n; ++r)
         if (!gpOv_.coupled[static_cast<std::size_t>(r)])
           maskC_[static_cast<std::size_t>(gpOv_.cell[static_cast<std::size_t>(r)])] = 0.0;
     } else {
+      gpPocket_.clear();
       pres_.buildOpenness([&](const Vec<3>& fc, int axis) { return faceFrac(sdfFn, fc, axis); });
       presMG_.setOpenness([&](const Vec<3>& fc, int axis) { return faceFrac(sdfFn, fc, axis); });
     }
@@ -584,7 +589,11 @@ class AmrFlow {
   double gradOfDir(const std::vector<double>& fld, Index i, int c) const {
     const double h = pres_.cellWidth(i);
     auto F = [&](Index j) { return fld[static_cast<std::size_t>(j)]; };
-    auto ok = [&](Index j) { return j >= 0 && mom_.isFluid(j) && t_->level(j) == t_->level(i); };
+    // Pocket cells (fragmentation guard) count as solid: their φ is pinned/decoupled.
+    auto ok = [&](Index j) {
+      return j >= 0 && mom_.isFluid(j) && t_->level(j) == t_->level(i) &&
+             !(!gpPocket_.empty() && gpPocket_[static_cast<std::size_t>(j)]);
+    };
     const Index jp = pres_.periodicNeighbor(i, c, +1);
     const Index jm = pres_.periodicNeighbor(i, c, -1);
     const bool ap = ok(jp), am = ok(jm);
@@ -671,6 +680,7 @@ class AmrFlow {
   int gpMatrixOrder_ = 1, gpRhsOrder_ = 2;  // closure orders: implicit matrix / RHS divergence
   GhostOverlay gpOv_;                       // closure overlay (finest-band rows)
   std::vector<double> maskC_;               // 1 = coupled row (Krylov subspace), 0 = pinned
+  std::vector<char> gpPocket_;              // fragmentation guard: 1 = decoupled pocket cell
   CfScheme cfScheme_ = CfScheme::standard;  // 2:1 C/F interface scheme (setCfScheme)
   CfCsr cfMom_;                             // +μ(∇²_scheme − ∇²_std) momentum RHS overlay
   CfCompCsr cfDiv_;                         // (D_scheme − D_std) divergence overlay
