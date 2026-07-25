@@ -5,6 +5,7 @@
 
 DOXYFILE_ENCODING      = UTF-8
 PROJECT_NAME           = "core"
+PROJECT_NUMBER         = 0.5.0
 PROJECT_BRIEF          = "Shared MPI block decomposition + asynchronous ghost-layer exchange (header-only C++20)"
 OUTPUT_DIRECTORY       = docs
 HTML_OUTPUT            = html
