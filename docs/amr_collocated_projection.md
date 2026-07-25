@@ -347,3 +347,47 @@ print precision — the remap is conservative) and the continued run lands on th
 state as a cold start on the identical final mesh to rel 2.6e-5. The Python surface refreshes
 `num_leaves` after `finish_adapt`; the NS auto-default composes with adaptivity (demo runs
 advection + auto-ghost through a mid-run band change).
+
+## Update (2026-07-25, later): island corners, fragmentation guard, and adaptive AMR on the Z&H cases
+
+**Island-corner C/F stencils** — where a coarse cell's tangential neighbour is itself finer
+(every curved fine region), the Martin–Cartwright stencil used to fall back to the raw coarse
+value (locally 1st-order). `cfAppendStencil` now samples such neighbours by the volume average
+of the 2^Dim covering leaves. Measured on a fine-ball mesh (the branch demonstrably fires): the
+fallback's pointwise truncation grows O(1/h) at corner rows (87→240→485 over N=16..64) while
+the upgraded stencil stays bounded (~30, the normal conservative-flux O(1)); never worse
+anywhere. (Convex graded regions have no corners — the earlier a-priori numbers were already
+corner-free.)
+
+**Fragmentation guard** — `findPocketCells` BFS's the binary coupled-face graph; fluid
+components outside the largest are decoupled pockets (pinned φ, excluded from the mean and from
+the directional gradients). Sealed-cavity ctest: 2 components, 1208 pocket cells, healthy
+BiCGStab, pocket creep bounded at the viscous scale.
+
+**Distributed adaptive refinement** — validated on the current build: `python/test_amr.py`
+(distributed refine/balance/gather/weighted-ORB rebalance with field migration + the
+Löhner-driven `DistributedOctree.adapt` with global conservation) green under mpirun np=1 and
+np=4; the C++ distributed adapt/rebalance ctests green np=1..8. The distributed FLOW solver
+(momentum/pressure/overlays across ranks) remains the next big project.
+
+**Solution-adaptive AMR on the two Z&H cases** (`tests/study/amr_adaptive_zh.py`: Löhner on |u|
+→ `Octree.adapt` → geometry-band re-refinement → `finish_adapt`; ghost projection +
+Martin–Cartwright C/F; Stokes):
+
+| case | start | final K | vs uniform-ghost | vs Z&H | cells |
+|------|------:|--------:|-----------------:|-------:|------:|
+| dense φ=0.125, finest 64  | band 3 (20%) | 4.2846 | −0.12% | −0.17% | **62%** |
+| dilute φ≈0.002, finest 128 | band 4 (0.9%) | 1.2767 | **−0.14%** | — | **4.1%** |
+
+The indicator behaves exactly as the physics dictates: on the dense array it discovers that most
+of the pore space carries shear (mesh saturates at ~62%, still 38% cheaper at uniform accuracy);
+on the dilute sphere it holds 4% of the cells at essentially the uniform answer — versus +2.9%
+error for the best static band at comparable cost.
+
+**Adapt-policy lesson (measured):** at STEADY-STATE dt (ρ/dt→0) the accumulated rotational p is
+the load-bearing state, and its conservative remap under COARSENING can leave a distorted field
+whose relaxation is slower than re-accumulation — a mid-cycle collapse (K 1.28→4.5) that took ≫
+cold-start steps to recover. The policy fix (in `adapt_cycle`): zero p after `finish_adapt`
+(`Flow.set_pressure`, new binding) and let the rotational update re-accumulate it while u
+carries the flow state — collapse eliminated, all cycles steady. At transient dt (the dense
+case) the transferred p is benign and kept.

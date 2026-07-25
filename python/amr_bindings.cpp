@@ -338,6 +338,9 @@ class Flow : public Releasable {
   // Adaptivity during a run: snapshot -> (externally mutate the Octree: adapt / refine_to_* /
   // balance) -> rebuild + conservative field transfer. num_leaves is refreshed.
   void begin_adapt() { flow_.beginAdapt(); }
+  void set_pressure(nb::ndarray<double, nb::c_contig> h) {
+    flow_.setPressure(std::vector<double>(h.data(), h.data() + h.shape(0)));
+  }
   void finish_adapt(std::function<double(double, double, double)> sdf) {
     flow_.finishAdapt([&](const Vec<3>& p) { return sdf(p[0], p[1], p[2]); });
     n_ = flow_.numLeaves();
@@ -667,6 +670,11 @@ NB_MODULE(amr, m) {
            "for the implicit matrix vs the RHS divergence — (1, 2) is the validated default. "
            "Raises if the finest band is too thin (a closure would cross a 2:1 boundary). Call "
            "before set_solid.")
+      .def("set_pressure", &Flow::set_pressure, nb::arg("values"),
+           "Write the accumulated rotational pressure from a (num_leaves,) array — restart, or "
+           "re-accumulation policies after finish_adapt (at steady-state dt the transferred p is "
+           "the load-bearing state; zeroing it after a coarsening adapt lets it re-accumulate "
+           "cleanly).")
       .def("begin_adapt", &Flow::begin_adapt,
            "Snapshot the octree topology + (u, p) ahead of an external mesh mutation (adapt / "
            "refine_to_sphere / refine_to_sdf / balance on the SAME Octree object). Pair with "

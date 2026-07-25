@@ -28,23 +28,32 @@ F = 1e-3
 K_ZH = 4.292
 
 
-def adapt_cycle(t, fl, sdf, band, refine_th=0.2, coarsen_th=0.05):
-    """One solution-adaptive step: Löhner on |u| + geometry-band protection + solver rebuild."""
+def adapt_cycle(t, fl, sdf, band, refine_th=0.2, coarsen_th=0.05, reset_p=False):
+    """One solution-adaptive step: Löhner on |u| + geometry-band protection + solver rebuild.
+
+    reset_p: at STEADY-STATE dt (rho/dt -> 0) the accumulated rotational p is the load-bearing
+    state, and its conservative remap under coarsening can leave a distorted field whose
+    relaxation is SLOWER than re-accumulating from zero (measured: a mid-cycle collapse that
+    took >> cold-start steps to recover). Zeroing p after the rebuild lets the rotational
+    update re-accumulate it at the cold-start rate while u carries the flow state.
+    """
     umag = np.linalg.norm(np.asarray(fl.velocities()), axis=1)
     fl.begin_adapt()
     t.adapt(umag, refine_th, coarsen_th, finest_level=0)
     t.refine_to_sdf(sdf, 0, band, True)  # keep the cut band finest (+ 2:1 balance)
     fl.finish_adapt(sdf)
+    if reset_p:
+        fl.set_pressure(np.zeros(fl.num_leaves))
 
 
 def run_case(name, N, R, band, uniform_ref, ref_label, cycles=10, stride=100, tol=1e-7,
-             max_tail=6000):
+             max_tail=6000, dt=60.0, reset_p=False):
     lmax = int(math.log2(N))
     t = amr.Octree([1, 1, 1], lmax, [0.0, 0.0, 0.0], 1.0)
     c = N / 2.0
     sdf = lambda x, y, z: math.sqrt((x - c) ** 2 + (y - c) ** 2 + (z - c) ** 2) - R
     t.refine_to_sphere([c, c, c], R, 0, band, True)
-    fl = amr.Flow(t, 1.0, MU, 60.0)
+    fl = amr.Flow(t, 1.0, MU, dt)
     fl.set_body_force(F, 0.0, 0.0)
     fl.set_advection(False)
     fl.set_ghost_projection(True, 1, 2)  # Stokes: ghost explicit (the NS auto-default is NS-only)
@@ -65,7 +74,7 @@ def run_case(name, N, R, band, uniform_ref, ref_label, cycles=10, stride=100, to
         k = kval()
         print(f"  cycle {cyc:2d}: K={k:.4f}  leaves={t.num_leaves:>8} "
               f"({100*t.num_leaves/N**3:5.1f}%)  pres={fl.last_pres_iters()}", flush=True)
-        adapt_cycle(t, fl, sdf, band)
+        adapt_cycle(t, fl, sdf, band, reset_p=reset_p)
     # mesh frozen: converge to steadiness
     kprev, k, steps, confirm = None, None, 0, False
     while steps < max_tail:
@@ -98,5 +107,7 @@ if __name__ == "__main__":
     if "dilute" in which:
         N = 128
         R = (0.125 * 3.0 / (4.0 * math.pi)) ** (1.0 / 3.0) * (N / 4.0)
+        # steady dt: the big dilute box is diffusion-limited at transient dt (the
+        # rotational scheme is dt-independent at steady state)
         run_case("dilute phi~0.002", N, R, band=4.0, uniform_ref=1.2785,
-                 ref_label="uniform-ghost")
+                 ref_label="uniform-ghost", dt=1e6, stride=200, reset_p=True)
