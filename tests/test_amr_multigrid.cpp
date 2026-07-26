@@ -89,8 +89,9 @@ struct HRef {
       Index nf = f.numLeaves();
       c2p[L].assign((std::size_t)nf, -1);
       for (Index i = 0; i < nf; ++i) {
-        Code par = M::from_code(f.code(i)).ancestor(f.level(i) + 1).code();
-        c2p[L][(std::size_t)i] = c.find(par);
+        // Covering-leaf c2p — mirrors the production construction (see multigrid.hpp: the
+        // ancestor(level+1)+find form mis-parented root-level rows in mixed-depth ladders).
+        c2p[L][(std::size_t)i] = c.find(f.code(i));
       }
     }
   }

@@ -293,8 +293,12 @@ class Multigrid {
       std::vector<Index> c2p(static_cast<std::size_t>(nf));
       std::vector<Index> cnt(static_cast<std::size_t>(nc), 0);
       for (Index i = 0; i < nf; ++i) {
-        Code parent = M::from_code(f.code(i)).ancestor(f.level(i) + 1).code();
-        Index p = c.find(parent);
+        // Covering-leaf construction: identical to ancestor(level+1)+find for merged children,
+        // and CORRECT (identity) for cells already at root level in mixed-depth ladders — the
+        // ancestor form maps those to the 2^(lmax+1)-aligned corner root cell instead (measured:
+        // 49/56 root rows mis-parented on a graded 16^3 ladder), and its alignment depends on
+        // the block origin, which would break the distributed WORLD==SELF transfer contract.
+        Index p = c.find(f.code(i));
         c2p[static_cast<std::size_t>(i)] = p;
         if (p >= 0)
           ++cnt[static_cast<std::size_t>(p)];

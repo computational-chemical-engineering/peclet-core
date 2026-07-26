@@ -1,6 +1,36 @@
 # Distributed AmrFlow — design (D0 audit + plan)
 
-Status 2026-07-25: **design only** (ladder step 0). The goal is the distributed (MPI)
+Status 2026-07-26: rungs 1–3(aperture) SHIPPED —
+* **Rung 1** `leaf_halo.hpp`: LeafHalo registry (miss-collect coverLevels fixpoint, canonical
+  covering-leaf-anchor dedup) + topology-once value exchange (host + device LeafHaloExchange,
+  batched 3-component). ctests bit-exact vs the coverValues oracle np=1..8, host/OpenMP/CUDA.
+* **Rung 2**: the resolver seam through the EXISTING host builders (AmrPoisson
+  setResolver/setGhosts/setFrameShift + probeSlot + ghost-aware levelOf/loOf/periodicNeighbor
+  + ghost α rows; AmrCutCell mirrors it and fills ghost sdfC/fluid) — all world-coordinate
+  evaluation in the GLOBAL frame (bit-identical geometry samples on every rank).
+  MomentumSolver::setDistributed (halo per matvec/sweep, injected dot reduction, extended
+  scratch). test_amr_distributed_momentum_mpi: CSR row-for-row BIT-EXACT vs single-rank on a
+  graded sphere mesh; np=1 solve bit-exact, np>1 Krylov tolerance.
+* **Rung 3 (aperture)** `distributed_flow_mg.hpp`: DistributedFlowMultigrid — coarsened
+  COPIES of the flow octree (decomposition preserved), per-level LeafHalo built by the same
+  fixpoint (ghosts must be re-installed into ap at the top of EVERY round — same-round
+  registry hits read levelOf), level-count padding to the global max, area-averaged openness
+  (local rows = exact single-rank arithmetic; GHOST α rows owner-exchanged once per build),
+  Allreduce'd removeMeanFvDist. PCG::setDistributed (sync direction per matvec, reduced dots,
+  removeMeanVolReduced). test_amr_distributed_flow_mg_mpi: V-cycle WORLD==SELF **bit-exact**
+  (mean removal off) np=1..8 OpenMP+CUDA; distributed MG-PCG np=1 bit-exact vs single-rank,
+  np>1 tolerance.
+* **c2p transfer fix (measured)**: the ancestor(level+1)+find parent map mis-parented
+  root-level rows in mixed-depth ladders (49/56 on a graded 16³ probe) and was
+  block-alignment-dependent; replaced suite-wide (Multigrid, MomentumMG, AmrMultigrid) by the
+  covering construction c.find(f.code(i)). Converged solutions unchanged; graded V-cycle
+  rates shift (kappa experiment 0.49→0.65/cyc — the old map accidentally aggregated root
+  bricks further; a PRINCIPLED super-root coarsening is the perf lever if bottom-solve
+  strength ever limits).
+* Remaining: ghost pressure + full step wiring (rung 4, inside AmrFlow via initMpi), NS
+  advection halo (rung 5), adapt/rebalance + distributed pocket guard (rung 6), perf (7).
+
+Original plan (2026-07-25, ladder step 0) below. The goal is the distributed (MPI)
 `peclet::core::amr::AmrFlow`: the full ghost-projection NS step — momentum, pressure,
 overlays, adaptivity — running multi-rank on the ORB block decomposition, validated by the
 suite's contract (np=1 bit-exact vs single-rank on OpenMP; WORLD==SELF for order-independent

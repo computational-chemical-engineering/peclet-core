@@ -142,6 +142,39 @@ class LeafHalo {
     return resolve(gc);
   }
 
+  /// Const lookup against the FINALIZED registry (no miss registration): wrapped probe →
+  /// local leaf or cached ghost slot; throws on an unknown remote coord — the caller's probe
+  /// set must be a subset of what the registry was built with (e.g. the pressure MG's level-0
+  /// ±1 face probes against the flow's ±2 registry).
+  Index lookup(const CoordArr& gc) const {
+    bool inBlock = true;
+    for (int a = 0; a < Dim; ++a) {
+      const long v = static_cast<long>(gc[a]) - fineOrigin_[a];
+      if (v < 0 || v >= fineSize_[a]) {
+        inBlock = false;
+        break;
+      }
+    }
+    if (inBlock) {
+      std::array<Coord, Dim> lc{};
+      for (int a = 0; a < Dim; ++a)
+        lc[a] = static_cast<Coord>(static_cast<long>(gc[a]) - fineOrigin_[a]);
+      return d_->local().find(M::encode(lc).code());
+    }
+    auto it = probeSlot_.find(gc);
+    if (it == probeSlot_.end())
+      throw std::runtime_error("amr::LeafHalo::lookup: coord not in the frozen registry");
+    return it->second;
+  }
+  Index lookupGlobal(std::array<long, Dim> g) const {
+    if (!wrap(g))
+      return kNone;
+    CoordArr gc{};
+    for (int a = 0; a < Dim; ++a)
+      gc[a] = static_cast<Coord>(g[a]);
+    return lookup(gc);
+  }
+
   /// COLLECTIVE (all ranks together, misses or not): one owner coverLevels round resolving every
   /// queued miss to a canonical ghost slot (or a newly-discovered one). Returns the GLOBAL
   /// number of coords that were pending — drive the builders' fixpoint:

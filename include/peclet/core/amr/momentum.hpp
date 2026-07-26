@@ -296,8 +296,9 @@ class MomentumMG {
       std::vector<Index> c2p(static_cast<std::size_t>(nf));
       std::vector<Index> cnt(static_cast<std::size_t>(nc), 0);
       for (Index i = 0; i < nf; ++i) {
-        Code par = M::from_code(f.code(i)).ancestor(f.level(i) + 1).code();
-        Index p = c.find(par);
+        // Covering-leaf c2p (see multigrid.hpp): == ancestor+find for merged children, correct
+        // (identity) for root-level rows in mixed-depth ladders, block-alignment-independent.
+        Index p = c.find(f.code(i));
         c2p[static_cast<std::size_t>(i)] = p;
         if (p >= 0)
           ++cnt[static_cast<std::size_t>(p)];

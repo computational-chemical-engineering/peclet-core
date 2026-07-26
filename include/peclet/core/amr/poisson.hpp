@@ -637,8 +637,9 @@ class AmrMultigrid {
       const Octree& c = levels_[L + 1];
       c2p_[L].resize(static_cast<std::size_t>(f.numLeaves()));
       for (Index i = 0; i < f.numLeaves(); ++i) {
-        Code parent = M::from_code(f.code(i)).ancestor(f.level(i) + 1).code();
-        c2p_[L][static_cast<std::size_t>(i)] = c.find(parent);
+        // Covering-leaf c2p (see multigrid.hpp): == ancestor+find for merged children, correct
+        // (identity) for root-level rows in mixed-depth ladders, block-alignment-independent.
+        c2p_[L][static_cast<std::size_t>(i)] = c.find(f.code(i));
       }
     }
   }

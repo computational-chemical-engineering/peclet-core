@@ -30,6 +30,7 @@
 #ifdef PECLET_CORE_HAVE_MORTON
 
 #include <cmath>
+#include <functional>
 
 #include "peclet/core/amr/fv_op.hpp"
 #include "peclet/core/amr/multigrid.hpp"
@@ -75,8 +76,11 @@ inline void maskSolid(View<double> u, View<const double> mask, Index n) {
 /// Project u onto the FLUID range: zero solid cells, then subtract the volume-weighted mean over
 /// the fluid cells only (the constant null mode of the connected fluid region). The mean must
 /// exclude the pinned solid cells — including them dilutes it and lets the solid drift.
-inline void removeMeanVol(View<double> u, View<const double> invVol, View<const double> mask,
-                          Index n) {
+/// `reduce` folds each local mean sum into the global one (identity single-rank; an
+/// MPI_Allreduce lambda distributed — the mean is over the GLOBAL fluid region).
+inline void removeMeanVolReduced(View<double> u, View<const double> invVol,
+                                 View<const double> mask, Index n,
+                                 const std::function<double(double)>& reduce) {
   Kokkos::parallel_for("amr::pcg_masksolid", n, KOKKOS_LAMBDA(const Index i) { u(i) *= mask(i); });
   double su = 0.0, sv = 0.0;
   Kokkos::parallel_reduce(
@@ -85,9 +89,18 @@ inline void removeMeanVol(View<double> u, View<const double> invVol, View<const 
   Kokkos::parallel_reduce(
       "amr::pcg_meanden", n, KOKKOS_LAMBDA(const Index i, double& a) { a += mask(i) / invVol(i); },
       sv);
+  if (reduce) {
+    su = reduce(su);
+    sv = reduce(sv);
+  }
   const double m = (sv > 0.0) ? su / sv : 0.0;
   Kokkos::parallel_for(
       "amr::pcg_meansub", n, KOKKOS_LAMBDA(const Index i) { u(i) -= mask(i) * m; });
+}
+
+inline void removeMeanVol(View<double> u, View<const double> invVol, View<const double> mask,
+                          Index n) {
+  removeMeanVolReduced(u, invVol, mask, n, {});
 }
 
 /// y += a·x
@@ -135,10 +148,28 @@ class PCG {
   /// non-singular homogeneous-Dirichlet operator).
   void setSingular(bool s) { singular_ = s; }
 
-  /// Solve L x = rhs on mg's finest level into `x` (size n). Returns iteration count and
-  /// residual history. `tol` is relative to the initial residual; `maxIters` caps the CG
-  /// iterations. The multigrid `mg` must already be built (operator + hierarchy).
-  Result solve(MG& mg, View<double> x, View<const double> rhs, int maxIters = 200,
+  /// Distributed solve (docs/amr_distributed_flow.md, rung 3): `refresh` re-fills the ghost
+  /// tail [n, nExt) of a vector before its neighbour entries are read (the CG direction ahead
+  /// of every matvec); `dotReduce` folds a local sum into the global one (an MPI_Allreduce
+  /// lambda — a callable so this header stays MPI-free), applied to every volume-weighted dot
+  /// AND to the nullspace-projection mean sums. Scratch (and the search direction) allocate at
+  /// nExt so they carry ghost tails; the multigrid passed to solve() must size its finest
+  /// x(0)/b(0) at the same nExt (DistributedFlowMultigrid does). Unset (default): the
+  /// single-rank behaviour, bit-identical.
+  void setDistributed(std::function<void(View<double>)> refresh,
+                      std::function<double(double)> dotReduce, Index nExt) {
+    haloFn_ = std::move(refresh);
+    dotReduce_ = std::move(dotReduce);
+    nExt_ = nExt;
+  }
+
+  /// Solve L x = rhs on mg's finest level into `x` (size n; nExt distributed). Returns
+  /// iteration count and residual history. `tol` is relative to the initial residual;
+  /// `maxIters` caps the CG iterations. The multigrid `mg` must already be built (operator +
+  /// hierarchy); any type exposing op(0)/x(0)/b(0)/numLeaves(0)/vcycle works
+  /// (Multigrid, DistributedFlowMultigrid).
+  template <class MGT = MG>
+  Result solve(MGT& mg, View<double> x, View<const double> rhs, int maxIters = 200,
                double tol = 1e-10) {
     const Index n = mg.numLeaves(0);
     const FvOp& op = mg.op(0);
@@ -153,47 +184,56 @@ class PCG {
     // removeMean∘maskSolid).
     auto project = [&](View<double> u) {
       if (singular_)
-        removeMeanVol(u, invVol, mask, n);
+        removeMeanVolReduced(u, invVol, mask, n, dotReduce_);
       else
         maskSolid(u, mask, n);
     };
+    auto vdot = [&](View<const double> a, View<const double> b) {
+      const double s = dotVol(a, b, invVol, n);
+      return dotReduce_ ? dotReduce_(s) : s;
+    };
 
-    // x = 0 ; r = b_A − A·0 = b_A = −rhs (A = −L, b_A = −rhs)
+    // x = 0 ; r = b_A − A·0 = b_A = −rhs (A = −L, b_A = −rhs). Element copy over the local
+    // rows (not deep_copy): rhs may be local-sized while the scratch carries a ghost tail.
     Kokkos::deep_copy(x, 0.0);
-    Kokkos::deep_copy(r_, rhs);
-    negate(r_, n);
+    {
+      auto r = r_;
+      Kokkos::parallel_for(
+          "amr::pcg_r0", n, KOKKOS_LAMBDA(const Index i) { r(i) = -rhs(i); });
+    }
     project(r_);
-    R.res0 = std::sqrt(dotVol(View<const double>(r_), View<const double>(r_), invVol, n));
+    R.res0 = std::sqrt(vdot(View<const double>(r_), View<const double>(r_)));
     if (R.res0 == 0.0)
       return R;
 
     applyPrec(mg, r_, z_, n);  // z = M^{-1} r ≈ A^{-1} r
     project(z_);
     Kokkos::deep_copy(p_, z_);
-    double rz = dotVol(View<const double>(r_), View<const double>(z_), invVol, n);
+    double rz = vdot(View<const double>(r_), View<const double>(z_));
 
     int it = 0;
     double rnorm = R.res0;
     for (; it < maxIters; ++it) {
       // Ap = A p = −L p, projected back onto the fluid range (keeps the search directions there).
+      sync(p_);  // ghost tail of the direction before the matvec (no-op single-rank)
       applyFv(op, View<const double>(p_), Ap_);
       negate(Ap_, n);
       project(Ap_);
-      double pAp = dotVol(View<const double>(p_), View<const double>(Ap_), invVol, n);
+      double pAp = vdot(View<const double>(p_), View<const double>(Ap_));
       if (pAp == 0.0)
         break;
       double alpha = rz / pAp;
       axpy(x, alpha, View<const double>(p_), n);     // x += α p
       axpy(r_, -alpha, View<const double>(Ap_), n);  // r −= α Ap
       project(r_);
-      rnorm = std::sqrt(dotVol(View<const double>(r_), View<const double>(r_), invVol, n));
+      rnorm = std::sqrt(vdot(View<const double>(r_), View<const double>(r_)));
       if (rnorm <= tol * R.res0) {
         ++it;
         break;
       }
       applyPrec(mg, r_, z_, n);
       project(z_);
-      double rzNew = dotVol(View<const double>(r_), View<const double>(z_), invVol, n);
+      double rzNew = vdot(View<const double>(r_), View<const double>(z_));
       double beta = rzNew / rz;
       zpby(p_, View<const double>(z_), beta, n);  // p = z + β p
       rz = rzNew;
@@ -207,7 +247,10 @@ class PCG {
  private:
   // z = M^{-1} r : solve L z = −r with `cyclesPerPrec_` V-cycles (correction scheme),
   // using the multigrid's own finest x/b as scratch. (A = −L ⇒ A z = r ⟺ L z = −r.)
-  void applyPrec(MG& mg, View<double> r, View<double> z, Index n) {
+  // The distributed multigrid sizes its finest x/b at the same nExt as this solver's scratch,
+  // so the deep_copies stay extent-matched.
+  template <class MGT>
+  void applyPrec(MGT& mg, View<double> r, View<double> z, Index n) {
     Kokkos::deep_copy(mg.b(0), r);
     negate(mg.b(0), n);
     Kokkos::deep_copy(mg.x(0), 0.0);
@@ -216,7 +259,15 @@ class PCG {
     Kokkos::deep_copy(z, mg.x(0));
   }
 
+  /// Refresh the ghost tail of a vector (no-op single-rank).
+  void sync(View<double> v) const {
+    if (haloFn_)
+      haloFn_(v);
+  }
+
   void ensure(Index n) {
+    if (nExt_ > n)
+      n = nExt_;  // scratch carries the ghost tail in distributed solves
     if (r_.extent(0) == static_cast<std::size_t>(n))
       return;
     r_ = View<double>("pcg_r", static_cast<std::size_t>(n));
@@ -231,6 +282,9 @@ class PCG {
   double omega_ = 0.8;
   int cyclesPerPrec_ = 1;
   bool singular_ = true;
+  std::function<void(View<double>)> haloFn_;  // ghost-tail refresh (unset ⇒ no-op)
+  std::function<double(double)> dotReduce_;   // global reduction (unset ⇒ local)
+  Index nExt_ = 0;                            // extended (local+ghost) scratch size
 };
 
 }  // namespace peclet::core::amr

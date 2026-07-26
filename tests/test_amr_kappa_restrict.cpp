@@ -99,7 +99,7 @@ void run() {
     return std::sqrt(s2);
   };
 
-  const int cycles = 30;
+  const int cycles = 40;
   auto solve = [&](bool kappa) {
     mg.setKappaRestrict(kappa);
     setDev(mg.b(0), b);
@@ -123,12 +123,18 @@ void run() {
       (long long)n0, cycles, plain.first, plain.second, ratePlain, kap.first, kap.second,
       rateKappa);
 
-  // FINDING (this mesh): plain converges to ~5e-7 (≈0.49/cyc); κ-weighted only to
-  // ~2e-3 (≈0.64/cyc) — κ-weighting is WORSE. It breaks the exact conservation of the
-  // volume-average, so on this singular (periodic) problem the restricted residual is
-  // no longer ⊥ the operator's constant nullspace ⇒ slower convergence + a residual
-  // floor. Conclusion: keep plain volume-average as the default; κ-restrict is a
-  // documented opt-in only (e.g. for non-singular / Dirichlet configurations).
+  // FINDING (this mesh): plain converges markedly better than κ-weighted (measured
+  // 2026-07-26 with the covering c2p: ≈0.65/cyc vs ≈0.80/cyc; the pre-fix
+  // ancestor-corner c2p measured ≈0.49 vs ≈0.64 — that construction accidentally
+  // aggregated root-brick cells 2× further per level, acting as extra coarse levels
+  // above the root grid, but mis-parented root rows and was block-alignment-dependent,
+  // so the covering construction replaced it; a PRINCIPLED super-root coarsening is
+  // the corresponding perf lever if bottom-solve strength ever limits). κ-weighting is
+  // WORSE: it breaks the exact conservation of the volume-average, so on this singular
+  // (periodic) problem the restricted residual is no longer ⊥ the operator's constant
+  // nullspace ⇒ slower convergence + a residual floor. Conclusion: keep plain
+  // volume-average as the default; κ-restrict is a documented opt-in only (e.g. for
+  // non-singular / Dirichlet configurations).
   PECLET_CORE_CHECK(plain.second < plain.first * 1e-6);  // baseline (plain) solves to round-off
   PECLET_CORE_CHECK(std::isfinite(kap.second));          // κ-weighting does not blow up
   PECLET_CORE_CHECK(kap.second < kap.first);             // κ-weighting still reduces the residual
