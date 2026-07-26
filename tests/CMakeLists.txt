@@ -286,6 +286,10 @@ if(MPI_FOUND)
     add_executable(test_amr_leaf_halo_view_mpi test_amr_leaf_halo_view_mpi.cpp)
     target_link_libraries(test_amr_leaf_halo_view_mpi PRIVATE tpx_halo)
     target_include_directories(test_amr_leaf_halo_view_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+    add_executable(test_amr_distributed_momentum_mpi test_amr_distributed_momentum_mpi.cpp)
+    target_link_libraries(test_amr_distributed_momentum_mpi PRIVATE tpx_halo)
+    target_include_directories(test_amr_distributed_momentum_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   endif()
 
   foreach(np IN ITEMS 1 2 4 8)
@@ -306,6 +310,11 @@ if(MPI_FOUND)
       add_test(NAME amr_leaf_halo_view_np${np}
                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
                        ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_leaf_halo_view_mpi> ${MPIEXEC_POSTFLAGS})
+    endif()
+    if(TARGET test_amr_distributed_momentum_mpi)
+      add_test(NAME amr_distributed_momentum_np${np}
+               COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
+                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_momentum_mpi> ${MPIEXEC_POSTFLAGS})
     endif()
     add_test(NAME grid_redistribute_np${np}
              COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}

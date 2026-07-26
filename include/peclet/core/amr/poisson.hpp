@@ -29,6 +29,7 @@
 
 #include <array>
 #include <cmath>
+#include <functional>
 #include <vector>
 
 #include "peclet/core/amr/block_octree.hpp"
@@ -55,11 +56,88 @@ class AmrPoisson {
     h0_ = h0;
     alpha_.clear();
     hasOpen_ = false;
+    extResolve_ = nullptr;  // distributed seam re-installed by the owner after every init
+    ghostLo_.clear();
+    ghostLv_.clear();
+    frameShift_ = {};
     for (int d = 0; d < Dim; ++d)
       fineExt_[d] = static_cast<Coord>(t.brick()[d] * (Index(1) << t.lmax()));
   }
 
   void setOrigin(const Vec<Dim>& o) { origin_ = o; }
+
+  // ---- distributed seam (docs/amr_distributed_flow.md) ---------------------------------------
+  /// Route probes that exit the block through an external resolver (the LeafHalo registry):
+  /// fn(blockLocalProbe as longs, possibly negative / beyond the block) → covering extended slot
+  /// (local leaf or ghost in [n, n+nGhost)), LeafHalo::kPending (−2) during the discovery
+  /// fixpoint, or −1 past a non-periodic edge. Unset (default) = periodic BLOCK wrap — the
+  /// single-rank behaviour, bit-identical (block == domain). Distributed use is periodic-domain
+  /// only for now (AmrFlow is periodic-only).
+  using ExtResolver = std::function<Index(const std::array<long, Dim>&)>;
+  void setResolver(ExtResolver r) { extResolve_ = std::move(r); }
+  /// Declare the ghost slots [n, n+nGhost): block-local lo corner (longs — ghosts lie outside
+  /// the block) and covering-leaf level. buildOpenness then fills ghost α rows from the same
+  /// world-coord openFn (evaluated in the GLOBAL frame, see setFrameShift, so the value matches
+  /// the owner's bit-for-bit); levelOf / loOf / periodicNeighbor serve ghost slots transparently.
+  void setGhosts(std::vector<std::array<long, Dim>> lo, std::vector<unsigned> lv) {
+    ghostLo_ = std::move(lo);
+    ghostLv_ = std::move(lv);
+  }
+  Index numGhosts() const { return static_cast<Index>(ghostLv_.size()); }
+  /// Distributed frame shift: this block's global fine origin. Every world-coordinate
+  /// evaluation (openness face centroids) computes origin_ + (localCoord + shift)·h0 with
+  /// origin_ the GLOBAL origin, so all ranks evaluate the geometry at bit-identical points
+  /// (float non-associativity would otherwise break the symmetric-openFn contract at cut
+  /// faces). Default 0 = single-rank (local coords are global).
+  void setFrameShift(const std::array<long, Dim>& s) { frameShift_ = s; }
+  /// Octree level of an extended slot (local leaf or declared ghost).
+  unsigned levelOf(Index slot) const {
+    return slot < numLeaves()
+               ? t_->level(slot)
+               : ghostLv_[static_cast<std::size_t>(slot - numLeaves())];
+  }
+  /// Block-local lo corner of an extended slot as longs (ghosts may lie outside the block).
+  std::array<long, Dim> loOf(Index slot) const {
+    std::array<long, Dim> lo{};
+    if (slot < numLeaves()) {
+      auto b = t_->bounds(slot);
+      for (int d = 0; d < Dim; ++d)
+        lo[d] = static_cast<long>(b[0][d]);
+    } else {
+      lo = ghostLo_[static_cast<std::size_t>(slot - numLeaves())];
+    }
+    return lo;
+  }
+
+  /// Covering slot + level of a block-local probe (longs, possibly outside the block).
+  /// In-block: local find (the fast path, unchanged). Out-of-block: periodic block wrap when no
+  /// resolver is set (single-rank: block == domain), else the external resolver. A negative
+  /// slot (kPending/kNone during the distributed discovery fixpoint) carries level 0; callers
+  /// skip those entries — a finished distributed build never sees one.
+  std::pair<Index, unsigned> probeSlot(const std::array<long, Dim>& p) const {
+    bool in = true;
+    for (int d = 0; d < Dim; ++d)
+      if (p[d] < 0 || p[d] >= static_cast<long>(fineExt_[d])) {
+        in = false;
+        break;
+      }
+    std::array<Coord, Dim> q{};
+    if (!in) {
+      if (extResolve_) {
+        const Index s = extResolve_(p);
+        return {s, s >= 0 ? levelOf(s) : 0u};
+      }
+      for (int d = 0; d < Dim; ++d) {
+        const long e = static_cast<long>(fineExt_[d]);
+        q[d] = static_cast<Coord>(((p[d] % e) + e) % e);
+      }
+    } else {
+      for (int d = 0; d < Dim; ++d)
+        q[d] = static_cast<Coord>(p[d]);
+    }
+    const Index j = t_->find(M::encode(q).code());
+    return {j, j >= 0 ? t_->level(j) : 0u};
+  }
 
   // ---- cut-cell openness (per-leaf per-face fluid fraction in [0,1]) -------
   static constexpr int kFaces = 2 * Dim;
@@ -85,26 +163,38 @@ class AmrPoisson {
   template <class OpenFn>
   void buildOpenness(OpenFn&& openFn) {
     const Index n = numLeaves();
-    alpha_.assign(static_cast<std::size_t>(n) * kFaces, 1.0);
+    const Index ng = numGhosts();
+    alpha_.assign(static_cast<std::size_t>(n + ng) * kFaces, 1.0);
     hasOpen_ = true;
-    for (Index i = 0; i < n; ++i) {
-      auto b = t_->bounds(i);
-      const auto& lo = b[0];
-      const Coord s = Coord(Coord(1) << t_->level(i));
+    // Face centroids in the GLOBAL frame (localCoord + frameShift_): every rank evaluates the
+    // world-coord openFn at bit-identical points, so ghost rows match the owner's exactly (the
+    // symmetric-openFn contract). Single-rank: frameShift_ = 0, unchanged.
+    auto fillRow = [&](Index row, const std::array<long, Dim>& lo, long s) {
       for (int axis = 0; axis < Dim; ++axis)
         for (int dir = -1; dir <= 1; dir += 2) {
-          const long plane = (dir > 0) ? static_cast<long>(lo[axis]) + static_cast<long>(s)
-                                       : static_cast<long>(lo[axis]);
+          const long plane = (dir > 0) ? lo[axis] + frameShift_[axis] + s : lo[axis] + frameShift_[axis];
           Vec<Dim> fc{};
           for (int d = 0; d < Dim; ++d)
-            fc[d] = (d == axis) ? origin_[d] + static_cast<Real>(plane) * h0_
-                                : origin_[d] +
-                                      (static_cast<Real>(lo[d]) + 0.5 * static_cast<Real>(s)) * h0_;
+            fc[d] = (d == axis)
+                        ? origin_[d] + static_cast<Real>(plane) * h0_
+                        : origin_[d] + (static_cast<Real>(lo[d] + frameShift_[d]) +
+                                        0.5 * static_cast<Real>(s)) *
+                                           h0_;
           double a = static_cast<double>(openFn(fc, axis));
           a = a < 0.0 ? 0.0 : (a > 1.0 ? 1.0 : a);
-          alpha_[static_cast<std::size_t>(i) * kFaces + faceIndex(axis, dir)] = a;
+          alpha_[static_cast<std::size_t>(row) * kFaces + faceIndex(axis, dir)] = a;
         }
+    };
+    for (Index i = 0; i < n; ++i) {
+      auto b = t_->bounds(i);
+      std::array<long, Dim> lo{};
+      for (int d = 0; d < Dim; ++d)
+        lo[d] = static_cast<long>(b[0][d]);
+      fillRow(i, lo, 1L << t_->level(i));
     }
+    for (Index g = 0; g < ng; ++g)  // ghost α rows (distributed builds; empty single-rank)
+      fillRow(n + g, ghostLo_[static_cast<std::size_t>(g)],
+              1L << ghostLv_[static_cast<std::size_t>(g)]);
   }
 
   Index numLeaves() const { return t_->numLeaves(); }
@@ -152,7 +242,7 @@ class AmrPoisson {
     return s;
   }
 
-  Real cellWidth(Index i) const { return h0_ * static_cast<Real>(Index(1) << t_->level(i)); }
+  Real cellWidth(Index i) const { return h0_ * static_cast<Real>(Index(1) << levelOf(i)); }
   Real cellVolume(Index i) const {
     Real w = cellWidth(i);
     Real v = 1;
@@ -178,10 +268,13 @@ class AmrPoisson {
         // wall handled by boundaryDiag) — skip it.
         if (!periodic_ && (pc < 0 || pc >= static_cast<long>(fineExt_[axis])))
           continue;
-        std::array<Coord, Dim> p = lo;
-        p[axis] = wrap(pc, axis);
-        Index j = t_->find(M::encode(p).code());
-        const unsigned Lj = t_->level(j);
+        std::array<long, Dim> p{};
+        for (int d = 0; d < Dim; ++d)
+          p[d] = static_cast<long>(lo[d]);
+        p[axis] = pc;
+        const auto [j, Lj] = probeSlot(p);
+        if (j < 0)
+          continue;  // unresolved during the distributed discovery fixpoint only
         if (Lj >= Li) {
           // same level or coarser: one neighbour, shared face = this cell's face.
           // Openness lives on the finer side (here, this cell i).
@@ -191,17 +284,17 @@ class AmrPoisson {
           const Coord sj = Coord(si >> 1);
           const int nsub = 1 << (Dim - 1);
           for (int k = 0; k < nsub; ++k) {
-            std::array<Coord, Dim> q = lo;
-            q[axis] = wrap(pc, axis);
+            std::array<long, Dim> q = p;
             int bit = 0;
             for (int t = 0; t < Dim; ++t) {
               if (t == axis)
                 continue;
-              const Coord off = ((k >> bit) & 1) ? sj : Coord(0);
-              q[t] = wrap(static_cast<long>(lo[t]) + static_cast<long>(off), t);
+              q[t] = static_cast<long>(lo[t]) + (((k >> bit) & 1) ? static_cast<long>(sj) : 0L);
               ++bit;
             }
-            Index jj = t_->find(M::encode(q).code());
+            const Index jj = probeSlot(q).first;
+            if (jj < 0)
+              continue;
             // Fine face area (min = sj) but the true centre-to-centre distance
             // (si+sj)/2 — same value the fine side computes, so the operator is
             // symmetric / conservative across the 2:1 interface. Openness lives on
@@ -226,10 +319,13 @@ class AmrPoisson {
       for (int dir = -1; dir <= 1; dir += 2) {
         const long pc = (dir > 0) ? static_cast<long>(lo[axis]) + static_cast<long>(si)
                                   : static_cast<long>(lo[axis]) - 1;
-        std::array<Coord, Dim> p = lo;
-        p[axis] = wrap(pc, axis);
-        Index j = t_->find(M::encode(p).code());
-        const unsigned Lj = t_->level(j);
+        std::array<long, Dim> p{};
+        for (int d = 0; d < Dim; ++d)
+          p[d] = static_cast<long>(lo[d]);
+        p[axis] = pc;
+        const auto [j, Lj] = probeSlot(p);
+        if (j < 0)
+          continue;  // unresolved during the distributed discovery fixpoint only
         if (Lj >= Li) {
           const Coord sj = Coord(Coord(1) << Lj);
           fn(j, axis, dir, areaOf(si), 0.5 * (static_cast<Real>(si) + static_cast<Real>(sj)) * h0_,
@@ -238,17 +334,17 @@ class AmrPoisson {
           const Coord sj = Coord(si >> 1);
           const int nsub = 1 << (Dim - 1);
           for (int k = 0; k < nsub; ++k) {
-            std::array<Coord, Dim> q = lo;
-            q[axis] = wrap(pc, axis);
+            std::array<long, Dim> q = p;
             int bit = 0;
             for (int t = 0; t < Dim; ++t) {
               if (t == axis)
                 continue;
-              const Coord off = ((k >> bit) & 1) ? sj : Coord(0);
-              q[t] = wrap(static_cast<long>(lo[t]) + static_cast<long>(off), t);
+              q[t] = static_cast<long>(lo[t]) + (((k >> bit) & 1) ? static_cast<long>(sj) : 0L);
               ++bit;
             }
-            Index jj = t_->find(M::encode(q).code());
+            const Index jj = probeSlot(q).first;
+            if (jj < 0)
+              continue;
             fn(jj, axis, dir, areaOf(sj),
                0.5 * (static_cast<Real>(si) + static_cast<Real>(sj)) * h0_,
                faceOpenness(jj, axis, -dir));
@@ -257,16 +353,13 @@ class AmrPoisson {
       }
   }
 
-  /// Periodic face neighbour leaf (covering the cell just across the face).
+  /// Periodic face neighbour leaf (covering the cell just across the face). Works for ghost
+  /// slots too (the ±2 overlay chains hop from ghosts), via loOf/levelOf.
   Index periodicNeighbor(Index i, int axis, int dir) const {
-    auto b = t_->bounds(i);
-    const auto& lo = b[0];
-    const Coord si = Coord(Coord(1) << t_->level(i));
-    const long pc = (dir > 0) ? static_cast<long>(lo[axis]) + static_cast<long>(si)
-                              : static_cast<long>(lo[axis]) - 1;
-    std::array<Coord, Dim> p = lo;
-    p[axis] = wrap(pc, axis);
-    return t_->find(M::encode(p).code());
+    std::array<long, Dim> p = loOf(i);
+    const long si = 1L << levelOf(i);
+    p[axis] = (dir > 0) ? p[axis] + si : p[axis] - 1;
+    return probeSlot(p).first;
   }
 
   /// Quadratic coarse-fine value: the coarse leaf `coarse`'s field, evaluated by
@@ -278,23 +371,23 @@ class AmrPoisson {
   /// neighbours aren't both same-level.
   double coarseStar(const std::vector<double>& u, Index coarse, Index fine, int axis) const {
     const double uc = u[static_cast<std::size_t>(coarse)];
-    auto bc = t_->bounds(coarse);
-    auto bf = t_->bounds(fine);
+    const std::array<long, Dim> bc = loOf(coarse);  // ghost-safe (block-local longs)
+    const std::array<long, Dim> bf = loOf(fine);
     const double H = cellWidth(coarse);
-    const double sc = static_cast<double>(Index(1) << t_->level(coarse));
-    const double sf = static_cast<double>(Index(1) << t_->level(fine));
+    const double sc = static_cast<double>(Index(1) << levelOf(coarse));
+    const double sf = static_cast<double>(Index(1) << levelOf(fine));
     double val = uc;
     for (int t = 0; t < Dim; ++t) {
       if (t == axis)
         continue;
-      const double dt = ((static_cast<double>(bf[0][t]) + 0.5 * sf) -
-                         (static_cast<double>(bc[0][t]) + 0.5 * sc)) *
+      const double dt = ((static_cast<double>(bf[t]) + 0.5 * sf) -
+                         (static_cast<double>(bc[t]) + 0.5 * sc)) *
                         h0_;
       Index cp = periodicNeighbor(coarse, t, +1);
       Index cm = periodicNeighbor(coarse, t, -1);
       if (cp < 0 || cm < 0)
         continue;
-      if (t_->level(cp) != t_->level(coarse) || t_->level(cm) != t_->level(coarse))
+      if (levelOf(cp) != levelOf(coarse) || levelOf(cm) != levelOf(coarse))
         continue;
       // Skip the correction near a solid: a nearly-closed tangential face means
       // the quadratic stencil would lean on a solid-side value. Drop to the raw
@@ -319,7 +412,7 @@ class AmrPoisson {
       const unsigned Li = t_->level(i);
       double acc = 0.0;
       forEachFaceNeighbor(i, [&](Index j, Real c, int axis, double a) {
-        const unsigned Lj = t_->level(j);
+        const unsigned Lj = levelOf(j);  // ghost-safe
         double uj = u[static_cast<std::size_t>(j)];
         double uii = ui;
         if (Lj > Li)
@@ -500,7 +593,11 @@ class AmrPoisson {
   Real h0_ = 1.0;
   std::array<Coord, Dim> fineExt_{};
   Vec<Dim> origin_{};
-  std::vector<double> alpha_;  // per-leaf per-face openness (kFaces per leaf), or empty
+  ExtResolver extResolve_;                    // distributed seam: out-of-block probe resolver
+  std::vector<std::array<long, Dim>> ghostLo_;  // ghost slot → block-local lo (longs)
+  std::vector<unsigned> ghostLv_;               // ghost slot → covering-leaf level
+  std::array<long, Dim> frameShift_{};          // block global fine origin (0 single-rank)
+  std::vector<double> alpha_;  // per-(leaf+ghost) per-face openness (kFaces per row), or empty
   bool hasOpen_ = false;
   bool periodic_ = true;       // false ⇒ homogeneous Dirichlet domain walls (boundaryDiag)
   bool immersedWall_ = false;  // true ⇒ velocity operator: (1−α) interior faces are no-slip walls

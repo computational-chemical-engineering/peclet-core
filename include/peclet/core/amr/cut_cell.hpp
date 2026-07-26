@@ -87,9 +87,29 @@ class AmrCutCell {
     t_ = &t;
     h0_ = h0;
     origin_ = origin;
+    extResolve_ = nullptr;  // distributed seam re-installed by the owner after every init
+    ghostLo_.clear();
+    ghostLv_.clear();
+    frameShift_ = {};
     for (int d = 0; d < 3; ++d)
       fineExt_[d] = static_cast<Coord>(t.brick()[d] * (Index(1) << t.lmax()));
   }
+
+  // ---- distributed seam (docs/amr_distributed_flow.md): mirrors AmrPoisson's. build() forwards
+  // all three into the internal lap_ (which it re-inits), so the whole momentum geometry —
+  // regular C/F rows and the ξ-overlay band — resolves cross-block probes through the LeafHalo
+  // registry and evaluates the SDF in the GLOBAL frame (bit-identical samples on every rank).
+  using ExtResolver = typename AmrPoisson<3, Bits>::ExtResolver;
+  void setResolver(ExtResolver r) { extResolve_ = std::move(r); }
+  /// Ghost slots [n, n+nGhost): block-local lo (longs) + covering-leaf level. build() fills
+  /// their sdfC/fluid metadata from the same world SdfFn (sampled at the ghost cell centre in
+  /// the global frame — identical to the owner's sample).
+  void setGhosts(std::vector<std::array<long, 3>> lo, std::vector<unsigned> lv) {
+    ghostLo_ = std::move(lo);
+    ghostLv_ = std::move(lv);
+  }
+  Index numGhosts() const { return static_cast<Index>(ghostLv_.size()); }
+  void setFrameShift(const std::array<long, 3>& s) { frameShift_ = s; }
 
   Index numLeaves() const { return t_->numLeaves(); }
   bool isFluid(Index i) const { return fluid_[static_cast<std::size_t>(i)]; }
@@ -132,15 +152,21 @@ class AmrCutCell {
   template <class SdfFn>
   void build(SdfFn&& sdfFn, double idiag = 0.0, double beta = 1.0, int nsub = 4) {
     const Index n = numLeaves();
+    const Index ng = numGhosts();
     // C/F-aware Laplacian provider for regular (non-cut) fluid cells: an AmrPoisson
     // with NO openness (α=1) -> the plain ∇² with 2:1-interface coeff(si,sj). The
     // cut cells (finest, same-level) keep the ξ overlay below.
     lap_.init(*t_, h0_);
+    if (extResolve_) {  // distributed: forward the seam into the freshly-init'd lap_
+      lap_.setResolver(extResolve_);
+      lap_.setGhosts(ghostLo_, ghostLv_);
+      lap_.setFrameShift(frameShift_);
+    }
     idiag_ = idiag;
     mu_ = beta * h0_ * h0_;  // physical μ (operator A = idiag·I − μ∇²)
-    sdfC_.assign(static_cast<std::size_t>(n), 0.0);
+    sdfC_.assign(static_cast<std::size_t>(n + ng), 0.0);
     kappa_.assign(static_cast<std::size_t>(n), 0.0);
-    fluid_.assign(static_cast<std::size_t>(n), false);
+    fluid_.assign(static_cast<std::size_t>(n + ng), false);
     cut_.assign(static_cast<std::size_t>(n), 0);
     hasAdv_ = false;  // advection FOU is rebuilt per step via buildAdvectionFou
     AC_.assign(static_cast<std::size_t>(n), 1.0);
@@ -158,6 +184,19 @@ class AmrCutCell {
       kappa_[static_cast<std::size_t>(i)] = volumeFraction(i, sdfFn, nsub);
       for (int k = 0; k < 6; ++k)
         nb_[static_cast<std::size_t>(i) * 6 + k] = neighbor(i, k);
+    }
+    // Ghost metadata (distributed): the SAME world SdfFn sampled at the ghost cell centre in
+    // the GLOBAL frame — bit-identical to the owner's Pass-1 sample of that leaf, so the
+    // ξ-classifications (and hence the CSR coefficients) agree across ranks exactly.
+    for (Index g = 0; g < ng; ++g) {
+      const auto& lo = ghostLo_[static_cast<std::size_t>(g)];
+      const double s = static_cast<double>(1L << ghostLv_[static_cast<std::size_t>(g)]);
+      Vec<3> c{};
+      for (int d = 0; d < 3; ++d)
+        c[d] = origin_[d] + (static_cast<double>(lo[d] + frameShift_[d]) + 0.5 * s) * h0_;
+      const double sc = sdfFn(c);
+      sdfC_[static_cast<std::size_t>(n + g)] = sc;
+      fluid_[static_cast<std::size_t>(n + g)] = sc > 0.0;
     }
 
     // Pass 2: build per-leaf stencil.
@@ -629,7 +668,8 @@ class AmrCutCell {
     double s = static_cast<double>(Index(1) << t_->level(i));
     Vec<3> c{};
     for (int d = 0; d < 3; ++d)
-      c[d] = origin_[d] + (static_cast<double>(b[0][d]) + 0.5 * s) * h0_;
+      c[d] = origin_[d] +
+             (static_cast<double>(static_cast<long>(b[0][d]) + frameShift_[d]) + 0.5 * s) * h0_;
     return c;
   }
 
@@ -639,35 +679,36 @@ class AmrCutCell {
     double s = static_cast<double>(Index(1) << t_->level(i));
     double w = s * h0_;
     int inside = 0, total = nsub * nsub * nsub;
+    Vec<3> base{};
+    for (int d = 0; d < 3; ++d)
+      base[d] =
+          origin_[d] + static_cast<double>(static_cast<long>(b[0][d]) + frameShift_[d]) * h0_;
     for (int a = 0; a < nsub; ++a)
       for (int bb = 0; bb < nsub; ++bb)
         for (int cc2 = 0; cc2 < nsub; ++cc2) {
-          Vec<3> p{origin_[0] + static_cast<double>(b[0][0]) * h0_ + (a + 0.5) / nsub * w,
-                   origin_[1] + static_cast<double>(b[0][1]) * h0_ + (bb + 0.5) / nsub * w,
-                   origin_[2] + static_cast<double>(b[0][2]) * h0_ + (cc2 + 0.5) / nsub * w};
+          Vec<3> p{base[0] + (a + 0.5) / nsub * w, base[1] + (bb + 0.5) / nsub * w,
+                   base[2] + (cc2 + 0.5) / nsub * w};
           if (sdfFn(p) > 0.0)
             ++inside;
         }
     return static_cast<double>(inside) / total;
   }
 
+  /// Periodic face neighbour in direction k — routed through lap_'s probe seam, so cross-block
+  /// probes resolve via the LeafHalo registry in distributed builds (block-periodic wrap,
+  /// bit-identical, when no resolver is set). Call only after lap_.init (i.e. inside build()).
   Index neighbor(Index i, int k) const {
-    int axis = k / 2, dir = (k % 2 == 0) ? +1 : -1;
-    auto b = t_->bounds(i);
-    const auto& lo = b[0];
-    Coord si = Coord(Coord(1) << t_->level(i));
-    long pc = (dir > 0) ? static_cast<long>(lo[axis]) + static_cast<long>(si)
-                        : static_cast<long>(lo[axis]) - 1;
-    long e = static_cast<long>(fineExt_[axis]);
-    std::array<Coord, 3> p = lo;
-    p[axis] = static_cast<Coord>(((pc % e) + e) % e);
-    return t_->find(M::encode(p).code());
+    return lap_.periodicNeighbor(i, k / 2, (k % 2 == 0) ? +1 : -1);
   }
 
   const Octree* t_ = nullptr;
   Real h0_ = 1.0;
   Vec<3> origin_{};
   std::array<Coord, 3> fineExt_{};
+  ExtResolver extResolve_;                     // distributed seam (forwarded into lap_ by build)
+  std::vector<std::array<long, 3>> ghostLo_;   // ghost slot → block-local lo (longs)
+  std::vector<unsigned> ghostLv_;              // ghost slot → covering-leaf level
+  std::array<long, 3> frameShift_{};           // block global fine origin (0 single-rank)
   std::vector<double> sdfC_, kappa_, AC_, rscale_, inhom_, off_;
   std::vector<Index> nb_;
   std::vector<char> fluid_, cut_;
