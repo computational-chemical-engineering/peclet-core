@@ -4,5 +4,5 @@ target_link_libraries(bench_halo PRIVATE tpx_halo)
 # AMR flow / Poisson host-vs-device benchmark (Kokkos + morton). Inert without them.
 if(PECLET_CORE_HAVE_KOKKOS)
   add_executable(bench_amr_flow bench_amr_flow.cpp)
-  target_link_libraries(bench_amr_flow PRIVATE tpx_core)
+  target_link_libraries(bench_amr_flow PRIVATE tpx_core MPI::MPI_CXX)
 endif()

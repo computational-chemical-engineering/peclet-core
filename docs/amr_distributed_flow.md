@@ -27,8 +27,25 @@ Status 2026-07-26: rungs 1–3(aperture) SHIPPED —
   rates shift (kappa experiment 0.49→0.65/cyc — the old map accidentally aggregated root
   bricks further; a PRINCIPLED super-root coarsening is the perf lever if bottom-solve
   strength ever limits).
-* Remaining: ghost pressure + full step wiring (rung 4, inside AmrFlow via initMpi), NS
-  advection halo (rung 5), adapt/rebalance + distributed pocket guard (rung 6), perf (7).
+* **Rungs 4+5 (full step + NS)**: `AmrFlow::initMpi(DistributedOctree&)` — setSolid installs
+  the seams, runs EVERY prober (momentum build, FaceGeom face+upup walks, overlay ±2 chains)
+  to the fixpoint, freezes the ±2 halo, then the normal build sequence runs distributed: host
+  parity-locked assembly with ghost columns, DistributedFlowMultigrid with level 0 SHARING the
+  flow registry (one extended layout for φ/overlay chains/Krylov scratch), COLLECTIVE
+  band-margin fallback, ghost syncs at every consumer (p before gradients, batched u before
+  divergence/advection, φ before the projection tail, directions before matvecs), Allreduce'd
+  ghost-BiCGStab dots + gpProject mean. Momentum preconditioner = RANK-LOCAL Galerkin MG
+  (exact local rows, ghost columns dropped — np=1 drops nothing ⇒ bit-identical to
+  single-rank; np>1 additive Schwarz; found by the np=1 bit-exact gate, which a Jacobi
+  fallback could not pass). test_amr_distributed_flow_mpi: full steps in THREE modes
+  (aperture Stokes / ghost Stokes / NS auto-ghost + advection halo) — np=1 BIT-EXACT vs
+  single-rank, np=2,4,8 Krylov tolerance, OpenMP + CUDA. Full AMR regressions green
+  (flow.hpp restructure is a single-rank no-op).
+* Deferred with explicit guards: distributed cf-quadratic scheme (throws), distributed
+  fragmentation guard (pockets undetected multi-rank until the label-propagation guard),
+  distributed beginAdapt/finishAdapt (throws — rung 6).
+* Remaining: adapt/rebalance + distributed pocket guard + the adaptive Z&H end gate (rung 6),
+  perf (rung 7: halo overlap, exact cross-rank Galerkin RAP, batched exchanges).
 
 Original plan (2026-07-25, ladder step 0) below. The goal is the distributed (MPI)
 `peclet::core::amr::AmrFlow`: the full ghost-projection NS step — momentum, pressure,

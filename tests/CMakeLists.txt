@@ -148,7 +148,7 @@ if(PECLET_CORE_HAVE_KOKKOS)
   add_test(NAME amr_momentum_assembly COMMAND test_amr_momentum_assembly)
 
   add_executable(test_amr_facegeom test_amr_facegeom.cpp)
-  target_link_libraries(test_amr_facegeom PRIVATE tpx_core)
+  target_link_libraries(test_amr_facegeom PRIVATE tpx_core MPI::MPI_CXX)
   target_include_directories(test_amr_facegeom PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   add_test(NAME amr_facegeom COMMAND test_amr_facegeom)
 
@@ -186,7 +186,8 @@ if(PECLET_CORE_HAVE_KOKKOS)
 
   # Collocated Stokes flow step (AmrFlow) — device vs host AmrFlow + analytic.
   add_executable(test_amr_flow_solver test_amr_flow_solver.cpp)
-  target_link_libraries(test_amr_flow_solver PRIVATE tpx_core)
+  # flow.hpp carries the distributed context (LeafHalo/DistributedOctree) => MPI headers.
+  target_link_libraries(test_amr_flow_solver PRIVATE tpx_core MPI::MPI_CXX)
   target_include_directories(test_amr_flow_solver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   add_test(NAME amr_flow_solver COMMAND test_amr_flow_solver)
 endif()
@@ -294,6 +295,10 @@ if(MPI_FOUND)
     add_executable(test_amr_distributed_flow_mg_mpi test_amr_distributed_flow_mg_mpi.cpp)
     target_link_libraries(test_amr_distributed_flow_mg_mpi PRIVATE tpx_halo)
     target_include_directories(test_amr_distributed_flow_mg_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+    add_executable(test_amr_distributed_flow_mpi test_amr_distributed_flow_mpi.cpp)
+    target_link_libraries(test_amr_distributed_flow_mpi PRIVATE tpx_halo)
+    target_include_directories(test_amr_distributed_flow_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   endif()
 
   foreach(np IN ITEMS 1 2 4 8)
@@ -324,6 +329,11 @@ if(MPI_FOUND)
       add_test(NAME amr_distributed_flow_mg_np${np}
                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
                        ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_flow_mg_mpi> ${MPIEXEC_POSTFLAGS})
+    endif()
+    if(TARGET test_amr_distributed_flow_mpi)
+      add_test(NAME amr_distributed_flow_np${np}
+               COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
+                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_flow_mpi> ${MPIEXEC_POSTFLAGS})
     endif()
     add_test(NAME grid_redistribute_np${np}
              COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}

@@ -47,6 +47,10 @@
 #include "peclet/core/common/types.hpp"
 #include "peclet/core/common/view.hpp"
 
+#include "peclet/core/amr/distributed_flow_mg.hpp"  // distributed pressure MG (initMpi mode)
+#include "peclet/core/amr/distributed_octree.hpp"
+#include "peclet/core/amr/leaf_halo.hpp"
+
 namespace peclet::core::amr {
 
 // FaceGeom (the collocated projection's static face-geometry CSR) now lives in face_geom.hpp so the
@@ -456,6 +460,20 @@ class AmrFlow {
     t_ = &t;
     h0_ = h0;
     origin_ = origin;
+    dist_ = nullptr;  // single-rank unless initMpi is used
+  }
+
+  /// Distributed mode (docs/amr_distributed_flow.md, rung 4): run this solver on one ORB block
+  /// of a DistributedOctree — the whole step (momentum, pressure, overlays) then executes
+  /// multi-rank through the LeafHalo ±2 ghost registry established in setSolid. The octree
+  /// must be graded + cross-block 2:1 balanced; the origin is the GLOBAL one (every rank
+  /// samples the geometry at bit-identical world points). Periodic domains only. All the
+  /// set* configuration calls apply as usual (before setSolid); setSolid / step / project are
+  /// COLLECTIVE over the octree's communicator. np=1 is bit-identical to init() + the
+  /// single-rank path on the same octree by construction.
+  void initMpi(DistributedOctree<3, Bits>& d) {
+    init(d.local(), d.h0(), d.globalGeometry().origin);
+    dist_ = &d;
   }
   void setDensity(double rho) { rho_ = rho; }
   void setViscosity(double mu) { mu_ = mu; }
@@ -581,27 +599,63 @@ class AmrFlow {
   template <class SdfFn>
   void setSolid(SdfFn&& sdfFn) {
     const Index n = t_->numLeaves();
+    if (dist_ && cfScheme_ != CfScheme::standard)
+      throw std::runtime_error(
+          "amr::AmrFlow: the C/F quadratic scheme is not distributed yet (rung-4 follow-up)");
     // Host operator build (geometry, openness, cut stencils) — same as oracle::AmrFlow::setSolid.
     mom_.init(*t_, h0_, origin_);
-    mom_.build(sdfFn, /*idiag=*/rho_ / dt_, /*beta=*/mu_ / (h0_ * h0_));
     pres_.init(*t_, h0_);
     pres_.setOrigin(origin_);
     // Resolve the projection mode: explicit request wins; AUTO (default) = ghost when advection
     // is on (the better AND cheaper NS projection — see setGhostProjection). The overlay is
-    // built here (it needs only mom_'s sdf samples + pres_'s topology walk, no openness); in
+    // built below (it needs only mom_'s sdf samples + pres_'s topology walk, no openness); in
     // auto mode a band-margin violation falls back to the aperture projection with a warning.
     ghostProj_ = (ghostProjReq_ == 1) || (ghostProjReq_ == -1 && advect_);
+    if (dist_) {
+      // Distributed: install the resolver seams and run every prober to the miss-collect
+      // fixpoint (docs/amr_distributed_flow.md). Freezes the ±2 halo, leaves mom_ FULLY built
+      // (its final round ran with every ghost resolved) and the solver hooks installed.
+      prepareDistributed(sdfFn);
+    } else {
+      nExt_ = n;
+      allred_ = {};
+      momSolver_.setDistributed({}, {}, 0);
+      pcg_.setDistributed({}, {}, 0);
+      mom_.build(sdfFn, /*idiag=*/rho_ / dt_, /*beta=*/mu_ / (h0_ * h0_));
+    }
     GhostOverlay hov;
     if (ghostProj_) {
-      try {
-        hov = buildGhostOverlay(*t_, pres_, mom_.sdfCRaw(), gpMatrixOrder_, gpRhsOrder_);
-      } catch (const std::runtime_error&) {
-        if (ghostProjReq_ == 1)
-          throw;
-        std::fprintf(stderr,
-                     "[peclet.core.amr] NS ghost-projection auto-default: the finest band is too "
-                     "thin for the closure overlay — falling back to the aperture projection\n");
-        ghostProj_ = false;
+      if (dist_) {
+        // COLLECTIVE band-margin decision: the flag is agreed across ranks before anyone
+        // commits to a projection mode (one rank falling back alone deadlocks the MG
+        // collectives).
+        bool viol = false;
+        hov = buildGhostOverlay(*t_, pres_, mom_.sdfCRaw(), gpMatrixOrder_, gpRhsOrder_, &viol);
+        int lv = viol ? 1 : 0, gv = 0;
+        MPI_Allreduce(&lv, &gv, 1, MPI_INT, MPI_LOR, dist_->comm());
+        if (gv) {
+          if (ghostProjReq_ == 1)
+            throw std::runtime_error(
+                "amr ghost projection: an overlay row's ±2 closure reach crosses a 2:1 level "
+                "boundary (collective) — widen the refineToSdf band margin");
+          std::fprintf(stderr,
+                       "[peclet.core.amr] NS ghost-projection auto-default: the finest band is "
+                       "too thin for the closure overlay — falling back to the aperture "
+                       "projection (collective)\n");
+          ghostProj_ = false;
+        }
+      } else {
+        try {
+          hov = buildGhostOverlay(*t_, pres_, mom_.sdfCRaw(), gpMatrixOrder_, gpRhsOrder_);
+        } catch (const std::runtime_error&) {
+          if (ghostProjReq_ == 1)
+            throw;
+          std::fprintf(stderr,
+                       "[peclet.core.amr] NS ghost-projection auto-default: the finest band is "
+                       "too thin for the closure overlay — falling back to the aperture "
+                       "projection\n");
+          ghostProj_ = false;
+        }
       }
     }
     if (ghostProj_) {
@@ -609,18 +663,34 @@ class AmrFlow {
       // rails; the closure physics lives in the overlay (built above).
       auto binFn = makeBinaryOpenFn([&sdfFn](const Vec<3>& p) { return sdfFn(p); }, h0_);
       pres_.buildOpenness(binFn);
-      presMG_.build(*t_, h0_, binFn, /*periodic=*/true);
+      if (dist_)
+        presMGD_.build(*dist_, h0_, binFn, &dhalo_);
+      else
+        presMG_.build(*t_, h0_, binFn, /*periodic=*/true);
       ghostGrad_ = true;  // the directional gradient is part of the scheme
       // Fragmentation guard: pockets outside the main binary component are decoupled (see
       // findPocketCells) — folded into maskC_ below and hidden from the directional gradients.
-      gpPocket_ = findPocketCells(*t_, pres_, mom_.sdfCRaw());
+      // Single-rank host BFS only: the DISTRIBUTED label-propagation guard is a rung-6 item
+      // (a rank-local BFS would mislabel components that span ranks), so multi-rank runs are
+      // unprotected on fragmenting geometries until it lands.
+      gpPocket_ = dist_ ? std::vector<char>{} : findPocketCells(*t_, pres_, mom_.sdfCRaw());
     } else {
       gpPocket_.clear();
       auto openFn = [&](const Vec<3>& fc, int axis) { return faceFrac(sdfFn, fc, axis); };
       pres_.buildOpenness(openFn);
-      presMG_.build(*t_, h0_, openFn, /*periodic=*/true);
+      if (dist_)
+        presMGD_.build(*dist_, h0_, openFn, &dhalo_);
+      else
+        presMG_.build(*t_, h0_, openFn, /*periodic=*/true);
     }
-    presMG_.setRemoveMean(true);  // singular periodic pressure: per-level nullspace projection
+    // Singular periodic pressure: per-level nullspace projection.
+    if (dist_) {
+      presMGD_.setRemoveMean(true);
+      pcg_.setDistributed([this](View<double> v) { presMGD_.sync(0, v); }, allred_,
+                          presMGD_.extendedSize(0));
+    } else {
+      presMG_.setRemoveMean(true);
+    }
 
     // Device assembly (D6): the static cut-cell momentum operator CSR and the collocated face
     // geometry are assembled ON THE DEVICE (assembleMomentum / assembleFaceGeom), and the
@@ -628,9 +698,23 @@ class AmrFlow {
     // no operator round-trip. Each is bit-for-bit identical to the host assembler on OpenMP (locked
     // in test_amr_momentum / test_amr_facegeom), so the flow result is unchanged. A shared device
     // octree view backs both assemblers.
+    // DISTRIBUTED: assemble on the HOST through the resolver seam instead (the device walkers
+    // cannot resolve cross-block probes) and upload — same parity-locked builders, ghost
+    // columns included.
     BlockOctreeView<3, Bits> ov;
-    ov.upload(*t_);
-    momOp_ = assembleMomentum<Bits>(mom_, ov);  // static Stokes operator (hasAdv stays false)
+    if (!dist_)
+      ov.upload(*t_);
+    if (dist_) {
+      auto A = mom_.assembleOperator();
+      momOp_ = MomentumOp{};
+      momOp_.n = n;
+      momOp_.diag = toDevice(A.diag, "mo_diag");
+      momOp_.faceStart = toDevice(A.start, "mo_start");
+      momOp_.faceNbr = toDevice(A.nbr, "mo_nbr");
+      momOp_.faceCoef = toDevice(A.coef, "mo_coef");
+    } else {
+      momOp_ = assembleMomentum<Bits>(mom_, ov);  // static Stokes operator (hasAdv stays false)
+    }
     // Velocity multigrid (momentum preconditioner): the Galerkin hierarchy A_c = R·A·P built
     // directly from the exact assembled momentum CSR. Consistent with the fine cut-cell
     // operator by construction (inherits the ξ-overlay + D_rescale row scaling; a coarse cell
@@ -639,7 +723,31 @@ class AmrFlow {
     // count stays ~flat with N instead of growing like the Jacobi-preconditioned BiCGStab.
     // Build the chosen momentum-MG: Galerkin (MomentumMG) by default, or the rediscretized
     // staircase (VelocityMG) — both from the static Stokes operator, once.
-    if (momMGon_) {
+    // DISTRIBUTED: the Galerkin MG becomes RANK-LOCAL (additive-Schwarz preconditioner): the
+    // local rows of the exact operator with the ghost COLUMNS dropped. At np=1 nothing is
+    // dropped, so the preconditioner — and hence the whole step — stays bit-identical to the
+    // single-rank path; at np>1 it is a block preconditioner (iterations may grow with np,
+    // the converged step is unchanged — the preconditioner never moves the solution). The
+    // EXACT cross-rank Galerkin RAP is the documented follow-up
+    // (docs/amr_distributed_flow.md §4c); the staircase variant is single-rank-only for now
+    // (distributed falls back to Jacobi-with-halo preconditioning).
+    if (momMGon_ && dist_ && !useStaircaseMG_) {
+      auto A = mom_.assembleOperator();
+      std::vector<Index> lstart(1, 0);
+      std::vector<Index> lnbr;
+      std::vector<double> lcoef;
+      for (Index i = 0; i < n; ++i) {
+        for (Index k = A.start[static_cast<std::size_t>(i)];
+             k < A.start[static_cast<std::size_t>(i) + 1]; ++k)
+          if (A.nbr[static_cast<std::size_t>(k)] < n) {  // drop ghost columns (Schwarz cut)
+            lnbr.push_back(A.nbr[static_cast<std::size_t>(k)]);
+            lcoef.push_back(A.coef[static_cast<std::size_t>(k)]);
+          }
+        lstart.push_back(static_cast<Index>(lnbr.size()));
+      }
+      momMG_.build(*t_, A.diag, lstart, lnbr, lcoef);
+      momMG_.setGaussSeidel(momGS_);
+    } else if (momMGon_ && !dist_) {
       if (useStaircaseMG_) {
         std::vector<double> kap(static_cast<std::size_t>(n));
         std::vector<char> fl(static_cast<std::size_t>(n)), cu(static_cast<std::size_t>(n));
@@ -661,7 +769,15 @@ class AmrFlow {
     std::vector<char> fluidVec(static_cast<std::size_t>(n));
     for (Index i = 0; i < n; ++i)
       fluidVec[static_cast<std::size_t>(i)] = mom_.isFluid(i) ? 1 : 0;
-    geom_ = assembleFaceGeom<Bits>(pres_, fluidVec, ov);
+    if (dist_) {
+      // Host walker through the resolver seam (nbr/upup may be ghost slots), then EXTEND the
+      // fluid flags over the ghost tail — the advection kernels read fl(j)/fl(upup) at ghost
+      // slots (mom_.fluidRaw() carries the ghost metadata filled from the world SdfFn).
+      geom_ = buildFaceGeom(pres_, [&](Index i) { return mom_.isFluid(i); });
+      geom_.fluid = toDevice(mom_.fluidRaw(), "fg_fluid_ext");
+    } else {
+      geom_ = assembleFaceGeom<Bits>(pres_, fluidVec, ov);
+    }
     std::vector<double> rs(static_cast<std::size_t>(n));
     for (Index i = 0; i < n; ++i)
       rs[static_cast<std::size_t>(i)] = mom_.rhsScale(i);
@@ -711,7 +827,8 @@ class AmrFlow {
         if (!hov.coupled[static_cast<std::size_t>(r)])
           mc[static_cast<std::size_t>(hov.cell[static_cast<std::size_t>(r)])] = 0.0;
       maskC_ = toDevice(mc, "gp_maskc");
-      auto mk = [&](const char* l) { return View<double>(l, static_cast<std::size_t>(n)); };
+      // Krylov scratch carries the ghost tail (matvec inputs) in distributed mode.
+      auto mk = [&](const char* l) { return View<double>(l, static_cast<std::size_t>(nExt_)); };
       gpr_ = mk("gp_r");
       gprh_ = mk("gp_rhat");
       gpp_ = mk("gp_p");
@@ -722,15 +839,18 @@ class AmrFlow {
       gpt_ = mk("gp_t");
     }
 
-    // Device state.
+    // Device state. Fields whose ghost entries are READ through the CSRs / overlays (u, p, φ)
+    // — plus div (its View is deep_copied into the nExt-sized distributed MG rhs) and the u
+    // snapshots (full-extent deep_copies of u) — carry the ghost tail [n, nExt); nExt == n
+    // single-rank, so those allocations are unchanged there.
     for (int c = 0; c < 3; ++c) {
-      u_[c] = View<double>("df_u", static_cast<std::size_t>(n));
+      u_[c] = View<double>("df_u", static_cast<std::size_t>(nExt_));
       gx_[c] = View<double>("df_g", static_cast<std::size_t>(n));
       Kokkos::deep_copy(u_[c], 0.0);
     }
-    p_ = View<double>("df_p", static_cast<std::size_t>(n));
-    phi_ = View<double>("df_phi", static_cast<std::size_t>(n));
-    div_ = View<double>("df_div", static_cast<std::size_t>(n));
+    p_ = View<double>("df_p", static_cast<std::size_t>(nExt_));
+    phi_ = View<double>("df_phi", static_cast<std::size_t>(nExt_));
+    div_ = View<double>("df_div", static_cast<std::size_t>(nExt_));
     uf_ = View<double>("df_uf",
                        geom_.nbr.extent(0));  // ABC divergence-free face field (per CSR face)
     faceFieldBuilt_ = false;
@@ -746,8 +866,8 @@ class AmrFlow {
       Kokkos::deep_copy(defc_[c], 0.0);
       // uⁿ snapshot for the backward-Euler mass term (frozen across Picard outer iters) + the
       // previous outer iterate for the outer-loop convergence test.
-      u0_[c] = View<double>("df_u0", static_cast<std::size_t>(n));
-      uprev_[c] = View<double>("df_uprev", static_cast<std::size_t>(n));
+      u0_[c] = View<double>("df_u0", static_cast<std::size_t>(nExt_));
+      uprev_[c] = View<double>("df_uprev", static_cast<std::size_t>(nExt_));
     }
     // Device-resident implicit-FOU advection: the FOU operator (advDiag + per-face advCoef over the
     // face-geometry CSR) is rebuilt on device each step from uⁿ and added to the static Stokes
@@ -762,8 +882,9 @@ class AmrFlow {
     momOp_.hasAdv = false;  // set per-step when advection is on
     momSolver_.setJacobi(2, 0.7);
     // Generic MG preconditioner: dispatch the chosen hierarchy's V-cycle (z = M⁻¹ r), decoupling
-    // the solver from the MG type so Galerkin and staircase are interchangeable.
-    if (momMGon_) {
+    // the solver from the MG type so Galerkin and staircase are interchangeable. Distributed:
+    // the rank-local Galerkin hierarchy built above (staircase unsupported there ⇒ Jacobi).
+    if (momMGon_ && !(dist_ && useStaircaseMG_)) {
       if (useStaircaseMG_)
         momSolver_.setPreconditioner(
             [this](View<const double> r, View<double> z) { runMgVcycle(velMG_, r, z); });
@@ -791,6 +912,7 @@ class AmrFlow {
       Kokkos::deep_copy(u0_[c], View<const double>(u_[c]));
     // −∇p^n is constant across the outer iterations (pressure is projected once, after the loop,
     // like flow's single per-step projection) ⇒ hoist it out.
+    syncScalar(p_);  // ghost tail of pⁿ before the gradient reads (no-op single-rank)
     grad3(geom_, View<const double>(p_), gx_[0], gx_[1], gx_[2]);
     for (int a = 0; a < 3; ++a)  // 2nd-order C/F face gradients (level-boundary rows)
       cfApply(cfGrad_[static_cast<std::size_t>(a)], View<const double>(p_), gx_[a]);
@@ -806,6 +928,7 @@ class AmrFlow {
       // instant early-stop. ---
       if (advect_) {
         momOp_.hasAdv = implicitFou_;
+        syncVel();  // ghost tails of the (lagged) advecting velocity for buildFou/deferredSou
         // Advect with the divergence-free face field uf (from the previous projection); fall back
         // to ½(u_i+u_j) before the first projection has built it. The implicit FOU and the explicit
         // SOU/FOU deferred correction use the SAME velocity ⇒ the FOU cancels at steady state
@@ -873,6 +996,7 @@ class AmrFlow {
   /// Pressure projection of the current velocity in place.
   void project(int presIters = 60) {
     const Index n = n_;
+    syncVel();  // ghost tails of u* for the divergence (+ the ghost-closed overlay delta)
     divergence(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
                View<const double>(u_[2]), div_);
     cfApplyComp(cfDiv_, View<const double>(u_[0]), View<const double>(u_[1]),
@@ -894,7 +1018,16 @@ class AmrFlow {
     // removal is on for both; making MG-PCG robust enough to also cover advection needs flow's
     // near-isolated-cell pinning/classification — a follow-up.)
     if (presPCG_ && !advect_) {
-      lastPresIters_ = pcg_.solve(presMG_, phi_, View<const double>(div_), presIters, 1e-10).iters;
+      lastPresIters_ =
+          dist_ ? pcg_.solve(presMGD_, phi_, View<const double>(div_), presIters, 1e-10).iters
+                : pcg_.solve(presMG_, phi_, View<const double>(div_), presIters, 1e-10).iters;
+    } else if (dist_) {
+      Kokkos::deep_copy(presMGD_.b(0), div_);
+      Kokkos::deep_copy(presMGD_.x(0), 0.0);
+      for (int it = 0; it < presIters; ++it)
+        presMGD_.vcycle(2, 2, 60, 0.8);
+      Kokkos::deep_copy(phi_, presMGD_.x(0));
+      lastPresIters_ = presIters;
     } else {
       Kokkos::deep_copy(presMG_.b(0), div_);
       Kokkos::deep_copy(presMG_.x(0), 0.0);
@@ -910,6 +1043,8 @@ class AmrFlow {
   /// velocities (ABC / ghost gradient), rotational pressure update. div_ holds the projection's
   /// RHS divergence (aperture or ghost-closed).
   void finishProjection(Index n) {
+    // u*'s ghost tail is current (project() synced it and u is untouched since); φ's is not.
+    syncScalar(phi_);
     buildFaceField(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
                    View<const double>(u_[2]), View<const double>(phi_), uf_);
     // 2nd-order C/F face values (setCfScheme): distance-weighted average + coarse* substitution
@@ -939,6 +1074,10 @@ class AmrFlow {
 
   /// Snapshot the octree topology + (u, p) ahead of an external mesh mutation.
   void beginAdapt() {
+    if (dist_)
+      throw std::runtime_error(
+          "amr::AmrFlow: distributed mid-run adaptivity lands at rung 6 (distributedAdapt + "
+          "rebalance integration) — single-rank only for now");
     adaptOldT_ = std::make_unique<Octree>(*t_);
     for (int c = 0; c < 3; ++c)
       adaptU_[static_cast<std::size_t>(c)] = velocity(c);
@@ -989,6 +1128,7 @@ class AmrFlow {
   /// DEBUG: the raw high-order advection ∇·(u u_comp) per cell from the current velocity
   /// (== host oracle::AmrFlow::advectTerm). Isolates the SOU kernel from the solve.
   std::vector<double> debugSou(int comp) {
+    syncVel();
     View<double> s("dbg_sou", static_cast<std::size_t>(n_));
     advectExplicit(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
                    View<const double>(u_[2]), comp, 1.0, advScheme_, s, View<const double>(uf_),
@@ -1005,10 +1145,22 @@ class AmrFlow {
   /// preconditioner is decoupled from the coarse-operator strategy.
   template <class MG>
   void runMgVcycle(MG& mg, View<const double> r, View<double> z) {
-    Kokkos::deep_copy(mg.b(0), r);
+    // Element copies over the LOCAL rows (not deep_copy): in distributed mode the Krylov
+    // scratch carries a ghost tail while the (rank-local) MG levels are local-sized; the
+    // solver refreshes z's ghost tail before the next matvec. Same values single-rank.
+    const Index nl = mg.numLeaves(0);
+    {
+      auto b0 = mg.b(0);
+      Kokkos::parallel_for(
+          "amr::mgv_b", nl, KOKKOS_LAMBDA(const Index i) { b0(i) = r(i); });
+    }
     Kokkos::deep_copy(mg.x(0), 0.0);
     mg.vcycle(mgVcPre_, mgVcPre_, mgVcBottom_, 0.7);
-    Kokkos::deep_copy(z, mg.x(0));
+    {
+      auto x0 = mg.x(0);
+      Kokkos::parallel_for(
+          "amr::mgv_z", nl, KOKKOS_LAMBDA(const Index i) { z(i) = x0(i); });
+    }
   }
   /// Max |a − b| over all cells (the Picard outer-loop convergence measure).
   static double maxAbsDiff(View<const double> a, View<const double> b, Index n) {
@@ -1039,11 +1191,23 @@ class AmrFlow {
       m(i) = h[static_cast<std::size_t>(i)];
     Kokkos::deep_copy(u_[c], m);
   }
-  /// Copy a velocity component back to host (single D2H, no host loop — S2a).
-  std::vector<double> velocity(int c) const { return peclet::core::toVector(u_[c]); }
+  /// Copy a velocity component back to host (single D2H, no host loop — S2a). Local rows only
+  /// (the distributed ghost tail is an implementation detail).
+  std::vector<double> velocity(int c) const { return localVector(u_[c]); }
   /// Copy the pressure field back to host (single D2H), (num_leaves,) — the incremental-rotational
-  /// p.
-  std::vector<double> pressure() const { return peclet::core::toVector(p_); }
+  /// p. Local rows only.
+  std::vector<double> pressure() const { return localVector(p_); }
+
+  /// Host copy of the LOCAL rows of a (possibly ghost-extended) per-cell field.
+  std::vector<double> localVector(const View<double>& v) const {
+    if (v.extent(0) == static_cast<std::size_t>(n_))
+      return peclet::core::toVector(v);
+    View<double> packed(Kokkos::view_alloc("amr::local_packed", Kokkos::WithoutInitializing),
+                        static_cast<std::size_t>(n_));
+    Kokkos::parallel_for(
+        "amr::pack_local", n_, KOKKOS_LAMBDA(const Index i) { packed(i) = v(i); });
+    return peclet::core::toVector(packed);
+  }
 
   /// All three velocity components interleaved as a flat (n,3) row-major host buffer
   /// (out[i*3+c]) with a single device→host transfer (G6): the three independent component
@@ -1064,6 +1228,7 @@ class AmrFlow {
   /// L2 norm of the (openness-weighted) divergence of the current velocity — the ghost-closed
   /// divergence when the ghost projection is on (its constraint IS the residual diagnostic).
   double divNormL2() {
+    syncVel();
     divergence(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
                View<const double>(u_[2]), div_);
     cfApplyComp(cfDiv_, View<const double>(u_[0]), View<const double>(u_[1]),
@@ -1071,15 +1236,20 @@ class AmrFlow {
     if (ghostProj_)
       ghostDivergDelta(gpOv_, View<const double>(u_[0]), View<const double>(u_[1]),
                        View<const double>(u_[2]), div_);
-    return std::sqrt(dotPlain(View<const double>(div_), View<const double>(div_), n_));
+    return std::sqrt(allSum(dotPlain(View<const double>(div_), View<const double>(div_), n_)));
   }
   /// L2 norm of the divergence of the ABC face field uf_ (built each project()): the φ-solve
   /// residual, far below the cell field's O(h²) divNormL2 — including across 2:1 interfaces.
-  double divNormFace() { return divFaceNorm(geom_, View<const double>(uf_)); }
+  double divNormFace() {
+    const double l = divFaceNorm(geom_, View<const double>(uf_));
+    return std::sqrt(allSum(l * l));
+  }
   /// Copy the divergence-free face field to host (one value per CSR (sub)face, forEachFaceFull
   /// order).
   std::vector<double> faceField() const { return peclet::core::toVector(uf_); }
   Index numLeaves() const { return n_; }
+  /// Distributed: number of ghost slots in the ±2 registry (0 single-rank).
+  Index numGhostCells() const { return nExt_ - n_; }
   /// Per-leaf fluid mask (false inside the solid) — for host-side post-processing / bindings.
   bool isFluid(Index i) const { return mom_.isFluid(i); }
   /// Total momentum BiCGStab iterations (summed over the 3 components) of the last step.
@@ -1089,26 +1259,124 @@ class AmrFlow {
   /// Picard outer iterations actually run in the last step (1 unless setOuterIterations(>1)).
   int lastOuterIters() const { return lastOuterIters_; }
 
+  // ---- distributed plumbing (docs/amr_distributed_flow.md, rung 4) ----------------------------
+
+  /// Refresh the ghost tails of the three velocity components (one batched message round).
+  void syncVel() {
+    if (dist_)
+      dhex_.exchange3(u_[0], u_[1], u_[2]);
+  }
+  /// Refresh the ghost tail of one cell scalar (p, φ, Krylov scratch).
+  void syncScalar(View<double> v) {
+    if (dist_)
+      dhex_.exchange(v);
+  }
+  /// Global sum (identity single-rank).
+  double allSum(double s) const {
+    if (!dist_)
+      return s;
+    double g = 0.0;
+    MPI_Allreduce(&s, &g, 1, MPI_DOUBLE, MPI_SUM, dist_->comm());
+    return g;
+  }
+  /// The pressure operator the ghost solver runs on (distributed MG level 0 or presMG_'s).
+  const FvOp& gpOp0() { return dist_ ? presMGD_.op(0) : presMG_.op(0); }
+
+  /// Install the resolver seams, run every prober to the miss-collect fixpoint, freeze the ±2
+  /// halo, hook the solvers. Leaves mom_ FULLY built (its final round ran with all ghosts
+  /// resolved). Collective.
+  template <class SdfFn>
+  void prepareDistributed(SdfFn&& sdfFn) {
+    dhalo_.init(*dist_);
+    for (int a = 0; a < 3; ++a)
+      shiftD_[a] = dist_->blockFineOrigin()[a];
+    auto resv = [hp = &dhalo_, sh = shiftD_](const std::array<long, 3>& p) -> Index {
+      std::array<long, 3> g = p;
+      for (int a = 0; a < 3; ++a)
+        g[a] += sh[a];
+      return hp->resolveGlobal(g);
+    };
+    mom_.setFrameShift(shiftD_);
+    mom_.setResolver(resv);
+    pres_.setFrameShift(shiftD_);
+    pres_.setResolver(resv);
+    const Index n = t_->numLeaves();
+    const double beta = mu_ / (h0_ * h0_);
+    for (;;) {
+      installGhostMeta();  // metadata for every ghost known so far (same-round hits read it)
+      mom_.build(sdfFn, rho_ / dt_, beta);  // ±1 probes (also fills the extended sdfC/fluid)
+      // FaceGeom probes: the full face enumeration + the SOU upstream-of-upwind ±2 reach.
+      for (Index i = 0; i < n; ++i)
+        pres_.forEachFaceFull(i, [&](Index j, int ax, int dr, double, double, double) {
+          (void)pres_.periodicNeighbor(i, ax, -dr);
+          if (j >= 0)
+            (void)pres_.periodicNeighbor(j, ax, dr);
+        });
+      // Overlay / directional-gradient ±2 chains (every cut cell is a non-clean overlay row,
+      // so this covers buildGhostGradOverlay's probes too). Discovery only — result discarded.
+      if (ghostProj_ || ghostGrad_) {
+        bool viol = false;
+        (void)buildGhostOverlay(*t_, pres_, mom_.sdfCRaw(), gpMatrixOrder_, gpRhsOrder_, &viol);
+      }
+      if (dhalo_.resolveMisses() == 0)
+        break;
+    }
+    installGhostMeta();
+    dhalo_.finalize();
+    nExt_ = dhalo_.extendedSize();
+    dhex_.init(dhalo_);
+    allred_ = [this](double s) { return allSum(s); };
+    momSolver_.setDistributed([this](View<double> v) { dhex_.exchange(v); }, allred_, nExt_);
+  }
+
+  /// Mirror the halo registry's ghost metadata (block-local lo + level) into mom_ and pres_.
+  void installGhostMeta() {
+    const Index ng = dhalo_.numGhosts();
+    std::vector<std::array<long, 3>> glo(static_cast<std::size_t>(ng));
+    std::vector<unsigned> glv(static_cast<std::size_t>(ng));
+    for (Index g = 0; g < ng; ++g) {
+      for (int a = 0; a < 3; ++a)
+        glo[static_cast<std::size_t>(g)][a] =
+            static_cast<long>(dhalo_.ghostCoord(g)[a]) - shiftD_[a];
+      glv[static_cast<std::size_t>(g)] =
+          static_cast<unsigned>(dhalo_.level(dhalo_.numLocal() + g));
+    }
+    mom_.setGhosts(glo, glv);  // copies — pres_ takes the originals
+    pres_.setGhosts(std::move(glo), std::move(glv));
+  }
+
   // (public like runMgVcycle: nvcc rejects extended device lambdas in private member functions)
   // Project onto the coupled subspace: pin decoupled rows (solid-centered + no-phi-coupling
   // overlay rows) to 0 and remove the volume-weighted mean over the coupled cells (the constant
-  // null mode of the connected fluid region) — removeMeanVol with the coupled mask.
-  void gpProject(View<double> v) { removeMeanVol(v, presMG_.op(0).invVol, maskC_, n_); }
+  // null mode of the connected fluid region) — removeMeanVol with the coupled mask (the mean
+  // reduced globally in distributed mode; allred_ is empty single-rank ⇒ bit-identical).
+  void gpProject(View<double> v) {
+    removeMeanVolReduced(v, gpOp0().invVol, maskC_, n_, allred_);
+  }
 
-  // Nonsymmetric ghost pressure matvec: y = P[rho·(L_bin x + Delta x)].
+  // Nonsymmetric ghost pressure matvec: y = P[rho·(L_bin x + Delta x)]. The caller keeps x's
+  // ghost tail current (syncScalar before every call in distributed mode).
   void ghostMatvec(View<const double> x, View<double> y) {
-    applyFv(presMG_.op(0), x, y);
+    applyFv(gpOp0(), x, y);
     ghostApplyDelta(gpOv_, x, y);
     gpProject(y);
   }
 
   // Preconditioner: two binary-openness V-cycles (the unchanged MG hierarchy) + projection.
   void ghostPrec(View<const double> r, View<double> z) {
-    Kokkos::deep_copy(presMG_.b(0), r);
-    Kokkos::deep_copy(presMG_.x(0), 0.0);
-    presMG_.vcycle(2, 2, 60, 0.8);
-    presMG_.vcycle(2, 2, 60, 0.8);
-    Kokkos::deep_copy(z, presMG_.x(0));
+    if (dist_) {
+      Kokkos::deep_copy(presMGD_.b(0), r);
+      Kokkos::deep_copy(presMGD_.x(0), 0.0);
+      presMGD_.vcycle(2, 2, 60, 0.8);
+      presMGD_.vcycle(2, 2, 60, 0.8);
+      Kokkos::deep_copy(z, presMGD_.x(0));
+    } else {
+      Kokkos::deep_copy(presMG_.b(0), r);
+      Kokkos::deep_copy(presMG_.x(0), 0.0);
+      presMG_.vcycle(2, 2, 60, 0.8);
+      presMG_.vcycle(2, 2, 60, 0.8);
+      Kokkos::deep_copy(z, presMG_.x(0));
+    }
     gpProject(z);
   }
 
@@ -1117,6 +1385,10 @@ class AmrFlow {
   // attainable-residual floor of the slightly incompatible ghost system). Returns iterations.
   int solveGhostBiCGStab(View<double> x, View<const double> b, int maxIters, double tol = 1e-10) {
     const Index n = n_;
+    // Dots are locally summed then globally reduced (allSum = identity single-rank); every
+    // matvec input's ghost tail is refreshed first. Stagnation/early-break branches depend on
+    // reduced scalars only ⇒ every rank takes the same branch.
+    syncScalar(x);
     ghostMatvec(View<const double>(x), gpr_);
     {
       auto r = gpr_;
@@ -1127,7 +1399,7 @@ class AmrFlow {
     gpProject(gpr_);
     Kokkos::deep_copy(gprh_, gpr_);
     const double res0 =
-        std::sqrt(dotPlain(View<const double>(gpr_), View<const double>(gpr_), n));
+        std::sqrt(allSum(dotPlain(View<const double>(gpr_), View<const double>(gpr_), n)));
     if (res0 == 0.0)
       return 0;
     double rho = 1, alpha = 1, omega = 1, best = res0;
@@ -1136,38 +1408,42 @@ class AmrFlow {
     Kokkos::deep_copy(gpp_, 0.0);
     int it = 0;
     for (; it < maxIters; ++it) {
-      const double rhoNew = dotPlain(View<const double>(gprh_), View<const double>(gpr_), n);
+      const double rhoNew =
+          allSum(dotPlain(View<const double>(gprh_), View<const double>(gpr_), n));
       if (rhoNew == 0.0)
         break;
       const double beta = (rhoNew / rho) * (alpha / omega);
       bicgPUpdate(gpp_, View<const double>(gpr_), View<const double>(gpv_), beta, omega, n);
       ghostPrec(View<const double>(gpp_), gpph_);
+      syncScalar(gpph_);
       ghostMatvec(View<const double>(gpph_), gpv_);
-      const double rhatV = dotPlain(View<const double>(gprh_), View<const double>(gpv_), n);
+      const double rhatV =
+          allSum(dotPlain(View<const double>(gprh_), View<const double>(gpv_), n));
       if (rhatV == 0.0)
         break;
       alpha = rhoNew / rhatV;
       Kokkos::deep_copy(gps_, gpr_);
       axpy(gps_, -alpha, View<const double>(gpv_), n);
       const double snorm =
-          std::sqrt(dotPlain(View<const double>(gps_), View<const double>(gps_), n));
+          std::sqrt(allSum(dotPlain(View<const double>(gps_), View<const double>(gps_), n)));
       if (snorm <= tol * res0) {
         axpy(x, alpha, View<const double>(gpph_), n);
         ++it;
         break;
       }
       ghostPrec(View<const double>(gps_), gpsh_);
+      syncScalar(gpsh_);
       ghostMatvec(View<const double>(gpsh_), gpt_);
-      const double tt = dotPlain(View<const double>(gpt_), View<const double>(gpt_), n);
+      const double tt = allSum(dotPlain(View<const double>(gpt_), View<const double>(gpt_), n));
       omega = (tt != 0.0)
-                  ? dotPlain(View<const double>(gpt_), View<const double>(gps_), n) / tt
+                  ? allSum(dotPlain(View<const double>(gpt_), View<const double>(gps_), n)) / tt
                   : 0.0;
       axpy(x, alpha, View<const double>(gpph_), n);
       axpy(x, omega, View<const double>(gpsh_), n);
       Kokkos::deep_copy(gpr_, gps_);
       axpy(gpr_, -omega, View<const double>(gpt_), n);
       const double rnorm =
-          std::sqrt(dotPlain(View<const double>(gpr_), View<const double>(gpr_), n));
+          std::sqrt(allSum(dotPlain(View<const double>(gpr_), View<const double>(gpr_), n)));
       if (rnorm <= tol * res0) {
         ++it;
         break;
@@ -1204,10 +1480,12 @@ class AmrFlow {
     std::vector<double> w(static_cast<std::size_t>(m) * 9, 0.0);
     // Pocket cells (fragmentation guard) count as solid for the directional gradient: their φ is
     // pinned/decoupled, and reading the pinned 0 is the gauge-dependent defect the ghost
-    // gradient exists to avoid.
+    // gradient exists to avoid. Levels via pres_.levelOf: ghost-slot-safe in distributed
+    // builds (identical to t_->level for local leaves; the pocket guard is single-rank-only —
+    // gpPocket_ stays empty distributed until the label-propagation guard lands).
     auto ok = [&](Index j, Index i) {
-      return j >= 0 && mom_.isFluid(j) && t_->level(j) == t_->level(i) &&
-             !(!gpPocket_.empty() && gpPocket_[static_cast<std::size_t>(j)]);
+      return j >= 0 && mom_.isFluid(j) && pres_.levelOf(j) == pres_.levelOf(i) &&
+             !(!gpPocket_.empty() && j < n && gpPocket_[static_cast<std::size_t>(j)]);
     };
     for (Index s = 0; s < m; ++s) {
       const Index i = cells[static_cast<std::size_t>(s)];
@@ -1347,6 +1625,15 @@ class AmrFlow {
   std::unique_ptr<Octree> adaptOldT_;      // beginAdapt topology snapshot
   std::array<std::vector<double>, 3> adaptU_;  // beginAdapt field snapshots
   std::vector<double> adaptP_;
+
+  // ---- distributed context (initMpi; all null/empty single-rank) -----------------------------
+  DistributedOctree<3, Bits>* dist_ = nullptr;  // the ORB block + communicator
+  LeafHalo<3, Bits> dhalo_;                     // the flow's ±2 ghost registry (frozen in setSolid)
+  LeafHaloExchange dhex_;                       // device value refresh over dhalo_
+  DistributedFlowMultigrid<3, Bits> presMGD_;   // distributed pressure MG (level 0 on dhalo_)
+  std::array<long, 3> shiftD_{};                // block global fine origin
+  Index nExt_ = 0;                              // n_ + ghosts (== n_ single-rank)
+  std::function<double(double)> allred_;        // Allreduce hook (empty single-rank)
 };
 
 }  // namespace peclet::core::amr

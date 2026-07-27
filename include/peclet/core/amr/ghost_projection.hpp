@@ -83,19 +83,27 @@ struct GhostOverlayRef {
 };
 }  // namespace detail
 
-/// Build the overlay from the octree + the cell-centered SDF samples (AmrCutCell::sdfCRaw).
-/// Classification is float, from CELL-CENTERED sdf with face values = mean of the two adjacent
-/// centers — identical to flow's buildGpOverlay, so the closures agree with the momentum solid
-/// masks. Throws if a non-clean row's ±2 reach touches a different-level leaf (finest-band
-/// margin invariant violated — widen the refineToSdf band).
+/// Build the overlay from the octree + the cell-centered SDF samples (AmrCutCell::sdfCRaw —
+/// EXTENDED over the ghost slots in a distributed build, where pres carries the LeafHalo
+/// resolver seam and the chains may hop through ghosts). Classification is float, from
+/// CELL-CENTERED sdf with face values = mean of the two adjacent centers — identical to flow's
+/// buildGpOverlay, so the closures agree with the momentum solid masks. On a band-margin
+/// violation (a non-clean row's ±2 reach crosses a 2:1 level boundary): throws when
+/// `bandViolation` is null (the single-rank behaviour — widen the refineToSdf band); with
+/// `bandViolation` set, flags it and skips the row instead — the DISTRIBUTED caller must make
+/// the fallback decision COLLECTIVELY (Allreduce the flag; one rank falling back alone
+/// deadlocks the MG collectives). Unresolved (negative) chain entries count as violations —
+/// they only occur during the discovery fixpoint, whose overlay is discarded.
 template <unsigned Bits>
 inline GhostOverlay buildGhostOverlay(const BlockOctree<3, Bits>& t,
                                       const AmrPoisson<3, Bits>& pres,
                                       const std::vector<double>& sdfC, int matrixOrder,
-                                      int rhsOrder) {
+                                      int rhsOrder, bool* bandViolation = nullptr) {
   GhostOverlay ov;
   const Index n = t.numLeaves();
-  auto sf = [&](Index j) { return static_cast<float>(sdfC[static_cast<std::size_t>(j)]); };
+  auto sf = [&](Index j) {
+    return j >= 0 ? static_cast<float>(sdfC[static_cast<std::size_t>(j)]) : -1.0f;
+  };
   // scratch single row appended per accepted cell
   for (Index i = 0; i < n; ++i) {
     if (!(sdfC[static_cast<std::size_t>(i)] > 0.0))
@@ -114,14 +122,23 @@ inline GhostOverlay buildGhostOverlay(const BlockOctree<3, Bits>& t,
       continue;
     // Non-clean ⇒ cut band ⇒ the finest-band contract must hold: the whole ±2 reach same-level.
     const unsigned Li = t.level(i);
+    bool bad = false;
     for (int a = 0; a < 3; ++a) {
-      chain[a][4] = pres.periodicNeighbor(chain[a][3], a, +1);
-      chain[a][0] = pres.periodicNeighbor(chain[a][1], a, -1);
+      chain[a][4] =
+          chain[a][3] >= 0 ? pres.periodicNeighbor(chain[a][3], a, +1) : chain[a][3];
+      chain[a][0] =
+          chain[a][1] >= 0 ? pres.periodicNeighbor(chain[a][1], a, -1) : chain[a][1];
       for (int q = 0; q < 5; ++q)
-        if (t.level(chain[a][q]) != Li)
-          throw std::runtime_error(
-              "amr ghost projection: an overlay row's ±2 closure reach crosses a 2:1 level "
-              "boundary — the cut band is too thin; widen the refineToSdf band margin");
+        if (chain[a][q] < 0 || pres.levelOf(chain[a][q]) != Li)
+          bad = true;
+    }
+    if (bad) {
+      if (!bandViolation)
+        throw std::runtime_error(
+            "amr ghost projection: an overlay row's ±2 closure reach crosses a 2:1 level "
+            "boundary — the cut band is too thin; widen the refineToSdf band margin");
+      *bandViolation = true;
+      continue;
     }
     float F[3][4], Cq[3][5];
     for (int a = 0; a < 3; ++a) {
