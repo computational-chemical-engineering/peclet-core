@@ -44,8 +44,26 @@ Status 2026-07-26: rungs 1–3(aperture) SHIPPED —
 * Deferred with explicit guards: distributed cf-quadratic scheme (throws), distributed
   fragmentation guard (pockets undetected multi-rank until the label-propagation guard),
   distributed beginAdapt/finishAdapt (throws — rung 6).
-* Remaining: adapt/rebalance + distributed pocket guard + the adaptive Z&H end gate (rung 6),
-  perf (rung 7: halo overlap, exact cross-rank Galerkin RAP, batched exchanges).
+* **Rung 6 (adapt + rebalance + end gate)**: beginAdapt/finishAdapt distributed
+  (distributedAdapt keeps ORB ownership ⇒ the conservative transfer is block-local per rank)
+  + AmrFlow::rebalanceMpi (weighted-ORB migration carrying u/p + full rebuild). FIXED a
+  latent transfer defect the np gates exposed: transferField's minmod prolongation gradients
+  were block-local (faceNeighbor −1 at block edges ⇒ silently zeroed at interior block
+  boundaries — measured 4.7% post-adapt divergence); now halo-completed (transferGradients:
+  coverValues/coverLevels, domain-crossing probes missing per the single-rank convention),
+  also inside distributedAdapt itself. test_amr_distributed_adaptflow_mpi: NS run with
+  mid-run adapt AND rebalance — np=1 BIT-EXACT through both, np=2,4,8 tolerance; full AMR
+  regressions 86/86 both backends. Python: Flow(DistributedOctree,...) + rebalance_mpi.
+  END GATE (tests/study/amr_adaptive_zh_mpi.py, dense φ=0.125 f64, ghost projection, adapt +
+  rebalance every cycle): np=4 K = 4.5167 == np=1 K = 4.5167 (per-cycle K identical to 4
+  decimals; identical final mesh, 180391 leaves, 68.8% cells). cf scheme 0 (see below), so
+  the absolute K carries the standard-C/F graded offset; the np=1 arm is ctest-locked
+  bit-identical to the single-rank solver. mpi4py RULE: never call a collective (gleaves/
+  allreduce) inside a rank-0-only block — deadlocked once.
+* Remaining: cf-quadratic distributed (the full-fidelity battery number), distributed pocket
+  guard, perf (rung 7: halo overlap, exact cross-rank Galerkin RAP, batched exchanges,
+  per-adapt setSolid cost — np=4 battery wall time is contexts-sharing-one-GPU + host
+  rebuild-bound).
 
 Original plan (2026-07-25, ladder step 0) below. The goal is the distributed (MPI)
 `peclet::core::amr::AmrFlow`: the full ghost-projection NS step — momentum, pressure,

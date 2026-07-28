@@ -47,6 +47,7 @@
 #include "peclet/core/common/types.hpp"
 #include "peclet/core/common/view.hpp"
 
+#include "peclet/core/amr/distributed_adapt.hpp"    // transferGradients (distributed finishAdapt)
 #include "peclet/core/amr/distributed_flow_mg.hpp"  // distributed pressure MG (initMpi mode)
 #include "peclet/core/amr/distributed_octree.hpp"
 #include "peclet/core/amr/leaf_halo.hpp"
@@ -1072,16 +1073,26 @@ class AmrFlow {
   // band again after a solution-driven adapt): the ghost overlay build throws / auto-falls-back
   // exactly as in setSolid. uf restarts from the ½-average fallback for one step.
 
-  /// Snapshot the octree topology + (u, p) ahead of an external mesh mutation.
+  /// Snapshot the octree topology + (u, p) ahead of an external mesh mutation. Distributed:
+  /// the mutation is distributedAdapt (+ the driver's geometry-band re-refinement + balance),
+  /// which KEEPS the ORB ownership — so the snapshot, the conservative transferField in
+  /// finishAdapt and the field restore are all block-local per rank, and finishAdapt's
+  /// setSolid rebuilds the ±2 halo/operators on the new local mesh (collective). For
+  /// OWNERSHIP changes use rebalanceMpi instead.
   void beginAdapt() {
-    if (dist_)
-      throw std::runtime_error(
-          "amr::AmrFlow: distributed mid-run adaptivity lands at rung 6 (distributedAdapt + "
-          "rebalance integration) — single-rank only for now");
     adaptOldT_ = std::make_unique<Octree>(*t_);
     for (int c = 0; c < 3; ++c)
       adaptU_[static_cast<std::size_t>(c)] = velocity(c);
     adaptP_ = pressure();
+    if (dist_) {
+      // Halo-completed prolongation gradients on the OLD mesh (while dist_ still holds it):
+      // the block-local transfer stencil zeroes gradients at interior block boundaries,
+      // which would make the remap np-dependent there (measured ~5% field divergence).
+      for (int c = 0; c < 3; ++c)
+        adaptGradU_[static_cast<std::size_t>(c)] =
+            transferGradients(*dist_, adaptU_[static_cast<std::size_t>(c)]);
+      adaptGradP_ = transferGradients(*dist_, adaptP_);
+    }
   }
 
   /// Rebuild on the mutated octree and transfer the snapshotted fields onto it.
@@ -1092,8 +1103,10 @@ class AmrFlow {
     std::array<std::vector<double>, 3> nu;
     for (int c = 0; c < 3; ++c)
       nu[static_cast<std::size_t>(c)] =
-          transferField(*adaptOldT_, adaptU_[static_cast<std::size_t>(c)], *t_, /*linear=*/true);
-    std::vector<double> np = transferField(*adaptOldT_, adaptP_, *t_, /*linear=*/true);
+          transferField(*adaptOldT_, adaptU_[static_cast<std::size_t>(c)], *t_, /*linear=*/true,
+                        dist_ ? &adaptGradU_[static_cast<std::size_t>(c)] : nullptr);
+    std::vector<double> np = transferField(*adaptOldT_, adaptP_, *t_, /*linear=*/true,
+                                           dist_ ? &adaptGradP_ : nullptr);
     setSolid(sdfFn);  // full operator/overlay rebuild on the new topology (zeroes the fields)
     for (int c = 0; c < 3; ++c) {
       setVelocity(c, nu[static_cast<std::size_t>(c)]);
@@ -1105,6 +1118,30 @@ class AmrFlow {
     for (int c = 0; c < 3; ++c)
       adaptU_[static_cast<std::size_t>(c)].clear();
     adaptP_.clear();
+  }
+
+  /// Distributed load rebalance (docs/amr_distributed_flow.md, rung 6): re-decompose the
+  /// octree by leaf count (weighted ORB) and migrate the leaves WITH the state (u, p) to the
+  /// new owners, then rebuild every solver structure on the new block (full distributed
+  /// setSolid: new ±2 registry, halos, operators, pressure hierarchy). Pure redistribution —
+  /// every cell's u/p value is preserved bit-for-bit; uf restarts from the ½-average fallback
+  /// for one step (as after finishAdapt). Collective; distributed mode only.
+  template <class SdfFn>
+  void rebalanceMpi(SdfFn&& sdfFn) {
+    if (!dist_)
+      throw std::runtime_error("amr::AmrFlow::rebalanceMpi requires initMpi");
+    std::vector<std::vector<double>> cols(4);
+    for (int c = 0; c < 3; ++c)
+      cols[static_cast<std::size_t>(c)] = velocity(c);
+    cols[3] = pressure();
+    dist_->rebalance(cols);  // t_ still points at dist_->local(), now the new block's octree
+    setSolid(sdfFn);         // full rebuild (registry, halos, operators) on the new block
+    for (int c = 0; c < 3; ++c) {
+      setVelocity(c, cols[static_cast<std::size_t>(c)]);
+      zeroSolid(u_[c]);
+    }
+    setPressure(cols[3]);
+    zeroSolid(p_);
   }
 
   /// Write the accumulated rotational pressure from host (restart / finishAdapt).
@@ -1625,6 +1662,8 @@ class AmrFlow {
   std::unique_ptr<Octree> adaptOldT_;      // beginAdapt topology snapshot
   std::array<std::vector<double>, 3> adaptU_;  // beginAdapt field snapshots
   std::vector<double> adaptP_;
+  std::array<std::vector<std::array<double, 3>>, 3> adaptGradU_;  // distributed transfer grads
+  std::vector<std::array<double, 3>> adaptGradP_;
 
   // ---- distributed context (initMpi; all null/empty single-rank) -----------------------------
   DistributedOctree<3, Bits>* dist_ = nullptr;  // the ORB block + communicator

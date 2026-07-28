@@ -324,6 +324,16 @@ class Flow : public Releasable {
     flow_.setViscosity(mu);
     flow_.setDt(dt);
   }
+  // Distributed (mpi4py): run this solver on one ORB block of a DistributedOctree — the whole
+  // step then executes multi-rank through the ±2 LeafHalo (docs/amr_distributed_flow.md).
+  // Defined after DistributedOctree below; keep_alive on the binding pins the octree.
+  Flow(class DistributedOctree& d, double rho, double mu, double dt);
+  // Distributed load rebalance: weighted-ORB re-decomposition migrating u/p with the leaves +
+  // full rebuild (collective; distributed constructor only).
+  void rebalance_mpi(std::function<double(double, double, double)> sdf) {
+    flow_.rebalanceMpi([&](const Vec<3>& p) { return sdf(p[0], p[1], p[2]); });
+    n_ = flow_.numLeaves();
+  }
   void release() override { flow_ = amr::AmrFlow<>{}; }
 
   Index num_leaves() const { return n_; }
@@ -545,9 +555,21 @@ class DistributedOctree : public Releasable {
                   asField(d_.local(), field, "write_vtu"));
   }
 
+  /// The wrapped core octree (the distributed Flow constructor hooks into it).
+  DO& ref() { return d_; }
+
  private:
   DO d_;
 };
+
+// Distributed Flow constructor (out of line: DistributedOctree is declared after Flow).
+inline Flow::Flow(DistributedOctree& d, double rho, double mu, double dt)
+    : n_(d.ref().local().numLeaves()) {
+  flow_.initMpi(d.ref());
+  flow_.setDensity(rho);
+  flow_.setViscosity(mu);
+  flow_.setDt(dt);
+}
 
 }  // namespace
 
@@ -648,6 +670,18 @@ NB_MODULE(amr, m) {
            nb::keep_alive<1, 2>(),  // keep the octree alive for the Flow's lifetime (borrowed by ref)
            "Create a flow on `octree` with the given density, viscosity and time step. A large dt "
            "drives straight to the steady (Stokes) solution. The octree is borrowed by reference.")
+      .def(nb::init<DistributedOctree&, double, double, double>(), nb::arg("octree"),
+           nb::arg("density") = 1.0, nb::arg("viscosity") = 1.0, nb::arg("dt") = 1e6,
+           nb::keep_alive<1, 2>(),
+           "DISTRIBUTED (mpi4py, collective): run this solver on one ORB block of a "
+           "DistributedOctree — the whole step (momentum, pressure, overlays, adaptivity) then "
+           "executes multi-rank through the ±2 leaf ghost registry. Per-leaf arrays are this "
+           "rank's LOCAL leaves. setSolid/step/project/begin_adapt/finish_adapt/rebalance_mpi "
+           "are collective. np=1 is bit-identical to the single-rank constructor.")
+      .def("rebalance_mpi", &Flow::rebalance_mpi, nb::arg("sdf"),
+           "DISTRIBUTED: weighted-ORB load rebalance — migrates the leaves WITH the state (u, p) "
+           "to the new owners and rebuilds every solver structure (collective). num_leaves is "
+           "refreshed.")
       .def_prop_ro("num_leaves", &Flow::num_leaves, "Number of leaves.")
       .def("set_solid", &Flow::set_solid, nb::arg("sdf"),
            "Build the cut-cell operators from a signed-distance callable f(x,y,z) (>0 fluid, <0 "

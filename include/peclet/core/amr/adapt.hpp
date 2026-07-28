@@ -26,6 +26,7 @@
 
 #include <array>
 #include <cmath>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -43,13 +44,57 @@ inline double minmod(double a, double b) {
 }
 }  // namespace detail
 
+/// Per-old-leaf minmod prolongation gradients (per fine-coordinate unit) — transferField's
+/// stencil, exposed so a DISTRIBUTED caller can substitute halo-completed gradients
+/// (transferGradients in distributed_adapt.hpp): the block-local faceNeighbor returns -1 at
+/// block edges, which silently zeroes the gradient there — correct at a true domain edge
+/// (the single-rank convention) but np-DEPENDENT at interior block boundaries.
+template <int Dim, unsigned Bits>
+std::vector<std::array<double, Dim>> transferFieldGradients(const BlockOctree<Dim, Bits>& oldT,
+                                                            const std::vector<double>& oldF) {
+  using BO = BlockOctree<Dim, Bits>;
+  using Coord = typename BO::Coord;
+  using M = typename BO::M;
+  auto centroid = [](const BO& t, Index i) {
+    auto o = M::from_code(t.code(i)).decode();
+    const double s = static_cast<double>(Coord(1) << t.level(i));
+    std::array<double, Dim> c{};
+    for (int d = 0; d < Dim; ++d)
+      c[d] = static_cast<double>(o[d]) + 0.5 * s;
+    return c;
+  };
+  const Index no = oldT.numLeaves();
+  std::vector<std::array<double, Dim>> grad(static_cast<std::size_t>(no),
+                                            std::array<double, Dim>{});
+  for (Index i = 0; i < no; ++i) {
+    auto ci = centroid(oldT, i);
+    const double ui = oldF[static_cast<std::size_t>(i)];
+    for (int axis = 0; axis < Dim; ++axis) {
+      const Index jp = oldT.faceNeighbor(i, axis, +1);
+      const Index jm = oldT.faceNeighbor(i, axis, -1);
+      if (jp < 0 || jm < 0)
+        continue;
+      auto cp = centroid(oldT, jp);
+      auto cm = centroid(oldT, jm);
+      const double sp = (oldF[static_cast<std::size_t>(jp)] - ui) / (cp[axis] - ci[axis]);
+      const double sm = (ui - oldF[static_cast<std::size_t>(jm)]) / (ci[axis] - cm[axis]);
+      grad[static_cast<std::size_t>(i)][axis] = detail::minmod(sp, sm);
+    }
+  }
+  return grad;
+}
+
 /// Conservative remap of a leaf field from `oldT` to `newT` (same domain). `linear`
 /// selects minmod-limited linear prolongation (more accurate, still conservative and
 /// non-overshooting) vs piecewise-constant injection for cells that get finer.
+/// `gradIn` (optional) supplies precomputed prolongation gradients (size numLeaves(oldT));
+/// null = compute them locally (the historical behaviour, bit-identical).
 template <int Dim, unsigned Bits>
-std::vector<double> transferField(const BlockOctree<Dim, Bits>& oldT,
-                                  const std::vector<double>& oldF,
-                                  const BlockOctree<Dim, Bits>& newT, bool linear = true) {
+std::vector<double> transferField(
+    const BlockOctree<Dim, Bits>& oldT, const std::vector<double>& oldF,
+    const BlockOctree<Dim, Bits>& newT, bool linear = true,
+    // type_identity: keep gradIn out of deduction (array<double, N> carries size_t, Dim is int)
+    const std::type_identity_t<std::vector<std::array<double, Dim>>>* gradIn = nullptr) {
   using BO = BlockOctree<Dim, Bits>;
   using Code = typename BO::Code;
   using Coord = typename BO::Coord;
@@ -67,23 +112,10 @@ std::vector<double> transferField(const BlockOctree<Dim, Bits>& oldT,
   const Index no = oldT.numLeaves();
   // Per-old-leaf minmod gradient (per fine-coordinate unit) for linear prolongation.
   std::vector<std::array<double, Dim>> grad;
-  if (linear) {
-    grad.assign(static_cast<std::size_t>(no), std::array<double, Dim>{});
-    for (Index i = 0; i < no; ++i) {
-      auto ci = centroid(oldT, i);
-      const double ui = oldF[static_cast<std::size_t>(i)];
-      for (int axis = 0; axis < Dim; ++axis) {
-        const Index jp = oldT.faceNeighbor(i, axis, +1);
-        const Index jm = oldT.faceNeighbor(i, axis, -1);
-        if (jp < 0 || jm < 0)
-          continue;
-        auto cp = centroid(oldT, jp);
-        auto cm = centroid(oldT, jm);
-        const double sp = (oldF[static_cast<std::size_t>(jp)] - ui) / (cp[axis] - ci[axis]);
-        const double sm = (ui - oldF[static_cast<std::size_t>(jm)]) / (ci[axis] - cm[axis]);
-        grad[static_cast<std::size_t>(i)][axis] = detail::minmod(sp, sm);
-      }
-    }
+  if (linear && gradIn) {
+    grad = *gradIn;
+  } else if (linear) {
+    grad = transferFieldGradients<Dim, Bits>(oldT, oldF);
   }
 
   const Index nn = newT.numLeaves();
