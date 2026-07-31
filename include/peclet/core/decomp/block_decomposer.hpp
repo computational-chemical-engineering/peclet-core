@@ -32,10 +32,30 @@ class BlockDecomposer {
   BlockDecomposer(std::size_t numBlocks, IVec<Dim> globalSize, const std::vector<Real>& weights) {
     init(numBlocks, globalSize, weights);
   }
+  /// Aligned ORB (coarsenable): see the aligned init() below.
+  BlockDecomposer(std::size_t numBlocks, IVec<Dim> globalSize, const IVec<Dim>& align) {
+    init(numBlocks, globalSize, align);
+  }
 
   /// Build the decomposition of a `globalSize` cell grid into `numBlocks` blocks (equal cell
   /// count).
   void init(std::size_t numBlocks, IVec<Dim> globalSize) {
+    align_ = IVec<Dim>{};
+    for (int i = 0; i < Dim; ++i)
+      align_[i] = 1;
+    initImpl(numBlocks, globalSize, nullptr);
+  }
+
+  /// Aligned ORB: force every split position (and hence every block origin/size) on axis k to be a
+  /// multiple of `align[k]`. This is what makes a decomposition safely COARSENABLE — a geometric
+  /// multigrid can then derive each coarse level by `coarsened()` (halving in place) and every level
+  /// nests, so restrict/prolong stay purely local. Set `align[k] = 2^(levels axis k coarsens)`.
+  /// `align[k] == 1` is the classic unaligned split. `globalSize[k]` must be a multiple of `align[k]`.
+  void init(std::size_t numBlocks, IVec<Dim> globalSize, const IVec<Dim>& align) {
+    align_ = align;
+    for (int i = 0; i < Dim; ++i)
+      if (align_[i] < 1)
+        align_[i] = 1;
     initImpl(numBlocks, globalSize, nullptr);
   }
 
@@ -52,6 +72,9 @@ class BlockDecomposer {
              return v;
            }()) &&
            "weights array must cover the global grid (x-fastest)");
+    align_ = IVec<Dim>{};
+    for (int i = 0; i < Dim; ++i)
+      align_[i] = 1;
     initImpl(numBlocks, globalSize, &weights);
   }
 
@@ -105,6 +128,39 @@ class BlockDecomposer {
     return g;
   }
 
+  /// Derive the NESTED coarse decomposition: each block, split value and the global size divided by
+  /// `ratio` per axis (ratio[k] is 1 or the integer coarsening factor). The tree shape and leaf order
+  /// are preserved, so rank r's coarse block is exactly rank r's fine block coarsened in place — the
+  /// invariant a geometric-multigrid restrict/prolong relies on (coarse-local i ↔ fine-local ratio*i).
+  /// Exact iff this decomposition was built aligned to a multiple of `ratio` on each coarsened axis
+  /// (see the aligned `init`); asserts divisibility in debug builds.
+  BlockDecomposer<Dim> coarsened(const IVec<Dim>& ratio) const {
+    BlockDecomposer<Dim> c;
+    for (int k = 0; k < Dim; ++k) {
+      assert(ratio[k] >= 1 && globalSize_[k] % ratio[k] == 0 &&
+             "coarsened(): global size not divisible by ratio (build the decomposition aligned)");
+      c.globalSize_[k] = globalSize_[k] / ratio[k];
+      c.align_[k] = align_[k] / ratio[k] >= 1 ? align_[k] / ratio[k] : 1;
+    }
+    c.tree_ = tree_;
+    for (auto& nd : c.tree_)
+      if (nd.splitDim != -1) {
+        assert(nd.splitValue % ratio[nd.splitDim] == 0 &&
+               "coarsened(): split not divisible by ratio (build the decomposition aligned)");
+        nd.splitValue /= ratio[nd.splitDim];
+      }
+    c.origins_.resize(origins_.size());
+    c.sizes_.resize(sizes_.size());
+    for (std::size_t b = 0; b < origins_.size(); ++b)
+      for (int k = 0; k < Dim; ++k) {
+        assert(origins_[b][k] % ratio[k] == 0 && sizes_[b][k] % ratio[k] == 0 &&
+               "coarsened(): block origin/size not divisible by ratio (build aligned)");
+        c.origins_[b][k] = origins_[b][k] / ratio[k];
+        c.sizes_[b][k] = sizes_[b][k] / ratio[k];
+      }
+    return c;
+  }
+
  private:
   struct TreeNode {
     int splitDim = -1;     ///< -1 for a leaf
@@ -124,6 +180,7 @@ class BlockDecomposer {
                       const std::vector<Real>* weights) const;
 
   IVec<Dim> globalSize_{};
+  IVec<Dim> align_{};  ///< per-axis split alignment (1 = unaligned); see the aligned init / coarsened
   std::vector<IVec<Dim>> origins_;
   std::vector<IVec<Dim>> sizes_;
   std::vector<TreeNode> tree_;
@@ -165,6 +222,18 @@ void BlockDecomposer<Dim>::initImpl(std::size_t numBlocks, IVec<Dim> globalSize,
       }
       std::size_t numSub = cur.numSub / 2;
       Index szSub = splitPosition(cur.origin, cur.size, kLargest, numSub, cur.numSub, weights);
+
+      // Snap the split to a multiple of align_[kLargest] so the global split position
+      // (cur.origin[kLargest] + szSub, with cur.origin already aligned) is a multiple too — the
+      // precondition for coarsened() to divide cleanly. Skip if the box is too small to split aligned.
+      const Index a = align_[kLargest];
+      if (a > 1 && cur.size[kLargest] >= 2 * a) {
+        szSub = ((szSub + a / 2) / a) * a;
+        if (szSub < a)
+          szSub = a;
+        if (szSub > cur.size[kLargest] - a)
+          szSub = cur.size[kLargest] - a;
+      }
 
       StackBlock left = cur;
       left.numSub = numSub;

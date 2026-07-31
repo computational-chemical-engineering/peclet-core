@@ -158,6 +158,38 @@ void checkSkewedBalances(IVec<Dim> globalSize, std::size_t numBlocks) {
   PECLET_CORE_CHECK(ratioW < ratioUW);
 }
 
+// Aligned ORB + coarsened(): every split/origin/size on axis k is a multiple of align[k], and the
+// coarse decomposition NESTS in the fine one (coarse block == fine block coarsened in place, same
+// leaf/rank order) — the invariant a geometric multigrid's local restrict/prolong relies on.
+template <int Dim>
+void checkAlignedCoarsen(IVec<Dim> globalSize, std::size_t numBlocks, IVec<Dim> align,
+                         IVec<Dim> ratio) {
+  BlockDecomposer<Dim> dec(numBlocks, globalSize, align);
+  // Every block origin & size is aligned.
+  for (std::size_t b = 0; b < dec.numBlocks(); ++b)
+    for (int k = 0; k < Dim; ++k) {
+      PECLET_CORE_CHECK_EQ(dec.origins()[b][k] % align[k], static_cast<Index>(0));
+      PECLET_CORE_CHECK_EQ(dec.sizes()[b][k] % align[k], static_cast<Index>(0));
+    }
+  // Still a valid tiling (no gaps/overlaps).
+  Index summed = 0, total = 1;
+  for (int k = 0; k < Dim; ++k)
+    total *= globalSize[k];
+  for (std::size_t b = 0; b < dec.numBlocks(); ++b)
+    summed += volume<Dim>(dec.sizes()[b]);
+  PECLET_CORE_CHECK_EQ(summed, total);
+
+  // Coarsen and check nesting: coarse block r == fine block r coarsened in place.
+  BlockDecomposer<Dim> c = dec.coarsened(ratio);
+  PECLET_CORE_CHECK_EQ(static_cast<Index>(c.numBlocks()), static_cast<Index>(dec.numBlocks()));
+  for (std::size_t b = 0; b < dec.numBlocks(); ++b)
+    for (int k = 0; k < Dim; ++k) {
+      PECLET_CORE_CHECK_EQ(c.origins()[b][k], dec.origins()[b][k] / ratio[k]);
+      PECLET_CORE_CHECK_EQ(c.sizes()[b][k], dec.sizes()[b][k] / ratio[k]);
+      PECLET_CORE_CHECK_EQ(c.globalSize()[k], globalSize[k] / ratio[k]);
+    }
+}
+
 int main() {
   // A spread of dimensions, grid sizes (incl. non-powers-of-two) and block counts.
   checkCase<1>({100}, 1);
@@ -184,6 +216,14 @@ int main() {
   checkSkewedBalances<2>({128, 96}, 16);
   checkSkewedBalances<3>({48, 48, 48}, 8);
   checkSkewedBalances<3>({64, 48, 40}, 16);
+
+  // Aligned ORB + nested coarsening (the distributed-multigrid nesting invariant). The channel-like
+  // case (x coarsens, z odd -> z never coarsens) is the one whose non-nesting caused the flow MG OOB.
+  checkAlignedCoarsen<3>({1508, 240, 503}, 2, {4, 16, 1}, {2, 2, 1});   // production channel structure
+  checkAlignedCoarsen<3>({1508, 240, 503}, 4, {4, 16, 1}, {2, 2, 1});
+  checkAlignedCoarsen<3>({132, 32, 131}, 2, {4, 16, 1}, {2, 2, 1});     // the local repro (axis-flip)
+  checkAlignedCoarsen<3>({132, 32, 131}, 4, {4, 16, 1}, {2, 2, 1});
+  checkAlignedCoarsen<3>({64, 64, 64}, 8, {16, 16, 16}, {2, 2, 2});     // cubic, all axes coarsen
 
   PECLET_CORE_RETURN_TEST_RESULT();
 }
