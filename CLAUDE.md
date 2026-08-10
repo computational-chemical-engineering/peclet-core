@@ -44,6 +44,17 @@ Header-only under `include/peclet/core/`:
   globalSize, weights)` is the **weighted ORB** for dynamic load balancing: it bisects at the cell
   boundary whose cumulative weight reaches the sub-block target fraction (vs equal cell count);
   equal weights reduce to the unweighted `init()` bit-for-bit.
+  **Multigrid-safe partitions** come in two flavours. `init(…, align)` is the *aligned* ORB: it picks
+  a split on the fine grid and snaps it to a multiple of `align[k]`, so `coarsened()` divides
+  cleanly. `refined(ratio)` is the inverse of `coarsened()` and enables the stronger *coarse-first*
+  route — decompose the grid coarsened `ratio` times, then refine the partition upward, so blocks are
+  multiples of `ratio` by construction and the hierarchy nests for the full depth. Coarse-first also
+  balances better, because the aligned ORB can round a balanced split into an unbalanced one (96|96
+  → 128|64) while on the coarse grid one cell *is* the quantum. When the axes were coarsened by
+  DIFFERENT factors, pass `init(…, align, cellExtent)` with `cellExtent = ratio`: the split-axis
+  choice then compares physical extents (`size[k]*cellExtent[k]`) rather than cell counts, which is
+  what stops the ORB bisecting an axis the fine grid would never have cut. flow drives all of this
+  through `CutcellMG::decomposition()` (see `../flow/CLAUDE.md`).
 - `decomp/block_indexer.hpp` — local↔global indexing for an extended (inner+ghost) block.
 - `decomp/morton_indexer.hpp` — `MortonIndexer<Dim>`: Z-order (Morton) cell indexing via the `morton`
   primitive (`morton::Morton<Dim,Bits>`), guarded by `PECLET_CORE_HAVE_MORTON`. The cache-friendly alternative

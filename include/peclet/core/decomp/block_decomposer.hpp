@@ -59,6 +59,19 @@ class BlockDecomposer {
     initImpl(numBlocks, globalSize, nullptr);
   }
 
+  /// Anisotropic-cell aligned ORB: `cellExtent[k]` is how many underlying FINE cells one cell of
+  /// this grid spans along axis k. It affects ONLY the choice of split axis, which then compares
+  /// `size[k]*cellExtent[k]` (the physical extent) instead of the raw cell count. Required when
+  /// decomposing a grid whose axes were coarsened by DIFFERENT factors — there equal cell counts do
+  /// not mean equal extents, and comparing counts makes the ORB bisect the wrong axis (which is how
+  /// a coarse-first partition ends up cutting a direction the fine grid would never have cut).
+  /// All ones (the default) reproduces the isotropic ORB exactly.
+  void init(std::size_t numBlocks, IVec<Dim> globalSize, const IVec<Dim>& align,
+            const IVec<Dim>& cellExtent) {
+    cellExtent_ = cellExtent;
+    init(numBlocks, globalSize, align);
+  }
+
   /// Weighted ORB: balance the *total weight* per block instead of the cell count. `weights` is a
   /// per-cell weight array over the global grid (size == product(globalSize), x-fastest). Each
   /// split is placed on the integer cell boundary whose cumulative weight is closest to the
@@ -161,6 +174,42 @@ class BlockDecomposer {
     return c;
   }
 
+  /// Derive the NESTED fine decomposition: the exact inverse of `coarsened()` — global size, split
+  /// values, block origins and block sizes each MULTIPLIED by `ratio` per axis.
+  ///
+  /// This is the "decompose coarse, refine upward" route to a multigrid-safe partition, and it is
+  /// strictly stronger than building the fine ORB with an alignment. Aligning the fine ORB decides
+  /// the split *and then snaps it*, so a balanced split can be rounded into an unbalanced one (the
+  /// pathological case: 96|96 snapped to 128|64, a 2:1 cascade). Refining upward instead lets the
+  /// ORB balance on the coarse grid, where one coarse cell IS the alignment quantum — so the fine
+  /// blocks are multiples of `ratio` by construction, `coarsened()` nests exactly for log2(ratio)
+  /// levels, and the load balance is the best achievable at that granularity.
+  ///
+  /// Caller's responsibility: `ratio` should be the coarsening the hierarchy will actually perform
+  /// (2^levels per axis, bounded by that axis's factors of two), and the coarse grid must hold at
+  /// least `numBlocks` cells.
+  BlockDecomposer<Dim> refined(const IVec<Dim>& ratio) const {
+    BlockDecomposer<Dim> f;
+    for (int k = 0; k < Dim; ++k) {
+      assert(ratio[k] >= 1 && "refined(): ratio must be >= 1");
+      f.globalSize_[k] = globalSize_[k] * ratio[k];
+      f.align_[k] = align_[k] * ratio[k];
+      f.cellExtent_[k] = 1;  // the refined grid's cells are the fine cells
+    }
+    f.tree_ = tree_;
+    for (auto& nd : f.tree_)
+      if (nd.splitDim != -1)
+        nd.splitValue *= ratio[nd.splitDim];
+    f.origins_.resize(origins_.size());
+    f.sizes_.resize(sizes_.size());
+    for (std::size_t b = 0; b < origins_.size(); ++b)
+      for (int k = 0; k < Dim; ++k) {
+        f.origins_[b][k] = origins_[b][k] * ratio[k];
+        f.sizes_[b][k] = sizes_[b][k] * ratio[k];
+      }
+    return f;
+  }
+
  private:
   struct TreeNode {
     int splitDim = -1;     ///< -1 for a leaf
@@ -181,6 +230,7 @@ class BlockDecomposer {
 
   IVec<Dim> globalSize_{};
   IVec<Dim> align_{};  ///< per-axis split alignment (1 = unaligned); see the aligned init / coarsened
+  IVec<Dim> cellExtent_{};  ///< fine cells per cell of THIS grid, per axis; split-axis choice only
   std::vector<IVec<Dim>> origins_;
   std::vector<IVec<Dim>> sizes_;
   std::vector<TreeNode> tree_;
@@ -190,6 +240,9 @@ template <int Dim>
 void BlockDecomposer<Dim>::initImpl(std::size_t numBlocks, IVec<Dim> globalSize,
                                     const std::vector<Real>* weights) {
   globalSize_ = globalSize;
+  for (int k = 0; k < Dim; ++k)
+    if (cellExtent_[k] <= 0)
+      cellExtent_[k] = 1;
   origins_.clear();
   sizes_.clear();
   tree_.clear();
@@ -215,9 +268,12 @@ void BlockDecomposer<Dim>::initImpl(std::size_t numBlocks, IVec<Dim> globalSize,
     if (cur.numSub > 1) {
       // Split along the largest axis. The split position balances either the sub-block cell count
       // (unweighted) or the cumulative weight (weighted) of the two children.
+      // Compare PHYSICAL extents: size*cellExtent. cellExtent is all-ones for an ordinary grid, so
+      // this is the plain largest-cell-count test unless an anisotropically coarsened grid says
+      // otherwise (see the cellExtent init).
       int kLargest = 0;
       for (int k = 1; k < Dim; ++k) {
-        if (cur.size[k] > cur.size[kLargest])
+        if (cur.size[k] * cellExtent_[k] > cur.size[kLargest] * cellExtent_[kLargest])
           kLargest = k;
       }
       std::size_t numSub = cur.numSub / 2;
