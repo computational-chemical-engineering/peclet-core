@@ -150,9 +150,11 @@ flow collocated reference run lived at `/tmp/sdflow_coloc_gpu.py` (single SC sph
 2. **Unsteady NS test** — the ONLY thing that would actually exercise the `uf` conservation benefit (all
    the steady cases here are `uf`-invariant by construction). E.g. a decaying Taylor–Green or a
    vortex-shedding case; check tracer/energy conservation vs the old `½(u_i+u_j)` advection.
-3. **Device NS via MG-PCG** — advection currently forces the bounded V-cycle (`if(presPCG_ && !advect_)`
-   in `project()`), because the large transient advection divergence excites the near-nullspace. With
-   `maskSolid` now in the PCG it may be robust enough to cover advection too — worth retrying.
+3. **Device NS via MG-PCG** — ~~advection currently forces the bounded V-cycle~~ **DONE 2026-08-19**:
+   the `!advect_` exclusion was stale (it predated `maskSolid`) and is removed — MG-PCG covers
+   advection, flat 15–17 iters/step. The "near-nullspace issue" was characterised as an
+   incompatible RHS fluid-mean (see `amr_aperture_advection_plan.md` §RESOLVED), which the PCG's
+   projection deflates.
 4. **The ~1% projection-structure difference** is still not isolated to one line. The clean way: expose
    each engine's projection as a standalone `project(u)->u_divfree` callable, feed both the SAME
    synthetic field on the SAME cut geometry, diff cell-by-cell. Neither exposes that yet.
@@ -306,6 +308,11 @@ normal sample offset that is conservative, telescoping, and vanishes at steady s
 - **solver economics reverse under advection**: the aperture path must run the bounded V-cycle
   (60 cycles/step — MG-PCG excluded by the transient near-nullspace issue) while the ghost
   BiCGStab stays at 6–7 iterations: 18 s vs 341 s (N=32), 52 s vs 586 s (N=64) to converge;
+  **[OBSOLETE 2026-08-19 — the exclusion was a stale gate, not a property of the problem; the
+  "near-nullspace issue" was an un-deflated incompatible RHS mean. With MG-PCG re-enabled under
+  advection the aperture path runs 15–16 iters/step and is CHEAPER per step than the ghost
+  BiCGStab (32.7 vs 39 ms/step at N=32, 46.6 vs 60 at N=64, same study). See
+  `amr_aperture_advection_plan.md` §RESOLVED and the 2026-08-19 update below.]**
 - unsteady impulsive start (600 steps, N=64): the two trajectories track within 0.24% —
   exactly the steady scheme gap, no transient drift or instability; the ghost residual
   divergence trace (max 1.1e-4, final 5.6e-6) sits an order of magnitude BELOW the aperture's

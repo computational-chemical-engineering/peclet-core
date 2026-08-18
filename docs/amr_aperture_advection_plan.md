@@ -4,6 +4,48 @@
 `amr_collocated_projection.md` §"Measured (tests/study/amr_ns_ghost.py …)" and the 2026-07-25
 update first — this note only states the problem, the evidence, and what would settle it.*
 
+## RESOLVED 2026-08-19 — characterisation results and the fix
+
+The stall was characterised before fixing, per the plan. All three candidate mechanisms were
+measured on the N=32 Z&H aperture NS case (RTX 5080, `PECLET_CORE_AMR_PRES_DEBUG=1` — the
+instrumentation is kept in `flow.hpp::project()`):
+
+1. **SPD — REFUTED as the cause.** The pressure operator is assembled in `setSolid` from geometry
+   only (`openFn`); `advect_` never enters the assembly, so the operator under advection is the
+   same object the Stokes MG-PCG solves in 17–30 iterations. Measured directly on the assembled
+   `FvOp` with advection on: `<y,Lx>_D` vs `<x,Ly>_D` agree to **8.8e-15 relative** and random
+   Rayleigh quotients are strictly negative — symmetric negative-definite in the volume-weighted
+   inner product, exactly as in Stokes.
+2. **Agglomerated coarse level — NOT the mechanism here.** `AmrMultigrid::build` coarsens until a
+   **single leaf** remains, so the (single-rank) bottom is exact by construction; there is no
+   under-solved coarsest level for flow's agglomeration cure to fix. (The measured stall is also
+   level-independent — see below — which an unsolved bottom would not be.)
+3. **Compatibility — CONFIRMED, with the projector-side twist.** The V-cycle residual trace shows
+   *clean* convergence at rate ≈0.70/cycle at step 1 (rel 8e-10 at the 60-cap), degrading to a
+   **hard stall** as the flow develops: at step 50 the residual floors at 1.435e-4, at step 200 it
+   floors at 2.108e-4 **from the first cycle**. The floor is exactly the incompatible RHS
+   component: the fluid-volume mean of `div_` times `sqrt(V_fluid)` (8.34e-7·169 = 1.41e-4 and
+   1.22e-6·169 = 2.07e-4 — match to <2%). The mean is nonzero because the divergence RHS is only
+   computed at fluid-*centered* cells while the aperture operator's DOF set also contains
+   solid-centered cells with partially-open faces — zeroing those rows' RHS breaks the telescoping
+   that would make `Σ V·div = 0` over the DOF set. The defect scales with the developed flow
+   (~3e-3 relative at steady state), which is why Stokes-from-rest never hurt and why it looked
+   "transient". So "60 bounded V-cycles/step" was a **stagnation cap**, not a convergence count —
+   and the solution `x` the stalled cycle produces is fine (the stall lives in the unsolvable
+   null component of the residual).
+
+**The fix is the PCG gate, nothing else.** The MG-PCG's per-iteration fluid-range projection
+(`maskSolid` + volume-weighted fluid-mean removal, in `pcg.hpp` since the maskSolid work) deflates
+exactly the incompatible component, so CG is valid and healthy under advection. The historic
+`presPCG_ && !advect_` exclusion predates `maskSolid` and was simply stale. Removing `!advect_`:
+flat **15–17 PCG iterations/step (tol 1e-10)** across the whole impulsive N=32 transient, steady
+K identical to the V-cycle path to 4+ digits (4.4276 at step 200 on both), RHS compatibility and
+solver health traced per step. The bounded V-cycle remains the `setPressurePCG(false)` fallback
+(unchanged, still stalls benignly at the incompatible floor).
+
+Acceptance measurements + the ghost-projection retirement that followed: see
+`amr_collocated_projection.md` (2026-08-19 update).
+
 ## Where this sits
 
 The collocated second-order question is closed: the **gauge-exact** scheme (aperture constraint +

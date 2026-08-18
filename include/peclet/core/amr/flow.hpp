@@ -54,6 +54,13 @@
 
 namespace peclet::core::amr {
 
+/// Truthy environment flag (unset / "" / "0" ⇒ false). Characterisation knobs only — never a
+/// production configuration channel (those are the set* methods).
+inline bool amrEnvFlag(const char* name) {
+  const char* v = std::getenv(name);
+  return v && v[0] && !(v[0] == '0' && v[1] == '\0');
+}
+
 // FaceGeom (the collocated projection's static face-geometry CSR) now lives in face_geom.hpp so the
 // device assembler and this driver share the type without a circular include.
 
@@ -1017,17 +1024,86 @@ class AmrFlow {
       finishProjection(n);
       return;
     }
-    // Two selectable pressure drivers, like flow's CutcellMG (MG-PCG single-rank default,
-    // standalone V-cycle the robust multi-rank default): MG-PCG for the near-steady, divergence-
-    // compatible Stokes case (faster), and the stationary V-cycle for the large transient
-    // divergence of advection, which excites near-nullspace modes of the cut-cell openness Poisson
-    // (near-isolated fluid cells) that CG amplifies — the V-cycle is bounded. (Per-level mean
-    // removal is on for both; making MG-PCG robust enough to also cover advection needs flow's
-    // near-isolated-cell pinning/classification — a follow-up.)
-    if (presPCG_ && !advect_) {
-      lastPresIters_ =
-          dist_ ? pcg_.solve(presMGD_, phi_, View<const double>(div_), presIters, 1e-10).iters
-                : pcg_.solve(presMG_, phi_, View<const double>(div_), presIters, 1e-10).iters;
+    // Two selectable pressure drivers, like flow's CutcellMG: MG-PCG (default, presPCG_) and the
+    // bounded stationary V-cycle (setPressurePCG(false)). MG-PCG covers ADVECTION too — the
+    // historic exclusion ("transient near-nullspace issue") was characterised 2026-08-19 and was
+    // NOT a property of the operator (which is geometry-only, advection-independent, SPD in the
+    // volume-weighted inner product): the aperture RHS is INCOMPATIBLE by a fluid-mean component
+    // (div_ is zeroed at solid-centered cells whose faces are partially open, breaking the
+    // telescoping that would make Σ V·div = 0 over the operator's DOF set; the defect grows with
+    // the developed flow, ~3e-3 relative at steady state on the Z&H sphere). The un-deflated
+    // V-cycle's residual therefore STALLS at exactly |mean|·sqrt(V_fluid) — the old "60 bounded
+    // cycles" was a stagnation cap, not a convergence count. The PCG's per-iteration fluid-range
+    // projection (maskSolid + volume-weighted fluid-mean removal) deflates exactly that component,
+    // so CG is valid and healthy: measured flat 15–17 iters/step (tol 1e-10) across the whole
+    // impulsive N=32 transient, steady K identical to the V-cycle path to 4+ digits.
+    // Debug knob (env, default-off): PECLET_CORE_AMR_PRES_DEBUG=1 — per-cycle/-solve residual +
+    // RHS-compatibility trace to stderr (the characterisation instrumentation, kept).
+    const bool dbg = amrEnvFlag("PECLET_CORE_AMR_PRES_DEBUG");
+    if (dbg && !dist_) {
+      // RHS compatibility: the operator's left null vector is the constant over fluid cells in the
+      // volume-weighted inner product, so a solvable RHS needs Σ V_i·div_i ≈ 0 over fluid cells.
+      const FvOp& op0 = presMG_.op(0);
+      auto st = op0.faceStart;
+      auto w = op0.faceW;
+      auto bcD = op0.bcDiag;
+      auto iv = op0.invVol;
+      auto dv = div_;
+      double su = 0.0, sv = 0.0, sn = 0.0;
+      Kokkos::parallel_reduce(
+          "amr::dbg_compat", n,
+          KOKKOS_LAMBDA(const Index i, double& a, double& b, double& c) {
+            double d = bcD(i);
+            for (Index k = st(i); k < st(i + 1); ++k)
+              d += w(k);
+            const double m = (d > 1e-30) ? 1.0 : 0.0;
+            a += m * dv(i) / iv(i);
+            b += m / iv(i);
+            c += m * dv(i) * dv(i) / iv(i);
+          },
+          su, sv, sn);
+      std::fprintf(stderr, "[amr pres] rhs fluid-mean=%.3e |rhs|_D=%.3e (rel mean %.3e)\n",
+                   su / sv, std::sqrt(sn), (su / sv) / (std::sqrt(sn) + 1e-300));
+      if (!presDbgSpdDone_) {
+        // One-shot direct SPD probe of the assembled pressure operator (advection cannot enter
+        // the assembly — this measures it): symmetry <y,Lx>_D vs <x,Ly>_D on deterministic
+        // pseudo-random vectors, and the Rayleigh quotient sign (L negative-semidefinite).
+        presDbgSpdDone_ = true;
+        View<double> xr("dbg_x", static_cast<std::size_t>(n)),
+            yr("dbg_y", static_cast<std::size_t>(n)), Ax("dbg_Ax", static_cast<std::size_t>(n)),
+            Ay("dbg_Ay", static_cast<std::size_t>(n));
+        Kokkos::parallel_for(
+            "amr::dbg_fill", n, KOKKOS_LAMBDA(const Index i) {
+              xr(i) = std::sin(0.7 * static_cast<double>(i) + 0.3);
+              yr(i) = std::cos(1.3 * static_cast<double>(i) + 1.1);
+            });
+        applyFv(op0, View<const double>(xr), Ax);
+        applyFv(op0, View<const double>(yr), Ay);
+        auto dotD = [&](View<const double> a, View<const double> b) {
+          double s = 0.0;
+          Kokkos::parallel_reduce(
+              "amr::dbg_dot", n,
+              KOKKOS_LAMBDA(const Index i, double& acc) { acc += a(i) * b(i) / iv(i); }, s);
+          return s;
+        };
+        const double yLx = dotD(View<const double>(yr), View<const double>(Ax));
+        const double xLy = dotD(View<const double>(xr), View<const double>(Ay));
+        const double xLx = dotD(View<const double>(xr), View<const double>(Ax));
+        const double yLy = dotD(View<const double>(yr), View<const double>(Ay));
+        std::fprintf(stderr,
+                     "[amr pres] SPD probe: <y,Lx>_D=%.15e <x,Ly>_D=%.15e rel asym=%.2e; "
+                     "Rayleigh <x,Lx>_D=%.3e <y,Ly>_D=%.3e (must be <=0)\n",
+                     yLx, xLy, std::fabs(yLx - xLy) / (std::fabs(yLx) + 1e-300), xLx, yLy);
+      }
+    }
+    if (presPCG_) {
+      const auto R =
+          dist_ ? pcg_.solve(presMGD_, phi_, View<const double>(div_), presIters, 1e-10)
+                : pcg_.solve(presMG_, phi_, View<const double>(div_), presIters, 1e-10);
+      lastPresIters_ = R.iters;
+      if (dbg)
+        std::fprintf(stderr, "[amr pres] pcg iters=%d res0=%.3e res=%.3e rel=%.3e\n", R.iters,
+                     R.res0, R.res, R.res0 > 0 ? R.res / R.res0 : 0.0);
     } else if (dist_) {
       Kokkos::deep_copy(presMGD_.b(0), div_);
       Kokkos::deep_copy(presMGD_.x(0), 0.0);
@@ -1038,8 +1114,19 @@ class AmrFlow {
     } else {
       Kokkos::deep_copy(presMG_.b(0), div_);
       Kokkos::deep_copy(presMG_.x(0), 0.0);
-      for (int it = 0; it < presIters; ++it)
+      View<double> rdbg;
+      if (dbg)
+        rdbg = View<double>("pres_dbg_res", static_cast<std::size_t>(n));
+      for (int it = 0; it < presIters; ++it) {
         presMG_.vcycle(2, 2, 60, 0.8);
+        if (dbg) {
+          residualFv(presMG_.op(0), View<const double>(presMG_.x(0)),
+                     View<const double>(presMG_.b(0)), rdbg);
+          const double rn =
+              std::sqrt(dotPlain(View<const double>(rdbg), View<const double>(rdbg), n));
+          std::fprintf(stderr, "[amr pres] vcycle %2d |r|=%.6e\n", it + 1, rn);
+        }
+      }
       Kokkos::deep_copy(phi_, presMG_.x(0));
       lastPresIters_ = presIters;
     }
@@ -1614,6 +1701,7 @@ class AmrFlow {
   double rho_ = 1.0, mu_ = 1.0, dt_ = 1e6;
   Vec<3> f_{};
   bool presPCG_ = true;
+  bool presDbgSpdDone_ = false;  // one-shot debug SPD probe (PECLET_CORE_AMR_PRES_DEBUG)
   bool momMGon_ = true;  // velocity-MG momentum preconditioner (scalable; see setMomentumMG)
   bool useStaircaseMG_ = false;  // false = Galerkin (MomentumMG), true = staircase (VelocityMG)
   int mgVcPre_ = 2, mgVcBottom_ = 30;  // momentum-MG V-cycle pre/post sweeps + bottom sweeps
