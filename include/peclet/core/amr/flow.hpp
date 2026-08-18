@@ -489,7 +489,13 @@ class AmrFlow {
   /// tests/study_amr_ghost_apriori.cpp). The directional gradient is central where both axis
   /// neighbours are fluid-centered and 2nd-order one-sided toward the fluid else — O(h²),
   /// gauge-exact. The aperture projection (divergence + φ solve + uf) is UNCHANGED (throat-safe).
-  /// Default OFF (bit-identical legacy path). Call before setSolid.
+  ///
+  /// DEFAULT ON since 2026-08-18, mirroring flow's collocated default
+  /// `set_collocated_scheme("gauge-exact")`. Measured there on two periodic sphere beds
+  /// (peclet-examples benchmarks/porous-scaling): second order at phi=0.50 AND at a contact-tight
+  /// phi=0.60, against first order for the plain gradient — which additionally failed to reach
+  /// steady state within 800 steps on three of five rungs of the dense bed. `setGhostGradient(false)`
+  /// restores the legacy path. Call before setSolid.
   void setGhostGradient(bool on) { ghostGrad_ = on; }
   /// FULL directional ghost-cell projection (the AMR port of flow's collocated
   /// set_ghost_projection): the pressure system becomes rho·(L_bin + Delta) phi = rho·D_g(u*) —
@@ -1615,7 +1621,9 @@ class AmrFlow {
   bool momGS_ = false;  // opt-in: multicolour Gauss–Seidel smoother in the momentum MG
   bool momMGSolver_ =
       false;            // opt-in (P4): velocity-MG as the solver (defect correction), not BiCGStab
-  bool ghostGrad_ = false;  // directional ghost gradient on cut cells (setGhostGradient)
+  bool ghostGrad_ = true;   // gauge-exact directional cell gradient (setGhostGradient) — the
+                            // DEFAULT since 2026-08-18, mirroring flow's collocated
+                            // set_collocated_scheme("gauge-exact")
   bool ghostProj_ = false;    // RESOLVED projection mode (set by setSolid from the request)
   int8_t ghostProjReq_ = -1;  // -1 = auto (ghost iff advection), 0/1 = explicit request
   int gpMatrixOrder_ = 1, gpRhsOrder_ = 2;  // closure orders: implicit matrix / RHS divergence

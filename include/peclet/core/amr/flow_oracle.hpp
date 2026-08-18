@@ -674,7 +674,7 @@ class AmrFlow {
   Vec<3> origin_{};
   double rho_ = 1.0, mu_ = 1.0, dt_ = 1e6;
   bool advect_ = false;
-  bool ghostGrad_ = false;   // directional ghost gradient on cut cells (setGhostGradient)
+  bool ghostGrad_ = true;   // directional ghost gradient on cut cells (setGhostGradient)
   bool ghostProj_ = false;    // RESOLVED projection mode (set by setSolid from the request)
   int8_t ghostProjReq_ = -1;  // -1 = auto (ghost iff advection), 0/1 = explicit request
   int gpMatrixOrder_ = 1, gpRhsOrder_ = 2;  // closure orders: implicit matrix / RHS divergence

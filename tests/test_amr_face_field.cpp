@@ -58,7 +58,13 @@ void run_test() {
   PECLET_CORE_CHECK(dFace6 <
                     0.05 * dCell6);  // face field ≥20× more divergence-free than the cell field
   PECLET_CORE_CHECK(dFace30 < 0.05 * dCell30);  // ditto at the tighter solve
-  PECLET_CORE_CHECK(dFace30 < dFace6);  // tightening the pressure solve shrinks the face divergence
+  // The face divergence used to TRACK the pressure-solve residual, so tightening the solve shrank
+  // it. Since the gauge-exact cell gradient became the default (2026-08-18) it is ~85x smaller and
+  // sits on a floor instead: measured here 5.87e-06 -> 5.54e-06 with the legacy gradient against
+  // 6.6992e-08 -> 6.6995e-08 with the gauge-exact one. So assert what still holds -- it does not
+  // GROW when the solve is tightened -- and pin the absolute level the floor sits at.
+  PECLET_CORE_CHECK(dFace30 <= 1.05 * dFace6);
+  PECLET_CORE_CHECK(dFace30 < 1e-6);
   //         (the cell-field divergence is the fixed O(h²) approximate-projection error, ~unchanged)
 
   // (2) graded 2:1 grid: the face field stays divergence-free across the coarse–fine interfaces,
