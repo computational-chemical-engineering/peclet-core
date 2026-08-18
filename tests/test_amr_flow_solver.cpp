@@ -430,7 +430,8 @@ void test_sphere_ghostproj_adv() {
     return std::sqrt(dx * dx + dy * dy + dz * dz) - rad;
   };
   const double dt = 2.0;  // NS needs finite dt (the (ρ/dt) mass damps the lagged advection)
-  // mode: 0 = explicit aperture, 1 = explicit ghost, 2 = AUTO (nothing set — the NS default).
+  // mode: 0 = explicit aperture, 1 = explicit ghost, 2 = DEFAULT (nothing set — must be the
+  // aperture projection since the 2026-08-19 ghost quarantine).
   auto setup = [&](auto& f, int mode) {
     f.init(t, h0);
     f.setViscosity(mu);
@@ -440,7 +441,7 @@ void test_sphere_ghostproj_adv() {
     if (mode == 1)
       f.setGhostProjection(true, 1, 2);
     else if (mode == 0)
-      f.setGhostProjection(false);  // explicit: the aperture NS reference (auto would pick ghost)
+      f.setGhostProjection(false);  // explicit aperture (also the default; ghost is quarantined)
     f.setSolid(sdf);
   };
   oracle::AmrFlow<21> hfl;
@@ -449,13 +450,13 @@ void test_sphere_ghostproj_adv() {
   setup(dfl, 1);
   AmrFlow<21> afl;  // device aperture reference (cross-scheme closeness)
   setup(afl, 0);
-  AmrFlow<21> ufl;  // AUTO: with advection on, the default must resolve to the ghost projection
+  AmrFlow<21> ufl;  // DEFAULT: must resolve to the aperture projection (ghost is quarantined)
   setup(ufl, 2);
   for (int s = 0; s < 50; ++s) {
     hfl.step(300, 12, 2);
     dfl.step(200, 60);
     afl.step(200, 80);
-    ufl.step(200, 60);
+    ufl.step(200, 80);  // same budgets as afl: the default must be bit-identical to it
   }
   const auto& hux = hfl.velocity(0);
   const auto dux = dfl.velocity(0);
@@ -489,12 +490,13 @@ void test_sphere_ghostproj_adv() {
   PECLET_CORE_CHECK(dmax < 5e-3 * hmax);                       // fields agree
   PECLET_CORE_CHECK(std::fabs(dmean - amean) / amean < 5e-2);  // ghost ≈ aperture NS physics
   PECLET_CORE_CHECK(std::isfinite(gdiv) && gdiv < 10.0 * adiv);  // same residual class
-  {  // the AUTO default must have resolved to the ghost projection (== the explicit-ghost run)
+  {  // the DEFAULT must have resolved to the aperture projection (== the explicit-aperture run;
+     // the former NS AUTO-ghost arm is retired — ghost is quarantined)
     const auto uux = ufl.velocity(0);
     double umax = 0.0;
     for (Index i = 0; i < n; ++i)
-      umax = std::max(umax, std::fabs(uux[(std::size_t)i] - dux[(std::size_t)i]));
-    std::printf("[flow] NS auto-default: max|auto-ghost| = %.2e\n", umax);
+      umax = std::max(umax, std::fabs(uux[(std::size_t)i] - aux[(std::size_t)i]));
+    std::printf("[flow] NS default: max|default-aperture| = %.2e\n", umax);
     PECLET_CORE_CHECK(umax < 1e-10 * hmax);  // identical configuration, identical kernels
   }
 }

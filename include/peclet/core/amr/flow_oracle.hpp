@@ -96,9 +96,10 @@ class AmrFlow {
   /// orders for the implicit matrix vs the RHS divergence; (1, 2) is the validated flow default
   /// (2nd-order steady constraint on a 7-point near-symmetric matrix). Default OFF. Call before
   /// setSolid.
-  /// DEFAULT: AUTO — ghost engages when advection is on at setSolid time (mirrors the device
-  /// AmrFlow's NS default; auto mode falls back to the aperture projection with a warning if the
-  /// finest band is too thin). Call setAdvection AND this before setSolid.
+  /// QUARANTINED (2026-08-19, mirrors the device AmrFlow): DEFAULT OFF everywhere — the aperture
+  /// projection is the production path for Stokes AND NS (the former NS AUTO-arm was retired with
+  /// the aperture-PCG-under-advection fix; see docs/amr_aperture_advection_plan.md §RESOLVED).
+  /// Engages only on an explicit setGhostProjection(true). Call before setSolid.
   void setGhostProjection(bool on, int matrixOrder = 1, int rhsOrder = 2) {
     ghostProjReq_ = on ? 1 : 0;
     gpMatrixOrder_ = matrixOrder;
@@ -125,21 +126,12 @@ class AmrFlow {
     pres_.init(*t_, h0_);
     pres_.setOrigin(origin_);
     presMG_.build(*t_, h0_);
-    // Resolve the projection mode (mirrors the device AmrFlow): explicit request wins; AUTO =
-    // ghost when advection is on; auto-mode band violations fall back to the aperture.
-    ghostProj_ = (ghostProjReq_ == 1) || (ghostProjReq_ == -1 && advect_);
-    if (ghostProj_) {
-      try {
-        gpOv_ = buildGhostOverlay(*t_, pres_, mom_.sdfCRaw(), gpMatrixOrder_, gpRhsOrder_);
-      } catch (const std::runtime_error&) {
-        if (ghostProjReq_ == 1)
-          throw;
-        std::fprintf(stderr,
-                     "[peclet.core.amr] NS ghost-projection auto-default: the finest band is too "
-                     "thin for the closure overlay — falling back to the aperture projection\n");
-        ghostProj_ = false;
-      }
-    }
+    // Resolve the projection mode (mirrors the device AmrFlow): the aperture projection is the
+    // production path everywhere; the QUARANTINED ghost projection engages only on an explicit
+    // setGhostProjection(true), and a band-margin violation throws.
+    ghostProj_ = (ghostProjReq_ == 1);
+    if (ghostProj_)
+      gpOv_ = buildGhostOverlay(*t_, pres_, mom_.sdfCRaw(), gpMatrixOrder_, gpRhsOrder_);
     if (ghostProj_) {
       // Ghost projection: the pressure geometry is the BINARY openness (a face is open iff both
       // adjacent centers + the face sample are fluid), on the UNCHANGED MG rails; the closure
@@ -676,7 +668,7 @@ class AmrFlow {
   bool advect_ = false;
   bool ghostGrad_ = true;   // directional ghost gradient on cut cells (setGhostGradient)
   bool ghostProj_ = false;    // RESOLVED projection mode (set by setSolid from the request)
-  int8_t ghostProjReq_ = -1;  // -1 = auto (ghost iff advection), 0/1 = explicit request
+  int8_t ghostProjReq_ = 0;  // 0 = off (default; ghost is quarantined), 1 = explicit request
   int gpMatrixOrder_ = 1, gpRhsOrder_ = 2;  // closure orders: implicit matrix / RHS divergence
   GhostOverlay gpOv_;                       // closure overlay (finest-band rows)
   std::vector<double> maskC_;               // 1 = coupled row (Krylov subspace), 0 = pinned

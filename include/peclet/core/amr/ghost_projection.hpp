@@ -1,5 +1,14 @@
 // core — directional ghost-cell projection overlay on the AMR octree (collocated).
 //
+// *** QUARANTINED (2026-08-19, mirroring flow's ghost quarantine) *** — no production consumer.
+// The aperture projection (gauge-exact directional cell gradient + MG-PCG, which now covers
+// advection — see docs/amr_aperture_advection_plan.md §RESOLVED) is the production collocated
+// path for Stokes AND Navier–Stokes: it matches the ghost scheme's accuracy (K gap ≤0.23% on the
+// Z&H NS study, shrinking with N) at lower per-step cost. This overlay stays compilable and
+// reachable ONLY through an explicit setGhostProjection(true), for A/B studies and the
+// regression tests that pin its behaviour. Do not grow new dependencies on it; it follows
+// peclet::core::scheme::ghost_closure out when the A/B value is gone.
+//
 // The AMR port of flow's collocated set_ghost_projection (flow/src/ghost_projection.hpp §9 of
 // flow/doc/collocated_second_order_open_problem.md): the aperture projection's two measured O(1)
 // cut-cell defects (tests/study_amr_ghost_apriori.cpp — the gauge-dependent O(1/h) ABC gradient

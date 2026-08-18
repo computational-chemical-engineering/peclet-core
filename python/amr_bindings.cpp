@@ -697,13 +697,15 @@ NB_MODULE(amr, m) {
            "ABC gradient). The aperture projection itself is unchanged. Call before set_solid.")
       .def("set_ghost_projection", &Flow::set_ghost_projection, nb::arg("on"),
            nb::arg("matrix_order") = 1, nb::arg("rhs_order") = 2,
-           "FULL directional ghost-cell projection (the AMR port of flow's collocated "
-           "set_ghost_projection): binary-openness pressure operator + wall-anchored closure "
-           "overlay on the finest-band rows, MG-preconditioned BiCGStab, ghost-closed divergence "
-           "constraint; implies set_ghost_gradient. (matrix_order, rhs_order) = closure orders "
-           "for the implicit matrix vs the RHS divergence — (1, 2) is the validated default. "
-           "Raises if the finest band is too thin (a closure would cross a 2:1 boundary). Call "
-           "before set_solid.")
+           "QUARANTINED (2026-08-19; default OFF everywhere — the aperture projection is the "
+           "production path for Stokes AND Navier-Stokes, matching this scheme's accuracy at "
+           "lower cost). FULL directional ghost-cell projection, kept for A/B studies (the AMR "
+           "port of flow's collocated set_ghost_projection): binary-openness pressure operator + "
+           "wall-anchored closure overlay on the finest-band rows, MG-preconditioned BiCGStab, "
+           "ghost-closed divergence constraint; implies set_ghost_gradient. (matrix_order, "
+           "rhs_order) = closure orders for the implicit matrix vs the RHS divergence — (1, 2) is "
+           "the validated default. Raises if the finest band is too thin (a closure would cross "
+           "a 2:1 boundary). Call before set_solid.")
       .def("set_pressure", &Flow::set_pressure, nb::arg("values"),
            "Write the accumulated rotational pressure from a (num_leaves,) array — restart, or "
            "re-accumulation policies after finish_adapt (at steady-state dt the transferred p is "

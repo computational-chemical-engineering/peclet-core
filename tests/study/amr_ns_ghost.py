@@ -46,7 +46,7 @@ def setup(N, ghost, cf=0, band=None, dt=None, target_re=10.0):
     if ghost:
         fl.set_ghost_projection(True, 1, 2)
     else:
-        fl.set_ghost_projection(False)  # explicit: NS auto-default is ghost
+        fl.set_ghost_projection(False)  # explicit aperture (also the default since the quarantine)
     if cf:
         fl.set_cf_scheme(cf)
     fl.set_solid(lambda x, y, z:

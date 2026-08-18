@@ -104,7 +104,7 @@ void run() {
   auto configure = [&](AmrFlow<kBits>& f) {
     f.setDensity(1.0);
     f.setViscosity(1.0);
-    f.setAdvection(true);  // NS ⇒ AUTO ghost projection
+    f.setAdvection(true);  // NS on the aperture projection (the default; MG-PCG under advection)
     f.setDt(60.0);
     f.setBodyForce(1.0, 0.0, 0.0);
     f.setSolid(sphereSdf);

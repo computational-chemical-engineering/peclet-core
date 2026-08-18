@@ -516,13 +516,14 @@ class AmrFlow {
   /// near-symmetric matrix; the operator mismatch converges through the time stepping). Throws in
   /// setSolid if an overlay row's ±2 reach crosses a 2:1 level boundary (finest-band margin).
   ///
-  /// DEFAULT (neither setGhostProjection value forced): AUTO — the ghost projection engages when
-  /// ADVECTION is on at setSolid time (it is both the more accurate and the much cheaper NS
-  /// projection: the aperture path must run the bounded V-cycle under advection, ~60 cycles/step,
-  /// while the ghost BiCGStab stays at 6–7 iterations — measured 10–19× wall-clock). In auto
-  /// mode a too-thin finest band falls back to the aperture projection with a warning instead of
-  /// throwing. Stokes (advection off) defaults to the aperture projection unchanged. Call
-  /// setAdvection AND this before setSolid.
+  /// QUARANTINED (2026-08-19, mirroring flow): DEFAULT OFF everywhere — the aperture projection
+  /// (gauge-exact cell gradient, MG-PCG) is the production path for Stokes AND Navier–Stokes.
+  /// The former NS AUTO-arm existed only because the aperture pressure solve was thought to need
+  /// a bounded V-cycle under advection; that was a stale solver gate, characterised and removed
+  /// (see docs/amr_aperture_advection_plan.md §RESOLVED — the aperture MG-PCG is now CHEAPER per
+  /// step than the ghost BiCGStab at matched accuracy, gap ≤0.23%). The ghost projection stays
+  /// callable for A/B studies via an explicit setGhostProjection(true) but has no production
+  /// consumer. Call before setSolid.
   void setGhostProjection(bool on, int matrixOrder = 1, int rhsOrder = 2) {
     ghostProjReq_ = on ? 1 : 0;
     gpMatrixOrder_ = matrixOrder;
@@ -620,11 +621,12 @@ class AmrFlow {
     mom_.init(*t_, h0_, origin_);
     pres_.init(*t_, h0_);
     pres_.setOrigin(origin_);
-    // Resolve the projection mode: explicit request wins; AUTO (default) = ghost when advection
-    // is on (the better AND cheaper NS projection — see setGhostProjection). The overlay is
-    // built below (it needs only mom_'s sdf samples + pres_'s topology walk, no openness); in
-    // auto mode a band-margin violation falls back to the aperture projection with a warning.
-    ghostProj_ = (ghostProjReq_ == 1) || (ghostProjReq_ == -1 && advect_);
+    // Resolve the projection mode: the aperture projection is the production path everywhere
+    // (Stokes and NS) — the ghost projection is QUARANTINED and engages only on an explicit
+    // setGhostProjection(true) (see the setter doc; the former NS AUTO-arm was retired 2026-08-19
+    // with the aperture-PCG-under-advection fix). The overlay is built below (it needs only
+    // mom_'s sdf samples + pres_'s topology walk, no openness).
+    ghostProj_ = (ghostProjReq_ == 1);
     if (dist_) {
       // Distributed: install the resolver seams and run every prober to the miss-collect
       // fixpoint (docs/amr_distributed_flow.md). Freezes the ±2 halo, leaves mom_ FULLY built
@@ -638,38 +640,20 @@ class AmrFlow {
       mom_.build(sdfFn, /*idiag=*/rho_ / dt_, /*beta=*/mu_ / (h0_ * h0_));
     }
     GhostOverlay hov;
-    if (ghostProj_) {
+    if (ghostProj_) {  // explicit request only (quarantined) — a band-margin violation throws
       if (dist_) {
         // COLLECTIVE band-margin decision: the flag is agreed across ranks before anyone
-        // commits to a projection mode (one rank falling back alone deadlocks the MG
-        // collectives).
+        // commits (one rank throwing alone would deadlock the MG collectives).
         bool viol = false;
         hov = buildGhostOverlay(*t_, pres_, mom_.sdfCRaw(), gpMatrixOrder_, gpRhsOrder_, &viol);
         int lv = viol ? 1 : 0, gv = 0;
         MPI_Allreduce(&lv, &gv, 1, MPI_INT, MPI_LOR, dist_->comm());
-        if (gv) {
-          if (ghostProjReq_ == 1)
-            throw std::runtime_error(
-                "amr ghost projection: an overlay row's ±2 closure reach crosses a 2:1 level "
-                "boundary (collective) — widen the refineToSdf band margin");
-          std::fprintf(stderr,
-                       "[peclet.core.amr] NS ghost-projection auto-default: the finest band is "
-                       "too thin for the closure overlay — falling back to the aperture "
-                       "projection (collective)\n");
-          ghostProj_ = false;
-        }
+        if (gv)
+          throw std::runtime_error(
+              "amr ghost projection: an overlay row's ±2 closure reach crosses a 2:1 level "
+              "boundary (collective) — widen the refineToSdf band margin");
       } else {
-        try {
-          hov = buildGhostOverlay(*t_, pres_, mom_.sdfCRaw(), gpMatrixOrder_, gpRhsOrder_);
-        } catch (const std::runtime_error&) {
-          if (ghostProjReq_ == 1)
-            throw;
-          std::fprintf(stderr,
-                       "[peclet.core.amr] NS ghost-projection auto-default: the finest band is "
-                       "too thin for the closure overlay — falling back to the aperture "
-                       "projection\n");
-          ghostProj_ = false;
-        }
+        hov = buildGhostOverlay(*t_, pres_, mom_.sdfCRaw(), gpMatrixOrder_, gpRhsOrder_);
       }
     }
     if (ghostProj_) {
@@ -1713,7 +1697,7 @@ class AmrFlow {
                             // DEFAULT since 2026-08-18, mirroring flow's collocated
                             // set_collocated_scheme("gauge-exact")
   bool ghostProj_ = false;    // RESOLVED projection mode (set by setSolid from the request)
-  int8_t ghostProjReq_ = -1;  // -1 = auto (ghost iff advection), 0/1 = explicit request
+  int8_t ghostProjReq_ = 0;  // 0 = off (default; ghost is quarantined), 1 = explicit request
   int gpMatrixOrder_ = 1, gpRhsOrder_ = 2;  // closure orders: implicit matrix / RHS divergence
   CfScheme cfScheme_ = CfScheme::standard;  // 2:1 C/F interface scheme (setCfScheme)
   int outerIters_ = 1;  // Picard outer iterations over the lagged advection (default 1)

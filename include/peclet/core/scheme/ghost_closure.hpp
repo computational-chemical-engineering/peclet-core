@@ -1,5 +1,11 @@
 // core — directional ghost-cell closure primitives (shared flow <-> AMR).
 //
+// *** NO PRODUCTION CONSUMER (2026-08-19) *** — flow quarantined its ghost projection 2026-08-18
+// (the gauge-exact collocated scheme is its default) and AMR retired its NS AUTO-arm 2026-08-19
+// (the aperture MG-PCG covers advection; see core/docs/amr_aperture_advection_plan.md §RESOLVED).
+// Both consumers keep these closures compilable strictly for A/B studies and the regression
+// tests that pin the quarantined schemes' behaviour.
+//
 // The PURE per-face pieces of the directional ghost-cell IBM projection, lifted verbatim from
 // flow/src/ghost_projection.hpp (where they were validated 2nd-order on Zick & Homsy, staggered
 // AND collocated — see that header for the full scheme documentation): a solid staggered/averaged

@@ -329,15 +329,14 @@ fragmentation guard, exact crossings).
 
 ## Update (2026-07-25): ghost projection is the NS default; adaptivity during a run (step 5)
 
-**NS default.** `setGhostProjection` is now a tri-state: explicit on/off wins; the DEFAULT is
-AUTO — the ghost projection engages when advection is on at `setSolid` time (it is both the more
-accurate and the ~10–19× cheaper NS projection, since the aperture path must run the bounded
-V-cycle under advection while the ghost BiCGStab stays at 6–7 iterations). In auto mode a
-too-thin finest band falls back to the aperture with a stderr warning instead of throwing;
-explicit ghost still throws. Stokes (advection off) keeps the aperture default unchanged.
-Call `setAdvection` and any explicit projection choice BEFORE `setSolid`. Guarded by the
-auto-arm in `test_sphere_ghostproj_adv` (bit-identical to the explicit-ghost run) and by
-explicit `setGhostProjection(false)` at every aperture-intent test/study site.
+**NS default. [RETIRED 2026-08-19 — see the update at the end of this doc: the AUTO arm existed
+only because of the stale aperture solver gate; the default is now the aperture projection
+everywhere and the ghost projection is quarantined.]** `setGhostProjection` was a tri-state:
+explicit on/off wins; the DEFAULT was AUTO — the ghost projection engaged when advection was on
+at `setSolid` time (it was believed the much cheaper NS projection, since the aperture path ran
+the bounded V-cycle under advection while the ghost BiCGStab stayed at 6–7 iterations). In auto
+mode a too-thin finest band fell back to the aperture with a stderr warning instead of throwing.
+Call `setAdvection` and any explicit projection choice BEFORE `setSolid`.
 
 **Adaptivity during a run** (`beginAdapt`/`finishAdapt`, Python `begin_adapt`/`finish_adapt`):
 the octree is mutated EXTERNALLY between the two calls (solution-driven `adapt`, `refine_to_*`,
@@ -398,3 +397,43 @@ cold-start steps to recover. The policy fix (in `adapt_cycle`): zero p after `fi
 (`Flow.set_pressure`, new binding) and let the rotational update re-accumulate it while u
 carries the flow state — collapse eliminated, all cycles steady. At transient dt (the dense
 case) the transferred p is benign and kept.
+
+## Update (2026-08-19): the aperture solve covers advection; the ghost projection is QUARANTINED
+
+The aperture-under-advection solver defect (the last thing keeping the ghost projection alive
+anywhere in the suite) was characterised and fixed — full diagnosis in
+`amr_aperture_advection_plan.md` §RESOLVED. In one line: the "transient near-nullspace issue" was
+an un-deflated **incompatible RHS fluid-mean** (the divergence RHS is zeroed at solid-centered
+open-faced DOF, breaking telescoping; the defect grows with the developed flow), which stalled the
+un-deflated bounded V-cycle at exactly `|mean|·sqrt(V_fluid)`; the operator itself is
+advection-independent and SPD (measured: `Aᵀ` asymmetry 8.8e-15). The MG-PCG's per-iteration
+fluid-range projection deflates the incompatible component, so the stale `!advect_` PCG gate was
+simply removed.
+
+**Acceptance (tests/study/amr_ns_ghost.py, RTX 5080, gauge-exact gradient on both paths):**
+
+| N  | scheme   | K_app  | pres iters | ms/step | secs to converge |
+|----|----------|--------|-----------:|--------:|-----------------:|
+| 32 | aperture | 4.4235 | 15 (PCG)   | **32.7**| 64 (was 341)     |
+| 32 | ghost    | 4.4132 | 6 (BiCGStab)| 39     | 18               |
+| 64 | aperture | 4.4112 | 16 (PCG)   | **46.6**| 122 (was 586)    |
+| 64 | ghost    | 4.4090 | 7 (BiCGStab)| 60     | 51               |
+
+The aperture NS path is now CHEAPER **per step** than the ghost BiCGStab (a PCG iteration is one
+V-cycle + one matvec vs BiCGStab's two of each); the remaining wall gap is step count to the
+study's K-stationarity tolerance, a trajectory property, not solver cost. Scheme gap −0.234% /
+−0.051% (halving with N); unsteady impulsive-start trajectories track to 5.7e-4; the aperture
+residual divergence is bounded (max 5.0e-4, final 1.1e-4 at N=64).
+
+**Consequences (this commit):**
+- `setGhostProjection` AUTO is retired: the DEFAULT is the aperture projection everywhere
+  (Stokes and NS, host oracle and device in lockstep). The ghost projection engages only on an
+  explicit `setGhostProjection(true)` and `amr/ghost_projection.hpp` carries a quarantine header —
+  kept compilable for A/B studies and the regression tests that pin its behaviour
+  (`test_sphere_ghost*`, `test_graded_*`), mirroring flow's quarantine of its collocated ghost.
+- `peclet::core::scheme::ghost_closure` has **no production consumer** anywhere in the suite —
+  flow quarantined its overlay 2026-08-18, AMR now too.
+- The NS default check in `test_sphere_ghostproj_adv` flips: the no-config run must be
+  bit-identical to the explicit-aperture run.
+- Distributed NS (`test_amr_distributed_flow_mpi` mode 2, `test_amr_distributed_adaptflow_mpi`)
+  now exercises the distributed aperture MG-PCG under advection (WORLD==SELF ctest-gated).

@@ -95,7 +95,7 @@ void run() {
   makeMesh(self, h0);
   const Index ns = self.local().numLeaves();
 
-  // mode: 0 = Stokes aperture, 1 = Stokes ghost, 2 = NS (advection on ⇒ AUTO-ghost + the
+  // mode: 0 = Stokes aperture, 1 = Stokes ghost, 2 = NS (advection on ⇒ aperture default + the
   // uⁿ advection halo + the uf face field across steps).
   auto configure = [&](AmrFlow<kBits>& f, int mode) {
     f.setDensity(1.0);
