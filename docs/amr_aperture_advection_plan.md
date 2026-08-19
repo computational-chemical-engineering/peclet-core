@@ -46,6 +46,15 @@ solver health traced per step. The bounded V-cycle remains the `setPressurePCG(f
 Acceptance measurements + the ghost-projection retirement that followed: see
 `amr_collocated_projection.md` (2026-08-19 update).
 
+**Follow-up experiment (2026-08-19, branch `dev/aperture-compat-rhs`, core 94a069d — NOT
+merged):** restoring RHS compatibility at the discretization level (divergence on ALL operator
+DOF) eliminates the V-cycle stall (4.2e-3 → 7.2e-13 in 60 cycles) with PCG cost unchanged, but
+introduces a resolution-independent Stokes bias ~−0.09 % — rejected for production; deflation
+stays. Its real value: it proves the stall has exactly one removable cause, which enables an
+**all-reduce-free pressure driver for the latency-bound MPI regime** (once-per-solve RHS
+projection + Chebyshev V-cycles, ≤2 global syncs per solve vs PCG's ~40). That optimization is
+written up in `comm_avoiding_pressure_driver.md`.
+
 ## Where this sits
 
 The collocated second-order question is closed: the **gauge-exact** scheme (aperture constraint +
