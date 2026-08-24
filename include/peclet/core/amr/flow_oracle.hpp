@@ -100,7 +100,7 @@ class AmrFlow {
   /// projection is the production path for Stokes AND NS (the former NS AUTO-arm was retired with
   /// the aperture-PCG-under-advection fix; see docs/amr_aperture_advection_plan.md §RESOLVED).
   /// Engages only on an explicit setGhostProjection(true). Call before setSolid.
-  void setGhostProjection(bool on, int matrixOrder = 1, int rhsOrder = 2) {
+  void setGhostProjection(bool on, int matrixOrder = 2, int rhsOrder = 2) {
     ghostProjReq_ = on ? 1 : 0;
     gpMatrixOrder_ = matrixOrder;
     gpRhsOrder_ = rhsOrder;

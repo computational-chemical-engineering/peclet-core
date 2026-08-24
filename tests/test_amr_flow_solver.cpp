@@ -217,7 +217,7 @@ void test_sphere_ghost() {
   PECLET_CORE_CHECK(dmax < 5e-3 * hmax);                       // fields agree
 }
 
-// FULL ghost projection (setGhostProjection, (1,2) default) on BOTH engines: binary-openness
+// FULL ghost projection (setGhostProjection, (2,2) production pair) on BOTH engines: binary-openness
 // operator + closure overlay + MG-preconditioned BiCGStab must agree oracle==device on a cut
 // geometry (same permeability, fields agree), and differ from the aperture projection (it
 // replaces the O(1) cut-face constraint).
@@ -239,7 +239,7 @@ void test_sphere_ghostproj() {
   hfl.setViscosity(mu);
   hfl.setDt(1e6);
   hfl.setBodyForce(G, 0, 0);
-  hfl.setGhostProjection(true, 1, 2);
+  hfl.setGhostProjection(true, 2, 2);
   hfl.setSolid(sdf);
   for (int s = 0; s < 8; ++s)
     hfl.step(/*momSweeps=*/400, /*presIters=*/12, /*presSweeps=*/2);
@@ -250,7 +250,7 @@ void test_sphere_ghostproj() {
   dfl.setViscosity(mu);
   dfl.setDt(1e6);
   dfl.setBodyForce(G, 0, 0);
-  dfl.setGhostProjection(true, 1, 2);
+  dfl.setGhostProjection(true, 2, 2);
   dfl.setSolid(sdf);
   for (int s = 0; s < 8; ++s)
     dfl.step(/*momIters=*/500, /*presIters=*/40);
@@ -305,7 +305,7 @@ void test_graded_ghostproj() {
     fl.init(t, 1.0, Vec<3>{0, 0, 0});
     fl.setViscosity(0.1);
     fl.setDt(60.0);
-    fl.setGhostProjection(true, 1, 2);
+    fl.setGhostProjection(true, 2, 2);
     bool threw = false;
     try {
       fl.setSolid(sdf);
@@ -323,7 +323,7 @@ void test_graded_ghostproj() {
     fl.setViscosity(0.1);
     fl.setDt(60.0);
     fl.setBodyForce(1e-3, 0, 0);
-    fl.setGhostProjection(true, 1, 2);
+    fl.setGhostProjection(true, 2, 2);
     fl.setSolid(sdf);
     for (int s = 0; s < 200; ++s)
       fl.step(100, 60);
@@ -368,7 +368,7 @@ void test_graded_cf_quadratic() {
     fl.setViscosity(0.1);
     fl.setDt(60.0);
     fl.setBodyForce(1e-3, 0, 0);
-    fl.setGhostProjection(true, 1, 2);
+    fl.setGhostProjection(true, 2, 2);
     fl.setCfScheme(cf);
     fl.setSolid(sdf);
     for (int s = 0; s < 40; ++s)
@@ -380,7 +380,7 @@ void test_graded_cf_quadratic() {
   hfl.setViscosity(0.1);
   hfl.setDt(60.0);
   hfl.setBodyForce(1e-3, 0, 0);
-  hfl.setGhostProjection(true, 1, 2);
+  hfl.setGhostProjection(true, 2, 2);
   hfl.setCfScheme(1);
   hfl.setSolid(sdf);
   for (int s = 0; s < 40; ++s)
@@ -439,7 +439,7 @@ void test_sphere_ghostproj_adv() {
     f.setBodyForce(G, 0, 0);
     f.setAdvection(true);
     if (mode == 1)
-      f.setGhostProjection(true, 1, 2);
+      f.setGhostProjection(true, 2, 2);
     else if (mode == 0)
       f.setGhostProjection(false);  // explicit aperture (also the default; ghost is quarantined)
     f.setSolid(sdf);
@@ -530,7 +530,7 @@ void test_adapt_midrun() {
     fl.setViscosity(0.1);
     fl.setDt(60.0);
     fl.setBodyForce(1e-3, 0, 0);
-    fl.setGhostProjection(true, 1, 2);
+    fl.setGhostProjection(true, 2, 2);
   };
 
   // Continued run: band 3 -> (mid-run) band 5.
@@ -592,7 +592,7 @@ void test_pocket_guard() {
   fl.setViscosity(0.1);
   fl.setDt(60.0);
   fl.setBodyForce(1e-3, 0, 0);
-  fl.setGhostProjection(true, 1, 2);
+  fl.setGhostProjection(true, 2, 2);
   fl.setSolid(sdf);  // prints the fragmentation notice (2 components expected)
   for (int s = 0; s < 100; ++s)
     fl.step(100, 60);

@@ -1,13 +1,16 @@
 // core — directional ghost-cell projection overlay on the AMR octree (collocated).
 //
-// *** QUARANTINED (2026-08-19, mirroring flow's ghost quarantine) *** — no production consumer.
-// The aperture projection (gauge-exact directional cell gradient + MG-PCG, which now covers
-// advection — see docs/amr_aperture_advection_plan.md §RESOLVED) is the production collocated
-// path for Stokes AND Navier–Stokes: it matches the ghost scheme's accuracy (K gap ≤0.23% on the
-// Z&H NS study, shrinking with N) at lower per-step cost. This overlay stays compilable and
-// reachable ONLY through an explicit setGhostProjection(true), for A/B studies and the
-// regression tests that pin its behaviour. Do not grow new dependencies on it; it follows
-// peclet::core::scheme::ghost_closure out when the A/B value is gone.
+// *** PRODUCTION CANDIDATE (re-framed 2026-08-24; quarantined 2026-08-19..24) ***
+// flow's attractor campaign (flow/doc/collocated_invisible_subspace.md) reversed the 08-19
+// retirement calculus: the aperture projection possesses an attractor FAMILY of steady states
+// (its solid-centered pressure DOFs are constraint multipliers the gauge-exact gradient never
+// reads — support inconsistency, Prop. 2 of the note) plus a rotational-update instability at
+// fine resolution, both of which this fluid-only scheme is measured NOT to have (family-free,
+// no stabilizer at any dt, protocol-independent, clean-ladder convergent with a ~+0.2% bias).
+// The 08-19 COST statement stands (aperture MG-PCG is cheaper per step); the scheme choice is
+// now robustness/uniqueness. Default remains aperture until the suite-wide flip decision;
+// select with setGhostProjection(true) — the (2, 2) closure pair ONLY (the (1, 2) mixed form
+// is march-unstable above ~2000 spheres, flow/doc/ghost_hardening_findings_A.md).
 //
 // The AMR port of flow's collocated set_ghost_projection (flow/src/ghost_projection.hpp §9 of
 // flow/doc/collocated_second_order_open_problem.md): the aperture projection's two measured O(1)

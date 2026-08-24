@@ -56,7 +56,7 @@ def run_case(name, N, R, band, uniform_ref, ref_label, cycles=10, stride=100, to
     fl = amr.Flow(t, 1.0, MU, dt)
     fl.set_body_force(F, 0.0, 0.0)
     fl.set_advection(False)
-    fl.set_ghost_projection(True, 1, 2)  # ghost explicit (quarantined scheme — this is an A/B study)
+    fl.set_ghost_projection(True, 2, 2)  # ghost (2,2) — the production-candidate pair
     fl.set_cf_scheme(1)
     fl.set_solid(sdf)
 

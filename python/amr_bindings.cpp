@@ -696,15 +696,17 @@ NB_MODULE(amr, m) {
            "pressure — removes the gauge-dependent O(1/h) cut-cell gradient error of the plain "
            "ABC gradient). The aperture projection itself is unchanged. Call before set_solid.")
       .def("set_ghost_projection", &Flow::set_ghost_projection, nb::arg("on"),
-           nb::arg("matrix_order") = 1, nb::arg("rhs_order") = 2,
-           "QUARANTINED (2026-08-19; default OFF everywhere — the aperture projection is the "
-           "production path for Stokes AND Navier-Stokes, matching this scheme's accuracy at "
-           "lower cost). FULL directional ghost-cell projection, kept for A/B studies (the AMR "
-           "port of flow's collocated set_ghost_projection): binary-openness pressure operator + "
-           "wall-anchored closure overlay on the finest-band rows, MG-preconditioned BiCGStab, "
-           "ghost-closed divergence constraint; implies set_ghost_gradient. (matrix_order, "
-           "rhs_order) = closure orders for the implicit matrix vs the RHS divergence — (1, 2) is "
-           "the validated default. Raises if the finest band is too thin (a closure would cross "
+           nb::arg("matrix_order") = 2, nb::arg("rhs_order") = 2,
+           "PRODUCTION CANDIDATE (2026-08-24; default still OFF = aperture, pending the "
+           "suite-wide flip): the fluid-only constraint scheme — family-free, unconditionally "
+           "stable, protocol-independent (flow's attractor-campaign verdicts; == flow's "
+           "set_collocated_scheme('ghost')). FULL directional ghost-cell projection (the AMR "
+           "port): binary-openness pressure operator + wall-anchored closure overlay on the "
+           "finest-band rows, MG-preconditioned BiCGStab, ghost-closed divergence constraint; "
+           "implies set_ghost_gradient. (matrix_order, rhs_order) closure orders: (2, 2) "
+           "default and the only pair cleared for production — the (1, 2) mixed form is "
+           "march-UNSTABLE above ~2000 spheres (flow hardening Phase A), kept callable for "
+           "parity records only. Raises if the finest band is too thin (a closure would cross "
            "a 2:1 boundary). Call before set_solid.")
       .def("set_pressure", &Flow::set_pressure, nb::arg("values"),
            "Write the accumulated rotational pressure from a (num_leaves,) array — restart, or "

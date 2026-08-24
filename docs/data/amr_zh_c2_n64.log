@@ -1,0 +1,11 @@
+N=64 Z&H phi=0.125: C2 (dt-independence) A/B
+     ghost dt=60       K=4.28956866 err=-0.0566% steps=5680 (392s)
+     ghost dt=600      K=4.28956869 err=-0.0566% steps=5750 (482s)
+     ghost dt=1e+20    K=4.28956869 err=-0.0566% steps=5760 (559s)
+ghost: dt-spread 7.50e-09 rel
+  aperture dt=60       K=4.29177655 err=-0.0052% steps=11290 (460s)
+  aperture dt=600      K=4.29177658 err=-0.0052% steps=11570 (645s)
+  aperture dt=1e+20    K=4.29177658 err=-0.0052% steps=11610 (825s)
+aperture: dt-spread 7.63e-09 rel
+
+C2 VERDICT: ghost spread 7.50e-09 vs aperture 7.63e-09 (PASS at 1e-5)

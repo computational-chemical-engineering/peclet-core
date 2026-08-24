@@ -437,3 +437,25 @@ residual divergence is bounded (max 5.0e-4, final 1.1e-4 at N=64).
   bit-identical to the explicit-aperture run.
 - Distributed NS (`test_amr_distributed_flow_mpi` mode 2, `test_amr_distributed_adaptflow_mpi`)
   now exercises the distributed aperture MG-PCG under advection (WORLD==SELF ctest-gated).
+
+
+## Update (2026-08-24): re-framing — the ghost projection is the production CANDIDATE
+
+flow's attractor campaign (flow/doc/collocated_invisible_subspace.md, tracker rows 1–47)
+reversed the 08-19 retirement *calculus* without touching its cost measurement:
+
+- The aperture projection's "asymptotic bias" is an **attractor family** of steady states
+  (support inconsistency: solid-centered pressure DOFs are coupled by the constraint but never
+  read by the gauge-exact gradient — Prop. 2 of the note), selected by march protocol, plus a
+  rotational-update instability whose wall-blend stopgap has a resolution-dependent margin
+  (unstable at R≥16, dt≥600 on flow's beds). AmrFlow's aperture path inherits both wholesale.
+- The ghost (fluid-only) scheme is measured family-free, unconditionally stable (dt 60…1e20,
+  no stabilizer), protocol-independent (C2), clean-ladder convergent on two beds with its own
+  small ~+0.2 % bias, Z&H −0.018 % at N=128.
+- Port state in AmrFlow (this branch): `setGhostProjection` defaults flipped to the **(2, 2)**
+  closure pair — the only pair cleared for production ((1, 2) is march-unstable above ~2000
+  spheres, flow hardening Phase A); parity/functional ctests and study harnesses moved to
+  (2, 2); quarantine banners replaced by production-candidate framing. Default remains
+  aperture pending the suite-wide flip. Acceptance gate: the C2 dt-battery
+  (`tests/study/amr_zh_c2.py` — ghost dt-spread must be ≤1e-5 relative where the aperture
+  spread is protocol-limited).

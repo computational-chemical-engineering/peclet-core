@@ -34,7 +34,7 @@ def drag_dilute(N, band, ghostproj=True, cf=0, tol=1e-7, max_steps=8000):
     fl.set_body_force(f, 0.0, 0.0)
     fl.set_advection(False)
     if ghostproj:
-        fl.set_ghost_projection(True, 1, 2)
+        fl.set_ghost_projection(True, 2, 2)
     if cf:
         fl.set_cf_scheme(cf)
     fl.set_solid(lambda x, y, z:

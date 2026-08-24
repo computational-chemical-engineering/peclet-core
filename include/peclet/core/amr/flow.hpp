@@ -512,19 +512,26 @@ class AmrFlow {
   /// flow), solved by MG-preconditioned BiCGStab on the coupled subspace; the constraint is the
   /// ghost-closed divergence of the ½/½ face-averaged field. Implies setGhostGradient.
   /// (matrixOrder, rhsOrder) = closure orders for the implicit matrix vs the RHS divergence;
-  /// (1, 2) is the validated flow default (2nd-order steady constraint on a 7-point
-  /// near-symmetric matrix; the operator mismatch converges through the time stepping). Throws in
-  /// setSolid if an overlay row's ±2 reach crosses a 2:1 level boundary (finest-band margin).
+  /// PRODUCTION CANDIDATE (re-framed 2026-08-24 after flow's attractor campaign,
+  /// flow/doc/collocated_invisible_subspace.md + fluid_only_constraint_plan.md): the ghost
+  /// projection is the FLUID-ONLY constraint scheme — the only measured collocated architecture
+  /// that is stable, unique (no attractor family: the aperture scheme's solid-centered pressure
+  /// DOFs are constraint multipliers its gauge-exact gradient never reads, giving an affine
+  /// family of steady states selected by march protocol) AND converging (flow clean ladders
+  /// both beds; Z&H −0.018% at N=128). Default remains OFF (aperture, matching flow's
+  /// gauge-exact default) until the suite-wide flip decision; select with
+  /// setGhostProjection(true) == flow's set_collocated_scheme("ghost").
   ///
-  /// QUARANTINED (2026-08-19, mirroring flow): DEFAULT OFF everywhere — the aperture projection
-  /// (gauge-exact cell gradient, MG-PCG) is the production path for Stokes AND Navier–Stokes.
-  /// The former NS AUTO-arm existed only because the aperture pressure solve was thought to need
-  /// a bounded V-cycle under advection; that was a stale solver gate, characterised and removed
-  /// (see docs/amr_aperture_advection_plan.md §RESOLVED — the aperture MG-PCG is now CHEAPER per
-  /// step than the ghost BiCGStab at matched accuracy, gap ≤0.23%). The ghost projection stays
-  /// callable for A/B studies via an explicit setGhostProjection(true) but has no production
-  /// consumer. Call before setSolid.
-  void setGhostProjection(bool on, int matrixOrder = 1, int rhsOrder = 2) {
+  /// Closure orders: (2, 2) is the DEFAULT and the only order pair cleared for production —
+  /// flow's hardening Phase A measured the (1, 2) mixed form march-UNSTABLE above ~2000 spheres
+  /// (an operator/RHS mismatch re-injected each step through the rotational pressure
+  /// accumulation; flow/doc/ghost_hardening_findings_A.md). (1, 2) stays callable for the
+  /// existing parity records only. Throws in setSolid if an overlay row's ±2 reach crosses a
+  /// 2:1 level boundary (finest-band margin). The 2026-08-19 advection-economics retirement
+  /// (aperture MG-PCG cheaper per step, docs/amr_aperture_advection_plan.md §RESOLVED) still
+  /// holds as a COST statement; the scheme choice is now a robustness/uniqueness decision.
+  /// Call before setSolid.
+  void setGhostProjection(bool on, int matrixOrder = 2, int rhsOrder = 2) {
     ghostProjReq_ = on ? 1 : 0;
     gpMatrixOrder_ = matrixOrder;
     gpRhsOrder_ = rhsOrder;
@@ -621,11 +628,11 @@ class AmrFlow {
     mom_.init(*t_, h0_, origin_);
     pres_.init(*t_, h0_);
     pres_.setOrigin(origin_);
-    // Resolve the projection mode: the aperture projection is the production path everywhere
-    // (Stokes and NS) — the ghost projection is QUARANTINED and engages only on an explicit
-    // setGhostProjection(true) (see the setter doc; the former NS AUTO-arm was retired 2026-08-19
-    // with the aperture-PCG-under-advection fix). The overlay is built below (it needs only
-    // mom_'s sdf samples + pres_'s topology walk, no openness).
+    // Resolve the projection mode: the aperture projection remains the DEFAULT — the ghost
+    // (fluid-only) projection is the production CANDIDATE (family-free/stable/unique, see the
+    // setter doc) and engages only on an explicit setGhostProjection(true) until the suite-wide
+    // flip decision. The overlay is built below (it needs only mom_'s sdf samples + pres_'s
+    // topology walk, no openness).
     ghostProj_ = (ghostProjReq_ == 1);
     if (dist_) {
       // Distributed: install the resolver seams and run every prober to the miss-collect

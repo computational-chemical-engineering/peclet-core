@@ -35,7 +35,7 @@ def drag_k(N, ghost, ghostproj=False, tol=1e-7, max_steps=6000, mom_iters=100, p
     fl.set_body_force(f, 0.0, 0.0)
     fl.set_advection(False)
     if ghostproj:
-        fl.set_ghost_projection(True, 1, 2)
+        fl.set_ghost_projection(True, 2, 2)
     elif ghost:
         fl.set_ghost_gradient(True)
     fl.set_solid(lambda x, y, z:

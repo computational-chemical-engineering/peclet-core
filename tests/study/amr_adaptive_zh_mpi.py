@@ -42,7 +42,7 @@ def run_case(name, N, R, band, cycles=10, stride=100, tol=1e-7, max_tail=6000, d
     fl = amr.Flow(d, 1.0, MU, dt)
     fl.set_body_force(F, 0.0, 0.0)
     fl.set_advection(False)
-    fl.set_ghost_projection(True, 1, 2)
+    fl.set_ghost_projection(True, 2, 2)
     fl.set_solid(sdf)
 
     def kval():
