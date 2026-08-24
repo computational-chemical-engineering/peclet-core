@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 #ifdef PECLET_CORE_HAVE_MORTON
@@ -368,9 +369,11 @@ void printCensus(const char* name, const Census& cs, const Census* baseline) {
 
 }  // namespace
 
-int main() {
-  const unsigned depth = 8;        // finest 256^3 equivalent, h0 = 1/256
-  const unsigned coarseLevel = 3;  // 32^3 background
+int main(int argc, char** argv) {
+  // Optional: argv[1] = packing file (unit periodic box, lines "x y z r", '#' comments) for a
+  // REAL bed census (plan §8 M1 follow-up); argv[2] = octree depth (default 8).
+  const unsigned depth = argc > 2 ? static_cast<unsigned>(std::atoi(argv[2])) : 8;
+  const unsigned coarseLevel = 3;  // background level (coarse bulk)
   const double nGap = 4.0;         // gap floor: gap >= nGap * h(level)
   const double band = 2.0;         // band margin in target-level cells
 
@@ -378,13 +381,34 @@ int main() {
               "(h0=1/%ld), background L%u, gap floor n=%.0f, band %.0f\n",
               depth, 1L << depth, coarseLevel, nGap, band);
 
-  Packing pk = buildPacking(1.0 / static_cast<double>(1L << depth));
+  Packing pk;
+  bool realBed = false;
+  if (argc > 1) {
+    std::FILE* f = std::fopen(argv[1], "r");
+    if (!f) {
+      std::printf("cannot open %s\n", argv[1]);
+      return 1;
+    }
+    char line[256];
+    while (std::fgets(line, sizeof line, f)) {
+      if (line[0] == '#')
+        continue;
+      Sphere s{};
+      if (std::sscanf(line, "%lf %lf %lf %lf", &s.c[0], &s.c[1], &s.c[2], &s.r) == 4)
+        pk.sp.push_back(s);
+    }
+    std::fclose(f);
+    realBed = true;
+    std::printf("packing file %s: %zu spheres, R/h0 = %.1f\n", argv[1], pk.sp.size(),
+                pk.sp.empty() ? 0.0 : pk.sp[0].r * static_cast<double>(1L << depth));
+  } else {
+    pk = buildPacking(1.0 / static_cast<double>(1L << depth));
+  }
   double phi = 0.0;
   for (const auto& s : pk.sp)
     phi += 4.0 / 3.0 * 3.14159265358979323846 * s.r * s.r * s.r;
-  std::printf("packing: %zu spheres (3 engineered throat pairs at 2/6/20 h0), phi ~= %.1f%% "
-              "(overlaps uncounted)\n",
-              pk.sp.size(), 100.0 * phi);
+  std::printf("packing: %zu spheres%s, phi ~= %.1f%% (overlaps uncounted)\n", pk.sp.size(),
+              realBed ? "" : " (3 engineered throat pairs at 2/6/20 h0)", 100.0 * phi);
 
   auto sdf = [&](const Vec<3>& p) { return pk.sdf(p); };
 
@@ -408,6 +432,13 @@ int main() {
   Geo gG = buildGeo(depth, coarseLevel, sdf, targetG, band);
   Census cG = runCensus(gG, pk);
   printCensus("map G: gap-graded (pointwise, un-quantized)", cG, &cU);
+
+  if (realBed) {
+    std::printf("\ninterpretation: [axis-pass] rows need NO new numerics under Option 0'; "
+                "[quad/lin-sample] rows need the D1 virtual-sample machinery; [fallback] rows "
+                "degrade within the fluid-only cascade (plan §4.2).\n");
+    return 0;
+  }
 
   // Map Q — D4-quantized: TWO surface levels only ({0, 2} — throats/contacts finest, caps at
   // L2; the L1 transition is forced by 2:1 balance but carries no surface patch of its own),

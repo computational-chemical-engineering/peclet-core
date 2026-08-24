@@ -250,9 +250,23 @@ L(x) on the surface = union of criteria, then D4-quantized:
      around contacts are NOT removable by quantization — collapsing the ladder to two surface
      levels kept only 27% of the saving. Keep the full ladder, accept seams-as-main-path;
      quantization/hysteresis remains only for adapt-cycle stability, not seam avoidance.
-  4. Follow-up worth doing before Phase 1: rerun the census on a REAL dense bed (dem RCP
-     positions or flow's packing data) — the RSA proxy is contact-rich but φ≈13%; a φ≈0.6
-     bed shifts the gap statistics and the economics number.
+  4. ~~Follow-up: rerun on a REAL dense bed~~ **DONE 2026-08-25** on the dem RCP bed
+     (`tests/data/rcp_pack_seed3_unit.txt` = flow's `rcp_pack_seed3.npz`, 180 monodisperse
+     spheres, φ=0.63; logs `amr_seam_census_m1_rcp{8,9}.log`):
+
+     | R/h0 | map G cells vs uniform band | seam rows | of seam: axis-pass / samples / fallback |
+     |---:|---:|---:|---|
+     | 24.1 (depth 8) | 66.2% (1.5×) | 28.6% | 42.1% / 57.3% / 0.6% |
+     | 48.2 (depth 9) | **34.5% (2.9×)** | 34.9% | 46.0% / 53.2% / 0.7% |
+
+     **The real-bed economics are RESOLUTION-DEPENDENT:** at φ=0.63 most gaps are only a few
+     fine cells at R/h≈24, so little of the surface may coarsen (1.5×); doubling resolution
+     doubles every gap in cell units and the saving jumps to 2.9×, i.e. the win grows toward
+     production resolutions (R/h≳96 extrapolates to ~5×; the dilute/flocculated φ≈13% case
+     reached 7.2×). Verdicts 1–3 are unchanged on the real bed: samples are the main path
+     (~19% of all rows), Option-0′ covers ~15% free, fallback stays negligible (0.3%).
+     Consequence for Phase 3: quote the headline cell-count reduction AT production
+     resolution, not at the smallest bed that fits.
 - **M2 — Sample-order requirement.** Two-level hemisphere sphere (L caps / L+1 band, one
   clean seam): row truncation + drag error for linear vs quadratic virtual-sample
   interpolation (normal direction), coarseStar on/off (tangential). Decides the D1

@@ -1,0 +1,15 @@
+M1 seam census (plan docs/amr_mixed_level_cut_band_plan.md §8): depth 9 (h0=1/512), background L3, gap floor n=4, band 2
+packing file tests/data/rcp_pack_seed3_unit.txt: 180 spheres, R/h0 = 48.2
+packing: 180 spheres, phi ~= 63.0% (overlaps uncounted)
+
+[map U: uniform finest band] leaves 37564129 (finest 33292848)
+  overlay rows 3847386: strict-pass 3847386 (100.0%) | axis-pass 0 (0.0%) | quad-sample 0 (0.0%) | lin-sample 0 (0.0%) | fallback 0 (0.0%)
+  seam rows (not strict) 0 (0.0% of rows); of seam: axis-pass 0.0%, samples 0.0%, fallback 0.0%
+  rows per level:  L0=3847386
+
+[map G: gap-graded (pointwise, un-quantized)] leaves 12947264 (finest 8411464; 34.5% of uniform-band cells)
+  overlay rows 1492399: strict-pass 972220 (65.1%) | axis-pass 239461 (16.0%) | quad-sample 205692 (13.8%) | lin-sample 71185 (4.8%) | fallback 3841 (0.3%)
+  seam rows (not strict) 520179 (34.9% of rows); of seam: axis-pass 46.0%, samples 53.2%, fallback 0.7%
+  rows per level:  L0=1039472  L1=359463  L2=92043  L3=1421
+
+interpretation: [axis-pass] rows need NO new numerics under Option 0'; [quad/lin-sample] rows need the D1 virtual-sample machinery; [fallback] rows degrade within the fluid-only cascade (plan §4.2).
