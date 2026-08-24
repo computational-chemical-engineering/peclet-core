@@ -224,6 +224,35 @@ L(x) on the surface = union of criteria, then D4-quantized:
   seam rows that pass the per-closure-axis relaxation with NO interpolation; fraction needing
   virtual samples; fraction hitting the fallback cascade. Decides whether the sample
   machinery is a rare path or the main path, and reports D4's cell waste.
+
+  **DONE 2026-08-24** (`tests/study_amr_seam_census.cpp`, log `docs/data/amr_seam_census_m1.log`;
+  50-sphere contact-rich periodic packing + 3 engineered throat pairs at 2/6/20 h0, finest
+  1/256, background L3, gap floor n=4, D2 virtual-position classification, states from the
+  real `gpFillRow` (2,2)):
+
+  | map | cells vs uniform band | seam rows | of seam: axis-pass / samples / fallback |
+  |---|---:|---:|---|
+  | U uniform finest band | 100% | 0% | — (sanity: 100% strict-pass) |
+  | G gap ladder {0,1,2,3}, pointwise | **13.9%** | 56.2% | 43.4% / 56.1% / **0.5%** |
+  | Q two surface levels {0,2} + dilation | 73.0% | 16.2% | 16.7% / 83.0% / 0.3% |
+  | hemisphere sphere, one clean seam | 64.1% | 3.3% | **99.8%** / 0% / 0.2% |
+
+  Verdicts (they revise the plan):
+  1. **The sample machinery is the MAIN path, not a rare path** — on the economically
+     interesting ladder map, ~31% of all rows need virtual samples. D1 gets first-class
+     design care; the Option-0′ relaxation is a worthwhile free fast path (24% of rows, and
+     ~100% of a clean isolated seam) but not sufficient alone.
+  2. **The fallback cascade is negligible** (0.1–0.5% of rows on every map): sample support
+     almost always exists, so almost no rows degrade below the (2,2) closure. The "fallback
+     fires too often" risk is retired by measurement.
+  3. **D4 revised:** on contact-rich packings the intermediate levels carry the economics
+     (most of the surface sits at intermediate gap scales), so their concentric seam rings
+     around contacts are NOT removable by quantization — collapsing the ladder to two surface
+     levels kept only 27% of the saving. Keep the full ladder, accept seams-as-main-path;
+     quantization/hysteresis remains only for adapt-cycle stability, not seam avoidance.
+  4. Follow-up worth doing before Phase 1: rerun the census on a REAL dense bed (dem RCP
+     positions or flow's packing data) — the RSA proxy is contact-rich but φ≈13%; a φ≈0.6
+     bed shifts the gap statistics and the economics number.
 - **M2 — Sample-order requirement.** Two-level hemisphere sphere (L caps / L+1 band, one
   clean seam): row truncation + drag error for linear vs quadratic virtual-sample
   interpolation (normal direction), coarseStar on/off (tangential). Decides the D1
@@ -287,6 +316,6 @@ Advection/uf seams, MPI (halo support + collective fallback), adapt-during-run r
 | seam-row march instability (lagged-stiff-term shape) | M3, Phase-2 batteries | matrix-side seam treatment; revisit D1-alternative |
 | classification flicker at seams | D2 flicker check across adapt cycles | D2-alternative (aggregation) |
 | coarse openness pinches a throat | D3 tripwire assertion | D3-alternative (telescoping geometry) |
-| fallback cascade fires too often (M1 >~ 30% of seam rows) | M1 census | D6-alternative (LS sample selection); D4 policy tightening |
+| fallback cascade fires too often (M1 >~ 30% of seam rows) | M1 census | RETIRED 2026-08-24: measured 0.1–0.5% on all maps |
 | accuracy loss beyond codim-2 estimate | Phase-2 ladder | raise sample order (M2); widen seam collars locally |
 | Snellius ladder disappoints | the gate | plan survives in outline; re-target the closure family per fluid_only_constraint_plan.md decision tree |

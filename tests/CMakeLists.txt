@@ -439,3 +439,9 @@ add_executable(test_amr_cf_vector test_amr_cf_vector.cpp)
 target_link_libraries(test_amr_cf_vector PRIVATE tpx_core)
 target_include_directories(test_amr_cf_vector PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME amr_cf_vector COMMAND test_amr_cf_vector)
+
+# M1 seam census for the mixed-level cut-band plan (docs/amr_mixed_level_cut_band_plan.md §8).
+# A measurement study (printed tables, no gates), not a ctest.
+add_executable(study_amr_seam_census study_amr_seam_census.cpp)
+target_link_libraries(study_amr_seam_census PRIVATE tpx_core)
+target_include_directories(study_amr_seam_census PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

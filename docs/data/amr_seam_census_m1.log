@@ -1,0 +1,29 @@
+M1 seam census (plan docs/amr_mixed_level_cut_band_plan.md §8): depth 8 (h0=1/256), background L3, gap floor n=4, band 2
+packing: 50 spheres (3 engineered throat pairs at 2/6/20 h0), phi ~= 13.4% (overlaps uncounted)
+
+[map U: uniform finest band] leaves 2606024 (finest 2244792)
+  overlay rows 256717: strict-pass 256717 (100.0%) | axis-pass 0 (0.0%) | quad-sample 0 (0.0%) | lin-sample 0 (0.0%) | fallback 0 (0.0%)
+  seam rows (not strict) 0 (0.0% of rows); of seam: axis-pass 0.0%, samples 0.0%, fallback 0.0%
+  rows per level:  L0=256717
+
+[map G: gap-graded (pointwise, un-quantized)] leaves 362202 (finest 157648; 13.9% of uniform-band cells)
+  overlay rows 42765: strict-pass 18723 (43.8%) | axis-pass 10428 (24.4%) | quad-sample 11140 (26.0%) | lin-sample 2350 (5.5%) | fallback 124 (0.3%)
+  seam rows (not strict) 24042 (56.2% of rows); of seam: axis-pass 43.4%, samples 56.1%, fallback 0.5%
+  rows per level:  L0=19200  L1=13194  L2=9164  L3=1207
+
+[map Q: two surface levels {0,2} + dilation (rho=8 h0)] leaves 1901313 (finest 1576696; 73.0% of uniform-band cells)
+  overlay rows 192545: strict-pass 161385 (83.8%) | axis-pass 5192 (2.7%) | quad-sample 21882 (11.4%) | lin-sample 3986 (2.1%) | fallback 100 (0.1%)
+  seam rows (not strict) 31160 (16.2% of rows); of seam: axis-pass 16.7%, samples 83.0%, fallback 0.3%
+  rows per level:  L0=180229  L1=8787  L2=3529
+
+[hemisphere sphere: uniform band (reference)] leaves 669670 (finest 554032)
+  overlay rows 62132: strict-pass 62132 (100.0%) | axis-pass 0 (0.0%) | quad-sample 0 (0.0%) | lin-sample 0 (0.0%) | fallback 0 (0.0%)
+  seam rows (not strict) 0 (0.0% of rows); of seam: axis-pass 0.0%, samples 0.0%, fallback 0.0%
+  rows per level:  L0=62132
+
+[hemisphere sphere: two-level (one seam ring)] leaves 429017 (finest 279000; 64.1% of uniform-band cells)
+  overlay rows 39127: strict-pass 37819 (96.7%) | axis-pass 1306 (3.3%) | quad-sample 0 (0.0%) | lin-sample 0 (0.0%) | fallback 2 (0.0%)
+  seam rows (not strict) 1308 (3.3% of rows); of seam: axis-pass 99.8%, samples 0.0%, fallback 0.2%
+  rows per level:  L0=31364  L1=7763
+
+interpretation: [axis-pass] rows need NO new numerics under Option 0'; [quad/lin-sample] rows need the D1 virtual-sample machinery; [fallback] rows degrade within the fluid-only cascade (plan §4.2).
