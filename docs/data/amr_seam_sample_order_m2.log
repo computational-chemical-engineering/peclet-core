@@ -1,0 +1,20 @@
+M2 virtual-sample order study (plan docs/amr_mixed_level_cut_band_plan.md §8):
+latitude two-level sphere (jump oblique to the wall); (2,2) closure deltas with
+exact vs LS1 vs LS2
+virtual samples at seam rows. B = row-propagated perturbation (max over rows).
+
+     N   rows        e1        e2 |     Bmat1     rmsM1     Bmat2     rmsM2    refMat |     Bdiv1     rmsD1     Bdiv2     rmsD2    refDiv |  fall
+    64     43  4.35e-02  2.56e-03 |  2.58e+01  8.94e+00  2.86e+00  6.44e-01  2.46e+02 |  1.26e-02  3.64e-03  1.51e-03  7.17e-04  6.09e-01 |     0
+   128     98  1.27e-02  3.44e-04 |  4.70e+01  1.18e+01  1.35e+00  3.66e-01  7.04e+02 |  2.25e-02  3.83e-03  2.18e-03  4.34e-04  6.29e-01 |     0
+   256    224  3.08e-03  4.23e-05 |  5.20e+01  1.04e+01  8.94e-01  2.02e-01  1.46e+03 |  1.22e-02  1.96e-03  5.70e-04  1.06e-04  6.78e-01 |     0
+   512    458  7.92e-04  5.45e-06 |  6.25e+01  1.10e+01  5.06e-01  8.63e-02  3.05e+03 |  7.57e-03  1.08e-03  2.42e-04  3.55e-05  7.16e-01 |     0
+
+aggregate orders (N=64 -> 512): Bmat1 -0.43 (rms -0.10) | Bmat2 0.83 (rms 0.97) | Bdiv1 0.25 (rms 0.58) | Bdiv2 0.88 (rms 1.45)
+physical scales at finest: |lap phi| = 118 (Bmat1/scale = 52.8%, Bmat2/scale = 0.43%); refDiv = 0.716 (Bdiv2/refDiv = 0.034%)
+
+==== soft gates (documenting the D1 verdict) ====
+  PASS  LS1 matrix perturbation is O(1) on the physical scale (agg ord <= 0.3) — linear INSUFFICIENT for the matrix path
+  PASS  LS2 matrix perturbation decays (agg ord >= 0.6) — quadratic gives consistent seam rows
+  PASS  LS2 divergence perturbation decays at >= 1st order (rms agg)
+  PASS  LS2 matrix perturbation < 3% of |lap phi| at finest
+4/4 gates

@@ -271,6 +271,34 @@ L(x) on the surface = union of criteria, then D4-quantized:
   clean seam): row truncation + drag error for linear vs quadratic virtual-sample
   interpolation (normal direction), coarseStar on/off (tangential). Decides the D1
   interpolation order and informs n in §7.
+
+  **DONE 2026-08-25** (`tests/study_amr_seam_sample_order.cpp`, log
+  `docs/data/amr_seam_sample_order_m2.log`). Two findings:
+
+  *Geometry lesson first:* the planned hemisphere jump produces almost NO sample-needing rows
+  (it is perpendicular to the wall everywhere — the census's 99.8% axis-pass). The study runs
+  on a LATITUDE jump plane (z = C0z−0.15, oblique to the wall), which is also the realistic
+  seam orientation for gap-graded maps.
+
+  *The verdict (4/4 gates, ladder N=64..512, actual gpFillRow (2,2) weights, degree-d LS
+  reconstruction from fluid leaf point values — coarseStar being the aligned degree-2 special
+  case):* sample errors behave exactly as theory (e1 ~ H², e2 ~ H³); row-propagated
+  perturbations:
+
+  | | max @ N=512 | aggregate order (max / rms) | vs physical scale |
+  |---|---:|---:|---|
+  | matrix, LS1 | 62.5 | −0.43 / −0.10 (does NOT decay) | **53% of ∇²φ** |
+  | matrix, LS2 | 0.51 | **0.83 / 0.97** | 0.43% of ∇²φ |
+  | divergence, LS1 | 7.6e−3 | 0.25 / 0.58 | ~1% of row action |
+  | divergence, LS2 | 2.4e−4 | 0.88 / **1.45** | 0.034% of row action |
+
+  **D1 is settled: degree-2 (quadratic, cross terms included) LS reconstruction for virtual
+  samples, in BOTH the matrix and divergence paths.** Linear samples are an O(1),
+  non-decaying operator perturbation at seam rows (the Martin–Colella linear-C/F result
+  reproduced on the actual closure); quadratic keeps seam rows consistent (~O(h), sub-percent
+  constants) with the codim-2 argument then guaranteeing global accuracy. The degree-2
+  fallback gate never fired on this geometry (clouds always sufficient). Drag-error
+  confirmation stays a Phase-1/2 item (needs the solver on a seamed mesh).
 - **M3 — Seam stability probe.** Minimal march on the seamed mesh, dt=60..1e20 + dt-cycling.
   A lagged-stiff-term instability found HERE changes the design (matrix-side seam
   treatment), not just the test section — this is the cheapest point to find it.

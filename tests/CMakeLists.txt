@@ -445,3 +445,8 @@ add_test(NAME amr_cf_vector COMMAND test_amr_cf_vector)
 add_executable(study_amr_seam_census study_amr_seam_census.cpp)
 target_link_libraries(study_amr_seam_census PRIVATE tpx_core)
 target_include_directories(study_amr_seam_census PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+# M2 virtual-sample order study for the mixed-level cut-band plan (§8 M2). A measurement study.
+add_executable(study_amr_seam_sample_order study_amr_seam_sample_order.cpp)
+target_link_libraries(study_amr_seam_sample_order PRIVATE tpx_core)
+target_include_directories(study_amr_seam_sample_order PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
