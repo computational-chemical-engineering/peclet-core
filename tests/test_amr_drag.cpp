@@ -48,6 +48,9 @@ double dragK(unsigned L, double phi) {
   fl.setDt(dt);
   fl.setBodyForce(f, 0, 0);
   fl.setAdvection(false);  // Stokes
+  fl.setGhostProjection(false);  // explicit aperture: this gate's tolerances are
+                                 // aperture-calibrated at N=8 (R~3), below the ghost
+                                 // scheme's certified resolution range
   fl.setSolid([&](const Vec<3>& p) {
     double dx = p[0] - c, dy = p[1] - c, dz = p[2] - c;
     return std::sqrt(dx * dx + dy * dy + dz * dz) - R;  // <0 inside sphere (solid)
@@ -96,6 +99,7 @@ void run() {
   fl.setDt(60.0);
   fl.setBodyForce(f, 0, 0);
   fl.setAdvection(false);
+  fl.setGhostProjection(false);  // explicit aperture (same gate calibration)
   fl.setSolid([&](const Vec<3>& p) {
     double dx = p[0] - c, dy = p[1] - c, dz = p[2] - c;
     return std::sqrt(dx * dx + dy * dy + dz * dz) - R;

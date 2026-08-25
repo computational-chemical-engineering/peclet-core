@@ -532,7 +532,7 @@ class AmrFlow {
   /// holds as a COST statement; the scheme choice is now a robustness/uniqueness decision.
   /// Call before setSolid.
   void setGhostProjection(bool on, int matrixOrder = 2, int rhsOrder = 2) {
-    ghostProjReq_ = on ? 1 : 0;
+    ghostProjReq_ = on ? 1 : 0;  // explicit selection disables the AUTO default
     gpMatrixOrder_ = matrixOrder;
     gpRhsOrder_ = rhsOrder;
   }
@@ -628,12 +628,15 @@ class AmrFlow {
     mom_.init(*t_, h0_, origin_);
     pres_.init(*t_, h0_);
     pres_.setOrigin(origin_);
-    // Resolve the projection mode: the aperture projection remains the DEFAULT — the ghost
-    // (fluid-only) projection is the production CANDIDATE (family-free/stable/unique, see the
-    // setter doc) and engages only on an explicit setGhostProjection(true) until the suite-wide
-    // flip decision. The overlay is built below (it needs only mom_'s sdf samples + pres_'s
-    // topology walk, no openness).
-    ghostProj_ = (ghostProjReq_ == 1);
+    // Resolve the projection mode. DEFAULT SWITCH (2026-08-25, user decision): AUTO = the
+    // GHOST (fluid-only) projection — family-free/stable/unique (see the setter doc) — falling
+    // back to the aperture projection with a stderr notice when the finest band is too thin for
+    // the overlay (probed below; the July AUTO arm restored, now unconditional). Explicit
+    // setGhostProjection(true/false) pins the scheme (band violations then THROW as before).
+    // The overlay is built below (it needs only mom_'s sdf samples + pres_'s topology walk,
+    // no openness).
+    const bool wantGhost = (ghostProjReq_ != 0);  // explicit on (1) or AUTO (-1)
+    ghostProj_ = wantGhost;                       // provisional; AUTO may fall back below
     if (dist_) {
       // Distributed: install the resolver seams and run every prober to the miss-collect
       // fixpoint (docs/amr_distributed_flow.md). Freezes the ±2 halo, leaves mom_ FULLY built
@@ -647,20 +650,26 @@ class AmrFlow {
       mom_.build(sdfFn, /*idiag=*/rho_ / dt_, /*beta=*/mu_ / (h0_ * h0_));
     }
     GhostOverlay hov;
-    if (ghostProj_) {  // explicit request only (quarantined) — a band-margin violation throws
+    if (ghostProj_) {  // probe the band margin; explicit request throws on violation, AUTO falls
+      bool viol = false;
+      hov = buildGhostOverlay(*t_, pres_, mom_.sdfCRaw(), gpMatrixOrder_, gpRhsOrder_, &viol);
       if (dist_) {
         // COLLECTIVE band-margin decision: the flag is agreed across ranks before anyone
-        // commits (one rank throwing alone would deadlock the MG collectives).
-        bool viol = false;
-        hov = buildGhostOverlay(*t_, pres_, mom_.sdfCRaw(), gpMatrixOrder_, gpRhsOrder_, &viol);
+        // commits (one rank throwing/falling back alone would deadlock the MG collectives).
         int lv = viol ? 1 : 0, gv = 0;
         MPI_Allreduce(&lv, &gv, 1, MPI_INT, MPI_LOR, dist_->comm());
-        if (gv)
+        viol = gv != 0;
+      }
+      if (viol) {
+        if (ghostProjReq_ == 1)
           throw std::runtime_error(
               "amr ghost projection: an overlay row's ±2 closure reach crosses a 2:1 level "
-              "boundary (collective) — widen the refineToSdf band margin");
-      } else {
-        hov = buildGhostOverlay(*t_, pres_, mom_.sdfCRaw(), gpMatrixOrder_, gpRhsOrder_);
+              "boundary — widen the refineToSdf band margin");
+        ghostProj_ = false;  // AUTO: fall back to the aperture projection
+        fprintf(stderr,
+                "peclet::core AmrFlow: AUTO scheme fell back to the aperture projection (the "
+                "finest band is too thin for the ghost overlay). Select explicitly with "
+                "setGhostProjection to silence this notice.\n");
       }
     }
     if (ghostProj_) {
@@ -1704,8 +1713,10 @@ class AmrFlow {
                             // DEFAULT since 2026-08-18, mirroring flow's collocated
                             // set_collocated_scheme("gauge-exact")
   bool ghostProj_ = false;    // RESOLVED projection mode (set by setSolid from the request)
-  int8_t ghostProjReq_ = 0;  // 0 = off (default; ghost is quarantined), 1 = explicit request
-  int gpMatrixOrder_ = 1, gpRhsOrder_ = 2;  // closure orders: implicit matrix / RHS divergence
+  int8_t ghostProjReq_ = -1;  // -1 = AUTO (DEFAULT since 2026-08-25: ghost, aperture fallback
+                              // on thin band), 0 = explicit aperture, 1 = explicit ghost
+  int gpMatrixOrder_ = 2, gpRhsOrder_ = 2;  // closure orders (2,2 = the production pair; the
+                                            // (1,2) mixed form is march-unstable at scale)
   CfScheme cfScheme_ = CfScheme::standard;  // 2:1 C/F interface scheme (setCfScheme)
   int outerIters_ = 1;  // Picard outer iterations over the lagged advection (default 1)
   double outerTol_ = 1e-6;   // outer-loop early-stop tolerance on max|Δu|

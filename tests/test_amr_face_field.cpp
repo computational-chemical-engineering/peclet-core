@@ -23,8 +23,9 @@ namespace {
 // Run a Stokes sphere to steady, return (divNorm cell, divNorm face).
 std::pair<double, double> run(BO& t, double R, Vec<3> c, int presIters) {
   const double mu = 0.1, f = 1e-3, dt = 60.0;
-  oracle::AmrFlow<21> fl;
+  oracle::AmrFlow<21> fl;  // NB scheme pinned below: this test asserts APERTURE face-field properties
   fl.init(t, 1.0, Vec<3>{0, 0, 0});
+  fl.setGhostProjection(false);  // explicit aperture (the scheme under test)
   fl.setDensity(1.0);
   fl.setViscosity(mu);
   fl.setDt(dt);

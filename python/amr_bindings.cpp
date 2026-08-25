@@ -697,8 +697,8 @@ NB_MODULE(amr, m) {
            "ABC gradient). The aperture projection itself is unchanged. Call before set_solid.")
       .def("set_ghost_projection", &Flow::set_ghost_projection, nb::arg("on"),
            nb::arg("matrix_order") = 2, nb::arg("rhs_order") = 2,
-           "PRODUCTION CANDIDATE (2026-08-24; default still OFF = aperture, pending the "
-           "suite-wide flip): the fluid-only constraint scheme — family-free, unconditionally "
+           "DEFAULT since 2026-08-25 (AUTO: ghost, with an aperture fallback + stderr notice when "
+           "the finest band is too thin): the fluid-only constraint scheme — family-free, unconditionally "
            "stable, protocol-independent (flow's attractor-campaign verdicts; == flow's "
            "set_collocated_scheme('ghost')). FULL directional ghost-cell projection (the AMR "
            "port): binary-openness pressure operator + wall-anchored closure overlay on the "

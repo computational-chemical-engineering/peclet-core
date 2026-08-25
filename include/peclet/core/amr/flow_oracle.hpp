@@ -134,13 +134,25 @@ class AmrFlow {
     pres_.init(*t_, h0_);
     pres_.setOrigin(origin_);
     presMG_.build(*t_, h0_);
-    // Resolve the projection mode (mirrors the device AmrFlow): the aperture projection is the
-    // production path everywhere; the QUARANTINED ghost projection engages only on an explicit
-    // setGhostProjection(true), and a band-margin violation throws.
-    ghostProj_ = (ghostProjReq_ == 1);
+    // Resolve the projection mode (mirrors the device AmrFlow). DEFAULT = AUTO: the ghost
+    // (fluid-only) projection, falling back to the aperture with a stderr notice on a
+    // band-margin violation; explicit setGhostProjection(true) keeps the hard throw.
+    ghostProj_ = (ghostProjReq_ != 0);
     ghostSampled_ = ghostProj_ && (ghostSampledReq_ == 1);
-    if (ghostProj_ && !ghostSampled_)
-      gpOv_ = buildGhostOverlay(*t_, pres_, mom_.sdfCRaw(), gpMatrixOrder_, gpRhsOrder_);
+    if (ghostProj_ && !ghostSampled_) {
+      bool viol = false;
+      gpOv_ = buildGhostOverlay(*t_, pres_, mom_.sdfCRaw(), gpMatrixOrder_, gpRhsOrder_, &viol);
+      if (viol) {
+        if (ghostProjReq_ == 1)
+          throw std::runtime_error(
+              "amr ghost projection: an overlay row's ±2 closure reach crosses a 2:1 level "
+              "boundary — widen the refineToSdf band margin");
+        ghostProj_ = false;
+        fprintf(stderr,
+                "peclet::core AmrFlow(oracle): AUTO scheme fell back to the aperture projection "
+                "(the finest band is too thin for the ghost overlay).\n");
+      }
+    }
     if (ghostSampled_)  // mixed-level cut band: sample-slot overlay, no band-margin throw
       gpOvS_ = buildGhostOverlaySampled(*t_, pres_, sdfFn, gpMatrixOrder_, gpRhsOrder_, origin_);
     if (ghostProj_) {
@@ -704,8 +716,10 @@ class AmrFlow {
   bool advect_ = false;
   bool ghostGrad_ = true;   // directional ghost gradient on cut cells (setGhostGradient)
   bool ghostProj_ = false;    // RESOLVED projection mode (set by setSolid from the request)
-  int8_t ghostProjReq_ = 0;  // 0 = off (default; ghost is quarantined), 1 = explicit request
-  int gpMatrixOrder_ = 1, gpRhsOrder_ = 2;  // closure orders: implicit matrix / RHS divergence
+  int8_t ghostProjReq_ = -1;  // -1 = AUTO (DEFAULT: ghost, aperture fallback on thin band),
+                              // 0 = explicit aperture, 1 = explicit ghost
+  int gpMatrixOrder_ = 2, gpRhsOrder_ = 2;  // closure orders (2,2 = the production pair; the
+                                            // (1,2) mixed form is march-unstable at scale)
   GhostOverlay gpOv_;                       // closure overlay (finest-band rows)
   bool ghostSampled_ = false;               // RESOLVED sampled mode (set by setSolid)
   int8_t ghostSampledReq_ = 0;              // setGhostSampled request (mixed-level prototype)
