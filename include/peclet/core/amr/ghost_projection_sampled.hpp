@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/cf_scheme.hpp"  // CfCsr + detail::{ScalarEnt, compactCsr} (mom seam delta)
 #include "peclet/core/amr/ghost_projection.hpp"
 #include "peclet/core/amr/poisson.hpp"
 #include "peclet/core/common/types.hpp"
@@ -502,6 +503,112 @@ inline void ghostDivergDeltaSampledHost(const GhostOverlaySampled& ov,
     d[static_cast<std::size_t>(c)] =
         g.rescale[rr] * (d[static_cast<std::size_t>(c)] + g.invh[rr] * dd);
   }
+}
+
+/// Momentum ξ-overlay seam correction (plan §6.2, rung 1): at overlay rows with a
+/// different-level ±1 neighbour, the raw AmrCutCell row is wrong twice over — it classifies
+/// and anchors the wall from the COVERING neighbour's center sample (position-inconsistent),
+/// and its ξ branch was built with the GLOBAL β = μ/h0² (dimensionally off by 4^ΔL at a
+/// coarser row). The corrected target row is the row-local ξ stencil (buildCutStencil with
+/// β = μ/h_row², AC0 = idiag + 6β) evaluated on the overlay's VIRTUAL ±1 sample functionals —
+/// i.e. exactly the uniform-band momentum closure on virtual samples (D1) — or, when the row
+/// is virtually clean, the level-aware conservative regular row. Delivered as a lagged
+/// deferred-correction CSR on the momentum source (the cfMom_ pattern): at the fixed point the
+/// steady operator carries the corrected row exactly. Assumes u_bc = 0 (stationary walls — the
+/// inhomogeneous ξ term is not corrected). Rows that are raw-regular AND virtually clean, or
+/// raw-regular with a virtually-ghost face (rare marginal), are skipped and counted.
+///
+/// Application (oracle step): src += cfApplyHost(csr, u^n) BEFORE makeRhs — the coefficients
+/// fold in 1/rscale so makeRhs's rscale multiply lands the correction at unit row scale.
+template <unsigned Bits, class Mom, class SdfFn>
+inline CfCsr buildMomSeamDelta(const GhostOverlaySampled& ov, const BlockOctree<3, Bits>& t,
+                               const AmrPoisson<3, Bits>& pres, const Mom& mom, SdfFn&& sdf,
+                               Vec<3> origin, double idiag, double mu, long* nSkipped = nullptr) {
+  const Index n = t.numLeaves();
+  const double h0 = pres.cellWidth(0) / static_cast<double>(Index(1) << t.level(0));
+  std::vector<std::vector<detail::ScalarEnt>> per(static_cast<std::size_t>(n));
+  long skipped = 0;
+  for (Index i = 0; i < n; ++i) {
+    const Index r = ov.rowOf[static_cast<std::size_t>(i)];
+    if (r < 0)
+      continue;
+    const unsigned Li = t.level(i);
+    bool seam = false;
+    for (int k = 0; k < 6; ++k) {
+      const Index nb = mom.neighborOf(i, k);
+      if (nb < 0 || t.level(nb) != Li)
+        seam = true;
+    }
+    if (!seam)
+      continue;
+    // Virtual classification + row-local ξ stencil.
+    auto b = t.bounds(i);
+    const double s = static_cast<double>(Index(1) << Li);
+    Vec<3> c{};
+    for (int d = 0; d < 3; ++d)
+      c[d] = origin[d] + (static_cast<double>(b[0][d]) + 0.5 * s) * h0;
+    const double h = pres.cellWidth(i);
+    const double sdfC = sdf(c);
+    double sdfNv[6];
+    bool anyGhost = false;
+    for (int k = 0; k < 6; ++k) {
+      Vec<3> p = c;
+      p[k / 2] += ((k % 2 == 0) ? +1.0 : -1.0) * h;  // k even = plus side (AmrCutCell::neighbor)
+      sdfNv[k] = sdf(p);
+      if (sdfNv[k] < 0.0)
+        anyGhost = true;
+    }
+    if (!mom.isCut(i) && !anyGhost)
+      continue;  // regular both ways: the C/F-aware raw row is already the target
+    if (!mom.isCut(i) && anyGhost) {
+      ++skipped;  // raw-regular but virtually ghost (marginal): out of rung-1 scope
+      continue;
+    }
+    auto push = [&](Index cell, double w) {
+      if (w != 0.0)
+        per[static_cast<std::size_t>(i)].push_back(detail::ScalarEnt{cell, w});
+    };
+    // + raw row / rscale_r (the assembled ξ row verbatim).
+    const double rsr = mom.rhsScale(i);
+    push(i, mom.acRaw()[static_cast<std::size_t>(i)] / rsr);
+    for (int k = 0; k < 6; ++k) {
+      const double a = mom.offRaw()[static_cast<std::size_t>(i) * 6 + k];
+      const Index nb = mom.neighborOf(i, k);
+      if (a != 0.0 && nb >= 0)
+        push(nb, a / rsr);
+    }
+    // − virtual row / rscale_v.
+    if (anyGhost) {
+      const double beta = mu / (h * h);
+      double ACv, offv[6], rsv = 1.0, inhomv = 0.0;
+      Mom::buildCutStencil(sdfC, sdfNv, beta, idiag + 6.0 * beta, ACv, offv, rsv, inhomv);
+      push(i, -ACv / rsv);
+      for (int k = 0; k < 6; ++k) {
+        if (offv[k] == 0.0)
+          continue;
+        const int q = (k % 2 == 0) ? +1 : -1;
+        const std::size_t sl = static_cast<std::size_t>(r * 15 + (k / 2) * 5 + (q + 2));
+        for (Index e = ov.sampStart[sl]; e < ov.sampStart[sl + 1]; ++e)
+          push(ov.sampIdx[static_cast<std::size_t>(e)],
+               -offv[k] / rsv * ov.sampW[static_cast<std::size_t>(e)]);
+      }
+    } else {
+      // Virtually clean: target = the level-aware conservative regular row (assembleOperator's
+      // regular branch, reproduced coefficient-for-coefficient).
+      const double invV = 1.0 / mom.lap().cellVolume(i);
+      double dsum = 0.0;
+      mom.lap().forEachFaceNeighbor(i, [&](Index j, Real cf, int, double a) {
+        push(j, -(-mu * invV * (a * cf)));  // minus the target's off-diagonal
+        dsum += a * cf;
+      });
+      push(i, -(idiag + mu * invV * dsum));
+    }
+  }
+  CfCsr out;
+  detail::compactCsr(per, out, n);
+  if (nSkipped)
+    *nSkipped = skipped;
+  return out;
 }
 
 /// Directional ghost cell-gradient on a sampled row (the mixed-level gradOfDir): the same

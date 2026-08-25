@@ -1,0 +1,18 @@
+[peclet.core.amr] sampled ghost overlay: 1735 rows | slots identity 25538, LS2 225, LS1 0, degraded 0, solid 262 | sign-forced faces 56, closed mixed faces 0
+[peclet.core.amr] sampled ghost overlay: 1735 rows | slots identity 25538, LS2 225, LS1 0, degraded 0, solid 262 | sign-forced faces 56, closed mixed faces 0
+[peclet.core.amr] sampled ghost overlay: 1735 rows | slots identity 25538, LS2 225, LS1 0, degraded 0, solid 262 | sign-forced faces 56, closed mixed faces 0
+  trace cyc60a step   50 statRes 2.933e-04
+  trace cyc60a step  100 statRes 6.914e-05
+  trace cyc60a step  150 statRes 2.226e-05
+  trace cyc60a step  200 statRes 1.004e-05
+  trace cyc60a step  250 statRes 5.098e-06
+  trace cyc60a step  300 statRes 2.711e-06
+  trace cyc1e20 step   50 statRes 2.929e-04
+  trace cyc1e20 step  100 statRes 6.907e-05
+  trace cyc60b step   50 statRes 2.933e-04
+  trace cyc60b step  100 statRes 6.914e-05
+  trace cyc60b step  150 statRes 2.226e-05
+  trace cyc60b step  200 statRes 1.004e-05
+  trace cyc60b step  250 statRes 5.098e-06
+  trace cyc60b step  300 statRes 2.711e-06
+RESULT cycle seam K1 4.134735759269e-02 K3 4.134735759269e-02 rel 0.000e+00

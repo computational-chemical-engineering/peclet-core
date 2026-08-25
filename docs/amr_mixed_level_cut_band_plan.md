@@ -340,6 +340,40 @@ at seam cut cells (silent O(1) coefficient error, §6.2); pocket cells are not e
 LS clouds; no device mirror; sub-face-resolved closures (the mixed-face Neumann-zero
 degeneracy) unimplemented — counted by the builder (`nMixedFace`, 0 on the probe geometries).
 
+### Phase 1 progress (started 2026-08-25 — the gate PASSED: ghost is the production default
+### suite-wide, flow c672014 + core 7472306)
+
+**Rung 1 — momentum ξ-row seam correction (§6.2): DONE** (`buildMomSeamDelta` in
+`ghost_projection_sampled.hpp`, applied as a lagged deferred-correction CSR in the oracle's
+predictor — the cfMom_ pattern; assumes u_bc=0). The raw AmrCutCell seam rows were wrong
+TWICE: covering-center classification/anchoring AND the global β = μ/h0² (dimensionally off
+4^ΔL at coarser rows). Measured (`study_amr_seam_sample_order` §[B], rescaled-row truncation
+on the wall-consistent f = sdf·φ, latitude mesh N=64/128/256):
+
+| N | raw RMS | corrected (exact) RMS | corrected (LS2) RMS |
+|---:|---:|---:|---:|
+| 64 | 25.2 | 0.346 | 2.52 |
+| 128 | 46.2 | 0.402 | 1.41 |
+| 256 | 90.9 | **0.464** | **0.846** |
+
+raw DIVERGES O(1/h); corrected is the scheme's normal bounded closure truncation (~200×
+below raw at N=256), LS2 samples converge onto the exact floor. March acceptance: parity
+still exact, dt-cycling with the new lagged term still rel 0.000e+00, dt=1e20 bounded, same
+stationarity. K(seam)−K(ctrl) at N=64 moved +0.31%→+0.51% (cf=0) / −0.72% (cf=1) — single-N
+offsets against the (biased) uniform control are a weak instrument; the accuracy verdict is
+Phase 2's ladder. Out of rung-1 scope (counted, logged): raw-regular-but-virtually-ghost
+rows; u_bc ≠ 0.
+
+**Rung 2 — wall-aware CfScheme gates (§6.1): DONE** (`cfAppendStencil`: when exactly one
+tangential side survives the fluid/openness gates — the near-wall seam case — substitute the
+one-sided LINEAR interpolation dt·u′ instead of falling back to the raw coarse value: O(H²)
+tangential sample error vs the raw fallback's O(H) offset). Two-sided path bit-identical
+(51/51 host AMR ctests unchanged, incl. the pinned cf-quadratic gates — the finest-band
+contract keeps them inert there).
+
+Remaining Phase-1 rungs: device mirror (+ level-aware openness on device, seam parity
+ctest), graded refineToSdf policy API, pocket exclusion in LS clouds, sub-face closures.
+
 ### Phase 1 — overlay generalization (rung 1, post-gate)
 Sample-slot CSR in `GhostOverlay` + builders (D1/D2/D6), per-closure-axis validity, delta
 kernels, momentum closure samples, CfScheme wall-aware gates, level-aware openness probe.

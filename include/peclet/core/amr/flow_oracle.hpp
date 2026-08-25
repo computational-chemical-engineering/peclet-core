@@ -153,8 +153,19 @@ class AmrFlow {
                 "(the finest band is too thin for the ghost overlay).\n");
       }
     }
-    if (ghostSampled_)  // mixed-level cut band: sample-slot overlay, no band-margin throw
+    if (ghostSampled_) {  // mixed-level cut band: sample-slot overlay, no band-margin throw
       gpOvS_ = buildGhostOverlaySampled(*t_, pres_, sdfFn, gpMatrixOrder_, gpRhsOrder_, origin_);
+      // Momentum ξ-row seam correction (plan §6.2): lagged deferred-correction CSR replacing
+      // the position-inconsistent (and wrong-β) raw ξ rows by the row-local virtual stencil.
+      long momSkipped = 0;
+      gpsMomDelta_ = buildMomSeamDelta(gpOvS_, *t_, pres_, mom_, sdfFn, origin_, rho_ / dt_, mu_,
+                                       &momSkipped);
+      if (momSkipped)
+        std::fprintf(stderr,
+                     "[peclet.core.amr] mom seam delta: %ld raw-regular/virtually-ghost rows "
+                     "skipped (rung-1 scope)\n",
+                     momSkipped);
+    }
     if (ghostProj_) {
       // Ghost projection: the pressure geometry is the BINARY openness (a face is open iff both
       // adjacent centers + the face sample are fluid), on the UNCHANGED MG rails; the closure
@@ -288,6 +299,13 @@ class AmrFlow {
       if (cfScheme_ != CfScheme::standard) {
         cfm.assign(static_cast<std::size_t>(n), 0.0);
         cfApplyHost(cfMom_, u_[c], cfm);
+      }
+      // Momentum ξ-row seam correction (sampled mode, plan §6.2): same lagged pattern; the
+      // coefficients already fold 1/rscale so makeRhs's rscale multiply is exact.
+      if (ghostSampled_ && !gpsMomDelta_.start.empty()) {
+        if (cfm.empty())
+          cfm.assign(static_cast<std::size_t>(n), 0.0);
+        cfApplyHost(gpsMomDelta_, u_[c], cfm);
       }
       std::vector<double> src(static_cast<std::size_t>(n), 0.0);
       for (Index i = 0; i < n; ++i)
@@ -724,6 +742,7 @@ class AmrFlow {
   bool ghostSampled_ = false;               // RESOLVED sampled mode (set by setSolid)
   int8_t ghostSampledReq_ = 0;              // setGhostSampled request (mixed-level prototype)
   GhostOverlaySampled gpOvS_;               // sample-slot overlay (mixed-level cut band)
+  CfCsr gpsMomDelta_;                       // momentum ξ-row seam correction (plan §6.2)
   std::vector<double> maskC_;               // 1 = coupled row (Krylov subspace), 0 = pinned
   std::vector<char> gpPocket_;              // fragmentation guard: 1 = decoupled pocket cell
   CfScheme cfScheme_ = CfScheme::standard;  // 2:1 C/F interface scheme (setCfScheme)

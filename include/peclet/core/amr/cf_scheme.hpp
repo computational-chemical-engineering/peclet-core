@@ -162,18 +162,32 @@ inline void cfAppendStencil(const AmrPoisson<3, Bits>& ap, const BlockOctree<3, 
     };
     const Samp sp = sampleTangential(+1);
     const Samp smi = sampleTangential(-1);
-    if (!sp.ok || !smi.ok)
+    const bool okP = sp.ok && ap.faceOpenness(coarse, tt, +1) >= 0.5;
+    const bool okM = smi.ok && ap.faceOpenness(coarse, tt, -1) >= 0.5;
+    if (okP && okM) {
+      // Two-sided (the original path, bit-identical): tangential quadratic.
+      const double cUp = dt / (2.0 * H) + 0.5 * dt * dt / (H * H);
+      const double cUm = -dt / (2.0 * H) + 0.5 * dt * dt / (H * H);
+      const double cUc = -dt * dt / (H * H);
+      push(coarse, scale * cUc);
+      for (int k2 = 0; k2 < sp.n; ++k2)
+        push(sp.cell[k2], scale * cUp * sp.w[k2]);
+      for (int k2 = 0; k2 < smi.n; ++k2)
+        push(smi.cell[k2], scale * cUm * smi.w[k2]);
       continue;
-    if (ap.faceOpenness(coarse, tt, +1) < 0.5 || ap.faceOpenness(coarse, tt, -1) < 0.5)
-      continue;
-    const double cUp = dt / (2.0 * H) + 0.5 * dt * dt / (H * H);
-    const double cUm = -dt / (2.0 * H) + 0.5 * dt * dt / (H * H);
-    const double cUc = -dt * dt / (H * H);
-    push(coarse, scale * cUc);
-    for (int k2 = 0; k2 < sp.n; ++k2)
-      push(sp.cell[k2], scale * cUp * sp.w[k2]);
-    for (int k2 = 0; k2 < smi.n; ++k2)
-      push(smi.cell[k2], scale * cUm * smi.w[k2]);
+    }
+    // Wall-aware one-sided fallback (mixed-level cut-band plan §6.1): when exactly one
+    // tangential side survives the gates (the other is solid / closed / irregular — the
+    // near-wall seam case), substitute the one-sided LINEAR interpolation dt·u' instead of
+    // falling all the way back to the raw coarse value: O(H²) tangential sample error vs the
+    // raw fallback's O(H) offset. Both sides gated ⇒ raw fallback (unchanged).
+    if (okP != okM) {
+      const Samp& s1 = okP ? sp : smi;
+      const double sgn = okP ? 1.0 : -1.0;
+      push(coarse, -scale * sgn * dt / H);
+      for (int k2 = 0; k2 < s1.n; ++k2)
+        push(s1.cell[k2], scale * sgn * (dt / H) * s1.w[k2]);
+    }
   }
 }
 

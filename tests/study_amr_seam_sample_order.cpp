@@ -34,6 +34,7 @@
 
 #ifdef PECLET_CORE_HAVE_MORTON
 #include "peclet/core/amr/block_octree.hpp"
+#include "peclet/core/amr/cut_cell.hpp"
 #include "peclet/core/amr/poisson.hpp"
 #include "peclet/core/common/types.hpp"
 #include "peclet/core/scheme/ghost_closure.hpp"
@@ -508,6 +509,144 @@ double orderOf(double prev, double cur) {
   return (prev > 0 && cur > 0) ? std::log2(prev / cur) : 0.0;
 }
 
+// ---- [B] momentum ξ-row truncation: raw (covering reads, global β) vs corrected (row-local
+// virtual stencil — the buildMomSeamDelta target) against the analytic operator, on a
+// manufactured field that RESPECTS the wall BC: f = sdf·phi (zero on the sphere), so the
+// wall-anchored closure rows are consistent with idiag·f − mu·lap f. ------------------------------
+
+double fBc(const Vec<3>& p) {
+  return sdfSphere(p) * phiMan(p);
+}
+double lapFBc(const Vec<3>& p) {
+  // lap(s·phi) = phi·lap s + 2 grad s . grad phi + s·lap phi, s = |r|-R0 (lap s = 2/|r|).
+  const double tp = 2.0 * kPi;
+  const double dx = p[0] - C0[0], dy = p[1] - C0[1], dz = p[2] - C0[2];
+  const double r = std::sqrt(dx * dx + dy * dy + dz * dz);
+  const Vec<3> gs{dx / r, dy / r, dz / r};
+  const Vec<3> gphi{tp * std::cos(tp * p[0]) * std::cos(tp * p[1]) -
+                        tp * std::sin(tp * p[2]) * std::sin(tp * p[0]),
+                    -tp * std::sin(tp * p[0]) * std::sin(tp * p[1]) +
+                        tp * std::cos(tp * p[1]) * std::cos(tp * p[2]),
+                    -tp * std::sin(tp * p[1]) * std::sin(tp * p[2]) +
+                        tp * std::cos(tp * p[2]) * std::cos(tp * p[0])};
+  // phiMan is a sum of sin·cos products in orthogonal coords: each term has lap = −2·tp²·term.
+  const double lapPhiMan = -2.0 * tp * tp * phiMan(p);
+  return phiMan(p) * 2.0 / r + 2.0 * (gs[0] * gphi[0] + gs[1] * gphi[1] + gs[2] * gphi[2]) +
+         (r - R0) * lapPhiMan;
+}
+
+struct MomResult {
+  long rows = 0;
+  double eRaw = 0, eVirt = 0, eVirtLs = 0;  // max rescaled-row truncation
+  double sRaw = 0, sVirt = 0, sVirtLs = 0;  // sums of squares (RMS)
+  double rRaw() const { return rows ? std::sqrt(sRaw / rows) : 0.0; }
+  double rVirt() const { return rows ? std::sqrt(sVirt / rows) : 0.0; }
+  double rVirtLs() const { return rows ? std::sqrt(sVirtLs / rows) : 0.0; }
+};
+
+MomResult runMomDepth(unsigned depth) {
+  const unsigned coarseLevel = std::min(3u, depth - 3u);
+  Geo g = buildGeo(depth, coarseLevel, 2.0);
+  const auto& t = g.t;
+  const double idiag = 1.0, mu = 1.0;
+  AmrCutCell<21> mom;
+  mom.init(t, g.h0, Vec<3>{});
+  mom.build(sdfSphere, idiag, mu / (g.h0 * g.h0));  // the RAW build: global finest-h beta
+
+  // Leaf point values of f + fluid flags + hash bins (as runDepth).
+  const Index n = t.numLeaves();
+  std::vector<char> fluid(static_cast<std::size_t>(n));
+  std::vector<double> fv(static_cast<std::size_t>(n), 0.0);
+  for (Index i = 0; i < n; ++i) {
+    const Vec<3> c = centerOf(t, g.h0, i);
+    fluid[static_cast<std::size_t>(i)] = sdfSphere(c) > 0.0 ? 1 : 0;
+    if (fluid[static_cast<std::size_t>(i)])
+      fv[static_cast<std::size_t>(i)] = fBc(c);
+  }
+  const double hb = 4.0 * g.h0;
+  const long nb = std::lround(1.0 / hb);
+  std::vector<std::vector<Index>> bins(static_cast<std::size_t>(nb * nb * nb));
+  for (Index i = 0; i < n; ++i) {
+    const Vec<3> c = centerOf(t, g.h0, i);
+    long bx = static_cast<long>(c[0] / hb) % nb, by = static_cast<long>(c[1] / hb) % nb,
+         bz = static_cast<long>(c[2] / hb) % nb;
+    bins[static_cast<std::size_t>((bz * nb + by) * nb + bx)].push_back(i);
+  }
+  LeafField lf{&g, &fv, &fluid};
+
+  MomResult res;
+  for (Index i = 0; i < n; ++i) {
+    if (!mom.isCut(i) || !fluid[static_cast<std::size_t>(i)])
+      continue;
+    const unsigned Li = t.level(i);
+    bool seam = false;
+    for (int k = 0; k < 6; ++k) {
+      const Index nbk = mom.neighborOf(i, k);
+      if (nbk < 0 || t.level(nbk) != Li)
+        seam = true;
+    }
+    if (!seam)
+      continue;
+    const Vec<3> c = centerOf(t, g.h0, i);
+    const double h = g.h0 * static_cast<double>(Index(1) << Li);
+    // raw row applied to f (covering reads), physical scale (/rscale).
+    double raw = mom.acRaw()[static_cast<std::size_t>(i)] * fv[static_cast<std::size_t>(i)];
+    for (int k = 0; k < 6; ++k) {
+      const double a = mom.offRaw()[static_cast<std::size_t>(i) * 6 + k];
+      const Index j = mom.neighborOf(i, k);
+      if (a != 0.0 && j >= 0)
+        raw += a * fv[static_cast<std::size_t>(j)];
+    }
+    const double rsr = mom.rhsScale(i);
+    // virtual row (row-local beta) on exact / LS2 virtual samples.
+    double sdfNv[6], fVirt[6], fLs[6];
+    bool anyGhost = false;
+    for (int k = 0; k < 6; ++k) {
+      Vec<3> p = c;
+      p[k / 2] += ((k % 2 == 0) ? +1.0 : -1.0) * h;
+      sdfNv[k] = sdfSphere(p);
+      anyGhost = anyGhost || sdfNv[k] < 0.0;
+      fVirt[k] = sdfNv[k] > 0.0 ? fBc(p) : 0.0;
+      double out;
+      const Index j = mom.neighborOf(i, k);
+      const double H = j >= 0 ? g.h0 * static_cast<double>(Index(1) << t.level(j)) : h;
+      if (sdfNv[k] <= 0.0)
+        fLs[k] = 0.0;
+      else if (j >= 0 && t.level(j) == Li)
+        fLs[k] = fv[static_cast<std::size_t>(j)];
+      else if (lsFit(lf, bins, nb, hb, p, 2.2 * std::max(h, H), H, 2, out))
+        fLs[k] = out;
+      else
+        fLs[k] = fVirt[k];  // (degenerate cloud: exact fallback, counted elsewhere)
+    }
+    if (!anyGhost)
+      continue;  // virtually clean: regular-row target, out of this instrument's scope
+    const double beta = mu / (h * h);
+    double ACv, offv[6], rsv = 1.0, inh = 0.0;
+    AmrCutCell<21>::buildCutStencil(sdfSphere(c), sdfNv, beta, idiag + 6.0 * beta, ACv, offv, rsv,
+                                    inh);
+    double virt = ACv * fv[static_cast<std::size_t>(i)], virtLs = virt;
+    for (int k = 0; k < 6; ++k) {
+      virt += offv[k] * fVirt[k];
+      virtLs += offv[k] * fLs[k];
+    }
+    // RESCALED-row truncation (the metric the solver feels: |row(f) − rscale·target|, bounded
+    // weights — un-rescaling by 1/rscale would amplify sliver rows, the P5b pointwise trap).
+    const double target = idiag * fv[static_cast<std::size_t>(i)] - mu * lapFBc(c);
+    ++res.rows;
+    const double er = std::fabs(raw - rsr * target);
+    const double ev = std::fabs(virt - rsv * target);
+    const double el = std::fabs(virtLs - rsv * target);
+    res.eRaw = std::max(res.eRaw, er);
+    res.eVirt = std::max(res.eVirt, ev);
+    res.eVirtLs = std::max(res.eVirtLs, el);
+    res.sRaw += er * er;
+    res.sVirt += ev * ev;
+    res.sVirtLs += el * el;
+  }
+  return res;
+}
+
 }  // namespace
 
 int main() {
@@ -541,6 +680,17 @@ int main() {
               "%.2f%%); refDiv = %.3g (Bdiv2/refDiv = %.3f%%)\n",
               lapScale, 100.0 * fN.bm1 / lapScale, 100.0 * fN.bm2 / lapScale, fN.refDiv,
               100.0 * fN.bd2 / fN.refDiv);
+  // [B] momentum ξ-row truncation at seam rows: raw (covering reads, global β) vs the
+  // buildMomSeamDelta target (row-local virtual stencil), exact and LS2 samples.
+  std::printf("\n[B] momentum xi-row truncation at seam rows (f = sdf·phi, wall-consistent):\n");
+  std::printf("%6s %6s | %10s %10s %10s | %10s %10s %10s\n", "N", "rows", "rawMax", "virtMax",
+              "ls2Max", "rawRms", "virtRms", "ls2Rms");
+  for (unsigned depth = 6; depth <= 8; ++depth) {
+    MomResult m = runMomDepth(depth);
+    std::printf("%6ld %6ld | %10.3e %10.3e %10.3e | %10.3e %10.3e %10.3e\n", 1L << depth,
+                m.rows, m.eRaw, m.eVirt, m.eVirtLs, m.rRaw(), m.rVirt(), m.rVirtLs());
+  }
+
   std::printf("\n==== soft gates (documenting the D1 verdict) ====\n");
   struct Gate {
     const char* name;

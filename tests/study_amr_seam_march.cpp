@@ -135,7 +135,8 @@ MarchOut march(oracle::AmrFlow<21>& fl, const BO& t, double h0, int maxSteps, in
   return out;
 }
 
-void setup(oracle::AmrFlow<21>& fl, const BO& t, double h0, double dt, bool sampled) {
+void setup(oracle::AmrFlow<21>& fl, const BO& t, double h0, double dt, bool sampled,
+           int cfScheme = 0) {
   fl.init(t, h0);
   fl.setViscosity(1.0);
   fl.setDensity(1.0);
@@ -145,6 +146,8 @@ void setup(oracle::AmrFlow<21>& fl, const BO& t, double h0, double dt, bool samp
   fl.setGhostProjection(true, 2, 2);
   if (sampled)
     fl.setGhostSampled(true);
+  if (cfScheme)
+    fl.setCfScheme(cfScheme);
   fl.setSolid(sdfSphere);
 }
 
@@ -177,14 +180,15 @@ int main(int argc, char** argv) {
   if (std::string_view(phase) == "march" && argc > 3) {
     const bool seam = std::string_view(argv[2]) == "seam";
     const double dt = std::atof(argv[3]);
+    const int cf = argc > 4 ? std::atoi(argv[4]) : 0;  // optional: C/F scheme (1 = quadratic)
     BO t = buildMesh(depth, coarse, seam);
     oracle::AmrFlow<21> fl;
-    setup(fl, t, h0, dt, /*sampled=*/true);
+    setup(fl, t, h0, dt, /*sampled=*/true, cf);
     const int nStep = dt > 1e10 ? 200 : 300;
     MarchOut r = march(fl, t, h0, nStep, sweeps(dt), /*traceEvery=*/25, argv[2]);
-    std::printf("RESULT march %s dt %.0e K %.12e statRes %.3e umax %.3e bounded %d leaves "
-                "%lld\n",
-                argv[2], dt, r.K, r.statRes, r.umax, r.bounded ? 1 : 0,
+    std::printf("RESULT march %s dt %.0e cf %d K %.12e statRes %.3e umax %.3e bounded %d "
+                "leaves %lld\n",
+                argv[2], dt, cf, r.K, r.statRes, r.umax, r.bounded ? 1 : 0,
                 static_cast<long long>(t.numLeaves()));
     return r.bounded ? 0 : 1;
   }

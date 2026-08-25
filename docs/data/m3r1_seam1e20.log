@@ -1,0 +1,10 @@
+[peclet.core.amr] sampled ghost overlay: 1735 rows | slots identity 25538, LS2 225, LS1 0, degraded 0, solid 262 | sign-forced faces 56, closed mixed faces 0
+  trace seam step   25 statRes 8.583e-04
+  trace seam step   50 statRes 2.929e-04
+  trace seam step   75 statRes 1.306e-04
+  trace seam step  100 statRes 6.907e-05
+  trace seam step  125 statRes 3.735e-05
+  trace seam step  150 statRes 2.225e-05
+  trace seam step  175 statRes 1.484e-05
+  trace seam step  200 statRes 1.004e-05
+RESULT march seam dt 1e+20 K 4.135108957311e-02 statRes 1.004e-05 umax 8.650e-02 bounded 1 leaves 17914
