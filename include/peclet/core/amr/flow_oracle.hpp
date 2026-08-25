@@ -47,6 +47,7 @@
 #include "peclet/core/amr/cf_scheme.hpp"  // pluggable 2:1 C/F interface schemes (setCfScheme)
 #include "peclet/core/amr/cut_cell.hpp"
 #include "peclet/core/amr/ghost_projection.hpp"  // directional ghost overlay (setGhostProjection)
+#include "peclet/core/amr/ghost_projection_sampled.hpp"  // mixed-level sampled overlay (setGhostSampled)
 #include "peclet/core/amr/poisson.hpp"
 #include "peclet/core/common/types.hpp"
 
@@ -105,6 +106,13 @@ class AmrFlow {
     gpMatrixOrder_ = matrixOrder;
     gpRhsOrder_ = rhsOrder;
   }
+  /// SAMPLED ghost projection: the mixed-level cut-band prototype (the D1 machinery of
+  /// docs/amr_mixed_level_cut_band_plan.md — cut cells at MULTIPLE octree levels, chain
+  /// entries across 2:1 boundaries replaced by degree-2 LS virtual samples). Implies
+  /// setGhostProjection (call it too, with the closure orders); replaces the finest-band
+  /// contract (no band throw) and the openness rule by the level-aware canonical form
+  /// (makeBinaryOpenFnMixed). Host-oracle only. Call before setSolid.
+  void setGhostSampled(bool on) { ghostSampledReq_ = on ? 1 : 0; }
   /// Coarse/fine (2:1) interface scheme (cf_scheme.hpp): 0 = standard two-point flux (default,
   /// 1st-order at level boundaries, bit-identical legacy path), 1 = Martin–Cartwright tangential
   /// quadratic (2nd-order). Applied to everything the STEADY solution feels: the momentum
@@ -130,17 +138,28 @@ class AmrFlow {
     // production path everywhere; the QUARANTINED ghost projection engages only on an explicit
     // setGhostProjection(true), and a band-margin violation throws.
     ghostProj_ = (ghostProjReq_ == 1);
-    if (ghostProj_)
+    ghostSampled_ = ghostProj_ && (ghostSampledReq_ == 1);
+    if (ghostProj_ && !ghostSampled_)
       gpOv_ = buildGhostOverlay(*t_, pres_, mom_.sdfCRaw(), gpMatrixOrder_, gpRhsOrder_);
+    if (ghostSampled_)  // mixed-level cut band: sample-slot overlay, no band-margin throw
+      gpOvS_ = buildGhostOverlaySampled(*t_, pres_, sdfFn, gpMatrixOrder_, gpRhsOrder_, origin_);
     if (ghostProj_) {
       // Ghost projection: the pressure geometry is the BINARY openness (a face is open iff both
       // adjacent centers + the face sample are fluid), on the UNCHANGED MG rails; the closure
       // physics lives in the overlay. World-coord sampling offset by the origin (the octree's
       // fine units start at origin_): shift the probe like cellCenter does.
       auto sdfW = [&](const Vec<3>& p) { return sdfFn(p); };
-      auto binFn = makeBinaryOpenFn(sdfW, h0_);
-      pres_.buildOpenness(binFn);
-      presMG_.setOpenness(binFn);
+      if (ghostSampled_) {
+        // Level-aware canonical openness (actual adjacent leaf centers) — the classification
+        // primitive the sampled overlay's face states are forced to (no double-counted flux).
+        auto binFn = makeBinaryOpenFnMixed(*t_, pres_, sdfW, h0_, origin_);
+        pres_.buildOpenness(binFn);
+        presMG_.setOpenness(binFn);
+      } else {
+        auto binFn = makeBinaryOpenFn(sdfW, h0_);
+        pres_.buildOpenness(binFn);
+        presMG_.setOpenness(binFn);
+      }
       ghostGrad_ = true;  // the directional gradient is part of the scheme
       // Fragmentation guard (pockets decoupled) + coupled mask (1 = row in the Krylov space).
       gpPocket_ = findPocketCells(*t_, pres_, mom_.sdfCRaw());
@@ -150,9 +169,10 @@ class AmrFlow {
             (mom_.isFluid(i) && !(!gpPocket_.empty() && gpPocket_[static_cast<std::size_t>(i)]))
                 ? 1.0
                 : 0.0;
-      for (Index r = 0; r < gpOv_.n; ++r)
-        if (!gpOv_.coupled[static_cast<std::size_t>(r)])
-          maskC_[static_cast<std::size_t>(gpOv_.cell[static_cast<std::size_t>(r)])] = 0.0;
+      const GhostOverlay& rows = ghostSampled_ ? gpOvS_.base : gpOv_;
+      for (Index r = 0; r < rows.n; ++r)
+        if (!rows.coupled[static_cast<std::size_t>(r)])
+          maskC_[static_cast<std::size_t>(rows.cell[static_cast<std::size_t>(r)])] = 0.0;
     } else {
       gpPocket_.clear();
       pres_.buildOpenness([&](const Vec<3>& fc, int axis) { return faceFrac(sdfFn, fc, axis); });
@@ -284,8 +304,12 @@ class AmrFlow {
         div[static_cast<std::size_t>(i)] = divergence(u_, i);
     if (cfScheme_ != CfScheme::standard)  // 2nd-order C/F face averages in the constraint
       cfApplyCompHost(cfDiv_, u_, div);
-    if (ghostProj_)  // ghost-closed constraint: binary div (above, binary α) + closure overlay
-      ghostDivergDeltaHost(gpOv_, u_, div);
+    if (ghostProj_) {  // ghost-closed constraint: binary div (above, binary α) + closure overlay
+      if (ghostSampled_)
+        ghostDivergDeltaSampledHost(gpOvS_, u_, div);
+      else
+        ghostDivergDeltaHost(gpOv_, u_, div);
+    }
 
     std::fill(phi_.begin(), phi_.end(), 0.0);
     (void)presSweeps;
@@ -482,7 +506,10 @@ class AmrFlow {
     const std::size_t ns = static_cast<std::size_t>(n);
     auto applyA = [&](const std::vector<double>& v, std::vector<double>& y) {
       pres_.applyLaplacian(v, y);  // binary-openness L (ghost mode geometry)
-      ghostApplyDeltaHost(gpOv_, v, y);
+      if (ghostSampled_)
+        ghostApplyDeltaSampledHost(gpOvS_, v, y);
+      else
+        ghostApplyDeltaHost(gpOv_, v, y);
       gpProject(y);
     };
     auto prec = [&](const std::vector<double>& r, std::vector<double>& z) {
@@ -558,8 +585,17 @@ class AmrFlow {
   // decoupled solid p through partially-open faces (gauge-dependent O(1/h), measured in
   // tests/study_amr_ghost_apriori.cpp) and the directional ghost gradient below is used instead.
   double gradP(const std::vector<double>& fld, Index i, int c) const {
-    if (ghostGrad_ && mom_.isCut(i))
+    if (ghostGrad_ && mom_.isCut(i)) {
+      if (ghostSampled_) {
+        // Mixed-level cut band: the row's sample functionals feed the gradient too (pairing —
+        // constraint and gradient from the same closures). Cut cells without a row (clean per
+        // the overlay classification) fall through to the level-aware gradOfDir cascade.
+        const Index r = gpOvS_.rowOf[static_cast<std::size_t>(i)];
+        if (r >= 0)
+          return gpsDirGrad(gpOvS_, r, fld, c, 1.0 / pres_.cellWidth(i));
+      }
       return gradOfDir(fld, i, c);  // cut band: no C/F faces (band contract) ⇒ no cf delta
+    }
     double g = gradOf(fld, i, c);
     // 2nd-order C/F face gradients (level-boundary rows); empty unless built by setSolid.
     if (cfScheme_ != CfScheme::standard && !cfGrad_[static_cast<std::size_t>(c)].start.empty()) {
@@ -671,6 +707,9 @@ class AmrFlow {
   int8_t ghostProjReq_ = 0;  // 0 = off (default; ghost is quarantined), 1 = explicit request
   int gpMatrixOrder_ = 1, gpRhsOrder_ = 2;  // closure orders: implicit matrix / RHS divergence
   GhostOverlay gpOv_;                       // closure overlay (finest-band rows)
+  bool ghostSampled_ = false;               // RESOLVED sampled mode (set by setSolid)
+  int8_t ghostSampledReq_ = 0;              // setGhostSampled request (mixed-level prototype)
+  GhostOverlaySampled gpOvS_;               // sample-slot overlay (mixed-level cut band)
   std::vector<double> maskC_;               // 1 = coupled row (Krylov subspace), 0 = pinned
   std::vector<char> gpPocket_;              // fragmentation guard: 1 = decoupled pocket cell
   CfScheme cfScheme_ = CfScheme::standard;  // 2:1 C/F interface scheme (setCfScheme)

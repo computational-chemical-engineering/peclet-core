@@ -450,3 +450,9 @@ target_include_directories(study_amr_seam_census PRIVATE ${CMAKE_CURRENT_SOURCE_
 add_executable(study_amr_seam_sample_order study_amr_seam_sample_order.cpp)
 target_link_libraries(study_amr_seam_sample_order PRIVATE tpx_core)
 target_include_directories(study_amr_seam_sample_order PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+# M3 seam stability probe for the mixed-level cut-band plan (§8 M3): sampled ghost projection
+# march on a two-level cut band (host oracle). A measurement study.
+add_executable(study_amr_seam_march study_amr_seam_march.cpp)
+target_link_libraries(study_amr_seam_march PRIVATE tpx_core)
+target_include_directories(study_amr_seam_march PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
