@@ -371,8 +371,20 @@ tangential sample error vs the raw fallback's O(H) offset). Two-sided path bit-i
 (51/51 host AMR ctests unchanged, incl. the pinned cf-quadratic gates — the finest-band
 contract keeps them inert there).
 
-Remaining Phase-1 rungs: device mirror (+ level-aware openness on device, seam parity
-ctest), graded refineToSdf policy API, pocket exclusion in LS clouds, sub-face closures.
+**Rung 3 — device mirror: DONE 2026-08-26.** `AmrFlow::setGhostSampled` (device, single-rank
+— the distributed sample halo is a later rung): sampled overlay host-built + uploaded
+(`GhostOverlaySampledDev`, sample-slot CSR kernels `ghostApplyDeltaSampled` /
+`ghostDivergDeltaSampled`), level-aware canonical openness (`makeBinaryOpenFnMixed`) on the
+unchanged MG rails, CSR directional-gradient overlay (`GhostGradCsrDev` — cascade over sample
+functionals on overlay rows, classic same-level fallback on rowless cut cells: the oracle's
+exact gradP split), momentum seam CSR re-folded per row to post-rscale (the device cfApply
+convention). Every delta site calls both classic and sampled appliers (empties no-op) — the
+classic path is untouched. Parity ctest `test_seam_sampled`: (a) uniform band, device sampled
+vs device classic **bit-identical** (max diff 0.00e+00, CUDA); (b) two-level latitude band,
+device vs oracle rel 2.4e-06 mean / 3e-6 fields. Full flow-solver battery green on CUDA.
+
+Remaining Phase-1 rungs: graded refineToSdf policy API, pocket exclusion in LS clouds,
+sub-face closures, distributed sample halo.
 
 ### Phase 1 — overlay generalization (rung 1, post-gate)
 Sample-slot CSR in `GhostOverlay` + builders (D1/D2/D6), per-closure-axis validity, delta

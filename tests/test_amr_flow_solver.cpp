@@ -347,6 +347,121 @@ void test_graded_ghostproj() {
 // BOTH engines: the three C/F overlays (momentum deferred correction, divergence, gradients) are
 // built by the shared host builders, so oracle==device to solver tolerance. Also guards that the
 // scheme actually changes the graded solution (it replaces the 1st-order C/F treatment).
+
+// SAMPLED ghost projection (mixed-level cut band, docs/amr_mixed_level_cut_band_plan.md §8a):
+// (a) on a UNIFORM finest band the sampled path must reproduce the classic ghost projection
+//     (identity slots; the canonical openness evaluates the same center samples) — device
+//     classic vs device sampled;
+// (b) on a TWO-LEVEL band (latitude map: cut cells at levels 0 AND 1, seam oblique to the
+//     wall) the device must match the host oracle (the Phase-0-validated reference).
+void test_seam_sampled() {
+  const long N = 32;
+  const double c = N / 2.0, R = 8.0;
+  auto sdf = [&](const Vec<3>& p) {
+    double dx = p[0] - c, dy = p[1] - c, dz = p[2] - c;
+    return std::sqrt(dx * dx + dy * dy + dz * dz) - R;
+  };
+  auto runDev = [&](const BO& t, bool sampled) {
+    AmrFlow<21> fl;
+    fl.init(t, 1.0, Vec<3>{0, 0, 0});
+    fl.setViscosity(1.0);
+    fl.setDt(1e6);
+    fl.setBodyForce(1e-3, 0, 0);
+    fl.setGhostProjection(true, 2, 2);
+    if (sampled)
+      fl.setGhostSampled(true);
+    fl.setSolid(sdf);
+    for (int s2 = 0; s2 < 8; ++s2)
+      fl.step(400, 40);
+    return fl.velocity(0);
+  };
+
+  {  // (a) uniform band: device sampled == device classic
+    BO t(IVec<3>{1, 1, 1}, 5);
+    AmrGeometry<3> geo;
+    geo.h0 = 1.0;
+    refineToSdf(t, geo, sdf, /*target*/ 0, /*band*/ 3.0, /*balance*/ true);
+    const auto uc = runDev(t, false);
+    const auto us = runDev(t, true);
+    double dmax = 0, cmax = 0, csum = 0, ssum = 0;
+    for (std::size_t i = 0; i < uc.size(); ++i) {
+      dmax = std::max(dmax, std::fabs(us[i] - uc[i]));
+      cmax = std::max(cmax, std::fabs(uc[i]));
+      csum += uc[i];
+      ssum += us[i];
+    }
+    std::printf("[flow] seam-sampled (a) uniform band: |Us-Uc|max %.2e (mag %.2e), Umean rel "
+                "%.2e\n",
+                dmax, cmax, std::fabs(ssum - csum) / std::fabs(csum));
+    PECLET_CORE_CHECK(dmax < 1e-9 * cmax);  // identity slots: bit-comparable paths
+  }
+
+  {  // (b) two-level latitude band: device sampled == oracle sampled
+    BO t(IVec<3>{1, 1, 1}, 5);
+    for (int k = 0; k < 3; ++k)  // background level 2
+      t.refineIf([](BO::Code, unsigned) { return true; });
+    const double halfDiag = 0.5 * std::sqrt(3.0);
+    for (;;) {
+      std::vector<BO::Code> toRefine;
+      for (Index i = 0; i < t.numLeaves(); ++i) {
+        const unsigned L = t.level(i);
+        if (L == 0)
+          continue;
+        auto b = t.bounds(i);
+        const double sLeaf = static_cast<double>(Index(1) << L);
+        Vec<3> cc{};
+        for (int d = 0; d < 3; ++d)
+          cc[d] = static_cast<double>(b[0][d]) + 0.5 * sLeaf;
+        const unsigned tgt = cc[2] < c - 0.5 * R ? 0u : 1u;  // latitude two-level map
+        if (L <= tgt)
+          continue;
+        if (std::fabs(sdf(cc)) <= halfDiag * sLeaf + 1.0 * sLeaf)
+          toRefine.push_back(t.code(i));
+      }
+      if (toRefine.empty())
+        break;
+      std::sort(toRefine.begin(), toRefine.end());
+      toRefine.erase(std::unique(toRefine.begin(), toRefine.end()), toRefine.end());
+      t.refineIf([&](BO::Code cd, unsigned) {
+        return std::binary_search(toRefine.begin(), toRefine.end(), cd);
+      });
+    }
+    t.balance2to1();
+
+    oracle::AmrFlow<21> hfl;
+    hfl.init(t, 1.0);
+    hfl.setViscosity(1.0);
+    hfl.setDt(1e6);
+    hfl.setBodyForce(1e-3, 0, 0);
+    hfl.setGhostProjection(true, 2, 2);
+    hfl.setGhostSampled(true);
+    hfl.setSolid(sdf);
+    for (int s2 = 0; s2 < 8; ++s2)
+      hfl.step(/*momSweeps=*/400, /*presIters=*/12, /*presSweeps=*/2);
+    const auto& hux = hfl.velocity(0);
+    const auto dux = runDev(t, true);
+
+    const Index n = t.numLeaves();
+    double hsum = 0, dsum = 0, dmax = 0, hmax = 0;
+    long nf = 0;
+    for (Index i = 0; i < n; ++i)
+      if (hfl.isFluid(i)) {
+        hsum += hux[(std::size_t)i];
+        dsum += dux[(std::size_t)i];
+        dmax = std::max(dmax, std::fabs(dux[(std::size_t)i] - hux[(std::size_t)i]));
+        hmax = std::max(hmax, std::fabs(hux[(std::size_t)i]));
+        ++nf;
+      }
+    const double hmean = hsum / nf, dmean = dsum / nf;
+    std::printf("[flow] seam-sampled (b) two-level: Umean host %.6e dev %.6e (rel %.2e), "
+                "max|dev-host| %.3e (mag %.3e)\n",
+                hmean, dmean, std::fabs(dmean - hmean) / std::fabs(hmean), dmax, hmax);
+    PECLET_CORE_CHECK(dmean > 0.0);
+    PECLET_CORE_CHECK(std::fabs(dmean - hmean) / std::fabs(hmean) < 2e-3);
+    PECLET_CORE_CHECK(dmax < 5e-3 * hmax);
+  }
+}
+
 void test_graded_cf_quadratic() {
   const long N = 32;
   const double phi = 0.125;
@@ -1094,6 +1209,7 @@ int main(int argc, char** argv) {
   test_sphere_ghost();
   test_sphere_ghostproj();
   test_graded_ghostproj();
+  test_seam_sampled();
   test_graded_cf_quadratic();
   test_sphere_ghostproj_adv();
   test_adapt_midrun();

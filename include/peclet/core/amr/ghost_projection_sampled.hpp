@@ -632,6 +632,297 @@ inline double gpsDirGrad(const GhostOverlaySampled& ov, Index r, const std::vect
   return 0.0;
 }
 
+/// Host CSR form of the SAMPLED directional gradient overlay (variable-length stencils — a
+/// seam row's cascade composes with its LS sample functionals, so the fixed 9-entry
+/// GhostGradOverlay cannot hold it). Covers ALL cut cells: overlay rows get the cascade over
+/// sample functionals (== oracle gpsDirGrad); cut cells WITHOUT a row get the classic
+/// same-level 3-point cascade (== oracle gradOfDir — the same split the oracle's gradP makes,
+/// so oracle/device parity holds row-by-row). `classicOk(j, i)` is the fallback's neighbour
+/// gate (fluid + same-level + not pocket).
+struct GhostGradCsrHost {
+  std::vector<Index> cell;   ///< [m] cut leaf
+  std::vector<Index> start;  ///< [m*3 + 1] per (cell, axis)
+  std::vector<Index> idx;
+  std::vector<double> w;
+};
+
+template <unsigned Bits, class IsCutFn, class OkFn>
+inline GhostGradCsrHost buildSampledGradCsr(const GhostOverlaySampled& ov,
+                                            const BlockOctree<3, Bits>& t,
+                                            const AmrPoisson<3, Bits>& pres, IsCutFn&& isCut,
+                                            OkFn&& classicOk) {
+  GhostGradCsrHost g;
+  g.start.assign(1, 0);
+  const Index n = t.numLeaves();
+  auto pushSlot = [&](Index r, int a, int q, double wgt) {
+    const std::size_t s = static_cast<std::size_t>(r * 15 + a * 5 + (q + 2));
+    for (Index e = ov.sampStart[s]; e < ov.sampStart[s + 1]; ++e) {
+      g.idx.push_back(ov.sampIdx[static_cast<std::size_t>(e)]);
+      g.w.push_back(wgt * ov.sampW[static_cast<std::size_t>(e)]);
+    }
+  };
+  auto pushCell = [&](Index j, double wgt) {
+    g.idx.push_back(j);
+    g.w.push_back(wgt);
+  };
+  for (Index i = 0; i < n; ++i) {
+    if (!isCut(i))
+      continue;
+    g.cell.push_back(i);
+    const double h = pres.cellWidth(i);
+    const Index r = ov.rowOf[static_cast<std::size_t>(i)];
+    for (int a = 0; a < 3; ++a) {
+      if (r >= 0) {
+        auto fl = [&](int q) {
+          return ov.sampFluid[static_cast<std::size_t>(r * 15 + a * 5 + (q + 2))] != 0;
+        };
+        const bool ap = fl(+1), am = fl(-1);
+        if (am && ap) {
+          pushSlot(r, a, +1, 0.5 / h);
+          pushSlot(r, a, -1, -0.5 / h);
+        } else if (ap) {
+          if (fl(+2)) {
+            pushSlot(r, a, 0, -1.5 / h);
+            pushSlot(r, a, +1, 2.0 / h);
+            pushSlot(r, a, +2, -0.5 / h);
+          } else {
+            pushSlot(r, a, +1, 1.0 / h);
+            pushSlot(r, a, 0, -1.0 / h);
+          }
+        } else if (am) {
+          if (fl(-2)) {
+            pushSlot(r, a, 0, 1.5 / h);
+            pushSlot(r, a, -1, -2.0 / h);
+            pushSlot(r, a, -2, 0.5 / h);
+          } else {
+            pushSlot(r, a, 0, 1.0 / h);
+            pushSlot(r, a, -1, -1.0 / h);
+          }
+        }  // sandwiched: no entries (gradient 0)
+      } else {
+        // Classic same-level cascade (buildGhostGradOverlay's per-cell body).
+        const Index jp = pres.periodicNeighbor(i, a, +1);
+        const Index jm = pres.periodicNeighbor(i, a, -1);
+        const bool ap = classicOk(jp, i), am = classicOk(jm, i);
+        if (am && ap) {
+          pushCell(jp, 0.5 / h);
+          pushCell(jm, -0.5 / h);
+        } else if (ap) {
+          const Index jpp = pres.periodicNeighbor(jp, a, +1);
+          if (classicOk(jpp, i)) {
+            pushCell(i, -1.5 / h);
+            pushCell(jp, 2.0 / h);
+            pushCell(jpp, -0.5 / h);
+          } else {
+            pushCell(jp, 1.0 / h);
+            pushCell(i, -1.0 / h);
+          }
+        } else if (am) {
+          const Index jmm = pres.periodicNeighbor(jm, a, -1);
+          if (classicOk(jmm, i)) {
+            pushCell(i, 1.5 / h);
+            pushCell(jm, -2.0 / h);
+            pushCell(jmm, 0.5 / h);
+          } else {
+            pushCell(i, 1.0 / h);
+            pushCell(jm, -1.0 / h);
+          }
+        }
+      }
+      g.start.push_back(static_cast<Index>(g.idx.size()));
+    }
+  }
+  return g;
+}
+
+// ---- device mirror + kernels (Kokkos TUs only; include after a Kokkos-carrying header) ---------
+#ifdef KOKKOS_INLINE_FUNCTION
+
+/// Device mirror of GhostOverlaySampled (uploaded once per setSolid). base.nbr is not uploaded
+/// (unused in sampled mode — the sample-slot CSR replaces it).
+struct GhostOverlaySampledDev {
+  Index n = 0;
+  View<Index> cell;
+  View<float> rescale;
+  View<int8_t> coupled, state;
+  View<float> w_n1, w_n2, wm_n1, wm_n2;
+  View<double> invh;
+  View<Index> sampStart, sampIdx;
+  View<double> sampW;
+};
+
+inline GhostOverlaySampledDev uploadGhostOverlaySampled(const GhostOverlaySampled& h) {
+  GhostOverlaySampledDev d;
+  d.n = h.base.n;
+  if (h.base.n == 0)
+    return d;
+  d.cell = toDevice(h.base.cell, "gps_cell");
+  d.rescale = toDevice(h.base.rescale, "gps_rescale");
+  d.coupled = toDevice(h.base.coupled, "gps_coupled");
+  d.state = toDevice(h.base.state, "gps_state");
+  d.w_n1 = toDevice(h.base.w_n1, "gps_wn1");
+  d.w_n2 = toDevice(h.base.w_n2, "gps_wn2");
+  d.wm_n1 = toDevice(h.base.wm_n1, "gps_wmn1");
+  d.wm_n2 = toDevice(h.base.wm_n2, "gps_wmn2");
+  d.invh = toDevice(h.base.invh, "gps_invh");
+  d.sampStart = toDevice(h.sampStart, "gps_sstart");
+  d.sampIdx = toDevice(h.sampIdx, "gps_sidx");
+  d.sampW = toDevice(h.sampW, "gps_sw");
+  return d;
+}
+
+/// Device matrix overlay (== ghostApplyDeltaSampledHost). Distinct rows per thread: no atomics.
+inline void ghostApplyDeltaSampled(const GhostOverlaySampledDev& ov, View<const double> x,
+                                   View<double> y) {
+  if (ov.n == 0)
+    return;
+  auto cell = ov.cell;
+  auto resc = ov.rescale;
+  auto cpl = ov.coupled;
+  auto st = ov.state;
+  auto wm1 = ov.wm_n1;
+  auto wm2 = ov.wm_n2;
+  auto invh = ov.invh;
+  auto ss = ov.sampStart;
+  auto si = ov.sampIdx;
+  auto sw = ov.sampW;
+  Kokkos::parallel_for(
+      "amr::gps_apply_delta", ov.n, KOKKOS_LAMBDA(const Index r) {
+        const Index c = cell(r);
+        if (!cpl(r)) {
+          y(c) = 0.0;
+          return;
+        }
+        auto X = [&](int a, int q) {
+          const Index s = r * 15 + a * 5 + (q + 2);
+          double v = 0.0;
+          for (Index e = ss(s); e < ss(s + 1); ++e)
+            v += sw(e) * x(si(e));
+          return v;
+        };
+        double delta = 0.0;
+        for (int k = 0; k < 6; ++k) {
+          const int8_t s = st(r * 6 + k);
+          if (s != scheme::GP_QUAD && s != scheme::GP_LIN)
+            continue;
+          const int a = k / 2;
+          const int sgn = (k & 1) ? -1 : 1;
+          const int mn = (k & 1) ? 1 : 0;
+          const int mf = (k & 1) ? 2 : -1;
+          const double w1 = wm1(r * 6 + k), w2 = wm2(r * 6 + k);
+          delta += sgn * w1 * (X(a, mn) - X(a, mn - 1));
+          if (s == scheme::GP_QUAD && w2 != 0.0)
+            delta += sgn * w2 * (X(a, mf) - X(a, mf - 1));
+        }
+        const double ih = invh(r);
+        y(c) = resc(r) * (y(c) + ih * ih * delta);
+      });
+}
+
+/// Device divergence overlay (== ghostDivergDeltaSampledHost).
+inline void ghostDivergDeltaSampled(const GhostOverlaySampledDev& ov, View<const double> u0,
+                                    View<const double> u1, View<const double> u2,
+                                    View<double> d) {
+  if (ov.n == 0)
+    return;
+  auto cell = ov.cell;
+  auto resc = ov.rescale;
+  auto cpl = ov.coupled;
+  auto st = ov.state;
+  auto w1v = ov.w_n1;
+  auto w2v = ov.w_n2;
+  auto invh = ov.invh;
+  auto ss = ov.sampStart;
+  auto si = ov.sampIdx;
+  auto sw = ov.sampW;
+  Kokkos::parallel_for(
+      "amr::gps_diverg_delta", ov.n, KOKKOS_LAMBDA(const Index r) {
+        const Index c = cell(r);
+        if (!cpl(r)) {
+          d(c) = 0.0;
+          return;
+        }
+        auto S = [&](int a, int q) {
+          const Index s = r * 15 + a * 5 + (q + 2);
+          double v = 0.0;
+          for (Index e = ss(s); e < ss(s + 1); ++e) {
+            const Index j = si(e);
+            v += sw(e) * ((a == 0) ? u0(j) : (a == 1) ? u1(j) : u2(j));
+          }
+          return v;
+        };
+        auto U = [&](int a, int m) { return 0.5 * (S(a, m - 1) + S(a, m)); };
+        double dd = 0.0;
+        for (int k = 0; k < 6; ++k) {
+          const int8_t s = st(r * 6 + k);
+          if (s == scheme::GP_COUPLED)
+            continue;
+          const int a = k / 2;
+          const int sgn = (k & 1) ? -1 : 1;
+          const int mg = (k & 1) ? 0 : 1;
+          const int mn = (k & 1) ? 1 : 0;
+          const int mf = (k & 1) ? 2 : -1;
+          if (s == scheme::GP_EXPLICIT) {
+            dd += sgn * U(a, mg);
+            continue;
+          }
+          if (s == scheme::GP_BC_ONLY)
+            continue;
+          double val = w1v(r * 6 + k) * U(a, mn);
+          if (s == scheme::GP_QUAD)
+            val += w2v(r * 6 + k) * U(a, mf);
+          dd += sgn * val;
+        }
+        d(c) = resc(r) * (d(c) + invh(r) * dd);
+      });
+}
+
+/// Device CSR gradient overlay (sampled mode) + upload + apply (the variable-length analog of
+/// GhostGradOverlay / applyGhostGrad; overwrites gx/gy/gz on the overlay cells).
+struct GhostGradCsrDev {
+  Index n = 0;
+  View<Index> cell, start, idx;
+  View<double> w;
+};
+
+inline GhostGradCsrDev uploadGhostGradCsr(const GhostGradCsrHost& h) {
+  GhostGradCsrDev d;
+  d.n = static_cast<Index>(h.cell.size());
+  if (d.n == 0)
+    return d;
+  d.cell = toDevice(h.cell, "gcs_cell");
+  d.start = toDevice(h.start, "gcs_start");
+  d.idx = toDevice(h.idx, "gcs_idx");
+  d.w = toDevice(h.w, "gcs_w");
+  return d;
+}
+
+inline void applyGhostGradCsr(const GhostGradCsrDev& ov, View<const double> f, View<double> gx,
+                              View<double> gy, View<double> gz) {
+  if (ov.n == 0)
+    return;
+  auto cell = ov.cell;
+  auto start = ov.start;
+  auto idx = ov.idx;
+  auto w = ov.w;
+  Kokkos::parallel_for(
+      "amr::flow_ghostgrad_csr", ov.n, KOKKOS_LAMBDA(const Index s) {
+        const Index i = cell(s);
+        double g[3];
+        for (int a = 0; a < 3; ++a) {
+          double acc = 0.0;
+          for (Index e = start(s * 3 + a); e < start(s * 3 + a + 1); ++e)
+            acc += w(e) * f(idx(e));
+          g[a] = acc;
+        }
+        gx(i) = g[0];
+        gy(i) = g[1];
+        gz(i) = g[2];
+      });
+}
+
+#endif  // KOKKOS_INLINE_FUNCTION
+
 }  // namespace peclet::core::amr
 
 #endif  // PECLET_CORE_HAVE_MORTON

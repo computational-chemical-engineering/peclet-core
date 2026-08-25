@@ -38,6 +38,7 @@
 #include "peclet/core/amr/cf_scheme.hpp"          // pluggable 2:1 C/F schemes (setCfScheme)
 #include "peclet/core/amr/facegeom_assembly.hpp"  // assembleFaceGeom (D4/D6)
 #include "peclet/core/amr/ghost_projection.hpp"   // directional ghost overlay (setGhostProjection)
+#include "peclet/core/amr/ghost_projection_sampled.hpp"  // mixed-level sampled overlay (setGhostSampled)
 #include "peclet/core/amr/momentum.hpp"
 #include "peclet/core/amr/momentum_assembly.hpp"  // assembleMomentum (D3/D6)
 #include "peclet/core/amr/multigrid.hpp"
@@ -536,6 +537,13 @@ class AmrFlow {
     gpMatrixOrder_ = matrixOrder;
     gpRhsOrder_ = rhsOrder;
   }
+  /// SAMPLED ghost projection: the mixed-level cut-band mode (docs/amr_mixed_level_cut_band_plan.md
+  /// — cut cells at MULTIPLE octree levels; chain entries across 2:1 boundaries become degree-2
+  /// LS virtual samples; no finest-band contract / band throw; level-aware canonical openness;
+  /// momentum ξ-row seam correction rides along). Implies the ghost projection (engages when the
+  /// resolved scheme is ghost — the AUTO default or an explicit setGhostProjection(true)).
+  /// Single-rank only (the distributed sample halo is a later rung). Call before setSolid.
+  void setGhostSampled(bool on) { ghostSampledReq_ = on ? 1 : 0; }
   /// Coarse/fine (2:1) interface scheme (cf_scheme.hpp): 0 = standard two-point flux (default,
   /// 1st-order at level boundaries, bit-identical legacy path), 1 = Martin–Cartwright tangential
   /// quadratic (2nd-order — measured at C/F rows: divergence 1.95, cell gradient 1.95, momentum
@@ -637,6 +645,10 @@ class AmrFlow {
     // no openness).
     const bool wantGhost = (ghostProjReq_ != 0);  // explicit on (1) or AUTO (-1)
     ghostProj_ = wantGhost;                       // provisional; AUTO may fall back below
+    ghostSampled_ = (ghostSampledReq_ == 1) && wantGhost;
+    if (ghostSampled_ && dist_)
+      throw std::runtime_error(
+          "amr::AmrFlow: setGhostSampled is single-rank only (distributed sample halo pending)");
     if (dist_) {
       // Distributed: install the resolver seams and run every prober to the miss-collect
       // fixpoint (docs/amr_distributed_flow.md). Freezes the ±2 halo, leaves mom_ FULLY built
@@ -650,7 +662,10 @@ class AmrFlow {
       mom_.build(sdfFn, /*idiag=*/rho_ / dt_, /*beta=*/mu_ / (h0_ * h0_));
     }
     GhostOverlay hov;
-    if (ghostProj_) {  // probe the band margin; explicit request throws on violation, AUTO falls
+    GhostOverlaySampled hovS;
+    if (ghostSampled_) {  // mixed-level cut band: sample-slot overlay, no band-margin probe
+      hovS = buildGhostOverlaySampled(*t_, pres_, sdfFn, gpMatrixOrder_, gpRhsOrder_, origin_);
+    } else if (ghostProj_) {  // probe the band margin; explicit request throws on violation, AUTO falls
       bool viol = false;
       hov = buildGhostOverlay(*t_, pres_, mom_.sdfCRaw(), gpMatrixOrder_, gpRhsOrder_, &viol);
       if (dist_) {
@@ -674,13 +689,22 @@ class AmrFlow {
     }
     if (ghostProj_) {
       // Ghost projection: the pressure geometry is the BINARY openness on the unchanged MG
-      // rails; the closure physics lives in the overlay (built above).
-      auto binFn = makeBinaryOpenFn([&sdfFn](const Vec<3>& p) { return sdfFn(p); }, h0_);
-      pres_.buildOpenness(binFn);
-      if (dist_)
-        presMGD_.build(*dist_, h0_, binFn, &dhalo_);
-      else
+      // rails; the closure physics lives in the overlay (built above). Sampled mode: the
+      // level-aware canonical rule (the sampled overlay's face states are FORCED to it — the
+      // overlay-closed <=> binary-closed invariant; single-rank, guarded above).
+      if (ghostSampled_) {
+        auto binFn = makeBinaryOpenFnMixed(
+            *t_, pres_, [&sdfFn](const Vec<3>& p) { return sdfFn(p); }, h0_, origin_);
+        pres_.buildOpenness(binFn);
         presMG_.build(*t_, h0_, binFn, /*periodic=*/true);
+      } else {
+        auto binFn = makeBinaryOpenFn([&sdfFn](const Vec<3>& p) { return sdfFn(p); }, h0_);
+        pres_.buildOpenness(binFn);
+        if (dist_)
+          presMGD_.build(*dist_, h0_, binFn, &dhalo_);
+        else
+          presMG_.build(*t_, h0_, binFn, /*periodic=*/true);
+      }
       ghostGrad_ = true;  // the directional gradient is part of the scheme
       // Fragmentation guard: pockets outside the main binary component are decoupled (see
       // findPocketCells) — folded into maskC_ below and hidden from the directional gradients.
@@ -797,10 +821,10 @@ class AmrFlow {
       rs[static_cast<std::size_t>(i)] = mom_.rhsScale(i);
     rscale_ = toDevice(rs, "df_rscale");
     fluid_ = geom_.fluid;
-    if (ghostGrad_)
+    if (ghostGrad_ && !ghostSampled_)
       buildGhostGradOverlay();
     else
-      gc_ = GhostGradOverlay{};
+      gc_ = GhostGradOverlay{};  // sampled mode: the CSR overlay gcS_ owns all cut cells
     // C/F interface scheme overlays (cf_scheme.hpp): the same host builders the oracle uses
     // (parity by construction), uploaded once. Momentum delta = ×μ on the α=1 velocity geometry
     // (regular fluid rows; cut rows are finest-band: no C/F faces).
@@ -829,18 +853,44 @@ class AmrFlow {
     }
     if (ghostProj_) {
       // Closure overlay (pre-built in the mode-resolve step above) + the coupled-subspace mask
-      // for the BiCGStab projection.
-      gpOv_ = uploadGhostOverlay(hov);
+      // for the BiCGStab projection. Sampled mode uploads the sample-slot overlay instead (the
+      // classic gpOv_ stays empty — every delta site calls both, empties no-op).
+      gpOv_ = ghostSampled_ ? GhostOverlayDev{} : uploadGhostOverlay(hov);
+      gpOvS_ = ghostSampled_ ? uploadGhostOverlaySampled(hovS) : GhostOverlaySampledDev{};
+      const GhostOverlay& rows = ghostSampled_ ? hovS.base : hov;
       std::vector<double> mc(static_cast<std::size_t>(n), 0.0);
       for (Index i = 0; i < n; ++i)
         mc[static_cast<std::size_t>(i)] =
             (mom_.isFluid(i) && !(!gpPocket_.empty() && gpPocket_[static_cast<std::size_t>(i)]))
                 ? 1.0
                 : 0.0;
-      for (Index r = 0; r < hov.n; ++r)
-        if (!hov.coupled[static_cast<std::size_t>(r)])
-          mc[static_cast<std::size_t>(hov.cell[static_cast<std::size_t>(r)])] = 0.0;
+      for (Index r = 0; r < rows.n; ++r)
+        if (!rows.coupled[static_cast<std::size_t>(r)])
+          mc[static_cast<std::size_t>(rows.cell[static_cast<std::size_t>(r)])] = 0.0;
       maskC_ = toDevice(mc, "gp_maskc");
+      // Sampled mode: momentum ξ-row seam correction (host CSR folds 1/rscale for the oracle's
+      // pre-rscale source; the device adds POST-rscale via cfApply, so re-fold rscale per row)
+      // + the CSR directional-gradient overlay (cascade over sample functionals; classic
+      // same-level fallback on cut cells without a row — the oracle's gradP split).
+      if (ghostSampled_) {
+        CfCsr msd = buildMomSeamDelta(hovS, *t_, pres_, mom_, sdfFn, origin_, rho_ / dt_, mu_);
+        for (Index i = 0; i < n; ++i) {
+          const double rs = mom_.rhsScale(i);
+          for (Index k = msd.start[static_cast<std::size_t>(i)];
+               k < msd.start[static_cast<std::size_t>(i) + 1]; ++k)
+            msd.coef[static_cast<std::size_t>(k)] *= rs;
+        }
+        gpsMomDelta_ = uploadCfCsr(msd, "gps_momdelta");
+        auto classicOk = [&](Index j, Index i) {
+          return j >= 0 && mom_.isFluid(j) && pres_.levelOf(j) == pres_.levelOf(i) &&
+                 !(!gpPocket_.empty() && j < n && gpPocket_[static_cast<std::size_t>(j)]);
+        };
+        gcS_ = uploadGhostGradCsr(buildSampledGradCsr(
+            hovS, *t_, pres_, [&](Index i) { return mom_.isCut(i); }, classicOk));
+      } else {
+        gpsMomDelta_ = CfCsrDev{};
+        gcS_ = GhostGradCsrDev{};
+      }
       // Krylov scratch carries the ghost tail (matvec inputs) in distributed mode.
       auto mk = [&](const char* l) { return View<double>(l, static_cast<std::size_t>(nExt_)); };
       gpr_ = mk("gp_r");
@@ -931,6 +981,7 @@ class AmrFlow {
     for (int a = 0; a < 3; ++a)  // 2nd-order C/F face gradients (level-boundary rows)
       cfApply(cfGrad_[static_cast<std::size_t>(a)], View<const double>(p_), gx_[a]);
     applyGhostGrad(gc_, View<const double>(p_), gx_[0], gx_[1], gx_[2]);
+    applyGhostGradCsr(gcS_, View<const double>(p_), gx_[0], gx_[1], gx_[2]);
     // Picard outer loop over the lagged advection only (the momentum nonlinearity); for
     // outerIters_==1 this is the single lagged predictor, then one projection — bit-identical to
     // before.
@@ -976,6 +1027,8 @@ class AmrFlow {
         // C/F-scheme deferred correction on the velocity diffusion: b += μ(∇²_scheme − ∇²_std)
         // of the lagged component (regular rows only, rscale = 1 there).
         cfApply(cfMom_, View<const double>(u_[c]), bmom_);
+        // Momentum ξ-row seam correction (sampled mode; rscale re-folded at upload).
+        cfApply(gpsMomDelta_, View<const double>(u_[c]), bmom_);
         // P4 (opt-in): the velocity-MG used as the *solver* — MG-preconditioned defect correction,
         // no Krylov (the flow RB-GS/velocity-MG mirror; cannot break down on the non-symmetric
         // operator) — vs the default MG-preconditioned BiCGStab. Both reach the same solution (the
@@ -1015,9 +1068,12 @@ class AmrFlow {
                View<const double>(u_[2]), div_);
     cfApplyComp(cfDiv_, View<const double>(u_[0]), View<const double>(u_[1]),
                 View<const double>(u_[2]), div_);  // 2nd-order C/F face averages (setCfScheme)
-    if (ghostProj_)  // ghost-closed constraint: binary div (geom_ carries binary α) + overlay
+    if (ghostProj_) {  // ghost-closed constraint: binary div (geom_ carries binary α) + overlay
       ghostDivergDelta(gpOv_, View<const double>(u_[0]), View<const double>(u_[1]),
                        View<const double>(u_[2]), div_);
+      ghostDivergDeltaSampled(gpOvS_, View<const double>(u_[0]), View<const double>(u_[1]),
+                              View<const double>(u_[2]), div_);
+    }
     Kokkos::deep_copy(phi_, 0.0);
     if (ghostProj_) {
       lastPresIters_ = solveGhostBiCGStab(phi_, View<const double>(div_), presIters);
@@ -1151,6 +1207,7 @@ class AmrFlow {
     for (int a = 0; a < 3; ++a)  // 2nd-order C/F face gradients (level-boundary rows)
       cfApply(cfGrad_[static_cast<std::size_t>(a)], View<const double>(phi_), gx_[a]);
     applyGhostGrad(gc_, View<const double>(phi_), gx_[0], gx_[1], gx_[2]);
+    applyGhostGradCsr(gcS_, View<const double>(phi_), gx_[0], gx_[1], gx_[2]);
     for (int c = 0; c < 3; ++c)
       correct(u_[c], View<const double>(gx_[c]), View<const char>(fluid_), n);
     presUpdate(p_, View<const double>(phi_), View<const double>(div_), View<const char>(fluid_),
@@ -1363,9 +1420,12 @@ class AmrFlow {
                View<const double>(u_[2]), div_);
     cfApplyComp(cfDiv_, View<const double>(u_[0]), View<const double>(u_[1]),
                 View<const double>(u_[2]), div_);
-    if (ghostProj_)
+    if (ghostProj_) {
       ghostDivergDelta(gpOv_, View<const double>(u_[0]), View<const double>(u_[1]),
                        View<const double>(u_[2]), div_);
+      ghostDivergDeltaSampled(gpOvS_, View<const double>(u_[0]), View<const double>(u_[1]),
+                              View<const double>(u_[2]), div_);
+    }
     return std::sqrt(allSum(dotPlain(View<const double>(div_), View<const double>(div_), n_)));
   }
   /// L2 norm of the divergence of the ABC face field uf_ (built each project()): the φ-solve
@@ -1489,6 +1549,7 @@ class AmrFlow {
   void ghostMatvec(View<const double> x, View<double> y) {
     applyFv(gpOp0(), x, y);
     ghostApplyDelta(gpOv_, x, y);
+    ghostApplyDeltaSampled(gpOvS_, x, y);
     gpProject(y);
   }
 
@@ -1740,6 +1801,11 @@ class AmrFlow {
   FaceGeom geom_;
   GhostGradOverlay gc_;  // directional ghost-gradient overlay (empty unless setGhostGradient)
   GhostOverlayDev gpOv_;  // closure overlay (empty unless setGhostProjection)
+  bool ghostSampled_ = false;          // RESOLVED sampled mode (set by setSolid)
+  int8_t ghostSampledReq_ = 0;         // setGhostSampled request (mixed-level cut band)
+  GhostOverlaySampledDev gpOvS_;       // sample-slot overlay (empty unless sampled)
+  GhostGradCsrDev gcS_;                // sampled CSR directional-gradient overlay
+  CfCsrDev gpsMomDelta_;               // momentum ξ-row seam correction (rscale-folded)
   std::vector<char> gpPocket_;  // fragmentation guard: 1 = decoupled pocket cell (ghost mode)
   CfCsrDev cfMom_;                  // +μ(∇²_scheme − ∇²_std) momentum RHS overlay
   CfCompCsrDev cfDiv_;              // (D_scheme − D_std) divergence overlay
