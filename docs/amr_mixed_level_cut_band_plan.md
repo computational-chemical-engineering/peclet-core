@@ -303,6 +303,43 @@ L(x) on the surface = union of criteria, then D4-quantized:
   A lagged-stiff-term instability found HERE changes the design (matrix-side seam
   treatment), not just the test section — this is the cheapest point to find it.
 
+  **DONE 2026-08-25** — via the HOST-ORACLE PROTOTYPE of the D1 machinery
+  (`ghost_projection_sampled.hpp` + `oracle::AmrFlow::setGhostSampled`; §8a below), probed by
+  `tests/study_amr_seam_march.cpp` (phase-parallel, logs `docs/data/m3_*.log` + v1
+  `amr_seam_march_m3_v1.log`). Latitude two-level sphere N=64 (1735 rows, 225 LS2 slots, 0
+  degraded), CONTROL = the identical protocol on the uniform finest band:
+
+  | probe | seamed | control (uniform band) | verdict |
+  |---|---:|---:|---|
+  | uniform-band parity (classic vs sampled) | — | rel **0.000e+00** | identity slots bit-exact |
+  | march bounded, dt=60/600/1e20 | all | all | no blow-up at any dt |
+  | statRes @ step 300, dt=60 | 2.70e-6 | 2.74e-6 | indistinguishable, same decay |
+  | statRes @ step 200, dt=1e20 | 1.01e-5 | 9.15e-6 | indistinguishable, both decaying |
+  | K dt-spread 60→1e20 (at this budget) | 9.0e-5 | 1.03e-4 | seam adds NOTHING |
+  | dt-cycling 60→1e20→60 (300-step legs) | rel **0.000e+00** | rel **0.000e+00** | NO attractor family |
+  | K offset vs uniform band | +0.31% at 43% of cells | — | accuracy plausible pre-Phase-2 |
+
+  **Verdict: no seam-induced instability and no attractor family at prototype level** — the
+  seamed march is statistically identical to the uniform-band control under the identical
+  protocol (the v1 absolute-gate "failures" were shared convergence-budget floors, present
+  bit-comparably in the control). The dt-cycling reversibility — the campaign's family
+  discriminator — is exact to all printed digits on the seamed mesh. Residual risk moves to
+  Phase 2 scale (bed geometry, per the flow campaign's lesson that families need beds).
+
+### 8a. The host-oracle prototype (built 2026-08-25, pre-gate — doubles as the Phase-1 oracle)
+
+`include/peclet/core/amr/ghost_projection_sampled.hpp` (host-only) + `flow_oracle.hpp`
+`setGhostSampled(true)`: chain entries → sample-slot CSR functionals (identity at same level —
+bit-exact on uniform bands; degree-2 LS virtual samples across 2:1 boundaries per M2;
+fluid-only fallback), face classification FORCED to the canonical actual-center openness
+(`makeBinaryOpenFnMixed`, any-sub-face-open for finer-across faces) so overlay-closed <=>
+binary-closed (no double-counted flux), and the row functionals feed the directional gradient
+(pairing). 51/51 host AMR ctests unchanged (opt-in path). KNOWN PROTOTYPE GAPS (Phase-1
+scope): the momentum ξ-overlay still reads covering neighbours with same-level coefficients
+at seam cut cells (silent O(1) coefficient error, §6.2); pocket cells are not excluded from
+LS clouds; no device mirror; sub-face-resolved closures (the mixed-face Neumann-zero
+degeneracy) unimplemented — counted by the builder (`nMixedFace`, 0 on the probe geometries).
+
 ### Phase 1 — overlay generalization (rung 1, post-gate)
 Sample-slot CSR in `GhostOverlay` + builders (D1/D2/D6), per-closure-axis validity, delta
 kernels, momentum closure samples, CfScheme wall-aware gates, level-aware openness probe.
@@ -355,7 +392,7 @@ Advection/uf seams, MPI (halo support + collective fallback), adapt-during-run r
 
 | risk | detection | response |
 |---|---|---|
-| seam-row march instability (lagged-stiff-term shape) | M3, Phase-2 batteries | matrix-side seam treatment; revisit D1-alternative |
+| seam-row march instability (lagged-stiff-term shape) | M3, Phase-2 batteries | RETIRED at prototype level 2026-08-25 (M3: seam == control, cycling exact); Phase-2 bed battery remains the final check |
 | classification flicker at seams | D2 flicker check across adapt cycles | D2-alternative (aggregation) |
 | coarse openness pinches a throat | D3 tripwire assertion | D3-alternative (telescoping geometry) |
 | fallback cascade fires too often (M1 >~ 30% of seam rows) | M1 census | RETIRED 2026-08-24: measured 0.1–0.5% on all maps |

@@ -1,0 +1,14 @@
+[peclet.core.amr] sampled ghost overlay: 3986 rows | slots identity 59790, LS2 0, LS1 0, degraded 0, solid 0 | sign-forced faces 0, closed mixed faces 0
+  trace ctrl step   25 statRes 8.898e-04
+  trace ctrl step   50 statRes 2.901e-04
+  trace ctrl step   75 statRes 1.364e-04
+  trace ctrl step  100 statRes 7.661e-05
+  trace ctrl step  125 statRes 4.280e-05
+  trace ctrl step  150 statRes 2.386e-05
+  trace ctrl step  175 statRes 1.332e-05
+  trace ctrl step  200 statRes 9.151e-06
+  trace ctrl step  225 statRes 6.841e-06
+  trace ctrl step  250 statRes 5.070e-06
+  trace ctrl step  275 statRes 3.734e-06
+  trace ctrl step  300 statRes 2.740e-06
+RESULT march ctrl dt 6e+01 K 4.113830129056e-02 statRes 2.740e-06 umax 8.608e-02 bounded 1 leaves 41287
