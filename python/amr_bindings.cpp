@@ -200,6 +200,27 @@ class Octree : public Releasable {
                             target_level, band, balance);
   }
 
+  // Graded surface refinement: a per-point TARGET LEVEL callable instead of one global target
+  // (the mixed-level cut band, plan §7). Pair with Flow.set_ghost_sampled(True).
+  Index refine_to_sdf_graded(std::function<double(double, double, double)> sdf,
+                             std::function<unsigned(double, double, double)> target_level,
+                             double band, bool balance) {
+    return amr::refineToSdfGraded(
+        t_, geo_, [&](const Vec<3>& p) { return sdf(p[0], p[1], p[2]); },
+        [&](const Vec<3>& p) { return target_level(p[0], p[1], p[2]); }, band, balance);
+  }
+
+  // The plan's gap-width floor (§7 criterion 1) driving refine_to_sdf_graded in one call:
+  // target level = coarsest L with n*h_L <= gap(x), clamped to [0, coarsest_level].
+  Index refine_to_gap_floor(std::function<double(double, double, double)> sdf,
+                            std::function<double(double, double, double)> gap,
+                            unsigned coarsest_level, double n, double band, bool balance) {
+    auto tgt = amr::gapFloorTarget<3>([&](const Vec<3>& p) { return gap(p[0], p[1], p[2]); },
+                                      geo_.h0, coarsest_level, n);
+    return amr::refineToSdfGraded(
+        t_, geo_, [&](const Vec<3>& p) { return sdf(p[0], p[1], p[2]); }, tgt, band, balance);
+  }
+
   // Split a single leaf by index; returns True if it was split (level>0).
   bool refine_leaf(Index i) { return t_.refineLeaf(i); }
 
@@ -344,6 +365,7 @@ class Flow : public Releasable {
   void set_ghost_projection(bool on, int matrix_order, int rhs_order) {
     flow_.setGhostProjection(on, matrix_order, rhs_order);
   }
+  void set_ghost_sampled(bool on) { flow_.setGhostSampled(on); }
   void set_cf_scheme(int scheme) { flow_.setCfScheme(scheme); }
 
   // Adaptivity during a run: snapshot -> (externally mutate the Octree: adapt / refine_to_* /
@@ -352,6 +374,7 @@ class Flow : public Releasable {
   void set_pressure(nb::ndarray<double, nb::c_contig> h) {
     flow_.setPressure(std::vector<double>(h.data(), h.data() + h.shape(0)));
   }
+  void set_dt(double dt) { flow_.setDt(dt); }
   void finish_adapt(std::function<double(double, double, double)> sdf) {
     flow_.finishAdapt([&](const Vec<3>& p) { return sdf(p[0], p[1], p[2]); });
     n_ = flow_.numLeaves();
@@ -621,6 +644,26 @@ NB_MODULE(amr, m) {
            nb::arg("band") = 1.0, nb::arg("balance") = true,
            "Refine toward an arbitrary signed-distance field given as a callable f(x,y,z)->distance "
            "(suite sign: <0 inside solid), down to target_level. Returns refinements performed.")
+      .def("refine_to_sdf_graded", &Octree::refine_to_sdf_graded, nb::arg("sdf"),
+           nb::arg("target_level"), nb::arg("band") = 2.0, nb::arg("balance") = true,
+           "GRADED surface refinement (the mixed-level cut band, "
+           "docs/amr_mixed_level_cut_band_plan.md §7): `target_level` is a callable "
+           "f(x,y,z)->level giving the COARSEST acceptable level at a world point (0 = finest), "
+           "so cut cells end up at SEVERAL levels — fine in throats/contacts, coarse on smooth "
+           "caps. The band margin is measured in cells of the level being created (not in h0 as "
+           "in refine_to_sdf). Requires Flow.set_ghost_sampled(True) — the classic overlay "
+           "contracts a uniform finest band and raises on these level jumps. Returns "
+           "refinements performed.")
+      .def("refine_to_gap_floor", &Octree::refine_to_gap_floor, nb::arg("sdf"), nb::arg("gap"),
+           nb::arg("coarsest_level"), nb::arg("n") = 4.0, nb::arg("band") = 2.0,
+           nb::arg("balance") = true,
+           "refine_to_sdf_graded driven by the plan's GAP-WIDTH FLOOR (§7 criterion 1): the "
+           "target level at a point is the coarsest L with n*h_L <= gap(x), clamped to "
+           "[0, coarsest_level]. `gap` is the local fluid-gap proxy f(x,y,z)->width — for a "
+           "sphere packing the two-closest-surfaces sum d1+d2; a medial-axis or peclet.pnm "
+           "throat-radius field substitutes verbatim. n=4 per the M1/M2 measurements. This is "
+           "the AMReX multi-valued-cell rule inverted: coarsening never merges or disconnects "
+           "fluid.")
       .def("refine_leaf", &Octree::refine_leaf, nb::arg("i"),
            "Split leaf `i` into its 8 children; returns True if it was split (level>0).")
       .def("balance", &Octree::balance,
@@ -713,11 +756,27 @@ NB_MODULE(amr, m) {
            "march-UNSTABLE above ~2000 spheres (flow hardening Phase A), kept callable for "
            "parity records only. Raises if the finest band is too thin (a closure would cross "
            "a 2:1 boundary). Call before set_solid.")
+      .def("set_ghost_sampled", &Flow::set_ghost_sampled, nb::arg("on"),
+           "MIXED-LEVEL CUT BAND (docs/amr_mixed_level_cut_band_plan.md): allow cut cells at "
+           "MULTIPLE octree levels — the finest-band contract is dropped. Chain entries that "
+           "cross a 2:1 boundary become degree-2 LS virtual samples at the uniform closure "
+           "positions (identity weights at same level, so a uniform finest band is BIT-IDENTICAL "
+           "to set_ghost_sampled(False)); face classification uses the level-aware canonical "
+           "openness; the momentum xi-row seam correction and the wall-aware C/F tangential "
+           "fallback ride along. Implies the ghost projection (engages when the resolved scheme "
+           "is ghost — the AUTO default or an explicit set_ghost_projection(True)). Single-rank "
+           "only (the distributed sample halo is a later rung). Call before set_solid.")
       .def("set_pressure", &Flow::set_pressure, nb::arg("values"),
            "Write the accumulated rotational pressure from a (num_leaves,) array — restart, or "
            "re-accumulation policies after finish_adapt (at steady-state dt the transferred p is "
            "the load-bearing state; zeroing it after a coarsening adapt lets it re-accumulate "
            "cleanly).")
+      .def("set_dt", &Flow::set_dt, nb::arg("dt"),
+           "Change the time step. dt is BAKED INTO the momentum operator at build time "
+           "(idiag = rho/dt), so a set_dt must be followed by set_solid or the operator stays "
+           "stale. set_solid reallocates and zeroes u and p, so a dt SWITCH mid-march is: read "
+           "velocity()/pressure() -> set_dt -> set_solid -> set_velocity()/set_pressure(). That "
+           "sequence is the dt-cycling protocol of the attractor-family batteries.")
       .def("begin_adapt", &Flow::begin_adapt,
            "Snapshot the octree topology + (u, p) ahead of an external mesh mutation (adapt / "
            "refine_to_sphere / refine_to_sdf / balance on the SAME Octree object). Pair with "
