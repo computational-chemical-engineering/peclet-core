@@ -340,6 +340,7 @@ class Flow : public Releasable {
   void set_body_force(double fx, double fy, double fz) { flow_.setBodyForce(fx, fy, fz); }
   void set_advection(bool on) { flow_.setAdvection(on); }
   void set_ghost_gradient(bool on) { flow_.setGhostGradient(on); }
+  void set_aperture_order(int order) { flow_.setApertureOrder(order); }
   void set_ghost_projection(bool on, int matrix_order, int rhs_order) {
     flow_.setGhostProjection(on, matrix_order, rhs_order);
   }
@@ -695,6 +696,10 @@ NB_MODULE(amr, m) {
            "projection's cell correction (2nd-order one-sided, never reads decoupled solid "
            "pressure — removes the gauge-dependent O(1/h) cut-cell gradient error of the plain "
            "ABC gradient). The aperture projection itself is unchanged. Call before set_solid.")
+      .def("set_aperture_order", &Flow::set_aperture_order, nb::arg("order"),
+           "Aperture estimator for the (fallback) aperture projection: 2 = analytic "
+           "marching-squares (DEFAULT since 2026-08-26), 1 = legacy one-sample model. "
+           "Call before set_solid.")
       .def("set_ghost_projection", &Flow::set_ghost_projection, nb::arg("on"),
            nb::arg("matrix_order") = 2, nb::arg("rhs_order") = 2,
            "DEFAULT since 2026-08-25 (AUTO: ghost, with an aperture fallback + stderr notice when "

@@ -101,6 +101,9 @@ class AmrFlow {
   /// projection is the production path for Stokes AND NS (the former NS AUTO-arm was retired with
   /// the aperture-PCG-under-advection fix; see docs/amr_aperture_advection_plan.md §RESOLVED).
   /// Engages only on an explicit setGhostProjection(true). Call before setSolid.
+  /// Aperture estimator order for the (fallback) aperture projection: 2 = analytic
+  /// marching-squares (DEFAULT since 2026-08-26), 1 = legacy one-sample model. Before setSolid.
+  void setApertureOrder(int order) { apertureOrder_ = order; }
   void setGhostProjection(bool on, int matrixOrder = 2, int rhsOrder = 2) {
     ghostProjReq_ = on ? 1 : 0;
     gpMatrixOrder_ = matrixOrder;
@@ -698,14 +701,49 @@ class AmrFlow {
     return 0.5 * (gpa + gma);
   }
 
-  // Fluid area fraction of a face, the gradient-normalised aperture (a faithful
-  // port of flow's ccFractionCore, src/mac_cutcell.hpp): frac = 0.5 + sd/denom,
-  // sd = SDF at the face centre, denom = (|n_t1| + |n_t2|)·h0 over the two
-  // tangential axes (n = unit SDF gradient). This is a linear interface
-  // reconstruction within the face — 2nd-order accurate, unlike indicator
-  // subsampling (which is only O(1/nsub) on cut faces and made the drag 1st-order).
+  // Fluid area fraction of a face. DEFAULT (order 2, 2026-08-26 user decision): triangle-fan
+  // marching squares on FIVE ANALYTIC samples (4 corners + centre) -- exact linear fraction per
+  // triangle, O(h^2), no saddle ambiguity, and the sub-resolution floor 1e-6 (alpha ~ 1e-12 rows
+  // destroy the pressure conditioning -- flow tracker rows 51/52). Because the AMR solver holds
+  // the analytic sdfFn, this samples the TRUE geometry (no trilinear ceiling). order 1 = the
+  // legacy one-sample gradient-normalised linear model (kept for A/B), which carries a SIGNED
+  // convexity bias measured at +0.59%/+0.27% bed permeability at R=8/12 (decay ~h^2).
+  static double triFrac(double a, double b, double c) {
+    const bool pa = a >= 0.0, pb = b >= 0.0, pc = c >= 0.0;
+    const int np = (pa ? 1 : 0) + (pb ? 1 : 0) + (pc ? 1 : 0);
+    if (np == 3)
+      return 1.0;
+    if (np == 0)
+      return 0.0;
+    double x, y, z;
+    if (np == 1) {
+      if (pa) { x = a; y = b; z = c; } else if (pb) { x = b; y = c; z = a; } else { x = c; y = a; z = b; }
+      const double den = (x - y) * (x - z);
+      return den > 1e-300 ? (x * x) / den : 1.0;
+    }
+    if (!pa) { x = a; y = b; z = c; } else if (!pb) { x = b; y = c; z = a; } else { x = c; y = a; z = b; }
+    const double den = (x - y) * (x - z);
+    return 1.0 - (den > 1e-300 ? (x * x) / den : 1.0);
+  }
   template <class SdfFn>
   double faceFrac(SdfFn&& sdfFn, const Vec<3>& fc, int axis) const {
+    if (apertureOrder_ >= 2) {
+      if (sdfFn(fc) <= 0.0)
+        return 0.0;  // center gate (kept from order 1; see flow ccFaceOpenMS)
+      const int t1 = (axis + 1) % 3, t2 = (axis + 2) % 3;
+      const double e = 0.5 * h0_;
+      auto at = [&](double d1, double d2) {
+        Vec<3> p = fc;
+        p[t1] += d1;
+        p[t2] += d2;
+        return sdfFn(p);
+      };
+      const double c00 = at(-e, -e), c10 = at(e, -e), c11 = at(e, e), c01 = at(-e, e);
+      const double cc = sdfFn(fc);
+      const double frac = 0.25 * (triFrac(c00, c10, cc) + triFrac(c10, c11, cc) +
+                                  triFrac(c11, c01, cc) + triFrac(c01, c00, cc));
+      return frac < 1e-3 ? 0.0 : (frac > 1.0 - 1e-12 ? 1.0 : frac);  // floor: see flow ccFaceOpenMS
+    }
     double sd = sdfFn(fc);
     if (sd <= 0.0)
       return 0.0;
@@ -736,6 +774,7 @@ class AmrFlow {
   bool ghostProj_ = false;    // RESOLVED projection mode (set by setSolid from the request)
   int8_t ghostProjReq_ = -1;  // -1 = AUTO (DEFAULT: ghost, aperture fallback on thin band),
                               // 0 = explicit aperture, 1 = explicit ghost
+  int apertureOrder_ = 2;  // aperture estimator order (setApertureOrder; default 2)
   int gpMatrixOrder_ = 2, gpRhsOrder_ = 2;  // closure orders (2,2 = the production pair; the
                                             // (1,2) mixed form is march-unstable at scale)
   GhostOverlay gpOv_;                       // closure overlay (finest-band rows)
