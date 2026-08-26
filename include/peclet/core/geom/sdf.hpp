@@ -6,6 +6,14 @@
 // gradient covers any shape, and a `Sdf` concept lets solvers accept analytic or grid SDFs
 // uniformly.
 //
+// DELEGATION (Layer 0, docs/ANALYTIC_SDF_GEOMETRY.md): the shapes here are the HOST-FACING layer --
+// they carry a `center` (and an `axis`) and model the `Sdf` concept for host consumers like
+// refineToSdf and the VTI path. Their eval() bodies hold NO formulas: each translates (and, for the
+// cylinder, permutes) into the canonical frame and calls the corresponding device-callable leaf in
+// peclet::core::geom::prim (geom/primitives.hpp), which is the single source of the formulas.
+// Note `Box` now goes through the leaf's fmax/fmin where it previously used std::max/std::min --
+// identical for every non-NaN input, and the leaf's form is the one dem's bit-exactness depends on.
+//
 // C++17-clean below the concept so this header can be pulled into CUDA translation units; the
 // concept itself is guarded for C++20 host use.
 #ifndef PECLET_CORE_GEOM_SDF_HPP
@@ -15,6 +23,7 @@
 #include <cmath>
 
 #include "peclet/core/common/types.hpp"
+#include "peclet/core/geom/primitives.hpp"
 
 namespace peclet::core::geom {
 
@@ -31,7 +40,10 @@ inline double norm(const Vec<3>& a) {
 struct Sphere {
   Vec<3> center{};
   double radius = 1.0;
-  double eval(const Vec<3>& p) const { return detail::norm(detail::sub(p, center)) - radius; }
+  double eval(const Vec<3>& p) const {
+    const Vec<3> d = detail::sub(p, center);
+    return prim::Sphere<double>{radius}.eval(Vec3<double>{d[0], d[1], d[2]});
+  }
 };
 
 /// Axis-aligned solid box of half-extents `half`: standard exact box SDF, negative inside.
@@ -39,11 +51,8 @@ struct Box {
   Vec<3> center{};
   Vec<3> half{0.5, 0.5, 0.5};
   double eval(const Vec<3>& p) const {
-    Vec<3> d = detail::sub(p, center);
-    Vec<3> q{std::fabs(d[0]) - half[0], std::fabs(d[1]) - half[1], std::fabs(d[2]) - half[2]};
-    double outside = detail::norm({std::max(q[0], 0.0), std::max(q[1], 0.0), std::max(q[2], 0.0)});
-    double inside = std::min(std::max(q[0], std::max(q[1], q[2])), 0.0);
-    return outside + inside;
+    const Vec<3> d = detail::sub(p, center);
+    return prim::Box<double>{half[0], half[1], half[2]}.eval(Vec3<double>{d[0], d[1], d[2]});
   }
 };
 
@@ -57,11 +66,10 @@ struct HollowCylinder {
   double height = 1.0;
   int axis = 2;
   double eval(const Vec<3>& p) const {
-    Vec<3> d = detail::sub(p, center);
-    int a0 = (axis + 1) % 3, a1 = (axis + 2) % 3;
-    double r = std::sqrt(d[a0] * d[a0] + d[a1] * d[a1]);
-    double z = d[axis];
-    return std::max({r - rOuter, rInner - r, std::fabs(z) - height * 0.5});
+    const Vec<3> d = detail::sub(p, center);
+    const int a0 = (axis + 1) % 3, a1 = (axis + 2) % 3;
+    const double r = std::sqrt(d[a0] * d[a0] + d[a1] * d[a1]);
+    return prim::HollowCylinderShell<double>{rOuter, rInner, height}.evalRZ(r, d[axis]);
   }
 };
 

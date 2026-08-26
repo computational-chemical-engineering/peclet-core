@@ -192,6 +192,14 @@ if(PECLET_CORE_HAVE_KOKKOS)
   add_test(NAME amr_flow_solver COMMAND test_amr_flow_solver)
 endif()
 
+# Layer 0 rung 0: device-callable SDF leaf primitives (peclet/core/geom/primitives.hpp) are
+# bit-exact to their dem/voro origins. Host-only TU -- also proves PECLET_HD degrades to `inline`
+# when Kokkos is absent. See suite/docs/ANALYTIC_SDF_GEOMETRY.md.
+add_executable(test_geom_primitives test_geom_primitives.cpp)
+target_link_libraries(test_geom_primitives PRIVATE tpx_core)
+target_include_directories(test_geom_primitives PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME geom_primitives COMMAND test_geom_primitives)
+
 add_executable(test_sdf test_sdf.cpp)
 target_link_libraries(test_sdf PRIVATE tpx_core)
 target_include_directories(test_sdf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
