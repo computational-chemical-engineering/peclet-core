@@ -10,10 +10,14 @@
 //                 Kokkos_Core.hpp still gets a device-callable annotation. Wrapped in
 //                 `#if !defined(PECLET_HD)` so a build can override it.
 //
-//   Vec3<Real>  — a Real-templated POD 3-vector. Deliberately NOT peclet::core::Vec<3>: that is
-//                 std::array<Real, 3> with `Real` a fixed double typedef (common/types.hpp), so it
-//                 is neither Real-templated nor a natural device type. Vec3 is what dem's F3
-//                 becomes and what voro's loose `Real x, y, z` parameters collapse into.
+//   Vec3<Real>  — a Real-templated POD 3-vector, plus the small vector/quaternion algebra the
+//                 scene transform stack needs. Deliberately NOT peclet::core::Vec<3>, which is
+//                 std::array<Real, 3> with `Real` a fixed double typedef (common/types.hpp):
+//                 neither Real-templated nor a natural device type. Vec3 is what dem's F3 becomes
+//                 and what voro's loose `Real x, y, z` parameters collapse into. Bundling the
+//                 algebra here mirrors how dem organises the same material (F3 ships alongside
+//                 add3/sub3/scale3/dot3/len3/cross3v/rotateVector in dem_portable.hpp), so the
+//                 rung-3 port is a rename rather than a rewrite.
 //
 // C++17-clean (no concepts, no C++20 constructs) so it can be pulled into CUDA translation units,
 // matching the pledge in common/types.hpp. Design: suite/docs/ANALYTIC_SDF_GEOMETRY.md.
@@ -41,6 +45,50 @@ template <class Real>
 struct Vec3 {
   Real x, y, z;
 };
+
+/// Quaternion, {x, y, z, w} — dem's F4 ordering (dem_portable.hpp), NOT {w, x, y, z}.
+template <class Real>
+struct Quat {
+  Real x, y, z, w;
+};
+
+// --- vector algebra (association order transcribed from dem's math_utils heritage) -------------
+
+template <class Real>
+PECLET_HD Vec3<Real> add(Vec3<Real> a, Vec3<Real> b) {
+  return Vec3<Real>{a.x + b.x, a.y + b.y, a.z + b.z};
+}
+template <class Real>
+PECLET_HD Vec3<Real> sub(Vec3<Real> a, Vec3<Real> b) {
+  return Vec3<Real>{a.x - b.x, a.y - b.y, a.z - b.z};
+}
+template <class Real>
+PECLET_HD Vec3<Real> scale(Vec3<Real> a, Real s) {
+  return Vec3<Real>{a.x * s, a.y * s, a.z * s};
+}
+template <class Real>
+PECLET_HD Real dot(Vec3<Real> a, Vec3<Real> b) {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+template <class Real>
+PECLET_HD Vec3<Real> cross(Vec3<Real> a, Vec3<Real> b) {
+  return Vec3<Real>{a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
+
+/// Rotate v by q. Verbatim port of dem `rotateVector` (dem_portable.hpp) — keep the operation
+/// order: a rewritten-but-algebraically-equal form would break the rung-3 bit-exactness gate.
+template <class Real>
+PECLET_HD Vec3<Real> rotate(Quat<Real> q, Vec3<Real> v) {
+  const Vec3<Real> qv{q.x, q.y, q.z};
+  const Vec3<Real> t = scale(cross(qv, v), Real(2));
+  return add(add(v, scale(t, q.w)), cross(qv, t));
+}
+
+/// Rotate v by the conjugate of q — dem `invRotateVector`.
+template <class Real>
+PECLET_HD Vec3<Real> invRotate(Quat<Real> q, Vec3<Real> v) {
+  return rotate(Quat<Real>{-q.x, -q.y, -q.z, q.w}, v);
+}
 
 namespace detail {
 

@@ -200,6 +200,13 @@ target_link_libraries(test_geom_primitives PRIVATE tpx_core)
 target_include_directories(test_geom_primitives PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME geom_primitives COMMAND test_geom_primitives)
 
+# Layer 0 rung 1: runtime node layer -- transforms, iterative CSG, grid leaf in both off-grid
+# extension policies -- over the rung-0 leaves. Host-only TU.
+add_executable(test_geom_scene test_geom_scene.cpp)
+target_link_libraries(test_geom_scene PRIVATE tpx_core)
+target_include_directories(test_geom_scene PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME geom_scene COMMAND test_geom_scene)
+
 add_executable(test_sdf test_sdf.cpp)
 target_link_libraries(test_sdf PRIVATE tpx_core)
 target_include_directories(test_sdf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
