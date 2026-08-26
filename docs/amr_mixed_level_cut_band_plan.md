@@ -383,8 +383,20 @@ classic path is untouched. Parity ctest `test_seam_sampled`: (a) uniform band, d
 vs device classic **bit-identical** (max diff 0.00e+00, CUDA); (b) two-level latitude band,
 device vs oracle rel 2.4e-06 mean / 3e-6 fields. Full flow-solver battery green on CUDA.
 
-Remaining Phase-1 rungs: graded refineToSdf policy API, pocket exclusion in LS clouds,
-sub-face closures, distributed sample halo.
+**Rung 4 — graded refineToSdf policy API (§7): DONE 2026-08-26** (core `83e9dff`). The
+mesh-generator side: `refineToSdfGraded(t, geo, sdf, targetFn, band, balance)` takes a per-point
+TARGET LEVEL instead of one global `targetLevel`, with the band margin measured in cells of the
+level being CREATED (not in h0 — that is what keeps the margin meaningful where the target is
+coarse), and the band predicate evaluated BEFORE `targetFn` (the gap/medial-axis field is the
+expensive one). `gapFloorTarget(gapFn, h0, coarsestLevel, n = 4)` packages §7 criterion 1 — the
+coarsest level clearing `gap >= n·h_L`. Python: `Octree.refine_to_sdf_graded` /
+`refine_to_gap_floor`, plus `Flow.set_ghost_sampled` (the sampled overlay had no binding at all)
+and `Flow.set_dt` (whose docstring carries the stale-momentum-operator trap: dt is baked in at
+build time, so a dt switch is read → `set_dt` → `set_solid` → `set_velocity`/`set_pressure`).
+`test_amr_sdf::runGraded` covers it; 51/51 host AMR ctests green.
+
+Remaining Phase-1 rungs: pocket exclusion in LS clouds, sub-face closures, distributed sample
+halo.
 
 ### Phase 1 — overlay generalization (rung 1, post-gate)
 Sample-slot CSR in `GhostOverlay` + builders (D1/D2/D6), per-closure-axis validity, delta
@@ -399,6 +411,38 @@ amr_zh_c2 battery + dt=1e20 stationarity + dt-cycling on the seamed sphere; Z&H 
 a graded surface (caps L, sector band L+1): clean-ladder convergence and the ~+0.2% ghost
 bias must survive seams. **Acceptance:** family-free (stationarity to the C2 thresholds),
 seam contribution to K consistent with the codim-2 estimate.
+
+#### P2a — the C2 acceptance battery on a seamed mesh at scale (DONE 2026-08-27)
+
+`tests/study/amr_zh_c2_seam.py` (log `docs/data/amr_zh_c2_seam_n128.log`), CUDA/RTX 5080. The
+ladder's arm (b) — the two-level latitude map, whose jump plane is OBLIQUE to the wall and so
+actually produces LS2 sample rows (M2's geometry lesson) — at **N = 128**, i.e. at scale rather
+than M3's N = 64 prototype, with the uniform-band control run under the identical protocol.
+`set_ghost_sampled(True)`, (2,2), cf-quadratic. The mixed-level band adds two lagged terms (the
+momentum ξ-row seam correction and the wall-aware C/F tangential fallback), and every instability
+the campaign found is of lagged-stiff-term shape, so this is the gate that says the seam
+machinery has not re-opened the attractor family.
+
+| probe | arm (b) seamed | arm (a) uniform control |
+|---|---:|---:|
+| K at dt = 60 (statRes) | 4.271444175 (1.03e-09) | 4.260989442 (9.89e-10) |
+| K at dt = 600 (statRes) | 4.271444172 (1.38e-08) | 4.260989445 (8.13e-09) |
+| K at dt = 1e20 (statRes) | 4.271444164 (3.04e-08) | 4.260989445 (8.99e-09) |
+| **dt-spread 60→1e20** | **2.46e-09 (PASS at 1e-5)** | **7.26e-10 (PASS)** |
+| dt-cycling 60→1e20→60, K | 1.42e-08 rel | 1.37e-08 rel |
+| dt-cycling, velocity field | 1.57e-08 rel | 1.51e-08 rel |
+
+**Verdict: family-free on a seamed mesh at N = 128.** Every probe on the seamed mesh matches the
+control to the same order of magnitude, and the cycling residual is essentially IDENTICAL
+(1.42e-08 vs 1.37e-08) — i.e. it is the shared convergence-budget floor of the two marches, not a
+seam effect. dt-independence holds at 2.5e-09, three and a half decades inside the 1e-5 gate.
+
+*Protocol note (worth not re-deriving).* Each cycling leg must march to STATIONARITY, not for a
+fixed number of steps. On the device, K-stationarity at N = 128 needs ~2800 steps; a first pass
+with M3's fixed 100-step legs compared a 100-step transient against a 233-step transient and read
+7.8e-02 — a pure protocol artefact, not a family. Also: the device `set_solid` reallocates and
+zeroes u and p (the host oracle's does not), so the dt switch has to save and restore the state —
+hence the new `set_dt` / `set_velocity` / `set_pressure` round trip.
 
 ### Phase 3 — the porous payoff
 Two-sphere gap unit case (throat criterion vs gap resolution n); then a mid-size sphere bed

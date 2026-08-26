@@ -1,0 +1,31 @@
+C2 battery on a SEAMED mesh: Z&H SC phi=0.125, N=128, cf=1, arms=ba, sampled ghost (2,2)
+
+### arm b (two-level latitude (seamed)) N=128 cf=1: 118812 leaves, levels [57120, 51036, 8536, 2120]
+[peclet.core.amr] sampled ghost overlay: 7284 rows | slots identity 108292, LS2 444, LS1 0, degraded 0, solid 524 | sign-forced faces 88, closed mixed faces 0
+  dt=60       K=4.271444175 err=-0.4789% statRes=1.030e-09 steps=2840 (1108s)
+[peclet.core.amr] sampled ghost overlay: 7284 rows | slots identity 108292, LS2 444, LS1 0, degraded 0, solid 524 | sign-forced faces 88, closed mixed faces 0
+  dt=600      K=4.271444172 err=-0.4789% statRes=1.382e-08 steps=1110 (558s)
+[peclet.core.amr] sampled ghost overlay: 7284 rows | slots identity 108292, LS2 444, LS1 0, degraded 0, solid 524 | sign-forced faces 88, closed mixed faces 0
+  dt=1e+20    K=4.271444164 err=-0.4789% statRes=3.043e-08 steps=960 (554s)
+  dt-spread 2.461e-09 rel  (PASS at 1e-5)
+[peclet.core.amr] sampled ghost overlay: 7284 rows | slots identity 108292, LS2 444, LS1 0, degraded 0, solid 524 | sign-forced faces 88, closed mixed faces 0
+[peclet.core.amr] sampled ghost overlay: 7284 rows | slots identity 108292, LS2 444, LS1 0, degraded 0, solid 524 | sign-forced faces 88, closed mixed faces 0
+[peclet.core.amr] sampled ghost overlay: 7284 rows | slots identity 108292, LS2 444, LS1 0, degraded 0, solid 524 | sign-forced faces 88, closed mixed faces 0
+  dt-cycling 60 -> 1e20 -> 60 (each leg to stationarity + 200 hold): K1=4.271444175 K3=4.271444114  Krel=1.420e-08  field rel 1.569e-08 (1567s)
+
+### arm a (uniform control) N=128 cf=1: 268752 leaves, levels [228480, 29616, 8536, 2120]
+[peclet.core.amr] sampled ghost overlay: 16776 rows | slots identity 251640, LS2 0, LS1 0, degraded 0, solid 0 | sign-forced faces 0, closed mixed faces 0
+  dt=60       K=4.260989442 err=-0.7225% statRes=9.890e-10 steps=2850 (1355s)
+[peclet.core.amr] sampled ghost overlay: 16776 rows | slots identity 251640, LS2 0, LS1 0, degraded 0, solid 0 | sign-forced faces 0, closed mixed faces 0
+  dt=600      K=4.260989445 err=-0.7225% statRes=8.129e-09 steps=1260 (643s)
+[peclet.core.amr] sampled ghost overlay: 16776 rows | slots identity 251640, LS2 0, LS1 0, degraded 0, solid 0 | sign-forced faces 0, closed mixed faces 0
+  dt=1e+20    K=4.260989445 err=-0.7225% statRes=8.992e-09 steps=1220 (565s)
+  dt-spread 7.256e-10 rel  (PASS at 1e-5)
+[peclet.core.amr] sampled ghost overlay: 16776 rows | slots identity 251640, LS2 0, LS1 0, degraded 0, solid 0 | sign-forced faces 0, closed mixed faces 0
+[peclet.core.amr] sampled ghost overlay: 16776 rows | slots identity 251640, LS2 0, LS1 0, degraded 0, solid 0 | sign-forced faces 0, closed mixed faces 0
+[peclet.core.amr] sampled ghost overlay: 16776 rows | slots identity 251640, LS2 0, LS1 0, degraded 0, solid 0 | sign-forced faces 0, closed mixed faces 0
+  dt-cycling 60 -> 1e20 -> 60 (each leg to stationarity + 200 hold): K1=4.260989442 K3=4.260989384  Krel=1.366e-08  field rel 1.510e-08 (1415s)
+
+C2 VERDICT (seamed vs control):
+  arm b (two-level latitude (seamed)): dt-spread 2.461e-09 (PASS)
+  arm a (uniform control): dt-spread 7.256e-10 (PASS)

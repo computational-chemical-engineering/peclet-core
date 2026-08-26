@@ -1,0 +1,37 @@
+Z&H SC phi=0.125 ladder: N=[64] arms=abc cf=[0, 1] tol=1e-08 LFAR=3 band=4.0 sampled=True (2,2)
+
+=== cf_scheme = 0 (standard two-point) ===
+ arm     N            K      err%     d(a)%    leaves  cells%   steps  pres       s
+[peclet.core.amr] sampled ghost overlay: 4208 rows | slots identity 63120, LS2 0, LS1 0, degraded 0, solid 0 | sign-forced faces 0, closed mixed faces 0
+   a    64    4.5330422   +5.6161   +0.0000     68608   26.17     830    12      46
+[peclet.core.amr] sampled ghost overlay: 1856 rows | slots identity 27348, LS2 232, LS1 0, degraded 0, solid 260 | sign-forced faces 72, closed mixed faces 0
+    [b N=64 cf=0] step 1000 K=4.5071809 (53.5 ms/step)
+   b    64    4.5071813   +5.0135   -0.5705     30696   11.71    1080    11      58
+[peclet.core.amr] sampled ghost overlay: 2304 rows | slots identity 31320, LS2 2136, LS1 0, degraded 0, solid 1104 | sign-forced faces 336, closed mixed faces 96
+    [c N=64 cf=0] step 1000 K=4.5504987 (58.5 ms/step)
+   c    64    4.5504956   +6.0227   +0.3850     32320   12.33    1260    11      74
+     levels a:[58176, 8536, 1864, 32]  b:[14848, 13952, 1864, 32]  c:[22080, 7672, 2536, 32]
+
+=== cf_scheme = 1 (Martin-Cartwright quadratic) ===
+ arm     N            K      err%     d(a)%    leaves  cells%   steps  pres       s
+[peclet.core.amr] sampled ghost overlay: 4208 rows | slots identity 63120, LS2 0, LS1 0, degraded 0, solid 0 | sign-forced faces 0, closed mixed faces 0
+   a    64    4.2508785   -0.9581   +0.0000     68608   26.17     710    11      41
+[peclet.core.amr] sampled ghost overlay: 1856 rows | slots identity 27348, LS2 232, LS1 0, degraded 0, solid 260 | sign-forced faces 72, closed mixed faces 0
+    [b N=64 cf=1] step 1000 K=4.2849135 (54.3 ms/step)
+   b    64    4.2849145   -0.1651   +0.8007     30696   11.71    1140    10      62
+[peclet.core.amr] sampled ghost overlay: 2304 rows | slots identity 31320, LS2 2136, LS1 0, degraded 0, solid 1104 | sign-forced faces 336, closed mixed faces 96
+    [c N=64 cf=1] step 1000 K=4.1888295 (60.1 ms/step)
+   c    64    4.1887930   -2.4046   -1.4605     32320   12.33    1650    10      98
+     levels a:[58176, 8536, 1864, 32]  b:[14848, 13952, 1864, 32]  c:[22080, 7672, 2536, 32]
+
+--- orders (log2 ratio of successive N) ---
+cf=0 arm a: |K-K_ZH| = 0.24104
+cf=0 arm b: |K-K_ZH| = 0.21518
+cf=0 arm c: |K-K_ZH| = 0.25850
+cf=0 SEAM OFFSET |K(b) - K(a)| = 2.586e-02
+cf=0 SEAM OFFSET |K(c) - K(a)| = 1.745e-02
+cf=1 arm a: |K-K_ZH| = 0.04112
+cf=1 arm b: |K-K_ZH| = 0.00709
+cf=1 arm c: |K-K_ZH| = 0.10321
+cf=1 SEAM OFFSET |K(b) - K(a)| = 3.404e-02
+cf=1 SEAM OFFSET |K(c) - K(a)| = 6.209e-02
