@@ -1,0 +1,7 @@
+ladder control-arm parity: N=128 cf=1, uniform finest band, 200 steps
+[peclet.core.amr] sampled ghost overlay: 16776 rows | slots identity 251640, LS2 0, LS1 0, degraded 0, solid 0 | sign-forced faces 0, closed mixed faces 0
+  u: max|sampled - classic| = 0.000e+00  (max|classic| = 1.432e+00)
+  v: max|sampled - classic| = 0.000e+00  (max|classic| = 3.388e-01)
+  w: max|sampled - classic| = 0.000e+00  (max|classic| = 3.388e-01)
+  p: max|sampled - classic| = 0.000e+00  (max|classic| = 2.763e-02)
+VERDICT: BIT-IDENTICAL

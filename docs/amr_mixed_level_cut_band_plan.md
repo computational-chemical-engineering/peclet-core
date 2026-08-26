@@ -444,6 +444,98 @@ with M3's fixed 100-step legs compared a 100-step transient against a 233-step t
 zeroes u and p (the host oracle's does not), so the dt switch has to save and restore the state —
 hence the new `set_dt` / `set_velocity` / `set_pressure` round trip.
 
+#### P2b — the graded accuracy ladder on device (DONE 2026-08-27)
+
+Single-N K offsets against the uniform control are a weak instrument (see "Phase 1 progress"):
+the control carries its own bias, so an offset of either sign is uninterpretable. Convergence
+WITH RESOLUTION is the honest one — a seam treatment that is *stable but inconsistent* shows up
+as an offset that stops shrinking.
+
+`tests/study/amr_zh_ladder.py` (CUDA `python/build_cuda2`, RTX 5080; logs
+`docs/data/amr_zh_ladder_n{64,128,256}.log`). Z&H simple-cubic sphere, φ = 0.125, K_ZH = 4.292;
+`set_ghost_sampled(True)`, (2,2) closures, dt = 60, K-stationarity to 1e-8 relative, K from the
+VOLUME-weighted (superficial) mean. Three arms differ ONLY in the surface level map — background
+uniform at LFAR = 3 levels above finest and band margin 4 cells of the level being created, so
+the mesh family is self-similar in N (every arm refines toward the exact answer rather than to a
+graded plateau) and the far field is identical across arms:
+
+- **(a) uniform** — finest band over the whole surface (today's policy; the control).
+- **(b) two-level** — latitude jump at z = c − R/2, OBLIQUE to the wall (M2's lesson: a
+  hemisphere jump is ⟂ to the wall and produces no sample rows at all), cap above at L1.
+- **(c) gap-ordered three-level** — L0/L1/L2 ordered by the §7 gap proxy (two-closest-surfaces
+  d1 + d2 over the 27 nearest periodic images): finest at the narrow pole directions, coarsest at
+  the wide corner directions, thresholds splitting the geometry's own gap range in three.
+
+| cf | arm | N=64 K (err%) | N=128 K (err%) | N=256 K (err%) | cells% of N³ (64/128/256) |
+|---:|---|---:|---:|---:|---|
+| 1 | a uniform | 4.250879 (−0.958) | 4.260990 (−0.723) | 4.277542 (−0.337) | 26.2 / 12.8 / 6.4 |
+| 1 | b two-level | 4.284915 (−0.165) | 4.271445 (−0.479) | 4.280699 (−0.263) | 11.7 / 5.7 / 2.9 |
+| 1 | c gap-ordered | 4.188793 (−2.405) | 4.251682 (−0.939) | 4.273262 (−0.437) | 12.3 / 6.4 / 3.3 |
+| 0 | a uniform | 4.533042 (+5.616) | 4.570203 (+6.482) | — | |
+| 0 | b two-level | 4.507181 (+5.014) | 4.547695 (+5.958) | — | |
+| 0 | c gap-ordered | 4.550496 (+6.023) | 4.558979 (+6.220) | — | |
+
+**The seam instrument** — |K(arm) − K(a)|, which cancels the shared far field:
+
+| | N=64 | N=128 | N=256 | order 64→128 | order 128→256 | over the full range |
+|---|---:|---:|---:|---:|---:|---:|
+| cf=1, b − a | 3.404e-02 | 1.045e-02 | 3.157e-03 | **1.70** | **1.73** | **1.72** |
+| cf=1, c − a | 6.209e-02 | 9.308e-03 | 4.280e-03 | 2.74 | 1.12 | **1.93** |
+| cf=0, b − a | 2.586e-02 | 2.251e-02 | — | 0.20 | | |
+| cf=0, c − a | 1.745e-02 | 1.122e-02 | — | 0.64 | | |
+
+**Verdict: the seam machinery is consistent — seams do not set the order.** With the quadratic
+C/F scheme the seam offset decays at 1.72 (arm b, two clean consecutive ratios of 1.70 and 1.73)
+and 1.93 (arm c, over the full range), and lands at 0.074% / 0.100% of K at N = 256 — inside the
+ghost scheme's own ~0.2–0.3% bias. The reference point that makes this readable: the ARMS
+themselves converge at ~1.1 order on the last doubling (arm a: 0.0411 → 0.0310 → 0.0145, orders
+0.41 and 1.10), because the graded family's leading error is the far-field C/F flux, not the cut
+cells — and arm (a) has ZERO sample slots, so that sub-2 order is demonstrably NOT seam-caused.
+The seam offset therefore shrinks at least as fast as the discretization error it rides on, which
+is exactly the codim-2 prediction: locally first-order-consistent seam rows on an O(N) set are
+asymptotically invisible in an integrated quantity.
+
+**Both C/F schemes had to be run, and the standard one is uninformative here** (as anticipated):
+with the 1st-order two-point flux the offsets barely move (order 0.20 / 0.64) and the control arm
+does not converge at all (+5.62% → +6.48%). That is the level-boundary flux, not seam numerics —
+arms b and c introduce more C/F faces near the surface than arm a does, so at cf=0 the "offset"
+mostly measures C/F count. The verdict rides on cf=1.
+
+**Overlay census across the ladder** (rows | LS2 sample slots | degraded | closed mixed faces):
+
+| arm | N=64 | N=128 | N=256 |
+|---|---|---|---|
+| a | 4208 \| 0 \| 0 \| 0 | 16776 \| 0 \| 0 \| 0 | 66432 \| 0 \| 0 \| 0 |
+| b | 1856 \| 232 \| 0 \| 0 | 7284 \| 444 \| 0 \| 0 | 28776 \| 872 \| 0 \| 0 |
+| c | 2304 \| 2136 \| 0 \| 96 | 9288 \| 5664 \| 0 \| 0 | 36608 \| 9072 \| 0 \| 240 |
+
+Three things the census settles. (i) **The codim-2 premise holds on real meshes**: LS2 slots grow
+~linearly in N (arm b 232 → 444 → 872) while rows grow ~N² — the seam set really is codimension 2.
+(ii) **The fallback cascade never fires** (0 degraded at every N on every arm), confirming M1's
+retirement of that risk on solver meshes and not just in the census. (iii) Arm (a) reports
+ALL-IDENTITY slots, i.e. the control is the bit-parity path — verified directly at ladder scale
+by `tests/study/amr_zh_ladder_parity.py` (N = 128, cf = 1, 200 steps: max|sampled − classic| =
+**0.000e+00** in u, v, w AND p; log `docs/data/amr_zh_ladder_parity_n128.log`).
+
+Caveat carried forward: arm (c) still hits the unimplemented **sub-face-resolved closures**
+(96 closed mixed faces at N = 64, 240 at N = 256; §8a's known gap) — geometry-dependent, not
+resolution-vanishing. It is the natural attribution for arm (c) being the noisier of the two
+seam instruments (orders 2.74 then 1.12 vs arm b's 1.70/1.73). Arm (b) has zero mixed faces at
+every N, and it is arm (b) that gives the clean pair of ratios.
+
+**Policy measurement, and why the porous payoff is Phase 3.** Run `amr_zh_ladder.py --gapfloor`:
+the ABSOLUTE gap floor of §7 criterion 1 (gap ≥ 4·h_L) is **inert on a dilute SC array**. The
+surface gap there is 0.38–0.55 of the box at every N, so the floor permits the background level
+everywhere and the criterion asks for no surface refinement at all (N = 128 and 256: the mesh
+comes back as the plain LFAR background, 4096 and 32768 leaves). The gap floor is a THROAT
+criterion and Z&H has no throats — its gap contrast is only 1.44×, which is less than one level.
+That is why arm (c) uses the gap ORDERING with thresholds normalised to the geometry's own range:
+its job in this ladder is to stress many seams and a two-level jump, not to demonstrate cell
+savings. The headline cell-count reduction belongs to Phase 3's two-sphere gap case and the bed
+(where M1 measured 2.9× at R/h = 48, growing with resolution). For the record, the AMR economics
+that DO show up here: arm (b) runs at 2.24× fewer cells than the uniform band at every N
+(6.4% → 2.9% of N³ at N = 256) for a 0.074% shift in K.
+
 ### Phase 3 — the porous payoff
 Two-sphere gap unit case (throat criterion vs gap resolution n); then a mid-size sphere bed
 with pnm-seeded L(x): permeability + cell count vs uniform-finest-band. **The headline
@@ -482,9 +574,10 @@ Advection/uf seams, MPI (halo support + collective fallback), adapt-during-run r
 
 | risk | detection | response |
 |---|---|---|
-| seam-row march instability (lagged-stiff-term shape) | M3, Phase-2 batteries | RETIRED at prototype level 2026-08-25 (M3: seam == control, cycling exact); Phase-2 bed battery remains the final check |
+| seam-row march instability (lagged-stiff-term shape) | M3, Phase-2 batteries | RETIRED 2026-08-27 (P2a at N=128 on device: dt-spread 2.5e-09, cycling residual identical to the control); a dense-bed battery remains the Phase-3 check |
 | classification flicker at seams | D2 flicker check across adapt cycles | D2-alternative (aggregation) |
 | coarse openness pinches a throat | D3 tripwire assertion | D3-alternative (telescoping geometry) |
 | fallback cascade fires too often (M1 >~ 30% of seam rows) | M1 census | RETIRED 2026-08-24: measured 0.1–0.5% on all maps |
-| accuracy loss beyond codim-2 estimate | Phase-2 ladder | raise sample order (M2); widen seam collars locally |
+| accuracy loss beyond codim-2 estimate | Phase-2 ladder | RETIRED 2026-08-27 (P2b: seam offset decays at 1.72 / 1.93 over N=64→256, faster than the arms' own ~1.1 order; 0.07–0.10% of K at N=256). Reopen only if a bed ladder disagrees; levers stay raise sample order (M2) / widen seam collars |
+| sub-face closures (mixed-face Neumann-zero degeneracy) | overlay `nMixedFace` counter | NOT retired: 96 (N=64) / 240 (N=256) on the gap-ordered arm, geometry-dependent, not resolution-vanishing. Suspected cause of arm (c)'s noisier order pair. Still an unimplemented rung (§8a) — a design fork, not execution |
 | Snellius ladder disappoints | the gate | plan survives in outline; re-target the closure family per fluid_only_constraint_plan.md decision tree |

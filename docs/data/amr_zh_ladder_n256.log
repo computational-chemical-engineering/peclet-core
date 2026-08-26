@@ -1,0 +1,42 @@
+Z&H SC phi=0.125 ladder: N=[256] arms=abc cf=[1] tol=1e-08 LFAR=3 band=4.0 sampled=True (2,2)
+
+=== cf_scheme = 1 (Martin-Cartwright quadratic) ===
+ arm     N            K      err%     d(a)%    leaves  cells%   steps  pres       s
+[peclet.core.amr] sampled ghost overlay: 66432 rows | slots identity 996480, LS2 0, LS1 0, degraded 0, solid 0 | sign-forced faces 0, closed mixed faces 0
+    [a N=256 cf=1] step 1000 K=5.3317319 (578.8 ms/step)
+    [a N=256 cf=1] step 2000 K=4.4558938 (578.4 ms/step)
+    [a N=256 cf=1] step 3000 K=4.3124872 (578.3 ms/step)
+    [a N=256 cf=1] step 4000 K=4.2845691 (580.8 ms/step)
+    [a N=256 cf=1] step 5000 K=4.2789606 (580.8 ms/step)
+    [a N=256 cf=1] step 6000 K=4.2778269 (579.5 ms/step)
+    [a N=256 cf=1] step 7000 K=4.2775975 (582.5 ms/step)
+    [a N=256 cf=1] step 8000 K=4.2775510 (582.7 ms/step)
+   a   256    4.2775418   -0.3369   +0.0000   1076272    6.42    8950    16    5215
+[peclet.core.amr] sampled ghost overlay: 28776 rows | slots identity 429696, LS2 872, LS1 0, degraded 0, solid 1072 | sign-forced faces 212, closed mixed faces 0
+    [b N=256 cf=1] step 1000 K=5.3349491 (480.9 ms/step)
+    [b N=256 cf=1] step 2000 K=4.4589740 (492.9 ms/step)
+    [b N=256 cf=1] step 3000 K=4.3156102 (496.9 ms/step)
+    [b N=256 cf=1] step 4000 K=4.2877153 (464.2 ms/step)
+    [b N=256 cf=1] step 5000 K=4.2821147 (397.6 ms/step)
+    [b N=256 cf=1] step 6000 K=4.2809832 (353.2 ms/step)
+    [b N=256 cf=1] step 7000 K=4.2807544 (321.5 ms/step)
+    [b N=256 cf=1] step 8000 K=4.2807081 (297.8 ms/step)
+   b   256    4.2806989   -0.2633   +0.0738    480488    2.86    8950    15    2507
+[peclet.core.amr] sampled ghost overlay: 36608 rows | slots identity 534360, LS2 9072, LS1 0, degraded 0, solid 5688 | sign-forced faces 1296, closed mixed faces 240
+    [c N=256 cf=1] step 1000 K=5.3288352 (132.7 ms/step)
+    [c N=256 cf=1] step 2000 K=4.4521124 (131.6 ms/step)
+    [c N=256 cf=1] step 3000 K=4.3083639 (131.2 ms/step)
+    [c N=256 cf=1] step 4000 K=4.2803332 (131.0 ms/step)
+    [c N=256 cf=1] step 5000 K=4.2746924 (130.9 ms/step)
+    [c N=256 cf=1] step 6000 K=4.2735501 (130.8 ms/step)
+    [c N=256 cf=1] step 7000 K=4.2733185 (130.8 ms/step)
+    [c N=256 cf=1] step 8000 K=4.2732715 (130.7 ms/step)
+   c   256    4.2732621   -0.4366   -0.1001    553736    3.30    8960    13    1171
+     levels a:[905920, 115240, 29616, 25496]  b:[225024, 200352, 29616, 25496]  c:[353856, 139128, 35256, 25496]
+
+--- orders (log2 ratio of successive N) ---
+cf=1 arm a: |K-K_ZH| = 0.01446
+cf=1 arm b: |K-K_ZH| = 0.01130
+cf=1 arm c: |K-K_ZH| = 0.01874
+cf=1 SEAM OFFSET |K(b) - K(a)| = 3.157e-03
+cf=1 SEAM OFFSET |K(c) - K(a)| = 4.280e-03
