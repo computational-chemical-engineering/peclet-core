@@ -4,12 +4,19 @@
 (the AMR ghost port + graded-mesh record) and flow's `collocated_invisible_subspace.md` /
 `fluid_only_constraint_plan.md` (the campaign verdicts that constrain any design here).*
 
-**Status: PLANNED — implementation gated on the Snellius verdict** (flow's clean-ladder
-R=24/32 order result + the np>=16 instability re-diagnosis). If the ladder confirms the ghost
-projection as the production collocated scheme, this plan executes on `dev/ghost-production`;
-if it disappoints, the seam design below survives in outline but the closure family it
-generalizes must be revisited first. Phase 0 (a-priori measurements, no solver commitment)
-may run before the gate.
+**Status (2026-08-27): PHASE 2 COMPLETE — the gate passed and the design is measured.** The
+Snellius verdict came in 2026-08-25 and the ghost projection is the production default suite-wide
+(flow c672014, core 7472306). Phase 0 (M1–M3) is done (§8); Phase 1 rungs 1–4 are done (momentum
+ξ-row seam correction, wall-aware C/F gates, device mirror, graded refinement policy API); Phase 2
+is done (§Phase 2: family-free on a seamed mesh at N=128, and the seam offset converges at ~1.7–1.9
+so **seams do not set the order**). What remains before the Phase-3 porous payoff: pocket exclusion
+in LS clouds, **sub-face closures** (the one measured, non-vanishing gap — see the risk register),
+and the distributed sample halo.
+
+*Original gating note, kept for the record:* implementation was gated on flow's clean-ladder
+R=24/32 order result + the np>=16 instability re-diagnosis; if that ladder had disappointed, the
+seam design below would have survived in outline but the closure family it generalizes would have
+had to be revisited first. Phase 0 was allowed to run before the gate.
 
 ## 1. Why
 
@@ -471,9 +478,9 @@ graded plateau) and the far field is identical across arms:
 | 1 | a uniform | 4.250879 (−0.958) | 4.260990 (−0.723) | 4.277542 (−0.337) | 26.2 / 12.8 / 6.4 |
 | 1 | b two-level | 4.284915 (−0.165) | 4.271445 (−0.479) | 4.280699 (−0.263) | 11.7 / 5.7 / 2.9 |
 | 1 | c gap-ordered | 4.188793 (−2.405) | 4.251682 (−0.939) | 4.273262 (−0.437) | 12.3 / 6.4 / 3.3 |
-| 0 | a uniform | 4.533042 (+5.616) | 4.570203 (+6.482) | — | |
-| 0 | b two-level | 4.507181 (+5.014) | 4.547695 (+5.958) | — | |
-| 0 | c gap-ordered | 4.550496 (+6.023) | 4.558979 (+6.220) | — | |
+| 0 | a uniform | 4.533042 (+5.616) | 4.570203 (+6.482) | 4.476080 (+4.289) | 26.2 / 12.8 / 6.4 |
+| 0 | b two-level | 4.507181 (+5.014) | 4.547695 (+5.958) | 4.458776 (+3.886) | 11.7 / 5.7 / 2.9 |
+| 0 | c gap-ordered | 4.550496 (+6.023) | 4.558979 (+6.220) | 4.454879 (+3.795) | 12.3 / 6.4 / 3.3 |
 
 **The seam instrument** — |K(arm) − K(a)|, which cancels the shared far field:
 
@@ -481,8 +488,8 @@ graded plateau) and the far field is identical across arms:
 |---|---:|---:|---:|---:|---:|---:|
 | cf=1, b − a | 3.404e-02 | 1.045e-02 | 3.157e-03 | **1.70** | **1.73** | **1.72** |
 | cf=1, c − a | 6.209e-02 | 9.308e-03 | 4.280e-03 | 2.74 | 1.12 | **1.93** |
-| cf=0, b − a | 2.586e-02 | 2.251e-02 | — | 0.20 | | |
-| cf=0, c − a | 1.745e-02 | 1.122e-02 | — | 0.64 | | |
+| cf=0, b − a | 2.586e-02 | 2.251e-02 | 1.730e-02 | 0.20 | 0.38 | 0.29 |
+| cf=0, c − a | 1.745e-02 | 1.122e-02 | 2.120e-02 | 0.64 | **−0.92** | −0.14 |
 
 **Verdict: the seam machinery is consistent — seams do not set the order.** With the quadratic
 C/F scheme the seam offset decays at 1.72 (arm b, two clean consecutive ratios of 1.70 and 1.73)
@@ -495,11 +502,15 @@ The seam offset therefore shrinks at least as fast as the discretization error i
 is exactly the codim-2 prediction: locally first-order-consistent seam rows on an O(N) set are
 asymptotically invisible in an integrated quantity.
 
-**Both C/F schemes had to be run, and the standard one is uninformative here** (as anticipated):
-with the 1st-order two-point flux the offsets barely move (order 0.20 / 0.64) and the control arm
-does not converge at all (+5.62% → +6.48%). That is the level-boundary flux, not seam numerics —
-arms b and c introduce more C/F faces near the surface than arm a does, so at cf=0 the "offset"
-mostly measures C/F count. The verdict rides on cf=1.
+**Both C/F schemes had to be run, and the standard one is uninformative here** (as anticipated —
+log `docs/data/amr_zh_ladder_n256_cf0.log`): with the 1st-order two-point flux the offsets do not
+converge at all — they wander (arm b order 0.20 then 0.38; arm c 0.64 then **−0.92**, i.e. the
+offset GROWS on the last doubling) — and the control arm's own error is non-monotone
+(+5.62% → +6.48% → +4.29%). That is the level-boundary flux, not seam numerics: arms b and c
+introduce more C/F faces near the surface than arm a does, so at cf=0 the "offset" mostly measures
+C/F count. Nothing about seams can be read off the cf=0 column; the verdict rides on cf=1. (This
+also re-confirms, on a third geometry family, the graded-mesh finding already in
+`amr_collocated_projection.md`: the quadratic C/F scheme is not optional on graded meshes.)
 
 **Overlay census across the ladder** (rows | LS2 sample slots | degraded | closed mixed faces):
 
