@@ -104,7 +104,23 @@ Header-only under `include/peclet/core/`:
   `amr/pcg.hpp`, `amr/multigrid.hpp`, `amr/velocity_mg.hpp`, `amr/momentum.hpp` and the
   `amr/distributed_*.hpp` set (`distributed_octree.hpp::rebalance` is the Eulerian leaf/field load
   balancer). Cut-cell openness is `amr/cut_cell.hpp`; solution-adaptive refinement is `amr/adapt.hpp` /
-  `amr/indicators.hpp` / `amr/refine.hpp`. Design notes: `docs/amr_collocated_projection.md`,
+  `amr/indicators.hpp` / `amr/refine.hpp`.
+  The immersed boundary has **two projection schemes**. The default (AUTO since 2026-08-25) is the
+  **ghost projection** — `amr/ghost_projection.hpp`, the fluid-only constraint scheme, selected
+  explicitly with `setGhostProjection(true)`; it falls back to the older aperture projection with a
+  stderr notice when the finest band is too thin for its ±2 closure reach. `(2, 2)` closure orders
+  are the only pair cleared for production.
+  On top of that sits the **mixed-level cut band** (`amr/ghost_projection_sampled.hpp`,
+  `AmrFlow::setGhostSampled` / Python `Flow.set_ghost_sampled`): it drops the uniform-finest-band
+  contract so cut cells may live at SEVERAL octree levels — closure chain entries that cross a 2:1
+  boundary become degree-2 least-squares virtual samples, and identity weights at same level keep a
+  uniform band bit-identical to the classic path. Its mesh-generator side is
+  `refine.hpp::refineToSdfGraded` / `gapFloorTarget` (Python `Octree.refine_to_sdf_graded` /
+  `refine_to_gap_floor`). Single-rank for now. Read `docs/amr_mixed_level_cut_band_plan.md` before
+  touching any of it: it holds the design (§4), six decisions each with the alternative to revisit
+  (§5), the measured phase results, and the risk register naming the three unfinished rungs
+  (sub-face closures, pocket exclusion in LS clouds, distributed sample halo).
+  Design notes: `docs/amr_collocated_projection.md`, `docs/amr_mixed_level_cut_band_plan.md`,
   `docs/amr_device_assembly_plan.md`.
 - `python/` + `python/include/peclet/core/python/ndarray_interop.hpp` — **nanobind** Python bindings over a
   shared **zero-copy `peclet::core::View`↔ndarray bridge** (`include/peclet/core/python/ndarray_interop.hpp`).

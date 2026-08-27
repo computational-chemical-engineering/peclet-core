@@ -1,7 +1,6 @@
-// core — SAMPLED ghost-projection overlay: cut cells at MULTIPLE octree levels (host prototype).
+// core — SAMPLED ghost-projection overlay: cut cells at MULTIPLE octree levels.
 //
-// The D1 machinery of docs/amr_mixed_level_cut_band_plan.md, host-only (the Phase-1 oracle;
-// the device port follows the plan's rungs after the Snellius gate): the ghost overlay's ±2
+// The D1 machinery of docs/amr_mixed_level_cut_band_plan.md: the ghost overlay's ±2
 // same-level chain entries become SAMPLE SLOTS — precomputed linear functionals of nearby
 // fluid leaves. A same-level entry is the identity (today's behaviour, bit-identical on a
 // uniform band); an entry across a 2:1 level boundary is a VIRTUAL SAMPLE at the uniform-grid
@@ -21,7 +20,23 @@
 // plan's D2 route, level-independent — identical to the classic builder on a uniform band).
 //
 // Everything is a pure function of (octree, sdf): deterministic under adaptivity (D6).
-// Host-only-safe: no Kokkos section — the device mirror is Phase-1 work.
+//
+// LAYOUT. The builder and the `*Host` appliers are plain host C++ — they are the oracle path
+// (flow_oracle.hpp `setGhostSampled`) and they also BUILD the weights the device consumes, so
+// oracle==device parity holds by construction rather than by a second implementation. The
+// device mirror (`GhostOverlaySampledDev`, `ghostApplyDeltaSampled`, `ghostDivergDeltaSampled`,
+// `GhostGradCsrDev`) lives in the `#ifdef KOKKOS_INLINE_FUNCTION` section at the bottom, so a
+// non-Kokkos TU can include this header and get the host half only. Driven from the device
+// solver by `AmrFlow::setGhostSampled` (flow.hpp), single-rank — the distributed sample halo is
+// a later rung.
+//
+// STATUS (2026-08-27, plan §Phase 2): Phase-1 rungs 1–4 and Phase 2 are done — momentum ξ-row
+// seam correction, wall-aware C/F gates, the device mirror, the graded refinement policy API
+// (refine.hpp `refineToSdfGraded`), family-free on a seamed mesh, and a seam offset converging
+// at ~1.7–1.9 so seams do not set the order. KNOWN GAPS, in the plan's risk register: sub-face
+// closures are unimplemented (the closed sub-faces of a mixed face are Neumann-zero — counted
+// by `nMixedFace`, measured non-vanishing), pocket cells are not excluded from LS clouds, and
+// there is no distributed sample halo.
 #ifndef PECLET_CORE_AMR_GHOST_PROJECTION_SAMPLED_HPP
 #define PECLET_CORE_AMR_GHOST_PROJECTION_SAMPLED_HPP
 
