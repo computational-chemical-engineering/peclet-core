@@ -188,6 +188,46 @@ PECLET_HD Real evalLeaf(const ShapeNode<Real>& n, Vec3<Real> p, const Grids& gri
   }
 }
 
+/// One placed copy of a shape tree (contract 7). This is what a DEM particle, a stirrer, a drum or
+/// a static container all reduce to, which is why resolved CFD-DEM needs no new representation:
+/// dem's per-particle (pos, quat, scale, shapeId) maps onto {transform, shapeRoot} directly.
+///
+/// The rigid-body velocity field v(x) = linVel + angVel x (x - center) generalises dem's WallSdf
+/// surface velocity to EVERY object; Layer 3's moving-wall BC and Layer 4's resolved coupling both
+/// read it. A static instance simply leaves linVel/angVel zero.
+template <class Real>
+struct Instance {
+  int shapeRoot = 0;    ///< index of the root ShapeNode of this instance's tree
+  int materialId = -1;  ///< consumer-defined; -1 = unset
+  Transform<Real> transform{};
+  Vec3<Real> linVel{0, 0, 0};
+  Vec3<Real> angVel{0, 0, 0};
+  Vec3<Real> center{0, 0, 0};  ///< reference point of the rotation, in world coordinates
+};
+
+/// Rigid-body surface velocity of instance `inst` at world point p: linVel + angVel x (p - center).
+template <class Real>
+PECLET_HD Vec3<Real> instanceVelocity(const Instance<Real>& inst, Vec3<Real> p) {
+  return add(inst.linVel, cross(inst.angVel, sub(p, inst.center)));
+}
+
+/// Non-owning bundle of everything a scene evaluation needs (resolved decision 4). Raw pointers,
+/// so it is POD, captures by value into a Kokkos lambda, and is equally usable on host or device --
+/// a Kokkos View contributes its .data(). Ownership stays with whoever allocated the arrays: dem
+/// adapts its own SoA into one of these, flow owns a small one for static scenes, and resolved
+/// CFD-DEM is dem handing its SceneView to flow.
+template <class Real>
+struct SceneView {
+  const ShapeNode<Real>* nodes = nullptr;
+  int nodeCount = 0;
+  const GridDesc<Real>* grids = nullptr;
+  int gridCount = 0;
+  const float* samples = nullptr;
+  long sampleCount = 0;
+  const Instance<Real>* instances = nullptr;
+  int instanceCount = 0;
+};
+
 /// Maximum shape-tree depth the iterative evaluator supports. A stirrer (shaft union blades) is
 /// depth 2-3; 16 is far above anything a scene should need, and it bounds the on-stack frame array
 /// so the evaluator allocates nothing and stays device-safe (no recursion — contract 5).
@@ -262,6 +302,49 @@ PECLET_HD Real evalTree(const Nodes& nodes, int nodeCount, int root, Vec3<Real> 
     }
   }
   return result;
+}
+
+/// Signed distance of ONE instance at world point p. The instance transform maps world -> the
+/// tree's frame and its scale carries the result back, composing with each node's own transform
+/// exactly as nested nodes do.
+template <class Real>
+PECLET_HD Real evalInstance(const SceneView<Real>& sc, int i, Vec3<Real> p) {
+  if (i < 0 || i >= sc.instanceCount)
+    return Real(1e9);
+  const Instance<Real>& inst = sc.instances[i];
+  const Vec3<Real> q = toCanonical(inst.transform, p);
+  const Real d = evalTree<Real>(TablePtr<ShapeNode<Real>>{sc.nodes}, sc.nodeCount, inst.shapeRoot,
+                                q, TablePtr<GridDesc<Real>>{sc.grids}, PoolPtr<float>{sc.samples});
+  return inst.transform.scale * d;
+}
+
+/// Signed distance of a scene over a CANDIDATE LIST (contract 9): the union of the listed
+/// instances, i.e. the nearest solid among them. Consumers bin instances by AABB and pass only the
+/// ones whose bound reaches the query cell, so acceleration is pluggable rather than baked in.
+template <class Real>
+PECLET_HD Real evalCandidates(const SceneView<Real>& sc, Vec3<Real> p, const int* candidates,
+                              int nCandidates) {
+  Real m = Real(1e9);
+  for (int k = 0; k < nCandidates; ++k) {
+    const Real d = evalInstance(sc, candidates[k], p);
+    if (d < m)
+      m = d;
+  }
+  return m;
+}
+
+/// Convenience: the union of EVERY instance. O(instanceCount) per query -- correct, and the right
+/// thing for the handful-of-objects case (a stirrer in a tank), but for particle-instanced scenes
+/// bin first and call evalCandidates.
+template <class Real>
+PECLET_HD Real evalScene(const SceneView<Real>& sc, Vec3<Real> p) {
+  Real m = Real(1e9);
+  for (int i = 0; i < sc.instanceCount; ++i) {
+    const Real d = evalInstance(sc, i, p);
+    if (d < m)
+      m = d;
+  }
+  return m;
 }
 
 }  // namespace peclet::core::geom

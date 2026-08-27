@@ -215,6 +215,13 @@ target_link_libraries(test_geom_properties PRIVATE tpx_core)
 target_include_directories(test_geom_properties PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME geom_properties COMMAND test_geom_properties)
 
+# Layer 0 rung 5: host scene assembly + the flat encoding the Python bindings speak. The gate is
+# a round trip -- compose, encode to flat int/Real arrays, decode, re-evaluate bit-identically.
+add_executable(test_geom_scene_builder test_geom_scene_builder.cpp)
+target_link_libraries(test_geom_scene_builder PRIVATE tpx_core)
+target_include_directories(test_geom_scene_builder PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME geom_scene_builder COMMAND test_geom_scene_builder)
+
 add_executable(test_sdf test_sdf.cpp)
 target_link_libraries(test_sdf PRIVATE tpx_core)
 target_include_directories(test_sdf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
