@@ -86,7 +86,7 @@ int main() {
   // (1) A node wrapping a single primitive, identity transform, == the direct leaf call, bit-exact.
   // ---------------------------------------------------------------------------------------
   {
-    std::vector<ShapeNode<float>> nv(4);
+    std::vector<ShapeNode<float>> nv(9);
     nv[0].kind = kSphere;
     nv[0].params[0] = 1.25f;
     nv[1].kind = kBox;
@@ -101,20 +101,49 @@ int main() {
     nv[3].params[0] = 1.30f;
     nv[3].params[1] = 0.80f;
     nv[3].params[2] = 1.60f;
+    nv[4].kind = kCapsule;
+    nv[4].params[0] = 0.45f;
+    nv[4].params[1] = 0.70f;
+    nv[5].kind = kTorus;
+    nv[5].params[0] = 0.90f;
+    nv[5].params[1] = 0.30f;
+    nv[6].kind = kCone;
+    nv[6].params[0] = 0.90f;
+    nv[6].params[1] = 0.35f;
+    nv[6].params[2] = 0.80f;
+    nv[7].kind = kEllipsoid;
+    nv[7].params[0] = 1.00f;
+    nv[7].params[1] = 0.65f;
+    nv[7].params[2] = 0.40f;
+    nv[8].kind = kSuperquadric;
+    nv[8].params[0] = 0.90f;
+    nv[8].params[1] = 0.70f;
+    nv[8].params[2] = 0.50f;
+    nv[8].params[3] = 4.0f;
     const NodesF nodes{nv.data()};
 
     prim::Sphere<float> lSph{1.25f};
     prim::Box<float> lBox{0.75f, 1.10f, 0.40f};
     prim::HollowCylinder<float> lHc{1.30f, 1.60f, 0.50f};
     prim::HollowCylinderShell<float> lSh{1.30f, 0.80f, 1.60f};
+    prim::Capsule<float> lCap{0.45f, 0.70f};
+    prim::Torus<float> lTor{0.90f, 0.30f};
+    prim::Cone<float> lCon{0.90f, 0.35f, 0.80f};
+    prim::Ellipsoid<float> lEll{1.00f, 0.65f, 0.40f};
+    prim::Superquadric<float> lSq{0.90f, 0.70f, 0.50f, 4.0f};
 
     int n = 0;
     for (int i = 0; i < 3000; ++i) {
       const Vec3<float> p{rng.u(-3, 3), rng.u(-3, 3), rng.u(-3, 3)};
-      PECLET_CORE_CHECK(bitEqualF(evalTree<float>(nodes, 4, 0, p, noGrids, noPool), lSph.eval(p)));
-      PECLET_CORE_CHECK(bitEqualF(evalTree<float>(nodes, 4, 1, p, noGrids, noPool), lBox.eval(p)));
-      PECLET_CORE_CHECK(bitEqualF(evalTree<float>(nodes, 4, 2, p, noGrids, noPool), lHc.eval(p)));
-      PECLET_CORE_CHECK(bitEqualF(evalTree<float>(nodes, 4, 3, p, noGrids, noPool), lSh.eval(p)));
+      PECLET_CORE_CHECK(bitEqualF(evalTree<float>(nodes, 9, 0, p, noGrids, noPool), lSph.eval(p)));
+      PECLET_CORE_CHECK(bitEqualF(evalTree<float>(nodes, 9, 1, p, noGrids, noPool), lBox.eval(p)));
+      PECLET_CORE_CHECK(bitEqualF(evalTree<float>(nodes, 9, 2, p, noGrids, noPool), lHc.eval(p)));
+      PECLET_CORE_CHECK(bitEqualF(evalTree<float>(nodes, 9, 3, p, noGrids, noPool), lSh.eval(p)));
+      PECLET_CORE_CHECK(bitEqualF(evalTree<float>(nodes, 9, 4, p, noGrids, noPool), lCap.eval(p)));
+      PECLET_CORE_CHECK(bitEqualF(evalTree<float>(nodes, 9, 5, p, noGrids, noPool), lTor.eval(p)));
+      PECLET_CORE_CHECK(bitEqualF(evalTree<float>(nodes, 9, 6, p, noGrids, noPool), lCon.eval(p)));
+      PECLET_CORE_CHECK(bitEqualF(evalTree<float>(nodes, 9, 7, p, noGrids, noPool), lEll.eval(p)));
+      PECLET_CORE_CHECK(bitEqualF(evalTree<float>(nodes, 9, 8, p, noGrids, noPool), lSq.eval(p)));
       ++n;
     }
     PECLET_CORE_CHECK(n == 3000);

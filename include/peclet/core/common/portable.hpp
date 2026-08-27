@@ -113,6 +113,10 @@ template <class Real>
 PECLET_HD Real hdMin(Real a, Real b) {
   return Kokkos::fmin(a, b);
 }
+template <class Real>
+PECLET_HD Real hdPow(Real a, Real b) {
+  return Kokkos::pow(a, b);
+}
 #else
 template <class Real>
 PECLET_HD Real hdSqrt(Real v) {
@@ -129,6 +133,10 @@ PECLET_HD Real hdMax(Real a, Real b) {
 template <class Real>
 PECLET_HD Real hdMin(Real a, Real b) {
   return std::fmin(a, b);
+}
+template <class Real>
+PECLET_HD Real hdPow(Real a, Real b) {
+  return std::pow(a, b);
 }
 #endif
 

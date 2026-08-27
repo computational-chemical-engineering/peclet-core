@@ -207,6 +207,14 @@ target_link_libraries(test_geom_scene PRIVATE tpx_core)
 target_include_directories(test_geom_scene PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME geom_scene COMMAND test_geom_scene)
 
+# Layer 0 rung 2: a-priori property tests over the leaf vocabulary -- sign vs an independent
+# oracle, eikonal |grad|=1, closed-form grad vs FD, 1-Lipschitz, and a brute-force metric check
+# that MEASURES the bound direction of the approximate leaves.
+add_executable(test_geom_properties test_geom_properties.cpp)
+target_link_libraries(test_geom_properties PRIVATE tpx_core)
+target_include_directories(test_geom_properties PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME geom_properties COMMAND test_geom_properties)
+
 add_executable(test_sdf test_sdf.cpp)
 target_link_libraries(test_sdf PRIVATE tpx_core)
 target_include_directories(test_sdf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

@@ -38,12 +38,21 @@ enum ShapeKind : int {
   kHollowCylinder = 2,       ///< params[0..2] = rOuter, height, thickness (distance-exact, y axis)
   kBox = 3,                  ///< params[0..2] = hx, hy, hz
   kHollowCylinderShell = 4,  ///< params[0..2] = rOuter, rInner, height (sign-exact, z axis)
+  kCapsule = 5,              ///< params[0..1] = radius, halfLength (exact, y axis)
+  kTorus = 6,                ///< params[0..1] = majorRadius, minorRadius (exact, y axis)
+  kCone = 7,                 ///< params[0..2] = rBottom, rTop, halfHeight (exact, y axis)
+  kEllipsoid = 8,            ///< params[0..2] = rx, ry, rz (BOUND, under-estimates)
+  kSuperquadric = 9,         ///< params[0..3] = rx, ry, rz, exponent (BOUND, under-estimates)
 
   kCsgBase = 32,
   kUnion = 32,         ///< min(L, R)          — aux0/aux1 = child node indices
   kIntersection = 33,  ///< max(L, R)
   kDifference = 34,    ///< max(L, -R)         — L minus R
 };
+
+/// NOT YET A NODE KIND: prim::Rounded (offset/rounding) stays a compile-time wrapper for now.
+/// Folding a rounding radius into every node would add an unconditional subtract to every leaf
+/// eval, and no scene consumer needs it yet; add it with the rung-5 encoding if one does.
 
 /// Off-grid extension policy for a sampled field (contract 6). The trilinear sample is clamped into
 /// the lattice and the distance from the query to that clamped point is then added or subtracted:
@@ -154,6 +163,16 @@ PECLET_HD Real evalLeaf(const ShapeNode<Real>& n, Vec3<Real> p, const Grids& gri
       return prim::HollowCylinder<Real>{n.params[0], n.params[1], n.params[2]}.eval(p);
     case kHollowCylinderShell:
       return prim::HollowCylinderShell<Real>{n.params[0], n.params[1], n.params[2]}.eval(p);
+    case kCapsule:
+      return prim::Capsule<Real>{n.params[0], n.params[1]}.eval(p);
+    case kTorus:
+      return prim::Torus<Real>{n.params[0], n.params[1]}.eval(p);
+    case kCone:
+      return prim::Cone<Real>{n.params[0], n.params[1], n.params[2]}.eval(p);
+    case kEllipsoid:
+      return prim::Ellipsoid<Real>{n.params[0], n.params[1], n.params[2]}.eval(p);
+    case kSuperquadric:
+      return prim::Superquadric<Real>{n.params[0], n.params[1], n.params[2], n.params[3]}.eval(p);
     case kGrid:
       return sampleGrid(p, grids(n.aux0), pool);
     default:
