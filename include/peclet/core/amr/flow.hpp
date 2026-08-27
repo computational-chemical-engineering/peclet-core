@@ -829,17 +829,23 @@ class AmrFlow {
     else
       gc_ = GhostGradOverlay{};  // sampled mode: the CSR overlay gcS_ owns all cut cells
     // C/F interface scheme overlays (cf_scheme.hpp): the same host builders the oracle uses
-    // (parity by construction), uploaded once. Momentum delta = ×μ on the α=1 velocity geometry
-    // (regular fluid rows; cut rows are finest-band: no C/F faces).
+    // (parity by construction), uploaded once. Momentum delta = ×μ on the α=1 velocity geometry.
     if (cfScheme_ != CfScheme::standard) {
       auto fluidOk = [&](Index i) { return mom_.isFluid(i); };
-      auto rowFluid = [&](Index i) { return mom_.isFluid(i); };
       auto rowRegular = [&](Index i) { return mom_.isFluid(i) && !mom_.isCut(i); };
       cfMom_ = uploadCfCsr(buildCfLapDelta(mom_.lap(), *t_, mu_, rowRegular, fluidOk, cfScheme_),
                            "cf_mom");
-      cfDiv_ = uploadCfCompCsr(buildCfDivDelta(pres_, *t_, rowFluid, fluidOk, cfScheme_),
+      // cfDiv/cfGrad rows: REGULAR fluid only — cut rows belong to the ghost closure family
+      // (the overlay owns their divergence and gradients; adding the smooth-field C/F
+      // substitution on top gives the constraint velocity reads the row's gradient never sees —
+      // a support-consistency violation). Measured (two-sphere throat, P3a follow-up
+      // 2026-08-27): with cut rows included, 2 of 12 throat-graded meshes march to k~1e12 by
+      // step ~100; the cfDiv delta alone carries it (momentum/gradient/uf deltas exonerated by
+      // bisection), and this row gate alone restores stability. On finest-band meshes cut rows
+      // have no C/F faces, so the gate is inert there — bit-identity by geometry.
+      cfDiv_ = uploadCfCompCsr(buildCfDivDelta(pres_, *t_, rowRegular, fluidOk, cfScheme_),
                                "cf_div");
-      auto gd = buildCfGradDelta(pres_, *t_, rowFluid, fluidOk, cfScheme_);
+      auto gd = buildCfGradDelta(pres_, *t_, rowRegular, fluidOk, cfScheme_);
       for (int a = 0; a < 3; ++a)
         cfGrad_[static_cast<std::size_t>(a)] =
             uploadCfCsr(gd[static_cast<std::size_t>(a)], "cf_grad");

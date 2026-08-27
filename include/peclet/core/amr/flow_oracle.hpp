@@ -205,16 +205,18 @@ class AmrFlow {
       presMG_.setOpenness([&](const Vec<3>& fc, int axis) { return faceFrac(sdfFn, fc, axis); });
     }
     // C/F interface scheme overlays (cf_scheme.hpp), built from the SAME host CSR builders the
-    // device uses (parity by construction). Rows: fluid; substitution stencils gated on fluid
-    // tangential neighbours. The momentum delta uses the α=1 velocity geometry (mom_.lap()),
-    // ×μ, on regular (non-cut) fluid rows only (cut rows are finest-band: no C/F faces).
+    // device uses (parity by construction). Rows: REGULAR fluid only, all three deltas — cut
+    // rows belong to the ghost closure family (on mixed-level bands the overlay owns their
+    // divergence/gradients, and the smooth-field C/F substitution on top destabilizes: the
+    // two-sphere throat marched to k~1e12 with cut rows in cfDiv — see flow.hpp's cf section
+    // and the P3a record). On finest-band meshes cut rows have no C/F faces: gate inert,
+    // bit-identical.
     if (cfScheme_ != CfScheme::standard) {
       auto fluidOk = [&](Index j) { return mom_.isFluid(j); };
-      auto rowFluid = [&](Index i) { return mom_.isFluid(i); };
       auto rowRegular = [&](Index i) { return mom_.isFluid(i) && !mom_.isCut(i); };
       cfMom_ = buildCfLapDelta(mom_.lap(), *t_, mu_, rowRegular, fluidOk, cfScheme_);
-      cfDiv_ = buildCfDivDelta(pres_, *t_, rowFluid, fluidOk, cfScheme_);
-      cfGrad_ = buildCfGradDelta(pres_, *t_, rowFluid, fluidOk, cfScheme_);
+      cfDiv_ = buildCfDivDelta(pres_, *t_, rowRegular, fluidOk, cfScheme_);
+      cfGrad_ = buildCfGradDelta(pres_, *t_, rowRegular, fluidOk, cfScheme_);
       cfUf_ = buildCfUfDelta(pres_, *t_, fluidOk, cfScheme_);
     } else {
       cfMom_ = CfCsr{};

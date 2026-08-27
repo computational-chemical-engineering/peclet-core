@@ -11,13 +11,14 @@ Snellius verdict came in 2026-08-25 and the ghost projection is the production d
 is done (§Phase 2: family-free on a seamed mesh at N=128, and the seam offset converges at ~1.7–1.9
 so **seams do not set the order**).
 
-**BLOCKED at Phase 3 (P3a, 2026-08-27).** The two-sphere gap case calibrated n (the plan's default
-n = 4 is supported: 4–8 cells across the throat, 0.1–1.3%, at 18–30× fewer cells) but also found a
-**hard march blow-up on 2 of 12 throat-graded meshes**, bisected to Phase-1 **rung 2** (the
-wall-aware C/F tangential fallback, active only at cf = 1 — and cf = 1 is not optional, since P2b
-showed the standard flux cannot converge on graded meshes). Fixing that is a numerics design fork.
-Also still open: pocket exclusion in LS clouds, **sub-face closures**, and the distributed sample
-halo.
+**Phase 3 opened, blocked, and UNBLOCKED (P3a/P3b, 2026-08-27).** The two-sphere gap case
+calibrated n (the plan's default n = 4 is supported: 4–8 cells across the throat, 0.1–1.3%, at
+18–30× fewer cells) and found a hard march blow-up on 2 of 12 throat-graded meshes. P3b bisected
+it — NOT rung 2 (first attribution, refuted) but the pre-existing `cfDiv_` C/F divergence delta
+firing at CUT rows, where the ghost closure overlay owns the constraint (a C2 violation) — and
+fixed it with a one-line row gate (`rowFluid → rowRegular` for `cfDiv_`/`cfGrad_`, matching
+`cfMom_`; inert by geometry on finest-band meshes, measured bit-identical). Still open before the
+bed run: pocket exclusion in LS clouds, **sub-face closures**, and the distributed sample halo.
 
 *Original gating note, kept for the record:* implementation was gated on flow's clean-ladder
 R=24/32 order result + the np>=16 instability re-diagnosis; if that ladder had disappointed, the
@@ -615,17 +616,68 @@ numerics touched:
 
 **Every failure carries cf = 1; every cf = 0 run survives. The momentum MG is irrelevant
 (bit-identical outcomes on and off). dt moves the timing (step 97 → 201), the lagged-stiff-term
-signature.** cf = 1 is the only mode in which Phase-1 **rung 2** — the wall-aware C/F tangential
-fallback, `cfAppendStencil`'s one-sided LINEAR substitution when exactly one tangential side
-survives the fluid/openness gates — is active. That rung's acceptance was "two-sided path
-bit-identical, 51/51 host AMR ctests unchanged", which only established that it is INERT on
-finest-band meshes; this is the first geometry where its one-sided branch actually fires in a
-throat, and it is unstable there.
+signature.** The first written attribution here blamed Phase-1 rung 2 (the only NEW cf=1 code);
+**P3b below refutes that and finds the real carrier** — the section is kept as the record of the
+coarse bisection, its conclusion superseded.
 
-This matters because cf = 1 is not optional: P2b measured that the standard two-point flux
-cannot even converge on graded meshes. So the porous payoff is **blocked** until rung 2's
-one-sided stencil is either given a stability condition or reconstructed. That is a numerics
-design decision, not execution — it is a fork, and it is where P3a stops.
+#### P3b — the divergence diagnosed and fixed: cfDiv at cut rows, not rung 2 (2026-08-27)
+
+**Rung 2 is exonerated.** Rebuilding with the one-sided branch (a) fully disabled (raw fallback,
+pre-rung-2) and (b) restricted to convex interpolation only: the blow-up is bit-comparably
+unchanged (n=3 diverges at step 97/96/99, n=4 at 164/140/163 for current/disabled/convex). The
+carrier is in the PRE-EXISTING cf=1 machinery, which on mixed-level bands fires at cut-band C/F
+faces for the first time.
+
+**Second bisection — per application path** (diag-mask build, disabling one cf delta at a time
+on the g=8, n=3 mesh): disabling `cfMom_` (lagged momentum delta), `cfGrad_` (pressure
+gradients), or `cfUf_` (advecting face field) changes nothing — divergence at step 97/98/97.
+**Disabling `cfDiv_` — the C/F divergence-constraint delta — alone restores a stable march.**
+That also rules out a cfDiv/cfGrad pairing break (removing either member of a broken pair would
+misbehave; only cfDiv is toxic). The discriminating variable is WHERE cfDiv fires: its row gate
+was `rowFluid` (all fluid rows, cut included), while `cfMom_` was already gated to
+`rowRegular` — under the wiring comment "cut rows are finest-band: no C/F faces", an assumption
+the mixed-level band killed.
+
+**Mechanism (reasoned, consistent with every measurement, not independently proven).** In ghost
+mode a cut row's divergence constraint and pressure gradient are OWNED by the closure overlay
+(sampled mode: `ghostDivergDeltaSampled` / `gcS_`), whose virtual samples already handle the 2:1
+level crossing inside the closure. `cfDiv_` at such a row adds the smooth-field coarse*
+substitution on top: extra velocity reads in the constraint that the row's gradient never sees —
+a support-consistency (C2) violation of exactly the campaign's kind. On the Z&H latitude seam
+those rows exist too but the march merely tolerated them; in a 4-cell throat at L1 the loop
+gains exceed one and the lagged iteration runs away.
+
+**The fix (one line per file, applied):** `cfDiv_` and `cfGrad_` row gates changed
+`rowFluid → rowRegular` in `flow.hpp` and `flow_oracle.hpp` — cut rows belong to the closure
+family, C/F substitutions to the smooth-field family; the same ownership split `cfMom_` always
+had. On finest-band meshes cut rows have no C/F faces, so the gate is **inert by geometry**:
+measured bit-identical (old vs fixed module, uniform-band arm, 200 steps: K, Σ|u|, Σ|p| equal
+to all 15 printed digits). 51/51 host AMR ctests green. Both blocked meshes (g=8, n=3/4) march
+stably under the gate with identical k between gating cfDiv alone and cfDiv+cfGrad (the cfGrad
+part of the gate is inert here too — kept for symmetry of ownership).
+
+**Acceptance under the fix** (build_cuda3; the pre-fix module kept in build_cuda2 as the A/B
+reference):
+
+- *Formerly blocked rows, marched to tol 1e-7* (g=8, vs control 6.590793e+02): n=3 →
+  k = 6.490584e+02 (**−1.52%**), n=4 → k = 6.548991e+02 (**−0.63%**). The neighbours shift only
+  slightly where the gate touches their seam-adjacent cut rows (n=2: −3.61% → −3.69%; n=6:
+  −0.36% → −0.70%) — the removed cut-row C/F correction costs a little accuracy there, the
+  price of the stability. The calibration table is now clean and monotone on the
+  cells-across-the-throat axis: 1 cell −4.5%, 2 cells −3.7%, 4 cells −0.6…−1.5%, 8 cells −0.7%.
+  **The n = 4 verdict strengthens**: −0.63% at 18× fewer cells on the geometry that used to
+  blow up.
+- *P2b ladder, seamed arm (b), cf = 1, tol 1e-8*: N=64 K = 4.2857391 (−0.146%), N=128
+  K = 4.2715797 (−0.476%), N=256 K = 4.2807445 (−0.262%). Seam offsets against the recorded
+  uniform control (valid — the control is bit-identical under the gate): 3.486e-2 → 1.059e-2 →
+  3.203e-3, **orders 1.72 and 1.73** (pre-fix: 1.70 / 1.73). The Phase-2 accuracy verdict
+  survives the fix unchanged.
+- 51/51 host AMR ctests and 86/86 CUDA ctests green (incl. `test_seam_sampled` device==oracle
+  parity — both sides carry the gate). Full bisection + acceptance log:
+  `docs/data/amr_cfdiv_cutrow_fix.log`.
+
+The bisection toggles were diagnostic-only and are not committed; the committed change is the
+two row gates plus this record.
 
 ### Phase 4 — deferred integration
 Advection/uf seams, MPI (halo support + collective fallback), adapt-during-run rebuild.
@@ -660,7 +712,7 @@ Advection/uf seams, MPI (halo support + collective fallback), adapt-during-run r
 
 | risk | detection | response |
 |---|---|---|
-| seam-row march instability (lagged-stiff-term shape) | M3, Phase-2 batteries, P3a | **FIRING — un-retired 2026-08-27.** Retired earlier the same day on P2a's Z&H evidence (dt-spread 2.5e-09, cycling residual identical to the control); P3a then found a hard blow-up (k ~ 1e12 by step 100) on 2 of 12 throat-graded meshes, bisected to the cf=1 wall-aware C/F tangential fallback (rung 2) and dt-dependent — exactly this shape. **The retirement was premature: Z&H has no throats, and rung 2's one-sided branch never fires there.** Do not re-retire without a throat battery |
+| seam-row march instability (lagged-stiff-term shape) | M3, Phase-2 batteries, P3a/P3b | **FIRED once, diagnosed, FIXED 2026-08-27 (P3b).** History: retired on P2a's Z&H evidence; un-retired hours later when P3a found the throat blow-up (first blamed on rung 2 — refuted); P3b bisected it to `cfDiv_` firing at CUT rows (a C2 violation: constraint reads the row's gradient never sees) and fixed it with the `rowRegular` gate. Lesson standing: **Z&H-class geometries cannot retire throat risks** — every future retirement of this row needs a throat battery. The fixed configuration is stable on both formerly-blocked meshes; residual exposure = geometries neither Z&H-like nor two-sphere-like (the Phase-3 bed run is the next witness) |
 | classification flicker at seams | D2 flicker check across adapt cycles | D2-alternative (aggregation) |
 | coarse openness pinches a throat | D3 tripwire assertion | D3-alternative (telescoping geometry) |
 | fallback cascade fires too often (M1 >~ 30% of seam rows) | M1 census | RETIRED 2026-08-24: measured 0.1–0.5% on all maps |

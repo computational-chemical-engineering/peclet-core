@@ -1,0 +1,44 @@
+=== one-sided bisect (mode 1=current / 0=disabled / 2=convex-only) ===
+one-sided bisect: mode=1 N=128 g=8 ns=[3.0, 4.0] horizon=600
+n=3.0 mode=1: DIVERGED @ step 97 (k=-1.128e+12)
+n=4.0 mode=1: DIVERGED @ step 164 (k=1.029e+12)
+one-sided bisect: mode=0 N=128 g=8 ns=[3.0, 4.0] horizon=600
+n=3.0 mode=0: DIVERGED @ step 96 (k=1.416e+12)
+n=4.0 mode=0: DIVERGED @ step 140 (k=1.049e+12)
+one-sided bisect: mode=2 N=128 g=8 ns=[3.0, 4.0] horizon=600
+n=3.0 mode=2: DIVERGED @ step 99 (k=-1.105e+12)
+n=4.0 mode=2: DIVERGED @ step 163 (k=-1.003e+12)
+
+
+=== per-path bisect (PECLET_CORE_CF_DIAG_MASK) ===
+== MASK 1 (disable cfMom
+n=3.0 mode=1: DIVERGED @ step 97 (k=-1.149e+12)
+== MASK 2 (disable cfDiv
+n=3.0 mode=1: survived 300 steps, k=5.507922e+02
+== MASK 4 (disable cfGrad
+n=3.0 mode=1: DIVERGED @ step 98 (k=1.255e+12)
+== MASK 8 (disable cfUf
+n=3.0 mode=1: DIVERGED @ step 97 (k=-1.128e+12)
+
+
+=== row-gate candidate (16=cfDiv regular-only, 48=+cfGrad) ===
+== MASK 16
+n=3.0 mode=1: survived 600 steps, k=6.342361e+02
+n=4.0 mode=1: survived 600 steps, k=6.398222e+02
+== MASK 48
+n=3.0 mode=1: survived 600 steps, k=6.342361e+02
+n=4.0 mode=1: survived 600 steps, k=6.398222e+02
+
+
+=== acceptance under the fix ===
+finest-band A/B: build_cuda2 (pre-fix) vs build_cuda3 (fix), arm a N=64 cf=1, 200 steps:
+  K200 = 10.452985997131362, sum|u| = 2.007491925920819e+04, sum|p| = 4.345619343447356e+02 — identical both builds
+g=8 n=2.0: k=6.347540e+02 leaves=5216 steps=2780 
+g=8 n=3.0: k=6.490584e+02 leaves=9472 steps=2150 
+g=8 n=4.0: k=6.548991e+02 leaves=14512 steps=2150 
+g=8 n=6.0: k=6.544788e+02 leaves=43632 steps=2150 
+=== LADDER ===
+ladder arm b N=64 cf=1: K=4.2857391 err%=-0.1459 steps=1140
+ladder arm b N=128 cf=1: K=4.2715797 err%=-0.4758 steps=2480
+ladder arm b N=256 cf=1: K=4.2807445 err%=-0.2622 steps=8950
+CUDA ctests: 100% tests passed, 0 tests failed out of 86
