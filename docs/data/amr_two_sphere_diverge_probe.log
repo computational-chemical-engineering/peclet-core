@@ -1,0 +1,34 @@
+divergence attribution probe: N=128 g=8 ns=[3.0, 4.0] horizon=400 steps
+   n  cf      dt  momMG                    outcome
+[peclet.core.amr] sampled ghost overlay: 864 rows | slots identity 11264, LS2 1152, LS1 0, degraded 0, solid 544 | sign-forced faces 128, closed mixed faces 32
+   3   1      60   True         DIVERGED @ step 97
+[peclet.core.amr] sampled ghost overlay: 864 rows | slots identity 11264, LS2 1152, LS1 0, degraded 0, solid 544 | sign-forced faces 128, closed mixed faces 32
+   3   1      60  False         DIVERGED @ step 97
+[peclet.core.amr] sampled ghost overlay: 864 rows | slots identity 11264, LS2 1152, LS1 0, degraded 0, solid 544 | sign-forced faces 128, closed mixed faces 32
+   3   1   1e+20   True        DIVERGED @ step 201
+[peclet.core.amr] sampled ghost overlay: 864 rows | slots identity 11264, LS2 1152, LS1 0, degraded 0, solid 544 | sign-forced faces 128, closed mixed faces 32
+   3   1   1e+20  False        DIVERGED @ step 201
+[peclet.core.amr] sampled ghost overlay: 864 rows | slots identity 11264, LS2 1152, LS1 0, degraded 0, solid 544 | sign-forced faces 128, closed mixed faces 32
+   3   0      60   True     survived, k=5.9295e+02
+[peclet.core.amr] sampled ghost overlay: 864 rows | slots identity 11264, LS2 1152, LS1 0, degraded 0, solid 544 | sign-forced faces 128, closed mixed faces 32
+   3   0      60  False     survived, k=5.9295e+02
+[peclet.core.amr] sampled ghost overlay: 864 rows | slots identity 11264, LS2 1152, LS1 0, degraded 0, solid 544 | sign-forced faces 128, closed mixed faces 32
+   3   0   1e+20   True     survived, k=6.4378e+02
+[peclet.core.amr] sampled ghost overlay: 864 rows | slots identity 11264, LS2 1152, LS1 0, degraded 0, solid 544 | sign-forced faces 128, closed mixed faces 32
+   3   0   1e+20  False     survived, k=6.4378e+02
+[peclet.core.amr] sampled ghost overlay: 1296 rows | slots identity 17536, LS2 1296, LS1 0, degraded 0, solid 608 | sign-forced faces 128, closed mixed faces 96
+   4   1      60   True        DIVERGED @ step 164
+[peclet.core.amr] sampled ghost overlay: 1296 rows | slots identity 17536, LS2 1296, LS1 0, degraded 0, solid 608 | sign-forced faces 128, closed mixed faces 96
+   4   1      60  False        DIVERGED @ step 164
+[peclet.core.amr] sampled ghost overlay: 1296 rows | slots identity 17536, LS2 1296, LS1 0, degraded 0, solid 608 | sign-forced faces 128, closed mixed faces 96
+   4   1   1e+20   True    survived, k=-2.0317e+03
+[peclet.core.amr] sampled ghost overlay: 1296 rows | slots identity 17536, LS2 1296, LS1 0, degraded 0, solid 608 | sign-forced faces 128, closed mixed faces 96
+   4   1   1e+20  False    survived, k=-2.0317e+03
+[peclet.core.amr] sampled ghost overlay: 1296 rows | slots identity 17536, LS2 1296, LS1 0, degraded 0, solid 608 | sign-forced faces 128, closed mixed faces 96
+   4   0      60   True     survived, k=5.9116e+02
+[peclet.core.amr] sampled ghost overlay: 1296 rows | slots identity 17536, LS2 1296, LS1 0, degraded 0, solid 608 | sign-forced faces 128, closed mixed faces 96
+   4   0      60  False     survived, k=5.9116e+02
+[peclet.core.amr] sampled ghost overlay: 1296 rows | slots identity 17536, LS2 1296, LS1 0, degraded 0, solid 608 | sign-forced faces 128, closed mixed faces 96
+   4   0   1e+20   True     survived, k=6.4020e+02
+[peclet.core.amr] sampled ghost overlay: 1296 rows | slots identity 17536, LS2 1296, LS1 0, degraded 0, solid 608 | sign-forced faces 128, closed mixed faces 96
+   4   0   1e+20  False     survived, k=6.4020e+02

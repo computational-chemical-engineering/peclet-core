@@ -9,9 +9,15 @@ Snellius verdict came in 2026-08-25 and the ghost projection is the production d
 (flow c672014, core 7472306). Phase 0 (M1–M3) is done (§8); Phase 1 rungs 1–4 are done (momentum
 ξ-row seam correction, wall-aware C/F gates, device mirror, graded refinement policy API); Phase 2
 is done (§Phase 2: family-free on a seamed mesh at N=128, and the seam offset converges at ~1.7–1.9
-so **seams do not set the order**). What remains before the Phase-3 porous payoff: pocket exclusion
-in LS clouds, **sub-face closures** (the one measured, non-vanishing gap — see the risk register),
-and the distributed sample halo.
+so **seams do not set the order**).
+
+**BLOCKED at Phase 3 (P3a, 2026-08-27).** The two-sphere gap case calibrated n (the plan's default
+n = 4 is supported: 4–8 cells across the throat, 0.1–1.3%, at 18–30× fewer cells) but also found a
+**hard march blow-up on 2 of 12 throat-graded meshes**, bisected to Phase-1 **rung 2** (the
+wall-aware C/F tangential fallback, active only at cf = 1 — and cf = 1 is not optional, since P2b
+showed the standard flux cannot converge on graded meshes). Fixing that is a numerics design fork.
+Also still open: pocket exclusion in LS clouds, **sub-face closures**, and the distributed sample
+halo.
 
 *Original gating note, kept for the record:* implementation was gated on flow's clean-ladder
 R=24/32 order result + the np>=16 instability re-diagnosis; if that ladder had disappointed, the
@@ -552,6 +558,75 @@ Two-sphere gap unit case (throat criterion vs gap resolution n); then a mid-size
 with pnm-seeded L(x): permeability + cell count vs uniform-finest-band. **The headline
 number** = accuracy-matched cell-count reduction.
 
+#### P3a — two-sphere gap unit case: n calibrated, and a BLOCKING divergence (2026-08-27)
+
+`tests/study/amr_two_sphere_gap.py` (log `docs/data/amr_two_sphere_gap_n128.log`), N = 128,
+cf-quadratic, `set_ghost_sampled(True)`, (2,2), dt = 60, tol 1e-7 (the control moves by 1.2e-06
+between tol 1e-8 and 1e-7, four decades below the ~1e-3 effects measured here). Geometry: a
+periodic chain of two equal spheres on z sized so BOTH z-gaps equal the throat width g
+(R = (N−2g)/4), Stokes flow along x, so the throat is a channel carrying flux while the open
+x/y directions sit at gap ≈ N−2R — several levels of contrast, which is exactly what Z&H lacked.
+Instrument: Darcy k = μ⟨u_x⟩/f against the uniform finest band on the same mesh family.
+
+| g=8 (R=28), ctl k = 6.590793e+02, 262480 leaves | | | | | |
+|---|---:|---:|---:|---:|---|
+| n | cells across throat (level) | k | vs ctl | leaves | vs ctl |
+| 1 | 1 (L3) | 6.294569e+02 | −4.494% | 4096 | 64.1× |
+| 2 | 2 (L2) | 6.353119e+02 | −3.606% | 5216 | 50.3× |
+| **3** | **4 (L1)** | — | **DIVERGED @ step 100** | 9472 | 27.7× |
+| **4** | **4 (L1)** | — | **DIVERGED @ step 170** | 14512 | 18.1× |
+| 6 | 8 (L0) | 6.567198e+02 | −0.358% | 43632 | 6.02× |
+| 8 | 8 (L0) | 6.582720e+02 | −0.123% | 76560 | 3.43× |
+
+| g=16 (R=24), ctl k = 9.313106e+02, 200432 leaves | | | | | |
+|---|---:|---:|---:|---:|---|
+| 1 | 2 (L3) | 8.462643e+02 | −9.132% | 4096 | 48.9× |
+| 2 | 2 (L3, same mesh) | 8.462643e+02 | −9.132% | 4096 | 48.9× |
+| 3 | 4 (L2) | 9.192287e+02 | −1.297% | 5216 | 38.4× |
+| 4 | 4 (L2) | 9.334591e+02 | +0.231% | 6784 | 29.5× |
+| 6 | 8 (L1) | 9.242515e+02 | −0.758% | 17536 | 11.4× |
+| 8 | 8 (L1) | 9.247510e+02 | −0.704% | 30192 | 6.64× |
+
+**n calibration (from the stable rows).** Read on the physical axis — cells across the throat,
+which the floor pins to [n, 2n) by construction — the policy error is −4.5 to −9% at 1–2 cells,
+~1% at 4 cells, and sub-1% at 8. **The plan's default n = 4 is supported**: it buys 4–8 cells
+across the throat and 0.1–1.3% at 18–30× fewer cells than the uniform band. Two honesty
+caveats: the sub-1% rows are NON-MONOTONE (g=16 n=4 reads +0.23% while the finer n=6/n=8 read
+−0.7%), so this single geometry supports "n = 4 is a sound floor" and nothing sharper; and the
+`Lthroat` column is the level at the throat CENTRE, which for a wide gap is a bulk fluid cell
+rather than a cut cell (that is why the g=16 control reads L1).
+
+**THE BLOCKER: two of the twelve graded meshes march to a hard blow-up** — k reaches ~1e12 by
+step 100/170, then NaN. Not a resolution effect: 1, 2 and 8 cells across the throat are all
+stable and only 4-cells-at-L1 fails, while 4-cells-at-L2 (g=16, n=3/4) is fine.
+
+**Attribution (`tests/study/amr_two_sphere_diverge_probe.py`, log
+`docs/data/amr_two_sphere_diverge_probe.log`)** — a bisection over existing public knobs, no
+numerics touched:
+
+| n | cf | dt | momentum MG | outcome |
+|---:|---:|---:|---|---|
+| 3 | 1 | 60 | on / off | DIVERGED @ step 97 (both) |
+| 3 | 1 | 1e20 | on / off | DIVERGED @ step 201 (both) |
+| 3 | 0 | 60 / 1e20 | on / off | survived, k = 5.93e+02 / 6.44e+02 |
+| 4 | 1 | 60 | on / off | DIVERGED @ step 164 (both) |
+| 4 | 1 | 1e20 | on / off | "survived" at k = **−2.03e+03** (negative — diverging, slower) |
+| 4 | 0 | 60 / 1e20 | on / off | survived, k = 5.91e+02 / 6.40e+02 |
+
+**Every failure carries cf = 1; every cf = 0 run survives. The momentum MG is irrelevant
+(bit-identical outcomes on and off). dt moves the timing (step 97 → 201), the lagged-stiff-term
+signature.** cf = 1 is the only mode in which Phase-1 **rung 2** — the wall-aware C/F tangential
+fallback, `cfAppendStencil`'s one-sided LINEAR substitution when exactly one tangential side
+survives the fluid/openness gates — is active. That rung's acceptance was "two-sided path
+bit-identical, 51/51 host AMR ctests unchanged", which only established that it is INERT on
+finest-band meshes; this is the first geometry where its one-sided branch actually fires in a
+throat, and it is unstable there.
+
+This matters because cf = 1 is not optional: P2b measured that the standard two-point flux
+cannot even converge on graded meshes. So the porous payoff is **blocked** until rung 2's
+one-sided stencil is either given a stability condition or reconstructed. That is a numerics
+design decision, not execution — it is a fork, and it is where P3a stops.
+
 ### Phase 4 — deferred integration
 Advection/uf seams, MPI (halo support + collective fallback), adapt-during-run rebuild.
 
@@ -585,7 +660,7 @@ Advection/uf seams, MPI (halo support + collective fallback), adapt-during-run r
 
 | risk | detection | response |
 |---|---|---|
-| seam-row march instability (lagged-stiff-term shape) | M3, Phase-2 batteries | RETIRED 2026-08-27 (P2a at N=128 on device: dt-spread 2.5e-09, cycling residual identical to the control); a dense-bed battery remains the Phase-3 check |
+| seam-row march instability (lagged-stiff-term shape) | M3, Phase-2 batteries, P3a | **FIRING — un-retired 2026-08-27.** Retired earlier the same day on P2a's Z&H evidence (dt-spread 2.5e-09, cycling residual identical to the control); P3a then found a hard blow-up (k ~ 1e12 by step 100) on 2 of 12 throat-graded meshes, bisected to the cf=1 wall-aware C/F tangential fallback (rung 2) and dt-dependent — exactly this shape. **The retirement was premature: Z&H has no throats, and rung 2's one-sided branch never fires there.** Do not re-retire without a throat battery |
 | classification flicker at seams | D2 flicker check across adapt cycles | D2-alternative (aggregation) |
 | coarse openness pinches a throat | D3 tripwire assertion | D3-alternative (telescoping geometry) |
 | fallback cascade fires too often (M1 >~ 30% of seam rows) | M1 census | RETIRED 2026-08-24: measured 0.1–0.5% on all maps |

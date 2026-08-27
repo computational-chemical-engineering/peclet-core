@@ -1,0 +1,80 @@
+two-sphere gap unit case: N=128 cf=1 gaps=[8, 16] n-sweep=[1.0, 2.0, 3.0, 4.0, 6.0, 8.0] tol=1e-07 LFAR=3 band=4.0 sampled ghost (2,2)
+
+=== throat g = 8 h0  (R = 28.0 h0, two spheres on z, both gaps = g) ===
+[peclet.core.amr] sampled ghost overlay: 16752 rows | slots identity 251280, LS2 0, LS1 0, degraded 0, solid 0 | sign-forced faces 0, closed mixed faces 0
+      [g=8 n=None] step 1000 k=6.578086e+02 dk=1.24e-04 pres=13 (84.4 ms/step)
+      [g=8 n=None] step 2000 k=6.590777e+02 dk=2.46e-07 pres=13 (86.8 ms/step)
+    n             k   d(ctl)%  Lthroat  gap/h_L    leaves  vs ctl   steps  pres      s
+  ctl  6.590793e+02    0.0000        0      8.0    262480   1.00x    2160    14    188
+[peclet.core.amr] sampled ghost overlay: 288 rows | slots identity 4320, LS2 0, LS1 0, degraded 0, solid 0 | sign-forced faces 0, closed mixed faces 0
+      [g=8 n=1.0] step 1000 k=6.282935e+02 dk=1.14e-04 pres=10 (32.3 ms/step)
+      [g=8 n=1.0] step 2000 k=6.294222e+02 dk=6.94e-07 pres=10 (32.4 ms/step)
+      [g=8 n=1.0] step 3000 k=6.294459e+02 dk=2.33e-07 pres=10 (32.3 ms/step)
+      [g=8 n=1.0] step 4000 k=6.294561e+02 dk=1.09e-07 pres=10 (32.3 ms/step)
+    1  6.294569e+02   -4.4945        3      1.0      4096  64.08x    4130    11    133
+      levels [0, 0, 0, 4096]
+[peclet.core.amr] sampled ghost overlay: 432 rows | slots identity 5904, LS2 448, LS1 0, degraded 0, solid 128 | sign-forced faces 0, closed mixed faces 32
+      [g=8 n=2.0] step 1000 k=6.344787e+02 dk=1.01e-04 pres=7 (34.1 ms/step)
+    2  6.353119e+02   -3.6061        2      2.0      5216  50.32x    1610     8     54
+      levels [0, 0, 1280, 3936]
+[peclet.core.amr] sampled ghost overlay: 864 rows | slots identity 11264, LS2 1152, LS1 0, degraded 0, solid 544 | sign-forced faces 128, closed mixed faces 32
+      [g=8 n=3.0] DIVERGED by step 100: k=3.308e+12
+    3  3.308160e+12 +501936551810.8501        1      4.0      9472  27.71x     100    13      6  *** DIVERGED ***
+      levels [0, 3072, 2688, 3712]
+[peclet.core.amr] sampled ghost overlay: 1296 rows | slots identity 17536, LS2 1296, LS1 0, degraded 0, solid 608 | sign-forced faces 128, closed mixed faces 96
+      [g=8 n=4.0] DIVERGED by step 170: k=4.133e+12
+    4  4.133175e+12 +627113519383.6847        1      4.0     14512  18.09x     170    14      9  *** DIVERGED ***
+      levels [0, 7296, 3696, 3520]
+[peclet.core.amr] sampled ghost overlay: 3408 rows | slots identity 47152, LS2 3104, LS1 0, degraded 0, solid 864 | sign-forced faces 160, closed mixed faces 32
+      [g=8 n=6.0] step 1000 k=6.554642e+02 dk=1.23e-04 pres=15 (75.0 ms/step)
+      [g=8 n=6.0] step 2000 k=6.567182e+02 dk=2.42e-07 pres=15 (78.5 ms/step)
+    6  6.567198e+02   -0.3580        0      8.0     43632   6.02x    2160    15    171
+      levels [17792, 15952, 6944, 2944]
+[peclet.core.amr] sampled ghost overlay: 5616 rows | slots identity 78432, LS2 3712, LS1 0, degraded 0, solid 2096 | sign-forced faces 544, closed mixed faces 96
+      [g=8 n=8.0] step 1000 k=6.570027e+02 dk=1.24e-04 pres=12 (80.7 ms/step)
+      [g=8 n=8.0] step 2000 k=6.582704e+02 dk=2.46e-07 pres=12 (75.7 ms/step)
+    8  6.582720e+02   -0.1225        0      8.0     76560   3.43x    2160    12    162
+      levels [38528, 26416, 9152, 2464]
+
+=== throat g = 16 h0  (R = 24.0 h0, two spheres on z, both gaps = g) ===
+[peclet.core.amr] sampled ghost overlay: 12336 rows | slots identity 185040, LS2 0, LS1 0, degraded 0, solid 0 | sign-forced faces 0, closed mixed faces 0
+      [g=16 n=None] step 1000 k=9.245907e+02 dk=3.66e-04 pres=12 (88.5 ms/step)
+      [g=16 n=None] step 2000 k=9.312628e+02 dk=2.68e-06 pres=11 (86.4 ms/step)
+    n             k   d(ctl)%  Lthroat  gap/h_L    leaves  vs ctl   steps  pres      s
+  ctl  9.313106e+02    0.0000        1      8.0    200432   1.00x    2680    13    225
+[peclet.core.amr] sampled ghost overlay: 240 rows | slots identity 3600, LS2 0, LS1 0, degraded 0, solid 0 | sign-forced faces 0, closed mixed faces 0
+      [g=16 n=1.0] step 1000 k=8.409348e+02 dk=3.06e-04 pres=8 (34.0 ms/step)
+      [g=16 n=1.0] step 2000 k=8.460344e+02 dk=4.28e-06 pres=8 (34.9 ms/step)
+      [g=16 n=1.0] step 3000 k=8.461969e+02 dk=9.30e-07 pres=8 (35.5 ms/step)
+      [g=16 n=1.0] step 4000 k=8.462455e+02 dk=3.29e-07 pres=8 (35.9 ms/step)
+      [g=16 n=1.0] step 5000 k=8.462628e+02 dk=1.18e-07 pres=8 (35.7 ms/step)
+    1  8.462643e+02   -9.1319        3      2.0      4096  48.93x    5170     8    184
+      levels [0, 0, 0, 4096]
+[peclet.core.amr] sampled ghost overlay: 240 rows | slots identity 3600, LS2 0, LS1 0, degraded 0, solid 0 | sign-forced faces 0, closed mixed faces 0
+      [g=16 n=2.0] step 1000 k=8.409348e+02 dk=3.06e-04 pres=8 (29.7 ms/step)
+      [g=16 n=2.0] step 2000 k=8.460344e+02 dk=4.28e-06 pres=8 (30.7 ms/step)
+      [g=16 n=2.0] step 3000 k=8.461969e+02 dk=9.30e-07 pres=8 (31.9 ms/step)
+      [g=16 n=2.0] step 4000 k=8.462455e+02 dk=3.29e-07 pres=8 (32.8 ms/step)
+      [g=16 n=2.0] step 5000 k=8.462628e+02 dk=1.18e-07 pres=8 (32.9 ms/step)
+    2  8.462643e+02   -9.1319        3      2.0      4096  48.93x    5170     8    170
+      levels [0, 0, 0, 4096]
+[peclet.core.amr] sampled ghost overlay: 384 rows | slots identity 5184, LS2 384, LS1 0, degraded 0, solid 192 | sign-forced faces 64, closed mixed faces 0
+      [g=16 n=3.0] step 1000 k=9.115931e+02 dk=3.99e-04 pres=10 (41.6 ms/step)
+      [g=16 n=3.0] step 2000 k=9.191515e+02 dk=3.96e-06 pres=10 (43.4 ms/step)
+    3  9.192287e+02   -1.2973        2      4.0      5216  38.43x    2830    10    126
+      levels [0, 0, 1280, 3936]
+[peclet.core.amr] sampled ghost overlay: 592 rows | slots identity 7600, LS2 832, LS1 0, degraded 0, solid 448 | sign-forced faces 96, closed mixed faces 0
+      [g=16 n=4.0] step 1000 k=9.260560e+02 dk=3.94e-04 pres=13 (56.9 ms/step)
+      [g=16 n=4.0] step 2000 k=9.334005e+02 dk=3.19e-06 pres=11 (52.9 ms/step)
+    4  9.334591e+02   +0.2307        2      4.0      6784  29.54x    2730    13    143
+      levels [0, 0, 3072, 3712]
+[peclet.core.amr] sampled ghost overlay: 1488 rows | slots identity 20080, LS2 1760, LS1 0, degraded 0, solid 480 | sign-forced faces 224, closed mixed faces 0
+      [g=16 n=6.0] step 1000 k=9.177819e+02 dk=3.57e-04 pres=9 (54.5 ms/step)
+      [g=16 n=6.0] step 2000 k=9.242069e+02 dk=2.54e-06 pres=9 (50.3 ms/step)
+    6  9.242515e+02   -0.7580        1      8.0     17536  11.43x    2670    10    131
+      levels [0, 8448, 5856, 3232]
+[peclet.core.amr] sampled ghost overlay: 1952 rows | slots identity 27392, LS2 1216, LS1 0, degraded 0, solid 672 | sign-forced faces 96, closed mixed faces 96
+      [g=16 n=8.0] step 1000 k=9.181925e+02 dk=3.61e-04 pres=14 (62.9 ms/step)
+      [g=16 n=8.0] step 2000 k=9.247051e+02 dk=2.60e-06 pres=14 (62.9 ms/step)
+    8  9.247510e+02   -0.7043        1      8.0     30192   6.64x    2680    15    169
+      levels [0, 19456, 7936, 2800]
