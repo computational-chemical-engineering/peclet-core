@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "peclet/core/common/types.hpp"
+#include "peclet/core/geom/scene.hpp"
 
 namespace peclet::core::geom {
 
@@ -31,30 +32,33 @@ struct GridSdf {
     return static_cast<double>(values[i + dims[0] * (j + dims[1] * k)]);
   }
 
+  /// Descriptor form of this field, for the shared sampler. Built from `spacing` once per call
+  /// here (this is host setup-side code, not a device inner loop); a hot path should hold the
+  /// descriptor instead -- see the rung-3 note in docs/ANALYTIC_SDF_GEOMETRY.md.
+  GridDesc<double> desc() const {
+    GridDesc<double> d;
+    d.nx = static_cast<int>(dims[0]);
+    d.ny = static_cast<int>(dims[1]);
+    d.nz = static_cast<int>(dims[2]);
+    d.offset = 0;
+    d.origin = Vec3<double>{origin[0], origin[1], origin[2]};
+    d.invSpacing = Vec3<double>{spacing[0] != 0.0 ? 1.0 / spacing[0] : 0.0,
+                                spacing[1] != 0.0 ? 1.0 / spacing[1] : 0.0,
+                                spacing[2] != 0.0 ? 1.0 / spacing[2] : 0.0};
+    d.extension = GridExtension::kClamp;  // flat at the box face -- this type's documented contract
+    return d;
+  }
+
   /// Trilinearly-interpolated signed distance at world point @p p. Queries outside the sampled box
-  /// clamp to the nearest in-domain sample.
+  /// clamp to the nearest in-domain sample (GridExtension::kClamp).
+  ///
+  /// DELEGATES to peclet::core::geom::sampleGrid, which is now the suite's single trilinear
+  /// grid-SDF routine (it also serves dem's object/container policies). NOTE this changed the
+  /// last bit of the result: the old body divided by `spacing`, the shared routine multiplies by
+  /// its inverse, and a/s != a*(1/s) in floating point. Deliberate -- multiplying is what dem's
+  /// bit-exactness contract is written against and is cheaper on device.
   double eval(const Vec<3>& p) const {
-    double g[3];
-    Index i0[3], i1[3];
-    double f[3];
-    for (int d = 0; d < 3; ++d) {
-      double c = (p[d] - origin[d]) / spacing[d];
-      c = std::clamp(c, 0.0, static_cast<double>(dims[d] - 1));
-      i0[d] = static_cast<Index>(std::floor(c));
-      i1[d] = std::min<Index>(i0[d] + 1, dims[d] - 1);
-      f[d] = c - static_cast<double>(i0[d]);
-    }
-    double c000 = at(i0[0], i0[1], i0[2]), c100 = at(i1[0], i0[1], i0[2]);
-    double c010 = at(i0[0], i1[1], i0[2]), c110 = at(i1[0], i1[1], i0[2]);
-    double c001 = at(i0[0], i0[1], i1[2]), c101 = at(i1[0], i0[1], i1[2]);
-    double c011 = at(i0[0], i1[1], i1[2]), c111 = at(i1[0], i1[1], i1[2]);
-    double c00 = c000 * (1 - f[0]) + c100 * f[0];
-    double c10 = c010 * (1 - f[0]) + c110 * f[0];
-    double c01 = c001 * (1 - f[0]) + c101 * f[0];
-    double c11 = c011 * (1 - f[0]) + c111 * f[0];
-    double c0 = c00 * (1 - f[1]) + c10 * f[1];
-    double c1 = c01 * (1 - f[1]) + c11 * f[1];
-    return c0 * (1 - f[2]) + c1 * f[2];
+    return sampleGrid(Vec3<double>{p[0], p[1], p[2]}, desc(), PoolPtr<float>{values.data()});
   }
 };
 

@@ -54,15 +54,21 @@ enum ShapeKind : int {
 /// Folding a rounding radius into every node would add an unconditional subtract to every leaf
 /// eval, and no scene consumer needs it yet; add it with the rung-5 encoding if one does.
 
-/// Off-grid extension policy for a sampled field (contract 6). The trilinear sample is clamped into
-/// the lattice and the distance from the query to that clamped point is then added or subtracted:
+/// Off-grid extension policy for a sampled field (contract 6). The query is clamped into the
+/// lattice and trilinearly sampled; the policy decides what happens to the distance between the
+/// query and that clamped point:
 ///   kObject    (+residual) — a BODY. Outside the stored box means further from the body, so the
 ///                            far field must grow POSITIVE. dem `sampleGridSdf`.
 ///   kContainer (-residual) — a CONTAINER whose void is bounded. Outside the stored box is
 ///                            wall-side, so it must read ever more NEGATIVE. dem `sampleWallSdf`.
-/// Getting this backwards is not cosmetic: dem's history records a 180k-bead pile losing 71k grains
-/// through a distributor because a container read "clear" beyond its own grid face.
-enum class GridExtension : int { kObject = 0, kContainer = 1 };
+///   kClamp     (no residual) — nearest-valid-sample extrapolation: the field simply flattens at
+///                            the box face. The right choice when the stored box already encloses
+///                            everything of interest and off-grid queries are incidental, which is
+///                            what core's host GridSdf and voro's grid provider both want.
+/// Getting the sign backwards is not cosmetic: dem's history records a 180k-bead pile losing 71k
+/// grains through a distributor because a container read "clear" beyond its own grid face. kClamp
+/// has that failure mode by construction, so use it only where the box genuinely bounds the domain.
+enum class GridExtension : int { kObject = 0, kContainer = 1, kClamp = 2 };
 
 /// Descriptor for one sampled field inside a shared sample pool.
 template <class Real>
@@ -142,6 +148,8 @@ PECLET_HD Real sampleGrid(Vec3<Real> p, const GridDesc<Real>& d, const Pool& poo
   const Real c0 = c00 * (1 - ty) + c10 * ty;
   const Real c1 = c01 * (1 - ty) + c11 * ty;
   const Real val = c0 * (1 - tz) + c1 * tz;
+  if (d.extension == GridExtension::kClamp)
+    return val;  // flat at the box face -- skip the residual (and its three divisions) entirely
   const Real rx = (d.invSpacing.x > Real(0)) ? (fx - cx) / d.invSpacing.x : Real(0);
   const Real ry = (d.invSpacing.y > Real(0)) ? (fy - cy) / d.invSpacing.y : Real(0);
   const Real rz = (d.invSpacing.z > Real(0)) ? (fz - cz) / d.invSpacing.z : Real(0);
