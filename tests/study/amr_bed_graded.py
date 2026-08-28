@@ -60,13 +60,26 @@ def make_sdf(N):
     return sdf
 
 
-def make_gap_lookup(N, gres=128):
+def make_gap_lookup(N, gres=128, gapfile=None):
     """Gap proxy d1+d2 (plan §7 crit. 1) precomputed on a uniform gres^3 grid, nearest lookup.
 
     The gap field varies on the pore scale, so sampling it coarsely is ample for a refinement
     POLICY (it is not a discretization). Equal radii ⇒ the two closest surfaces are the two
     closest centres, so one vectorised distance pass per grid slab suffices.
     """
+    # A precomputed UNIT-box table (gap_unit_<gres>.npy) is resolution-independent — gap scales
+    # linearly with N — so one file serves every depth and the run needs no scipy. Used on
+    # clusters where the venv is minimal, and it keeps the KD-tree build off billed GPU time.
+    if gapfile:
+        g = np.load(gapfile).astype(np.float32) * float(N)
+        gres = g.shape[0]
+        inv = gres / N
+
+        def lookup_pre(x, y, z):
+            return float(g[int(x * inv) % gres, int(y * inv) % gres, int(z * inv) % gres])
+
+        return lookup_pre, g
+
     from scipy.spatial import cKDTree
     C, R = load_pack(N)
     ax = (np.arange(gres) + 0.5) * (N / gres)
@@ -158,7 +171,7 @@ if __name__ == "__main__":
           flush=True)
 
     t0 = time.time()
-    gapfn, gg = make_gap_lookup(N)
+    gapfn, gg = make_gap_lookup(N, gapfile=opt("--gap-file", None))
     print(f"gap field precomputed ({time.time() - t0:.0f}s): "
           f"min {gg.min():.1f} h0, median {np.median(gg):.1f} h0, max {gg.max():.1f} h0",
           flush=True)
