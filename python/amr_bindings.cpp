@@ -41,6 +41,7 @@
 #include "peclet/core/amr/adapt.hpp"
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/flow.hpp"  // the canonical (device) AmrFlow exposed to Python
+#include "peclet/core/geom/scene_query.hpp"  // SphereBedQuery (Layer 2-for-core)
 #include "peclet/core/amr/distributed_adapt.hpp"
 #include "peclet/core/amr/distributed_octree.hpp"
 #include "peclet/core/amr/flow_oracle.hpp"  // oracle::AmrFlow (dev-only reference; not exposed)
@@ -345,9 +346,11 @@ class Flow : public Releasable {
     flow_.setViscosity(mu);
     flow_.setDt(dt);
     const auto& t = oct.octreeRef();
-    for (int d = 0; d < 3; ++d)
+    for (int d = 0; d < 3; ++d) {
       extent_[d] = static_cast<double>(t.brick()[d]) * static_cast<double>(Index(1) << t.lmax()) *
                    oct.geoRef().h0;
+      origin_[d] = oct.geoRef().origin[d];
+    }
   }
   // Distributed (mpi4py): run this solver on one ORB block of a DistributedOctree — the whole
   // step then executes multi-rank through the ±2 LeafHalo (docs/amr_distributed_flow.md).
@@ -415,22 +418,15 @@ class Flow : public Releasable {
       cz[i] = cp[3 * i + 2];
       rr[i] = oneR ? rp[0] : rp[i];
     }
-    const double Lx = extent_[0], Ly = extent_[1], Lz = extent_[2];
-    flow_.setSolid([&, m](const Vec<3>& p) {
-      double best = 1e300;
-      for (std::size_t i = 0; i < m; ++i) {
-        double dx = p[0] - cx[i], dy = p[1] - cy[i], dz = p[2] - cz[i];
-        if (periodic) {
-          dx -= Lx * std::nearbyint(dx / Lx);
-          dy -= Ly * std::nearbyint(dy / Ly);
-          dz -= Lz * std::nearbyint(dz / Lz);
-        }
-        const double d = std::sqrt(dx * dx + dy * dy + dz * dz) - rr[i];
-        if (d < best)
-          best = d;
-      }
-      return best;
-    });
+    // Layer 2-for-core (docs/AMR_GEOMETRY_SETUP_REQUIREMENTS.md): the per-query brute-force scan
+    // over all M spheres — measured 1.18 us/eval at M=180, 94% of the whole setSolid — is retired
+    // for the candidate-grid + equal-radius query. BIT-IDENTICAL to the old callback (value, not
+    // just sign) by construction and by the geom_scene_query ctest; the templated setSolid inlines
+    // the query, so there is no std::function indirection left either.
+    geom::SphereBedQuery q(std::move(cx), std::move(cy), std::move(cz), std::move(rr),
+                           Vec<3>{origin_[0], origin_[1], origin_[2]},
+                           Vec<3>{extent_[0], extent_[1], extent_[2]}, periodic);
+    flow_.setSolid(q);
   }
 
   // Momentum solver controls (device path): velocity multigrid + smoother selection.
@@ -488,6 +484,7 @@ class Flow : public Releasable {
   amr::AmrFlow<> flow_;  // the canonical device (Kokkos) AMR flow
   Index n_;
   std::array<double, 3> extent_{0.0, 0.0, 0.0};  // world box size (min-image for set_solid_spheres)
+  std::array<double, 3> origin_{0.0, 0.0, 0.0};  // world box origin (candidate-grid coverage)
 };
 
 // ---- distributed (MPI) octree ------------------------------------------------------------------

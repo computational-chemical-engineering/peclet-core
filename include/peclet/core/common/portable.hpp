@@ -117,6 +117,18 @@ template <class Real>
 PECLET_HD Real hdPow(Real a, Real b) {
   return Kokkos::pow(a, b);
 }
+template <class Real>
+PECLET_HD Real hdNearbyint(Real v) {
+  return Kokkos::nearbyint(v);
+}
+template <class Real>
+PECLET_HD Real hdFloor(Real v) {
+  return Kokkos::floor(v);
+}
+template <class Real>
+PECLET_HD Real hdFma(Real a, Real b, Real c) {
+  return Kokkos::fma(a, b, c);
+}
 #else
 template <class Real>
 PECLET_HD Real hdSqrt(Real v) {
@@ -137,6 +149,18 @@ PECLET_HD Real hdMin(Real a, Real b) {
 template <class Real>
 PECLET_HD Real hdPow(Real a, Real b) {
   return std::pow(a, b);
+}
+template <class Real>
+PECLET_HD Real hdNearbyint(Real v) {
+  return std::nearbyint(v);
+}
+template <class Real>
+PECLET_HD Real hdFloor(Real v) {
+  return std::floor(v);
+}
+template <class Real>
+PECLET_HD Real hdFma(Real a, Real b, Real c) {
+  return std::fma(a, b, c);
 }
 #endif
 

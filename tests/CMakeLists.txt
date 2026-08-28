@@ -222,6 +222,16 @@ target_link_libraries(test_geom_scene_builder PRIVATE tpx_core)
 target_include_directories(test_geom_scene_builder PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME geom_scene_builder COMMAND test_geom_scene_builder)
 
+# Layer 2-for-core: accelerated sphere-union scene queries (candidate grids, equal-R fast path,
+# min-image periodicity) must be BIT-IDENTICAL to the brute-force scan -- gated against an
+# independent transcription of the AMR stopgap. Needs tests/data/rcp_pack_seed3_unit.txt (run
+# from the tests/ directory: ctest sets WORKING_DIRECTORY).
+add_executable(test_geom_scene_query test_geom_scene_query.cpp)
+target_link_libraries(test_geom_scene_query PRIVATE tpx_core)
+target_include_directories(test_geom_scene_query PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME geom_scene_query COMMAND test_geom_scene_query
+         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
 add_executable(test_sdf test_sdf.cpp)
 target_link_libraries(test_sdf PRIVATE tpx_core)
 target_include_directories(test_sdf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -428,6 +438,15 @@ if(MPI_FOUND)
   # Kokkos was built for (CUDA / HIP / OpenMP). Compiled as CXX — Kokkos routes it to the device
   # compiler via its launch compiler (so this is a .cpp, not a .cu).
   if(PECLET_CORE_HAVE_KOKKOS)
+    # Layer 2-for-core: batched scene evaluation on device vs the host query — the sphere-union
+    # path (fma-canonical) must be BITWISE identical, the general CSG tree within sign + ULP band.
+    add_executable(test_geom_batch_device test_geom_batch_device.cpp)
+    target_include_directories(test_geom_batch_device PRIVATE
+      ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(test_geom_batch_device PRIVATE Kokkos::kokkos)
+    add_test(NAME geom_batch_device COMMAND test_geom_batch_device
+             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Device GraphAMG apply vs the host oracle (no MPI; serial + device).
     add_executable(test_graph_amg_device test_graph_amg_device.cpp)
     target_include_directories(test_graph_amg_device PRIVATE
