@@ -1,0 +1,11 @@
+sphere bed: 180 spheres, R/h0 = 24.1, phi = 63.0%, N = 256 (depth 8), LFAR=3 band=4.0 n_gap=4.0 tol=1e-07
+gap field precomputed (0s): min -33.0 h0, median 6.2 h0, max 36.8 h0
+[peclet.core.amr] sampled ghost overlay: 953419 rows | slots identity 14301285, LS2 0, LS1 0, degraded 0, solid 0 | sign-forced faces 0, closed mixed faces 0
+[peclet.core.amr] ghost projection: binary coupled-face graph fragments into 826 components — decoupling 968 pocket cells outside the main component
+Traceback (most recent call last):
+  File "/home/frankp/Codes/suite/core/tests/study/amr_bed_graded.py", line 178, in <module>
+    r = permeability(arm, N, gapfn, tol=tol, max_steps=maxst)
+  File "/home/frankp/Codes/suite/core/tests/study/amr_bed_graded.py", line 112, in permeability
+    fl.set_solid_spheres(C, np.array([R]), True)   # native union-of-spheres SDF: set_solid with
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: Kokkos ERROR: Cuda memory space failed to allocate 531 MiB (label="df_uf").

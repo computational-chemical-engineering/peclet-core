@@ -1,0 +1,12 @@
+sphere bed: 180 spheres, R/h0 = 12.1, phi = 63.0%, N = 128 (depth 7), LFAR=3 band=4.0 n_gap=4.0 tol=1e-07
+gap field precomputed (0s): min -16.5 h0, median 3.1 h0, max 18.4 h0
+[peclet.core.amr] sampled ghost overlay: 232227 rows | slots identity 3483405, LS2 0, LS1 0, degraded 0, solid 0 | sign-forced faces 0, closed mixed faces 0
+[peclet.core.amr] ghost projection: binary coupled-face graph fragments into 376 components — decoupling 410 pocket cells outside the main component
+    [u N=128] step 500 k=5.840447e-01 dk=1.26e-07 pres=60 (895 ms/step)
+ uniform: k=5.840443e-01 leaves=1923587 steps=560 (497s) levels [1898800, 24786, 1, 0]
+[peclet.core.amr] sampled ghost overlay: 229485 rows | slots identity 3406585, LS2 31095, LS1 0, degraded 0, solid 4595 | sign-forced faces 1369, closed mixed faces 453
+[peclet.core.amr] ghost projection: binary coupled-face graph fragments into 376 components — decoupling 410 pocket cells outside the main component
+    [g N=128] step 500 k=5.855414e-01 dk=1.33e-07 pres=60 (917 ms/step)
+  graded: k=5.855410e-01 leaves=1794535 steps=570 (524s) levels [1751320, 43213, 2, 0]
+
+HEADLINE: graded k differs by +0.256% at 1.07x fewer cells (1794535 vs 1923587)

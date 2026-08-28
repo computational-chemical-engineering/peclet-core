@@ -17,8 +17,16 @@ calibrated n (the plan's default n = 4 is supported: 4–8 cells across the thro
 it — NOT rung 2 (first attribution, refuted) but the pre-existing `cfDiv_` C/F divergence delta
 firing at CUT rows, where the ghost closure overlay owns the constraint (a C2 violation) — and
 fixed it with a one-line row gate (`rowFluid → rowRegular` for `cfDiv_`/`cfGrad_`, matching
-`cfMom_`; inert by geometry on finest-band meshes, measured bit-identical). Still open before the
-bed run: pocket exclusion in LS clouds, **sub-face closures**, and the distributed sample halo.
+`cfMom_`; inert by geometry on finest-band meshes, measured bit-identical).
+
+**Phase 3 bed run DONE at depth 7 (P3c, 2026-08-28): the gap-graded policy reproduces the RCP
+bed's permeability to +0.256%**, marching stably with 0 degraded rows. The accuracy-matched
+CELL-COUNT headline is not yet quotable: the saving is only 1.07× at depth 7 (the band already
+covers 92% of that domain) and 1.62× at depth 8 — but depth 8 exceeds the local RTX 5080 twice
+over (the control needs ~21.5 GB of 16.3; the graded arm then hits `cudaErrorLaunchTimeout`).
+**The headline needs a compute-mode cluster GPU; everything else is ready.** Still open:
+pocket exclusion in LS clouds, **sub-face closures** (now bounded — an accuracy item, not a
+stability blocker), and the distributed sample halo.
 
 *Original gating note, kept for the record:* implementation was gated on flow's clean-ladder
 R=24/32 order result + the np>=16 instability re-diagnosis; if that ladder had disappointed, the
@@ -679,6 +687,73 @@ reference):
 The bisection toggles were diagnostic-only and are not committed; the committed change is the
 two row gates plus this record.
 
+#### P3c — the sphere bed: policy validated end-to-end, headline capped by the local GPU (2026-08-28)
+
+`tests/study/amr_bed_graded.py` on the M1 census bed (`tests/data/rcp_pack_seed3_unit.txt`, 180
+monodisperse spheres, φ = 0.63), Stokes along x, Darcy k = μ⟨u_x⟩/f, gap floor at the
+P3a-calibrated n = 4, `set_ghost_sampled(True)`, cf-quadratic. Logs
+`docs/data/amr_bed_graded_d{7,8}*.log`.
+
+**Mesh economics (`--probe`, CPU only) — M1's resolution dependence confirmed on solver meshes:**
+
+| depth | R/h₀ | uniform finest band | gap-graded (n=4) | saving |
+|---:|---:|---:|---:|---:|
+| 7 (N=128) | 12.1 | 1 923 587 | 1 794 535 | 1.07× |
+| 8 (N=256) | 24.1 | 11 350 032 | 7 010 669 | **1.62×** |
+
+Depth 7 is useless as a headline — the band already covers 92% of the domain, so there is almost
+nothing to coarsen. This is exactly M1's "quote the saving at production resolution" warning,
+now measured on the meshes the solver actually runs.
+
+**Accuracy (depth 7, both arms marched to tol 1e-7):**
+
+| arm | k | leaves | steps |
+|---|---:|---:|---:|
+| uniform finest band | 5.840443e-01 | 1 923 587 | 560 |
+| gap-graded (n=4) | 5.855410e-01 | 1 794 535 | 570 |
+
+**The gap-graded policy reproduces the bed permeability to +0.256%** — comfortably inside the
+ghost scheme's own bias, on a real contact-rich packing rather than a model geometry. Both arms
+converge in ~560 steps (dense beds relax much faster than the Z&H sphere's ~9000). The march is
+stable, which is the risk register's third witness geometry and the first that is neither
+Z&H-like nor two-sphere-like.
+
+**Bed-scale overlay census** — the numbers that settle two open rungs:
+
+| arm | rows | LS2 slots | degraded | closed mixed faces | pockets |
+|---|---:|---:|---:|---:|---|
+| depth 7, uniform | 232 227 | 0 | 0 | 0 | 410 cells / 376 comps |
+| depth 7, graded | 229 485 | 31 095 | **0** | 453 | — |
+| depth 8, graded | 691 813 | 429 694 | **0** | 10 846 | 968 cells / 826 comps |
+
+1. **The fallback cascade never fires on a real bed either** — 0 degraded rows at every size,
+   up to 692k rows. M1's retirement of that risk now holds on solver meshes at bed scale.
+2. **Sub-face closures are real but small**: 453/229 485 = 0.20% of rows at depth 7 and
+   10 846/691 813 = 1.57% at depth 8 (vs 0.66% on Z&H's gap-ordered arm). Non-vanishing and
+   growing with resolution, but the depth-7 march carrying 453 of them still lands within
+   0.26%. So the rung is a real accuracy item, NOT a stability blocker.
+3. **Pockets are plentiful on a real bed** (826 components at depth 8), which makes "pocket
+   exclusion in LS clouds" a concrete rather than theoretical rung.
+
+**Why the depth-8 headline is not here: two hard limits of the local RTX 5080 (16 GB, display
+attached), neither a code defect.**
+- *Memory.* The uniform control (11.35M leaves) dies in `setSolid` — `Kokkos ERROR: Cuda memory
+  space failed to allocate 531 MiB (label="df_uf")`. The graded arm (7.01M) fits at 13.3 GB of
+  16.3 GB, i.e. ~1.9 kB/leaf, which puts the wall at ≈8.5M leaves — the control needs ≈21.5 GB.
+- *Kernel watchdog.* The depth-8 graded arm then died mid-march with
+  `cudaErrorLaunchTimeout`: at 7M leaves a single kernel exceeds the driver's launch limit.
+
+So **the accuracy-matched headline at production resolution needs a compute-mode GPU** (no
+watchdog, ≥40 GB — Snellius). Everything needed to run it is in place; only the hardware is
+short. Depth 9 (R/h₀ = 48, where M1 measured 2.9×) is firmly cluster work.
+
+**Study-side lesson worth not re-deriving:** `set_solid` samples the SDF tens of times per leaf
+(operator build, overlay classification at virtual positions, openness probe), so a *Python*
+SDF callback dominates everything at bed scale — the first depth-8 attempt spent >1h43m inside
+numpy before the GPU ran one kernel (confirmed by native backtraces). `Flow.set_solid_spheres`
+(core 29ba5b0) evaluates the union natively: 311s → 33s on a 262k-leaf slice, fields
+bit-identical to 15 digits.
+
 ### Phase 4 — deferred integration
 Advection/uf seams, MPI (halo support + collective fallback), adapt-during-run rebuild.
 
@@ -717,5 +792,5 @@ Advection/uf seams, MPI (halo support + collective fallback), adapt-during-run r
 | coarse openness pinches a throat | D3 tripwire assertion | D3-alternative (telescoping geometry) |
 | fallback cascade fires too often (M1 >~ 30% of seam rows) | M1 census | RETIRED 2026-08-24: measured 0.1–0.5% on all maps |
 | accuracy loss beyond codim-2 estimate | Phase-2 ladder | RETIRED 2026-08-27 (P2b: seam offset decays at 1.72 / 1.93 over N=64→256, faster than the arms' own ~1.1 order; 0.07–0.10% of K at N=256). Reopen only if a bed ladder disagrees; levers stay raise sample order (M2) / widen seam collars |
-| sub-face closures (mixed-face Neumann-zero degeneracy) | overlay `nMixedFace` counter | NOT retired: 96 (N=64) / 240 (N=256) on the gap-ordered arm, geometry-dependent, not resolution-vanishing. Suspected cause of arm (c)'s noisier order pair. Still an unimplemented rung (§8a) — a design fork, not execution |
+| sub-face closures (mixed-face Neumann-zero degeneracy) | overlay `nMixedFace` counter | NOT retired, but BOUNDED (P3c): 0.20% of rows on the depth-7 bed and 1.57% at depth 8 (Z&H gap-ordered arm: 0.66%) — non-vanishing and growing with resolution, yet a bed march carrying 453 of them lands within 0.26% of the uniform control. So it is an ACCURACY item, not a stability blocker; still an unimplemented rung (§8a) and a design fork |
 | Snellius ladder disappoints | the gate | plan survives in outline; re-target the closure family per fluid_only_constraint_plan.md decision tree |

@@ -1,0 +1,13 @@
+sphere bed: 180 spheres, R/h0 = 24.1, phi = 63.0%, N = 256 (depth 8), LFAR=3 band=4.0 n_gap=4.0 tol=1e-07
+gap field precomputed (0s): min -33.0 h0, median 6.2 h0, max 36.8 h0
+[peclet.core.amr] sampled ghost overlay: 691813 rows | slots identity 9811344, LS2 429694, LS1 0, degraded 0, solid 136157 | sign-forced faces 32639, closed mixed faces 10846
+[peclet.core.amr] ghost projection: binary coupled-face graph fragments into 826 components — decoupling 968 pocket cells outside the main component
+Traceback (most recent call last):
+  File "/home/frankp/Codes/suite/core/tests/study/amr_bed_graded.py", line 178, in <module>
+    r = permeability(arm, N, gapfn, tol=tol, max_steps=maxst)
+  File "/home/frankp/Codes/suite/core/tests/study/amr_bed_graded.py", line 120, in permeability
+    fl.step(100, 60)
+    ~~~~~~~^^^^^^^^^
+RuntimeError: cudaStreamSynchronize(stream) error( cudaErrorLaunchTimeout): the launch timed out and was terminated /home/frankp/Codes/suite/extern/src/kokkos/core/src/Cuda/Kokkos_Cuda_Instance.cpp:158
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cudaFree(arg_alloc_ptr) error( cudaErrorLaunchTimeout): the launch timed out and was terminated /home/frankp/Codes/suite/extern/src/kokkos/core/src/Cuda/Kokkos_CudaSpace.cpp:368
