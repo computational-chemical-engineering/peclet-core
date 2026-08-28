@@ -24,6 +24,7 @@
 
 #include <array>
 #include <cmath>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -635,10 +636,29 @@ class AmrFlow {
     if (dist_ && cfScheme_ != CfScheme::standard)
       throw std::runtime_error(
           "amr::AmrFlow: the C/F quadratic scheme is not distributed yet (rung-4 follow-up)");
+    // Phase profiler (PECLET_CORE_PROFILE_SETUP=1): setSolid is the whole setup cost at bed
+    // scale (measured 127 us/leaf single-threaded, [[performance-sota-yardstick]]) — the
+    // per-phase breakdown is what any optimization must start from.
+    const bool prof_ = [] {
+      const char* e = std::getenv("PECLET_CORE_PROFILE_SETUP");
+      return e && e[0] == '1';
+    }();
+    auto profT0_ = std::chrono::steady_clock::now();
+    auto profPhase = [&](const char* name) {
+      if (!prof_)
+        return;
+      Kokkos::fence();
+      auto now = std::chrono::steady_clock::now();
+      double ms = std::chrono::duration<double, std::milli>(now - profT0_).count();
+      std::fprintf(stderr, "[setSolid] %-28s %9.1f ms  (%6.1f us/leaf)\n", name, ms,
+                   1e3 * ms / static_cast<double>(n));
+      profT0_ = std::chrono::steady_clock::now();
+    };
     // Host operator build (geometry, openness, cut stencils) — same as oracle::AmrFlow::setSolid.
     mom_.init(*t_, h0_, origin_);
     pres_.init(*t_, h0_);
     pres_.setOrigin(origin_);
+    profPhase("mom.init + pres.init");
     // Resolve the projection mode. DEFAULT SWITCH (2026-08-25, user decision): AUTO = the
     // GHOST (fluid-only) projection — family-free/stable/unique (see the setter doc) — falling
     // back to the aperture projection with a stderr notice when the finest band is too thin for
@@ -664,10 +684,12 @@ class AmrFlow {
       pcg_.setDistributed({}, {}, 0);
       mom_.build(sdfFn, /*idiag=*/rho_ / dt_, /*beta=*/mu_ / (h0_ * h0_));
     }
+    profPhase("mom.build (SDF+cut stencils)");
     GhostOverlay hov;
     GhostOverlaySampled hovS;
     if (ghostSampled_) {  // mixed-level cut band: sample-slot overlay, no band-margin probe
       hovS = buildGhostOverlaySampled(*t_, pres_, sdfFn, gpMatrixOrder_, gpRhsOrder_, origin_);
+      profPhase("buildGhostOverlaySampled");
     } else if (ghostProj_) {  // probe the band margin; explicit request throws on violation, AUTO falls
       bool viol = false;
       hov = buildGhostOverlay(*t_, pres_, mom_.sdfCRaw(), gpMatrixOrder_, gpRhsOrder_, &viol);
@@ -699,7 +721,9 @@ class AmrFlow {
         auto binFn = makeBinaryOpenFnMixed(
             *t_, pres_, [&sdfFn](const Vec<3>& p) { return sdfFn(p); }, h0_, origin_);
         pres_.buildOpenness(binFn);
+        profPhase("buildOpenness (mixed)");
         presMG_.build(*t_, h0_, binFn, /*periodic=*/true);
+        profPhase("presMG.build");
       } else {
         auto binFn = makeBinaryOpenFn([&sdfFn](const Vec<3>& p) { return sdfFn(p); }, h0_);
         pres_.buildOpenness(binFn);
@@ -715,6 +739,7 @@ class AmrFlow {
       // (a rank-local BFS would mislabel components that span ranks), so multi-rank runs are
       // unprotected on fragmenting geometries until it lands.
       gpPocket_ = dist_ ? std::vector<char>{} : findPocketCells(*t_, pres_, mom_.sdfCRaw());
+      profPhase("findPocketCells");
     } else {
       gpPocket_.clear();
       auto openFn = [&](const Vec<3>& fc, int axis) { return faceFrac(sdfFn, fc, axis); };
@@ -732,6 +757,7 @@ class AmrFlow {
     } else {
       presMG_.setRemoveMean(true);
     }
+    profPhase("nullspace setup");
 
     // Device assembly (D6): the static cut-cell momentum operator CSR and the collocated face
     // geometry are assembled ON THE DEVICE (assembleMomentum / assembleFaceGeom), and the
@@ -755,6 +781,7 @@ class AmrFlow {
       momOp_.faceCoef = toDevice(A.coef, "mo_coef");
     } else {
       momOp_ = assembleMomentum<Bits>(mom_, ov);  // static Stokes operator (hasAdv stays false)
+      profPhase("assembleMomentum (device)");
     }
     // Velocity multigrid (momentum preconditioner): the Galerkin hierarchy A_c = R·A·P built
     // directly from the exact assembled momentum CSR. Consistent with the fine cut-cell
@@ -807,6 +834,7 @@ class AmrFlow {
         momMG_.setGaussSeidel(momGS_);
       }
     }
+    profPhase("velocity MG build");
     std::vector<char> fluidVec(static_cast<std::size_t>(n));
     for (Index i = 0; i < n; ++i)
       fluidVec[static_cast<std::size_t>(i)] = mom_.isFluid(i) ? 1 : 0;
@@ -819,6 +847,7 @@ class AmrFlow {
     } else {
       geom_ = assembleFaceGeom<Bits>(pres_, fluidVec, ov);
     }
+    profPhase("assembleFaceGeom");
     std::vector<double> rs(static_cast<std::size_t>(n));
     for (Index i = 0; i < n; ++i)
       rs[static_cast<std::size_t>(i)] = mom_.rhsScale(i);
@@ -860,6 +889,7 @@ class AmrFlow {
       cfUfVel_ = CfCompCsrDev{};
       cfUfPhi_ = CfCsrDev{};
     }
+    profPhase("cf overlays");
     if (ghostProj_) {
       // Closure overlay (pre-built in the mode-resolve step above) + the coupled-subspace mask
       // for the BiCGStab projection. Sampled mode uploads the sample-slot overlay instead (the
@@ -968,6 +998,7 @@ class AmrFlow {
     pcg_.setVcycle(2, 2, 60, 0.8);
     pcg_.setSingular(true);
     n_ = n;
+    profPhase("overlays upload + state alloc");
   }
 
   /// One incompressible step on device (Stokes, or Navier–Stokes with setAdvection). `momIters`
