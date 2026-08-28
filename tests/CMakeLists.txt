@@ -232,6 +232,15 @@ target_include_directories(test_geom_scene_query PRIVATE ${CMAKE_CURRENT_SOURCE_
 add_test(NAME geom_scene_query COMMAND test_geom_scene_query
          WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+# Layer 3 rung 1: cut OWNERSHIP (SceneQueryView::owner) -- the argmin behind eval's min, with a
+# scan-order-independent lowest-index tie-break, so moving geometry reads its wall velocity (and
+# resolved CFD-DEM posts its force) off the right body no matter which query path answered.
+add_executable(test_geom_owner test_geom_owner.cpp)
+target_link_libraries(test_geom_owner PRIVATE tpx_core)
+target_include_directories(test_geom_owner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME geom_owner COMMAND test_geom_owner
+         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
 add_executable(test_sdf test_sdf.cpp)
 target_link_libraries(test_sdf PRIVATE tpx_core)
 target_include_directories(test_sdf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

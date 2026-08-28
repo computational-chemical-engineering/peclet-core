@@ -716,6 +716,177 @@ CandidateGrid<Real> buildSceneCandidateGrid(const SceneView<Real>& sc, Vec3<Real
   return g;
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// Cut ownership (Layer 3 rung 1 of suite/docs/ANALYTIC_SDF_GEOMETRY.md)
+//
+// "Which body owns the surface nearest to p" — the attribution a moving-geometry solver needs to
+// read a wall velocity off the right instance, and a resolved CFD-DEM solver needs to post a
+// hydrodynamic force back to the right grain.
+//
+// DETERMINISM CONTRACT. The winner is the argmin of exactly the value `eval` returns, and ties
+// break to the LOWEST index — enforced by the comparison itself (`v < best || (v == best && i <
+// best_i)`), NOT by scan order. That matters because the same point can be answered through three
+// different orders: a candidate list, the always-list + candidate list, or the full-scan fallback.
+// All three therefore agree, and a per-bin shuffle of the candidate lists cannot change the owner.
+//
+// The equal-radius sphere path carries SQUARED center distances through the scan and converts
+// once at the end, exactly as evalSphereUnion does — so `evalOwner` returns a value BITWISE equal
+// to `eval`'s, and the argmin is the same one sqrt(.) - r0 would have chosen (it is strictly
+// increasing in d2).
+//
+// EVERY owner path is written as an eval-AND-owner primitive, with `owner()` discarding the value.
+// One traversal answers both, which is what keeps a per-cell owner field free for a consumer that
+// is sampling the scene anyway (flow's set_solid_from_scene).
+// ---------------------------------------------------------------------------------------------
+
+namespace owner_detail {
+/// The single tie-break rule (lowest index wins an exact tie), shared by every owner path.
+template <class Real>
+PECLET_HD void take(Real v, int i, Real& best, int& bestI) {
+  if (v < best || (v == best && i < bestI)) {
+    best = v;
+    bestI = i;
+  }
+}
+}  // namespace owner_detail
+
+/// Accumulate the argmin over an explicit index subset (a candidate list) into (best, bestI).
+/// `best` carries d2 on the equal-radius path and the signed distance otherwise — the caller
+/// converts, exactly once, like evalSphereUnion.
+template <class Real>
+PECLET_HD void sphereUnionOwnerSubset(const SphereUnionView<Real>& u, Vec3<Real> p,
+                                      const PeriodicBox<Real>& box, const int* items, int count,
+                                      Real& best, int& bestI) {
+  if (u.equalR) {
+    for (int k = 0; k < count; ++k) {
+      const int i = items[k];
+      owner_detail::take(sphereDist2(u, i, p, box), i, best, bestI);
+    }
+    return;
+  }
+  for (int k = 0; k < count; ++k) {
+    const int i = items[k];
+    owner_detail::take(peclet::core::detail::hdSqrt(sphereDist2(u, i, p, box)) - u.r[i], i, best,
+                       bestI);
+  }
+}
+
+/// Brute-force value + owner (all spheres) — the reference the candidate path must match, and the
+/// out-of-coverage fallback.
+template <class Real>
+PECLET_HD Real sphereUnionEvalOwner(const SphereUnionView<Real>& u, Vec3<Real> p,
+                                    const PeriodicBox<Real>& box, int& own) {
+  Real best = Real(1e300);
+  int bestI = -1;
+  if (u.equalR) {
+    for (int i = 0; i < u.n; ++i)
+      owner_detail::take(sphereDist2(u, i, p, box), i, best, bestI);
+    own = bestI;
+    return peclet::core::detail::hdSqrt(best) - u.r0;
+  }
+  for (int i = 0; i < u.n; ++i)
+    owner_detail::take(peclet::core::detail::hdSqrt(sphereDist2(u, i, p, box)) - u.r[i], i, best,
+                       bestI);
+  own = bestI;
+  return best;
+}
+
+/// Value + owner through the candidate grid. Same superset argument as evalSphereUnionGrid: the
+/// list contains the argmin, so the argmin over the list IS the global argmin.
+template <class Real>
+PECLET_HD Real sphereUnionEvalOwnerGrid(const SphereUnionView<Real>& u, Vec3<Real> p,
+                                        const PeriodicBox<Real>& box,
+                                        const CandidateGridView<Real>& g, int& own) {
+  const long b = g.binOf(p);
+  if (b < 0)
+    return sphereUnionEvalOwner(u, p, box, own);
+  const int lo = g.offsets[b], hi = g.offsets[b + 1];
+  if (lo == hi)
+    return sphereUnionEvalOwner(u, p, box, own);
+  Real best = Real(1e300);
+  int bestI = -1;
+  sphereUnionOwnerSubset(u, p, box, g.items + lo, hi - lo, best, bestI);
+  own = bestI;
+  return u.equalR ? peclet::core::detail::hdSqrt(best) - u.r0 : best;
+}
+
+/// Value + owner over every instance of a general scene, min-image periodic.
+template <class Real>
+PECLET_HD Real sceneEvalOwnerPeriodic(const SceneView<Real>& sc, Vec3<Real> p,
+                                      const PeriodicBox<Real>& box, int& own,
+                                      const Real* boundR = nullptr) {
+  Real best = Real(1e9);
+  int bestI = -1;
+  for (int i = 0; i < sc.instanceCount; ++i)
+    owner_detail::take(evalInstancePeriodic(sc, i, p, box, boundR ? boundR[i] : Real(-1)), i, best,
+                       bestI);
+  own = bestI;
+  return best;
+}
+
+/// Value + owner through a general-scene candidate grid: always-list ∪ candidate list, with the
+/// same empty-list / out-of-coverage full-scan fallback evalSceneGrid uses (an owner that
+/// disagreed with the value would attribute a wall velocity to a body that is not the nearest).
+template <class Real>
+PECLET_HD Real sceneEvalOwnerGrid(const SceneView<Real>& sc, Vec3<Real> p,
+                                  const PeriodicBox<Real>& box, const CandidateGridView<Real>& g,
+                                  int& own, const Real* boundR = nullptr) {
+  Real best = Real(1e9);
+  int bestI = -1;
+  for (int k = 0; k < g.alwaysCount; ++k) {
+    const int i = g.always[k];
+    owner_detail::take(evalInstancePeriodic(sc, i, p, box, boundR ? boundR[i] : Real(-1)), i, best,
+                       bestI);
+  }
+  const long b = g.binOf(p);
+  const int lo = b < 0 ? 0 : g.offsets[b], hi = b < 0 ? 0 : g.offsets[b + 1];
+  if (b < 0 || lo == hi) {
+    for (int i = 0; i < sc.instanceCount; ++i)
+      owner_detail::take(evalInstancePeriodic(sc, i, p, box, boundR ? boundR[i] : Real(-1)), i,
+                         best, bestI);
+    own = bestI;
+    return best;
+  }
+  for (int k = lo; k < hi; ++k) {
+    const int i = g.items[k];
+    owner_detail::take(evalInstancePeriodic(sc, i, p, box, boundR ? boundR[i] : Real(-1)), i, best,
+                       bestI);
+  }
+  own = bestI;
+  return best;
+}
+
+/// Owner-only wrappers (the value is discarded by the compiler on every backend).
+template <class Real>
+PECLET_HD int sphereUnionOwner(const SphereUnionView<Real>& u, Vec3<Real> p,
+                               const PeriodicBox<Real>& box) {
+  int own = -1;
+  (void)sphereUnionEvalOwner(u, p, box, own);
+  return own;
+}
+template <class Real>
+PECLET_HD int sphereUnionOwnerGrid(const SphereUnionView<Real>& u, Vec3<Real> p,
+                                   const PeriodicBox<Real>& box, const CandidateGridView<Real>& g) {
+  int own = -1;
+  (void)sphereUnionEvalOwnerGrid(u, p, box, g, own);
+  return own;
+}
+template <class Real>
+PECLET_HD int sceneOwnerPeriodic(const SceneView<Real>& sc, Vec3<Real> p,
+                                 const PeriodicBox<Real>& box, const Real* boundR = nullptr) {
+  int own = -1;
+  (void)sceneEvalOwnerPeriodic(sc, p, box, own, boundR);
+  return own;
+}
+template <class Real>
+PECLET_HD int sceneOwnerGrid(const SceneView<Real>& sc, Vec3<Real> p, const PeriodicBox<Real>& box,
+                             const CandidateGridView<Real>& g, const Real* boundR = nullptr) {
+  int own = -1;
+  (void)sceneEvalOwnerGrid(sc, p, box, g, own, boundR);
+  return own;
+}
+
 /// The one POD every consumer captures: sphere-union fast path when the scene is a plain sphere
 /// union, general scene otherwise, candidate-accelerated in both modes, min-image periodic.
 /// Mode selection happens ONCE at build (SceneQueryDevice / SceneQueryHost), so numerics are
@@ -734,6 +905,25 @@ struct SceneQueryView {
       return grid.offsets ? evalSphereUnionGrid(u, p, box, grid) : evalSphereUnion(u, p, box);
     return grid.offsets ? evalSceneGrid(scene, p, box, grid, instBoundR)
                         : evalScenePeriodic(scene, p, box, instBoundR);
+  }
+
+  /// eval(p) AND the index of the instance (sphere-union mode: the sphere) whose surface is
+  /// nearest — the argmin behind eval's min, in ONE traversal. `own` is -1 for an empty scene.
+  /// Ties break to the lowest index; see the determinism contract above. The returned value is
+  /// bitwise eval's, so a consumer that needs both never has to reconcile two numbers.
+  PECLET_HD Real evalOwner(Vec3<Real> p, int& own) const {
+    if (u.n > 0)
+      return grid.offsets ? sphereUnionEvalOwnerGrid(u, p, box, grid, own)
+                          : sphereUnionEvalOwner(u, p, box, own);
+    return grid.offsets ? sceneEvalOwnerGrid(scene, p, box, grid, own, instBoundR)
+                        : sceneEvalOwnerPeriodic(scene, p, box, own, instBoundR);
+  }
+
+  /// Owner only.
+  PECLET_HD int owner(Vec3<Real> p) const {
+    int own = -1;
+    (void)evalOwner(p, own);
+    return own;
   }
 };
 

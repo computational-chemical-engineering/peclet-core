@@ -228,6 +228,40 @@ int main(int argc, char** argv) {
     std::printf("  SceneQueryDevice sphere mode: %d/%d bit mismatches vs host\n", n3, NP3);
     if (n3)
       bad = 1;
+
+    // Layer 3 rung 1: OWNER host == device. The argmin rides the same fma-canonical per-sphere
+    // expression `eval` does, so it inherits bit-parity -- but an INDEX disagreement is a silent
+    // mis-attribution (wall velocity, or a drag force, posted to the wrong body), not a rounding
+    // wobble, so it is gated explicitly rather than inferred.
+    Kokkos::View<int*> own3("own3", NP3);
+    Kokkos::View<double*> val3("val3", NP3);
+    const auto qv = q.view();
+    Kokkos::parallel_for(
+        "owner_parity", Kokkos::RangePolicy<>(0, NP3), KOKKOS_LAMBDA(int i) {
+          int o = -1;
+          val3(i) = qv.evalOwner(Vec3<double>{pts3(i, 0), pts3(i, 1), pts3(i, 2)}, o);
+          own3(i) = o;
+        });
+    Kokkos::fence();
+    auto hoOwn = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, own3);
+    auto hoVal = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, val3);
+    int nOwn = 0, nVal = 0;
+    for (int i = 0; i < NP3; ++i) {
+      const Vec3<double> p{hp3(i, 0), hp3(i, 1), hp3(i, 2)};
+      if (hoOwn(i) != sphereUnionOwnerGrid(hu, p, box, hgv))
+        ++nOwn;
+      const double ref = evalSphereUnionGrid(hu, p, box, hgv);
+      std::uint64_t a, c;
+      std::memcpy(&a, &ref, 8);
+      const double v = hoVal(i);
+      std::memcpy(&c, &v, 8);
+      if (a != c)
+        ++nVal;
+    }
+    std::printf("  owner host==device:           %d/%d index, %d/%d evalOwner bit mismatches\n",
+                nOwn, NP3, nVal, NP3);
+    if (nOwn || nVal)
+      bad = 1;
   }
   Kokkos::finalize();
   std::printf(bad ? "BATCH FAIL\n" : "BATCH OK\n");
