@@ -191,6 +191,52 @@ int main() {
     PECLET_CORE_CHECK(threw);
   }
 
+  // ---------------------------------------------------------------------------------------
+  // (6) The GENERAL surface-point generator (Layer 1): SDF-driven, so it works for shapes that
+  //     have no hand-written generator, including CSG results that are not star-shaped.
+  // ---------------------------------------------------------------------------------------
+  {
+    struct Case {
+      const char* name;
+      int root;
+      double lo, hi;
+      double area;  // analytic surface area, for a sanity check on the point count
+    };
+    SceneBuilder<double> g;
+    const int sph = g.addLeaf(kSphere, {0.5});
+    const int tor = g.addLeaf(kTorus, {0.5, 0.15});
+    const int bx = g.addLeaf(kBox, {0.4, 0.3, 0.2});
+    const int sp2 = g.addLeaf(kSphere, {0.3}, Transform<double>{V{0.25, 0, 0}});
+    const int csg = g.addDifference(bx, sp2);  // a box with a bite taken out: not star-shaped
+    g.addInstance(sph);
+    const SceneView<double> gv = g.view();
+
+    const Case cases[] = {{"sphere r=0.5", sph, -0.7, 0.7, 4 * M_PI * 0.25},
+                          {"torus R=.5 r=.15", tor, -0.75, 0.75, 4 * M_PI * M_PI * 0.5 * 0.15},
+                          {"box .4x.3x.2", bx, -0.55, 0.55, 2 * (0.8 * 0.6 + 0.8 * 0.4 + 0.6 * 0.4)},
+                          {"box MINUS sphere", csg, -0.6, 0.7, 0.0}};
+    for (const Case& c : cases) {
+      const double sp = 0.05;
+      const std::vector<V> pts =
+          surfacePoints<double>(gv, c.root, sp, V{c.lo, c.lo, c.lo}, V{c.hi, c.hi, c.hi});
+      // every returned point must actually lie on the zero level set
+      double worst = 0;
+      for (const V& p : pts)
+        worst = std::fmax(worst, std::fabs(evalTree<double>(TablePtr<ShapeNode<double>>{gv.nodes},
+                                                            gv.nodeCount, c.root, p,
+                                                            TablePtr<GridDesc<double>>{gv.grids},
+                                                            PoolPtr<float>{gv.samples})));
+      std::printf("  surfacePoints %-18s %5zu pts, worst |sdf| = %.2e\n", c.name, pts.size(),
+                  worst);
+      PECLET_CORE_CHECK(pts.size() > 100);
+      PECLET_CORE_CHECK(worst < sp * 0.05);
+      if (c.area > 0) {  // point count should track area / spacing^2 within a small factor
+        const double expect = c.area / (sp * sp);
+        PECLET_CORE_CHECK(pts.size() > 0.2 * expect && pts.size() < 5.0 * expect);
+      }
+    }
+  }
+
   std::printf("scene round-trip: %d probes x %d instances, 0 mismatches\n", probes,
               s1.instanceCount);
   PECLET_CORE_RETURN_TEST_RESULT();

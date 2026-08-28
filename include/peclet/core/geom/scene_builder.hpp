@@ -31,10 +31,13 @@
 #ifndef PECLET_CORE_GEOM_SCENE_BUILDER_HPP
 #define PECLET_CORE_GEOM_SCENE_BUILDER_HPP
 
+#include <cmath>
 #include <cstddef>
 #include <initializer_list>
+#include <set>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "peclet/core/geom/scene.hpp"
@@ -279,6 +282,73 @@ class SceneBuilder {
   std::vector<float> pool_;
   std::vector<Instance<Real>> instances_;
 };
+
+/// Sample points on the zero level set of a shape tree — the GENERAL surface-point generator.
+///
+/// Layer 1 of docs/ANALYTIC_SDF_GEOMETRY.md: dem's collision shells were produced by per-shape
+/// hand-written generators (a cylinder one, a box one), so every new primitive needed bespoke code
+/// and shapes without one could not be a collision body at all. This is driven by the SDF itself,
+/// so it works for ANY node — the whole leaf vocabulary, CSG trees, and sampled grids alike.
+///
+/// Method: walk a lattice of pitch `spacing` over [lo, hi], keep the cells whose |f| shows the
+/// surface passes nearby, project each survivor onto the surface by Newton steps along the
+/// gradient (p <- p - f(p) * n(p), which converges immediately for an exact distance field and
+/// still converges for a bound), then deduplicate by snapping to a half-pitch grid.
+///
+/// Deliberately NOT ray casting from a centre: that is simpler but only correct for star-shaped
+/// bodies, and a torus, a hollow cylinder and most CSG results are not star-shaped.
+///
+/// Host-side setup code — call it once when registering a shape, never per step.
+template <class Real>
+std::vector<Vec3<Real>> surfacePoints(const SceneView<Real>& sc, int root, Real spacing,
+                                      Vec3<Real> lo, Vec3<Real> hi, int projectIters = 4) {
+  std::vector<Vec3<Real>> out;
+  if (spacing <= Real(0) || root < 0 || root >= sc.nodeCount)
+    return out;
+  const TablePtr<ShapeNode<Real>> nodes{sc.nodes};
+  const TablePtr<GridDesc<Real>> grids{sc.grids};
+  const PoolPtr<float> pool{sc.samples};
+  const auto f = [&](Vec3<Real> p) {
+    return evalTree<Real>(nodes, sc.nodeCount, root, p, grids, pool);
+  };
+  // Central-difference normal: generic, so CSG seams and sampled grids are handled too.
+  const Real h = spacing * Real(1e-3);
+  const auto n = [&](Vec3<Real> p) {
+    Vec3<Real> g{f(Vec3<Real>{p.x + h, p.y, p.z}) - f(Vec3<Real>{p.x - h, p.y, p.z}),
+                 f(Vec3<Real>{p.x, p.y + h, p.z}) - f(Vec3<Real>{p.x, p.y - h, p.z}),
+                 f(Vec3<Real>{p.x, p.y, p.z + h}) - f(Vec3<Real>{p.x, p.y, p.z - h})};
+    const Real l = std::sqrt(g.x * g.x + g.y * g.y + g.z * g.z);
+    return (l > Real(0)) ? Vec3<Real>{g.x / l, g.y / l, g.z / l} : Vec3<Real>{1, 0, 0};
+  };
+
+  // A lattice cell can touch the surface if |f| is within its half-diagonal.
+  const Real band = spacing * Real(0.87);  // sqrt(3)/2, rounded up
+  const Real snap = spacing * Real(0.5);
+  std::set<std::tuple<long, long, long>> seen;
+  const int nx = static_cast<int>((hi.x - lo.x) / spacing) + 1;
+  const int ny = static_cast<int>((hi.y - lo.y) / spacing) + 1;
+  const int nz = static_cast<int>((hi.z - lo.z) / spacing) + 1;
+  for (int k = 0; k <= nz; ++k)
+    for (int j = 0; j <= ny; ++j)
+      for (int i = 0; i <= nx; ++i) {
+        Vec3<Real> p{lo.x + spacing * i, lo.y + spacing * j, lo.z + spacing * k};
+        if (std::fabs(f(p)) > band)
+          continue;
+        for (int it = 0; it < projectIters; ++it) {
+          const Real d = f(p);
+          const Vec3<Real> g = n(p);
+          p = Vec3<Real>{p.x - d * g.x, p.y - d * g.y, p.z - d * g.z};
+        }
+        if (std::fabs(f(p)) > spacing * Real(0.05))
+          continue;  // failed to land on the surface (a bound-only leaf far from its zero set)
+        const std::tuple<long, long, long> key{static_cast<long>(std::llround(p.x / snap)),
+                                               static_cast<long>(std::llround(p.y / snap)),
+                                               static_cast<long>(std::llround(p.z / snap))};
+        if (seen.insert(key).second)
+          out.push_back(p);
+      }
+  return out;
+}
 
 }  // namespace peclet::core::geom
 
