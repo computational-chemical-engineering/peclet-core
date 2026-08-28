@@ -344,6 +344,10 @@ class Flow : public Releasable {
     flow_.setDensity(rho);
     flow_.setViscosity(mu);
     flow_.setDt(dt);
+    const auto& t = oct.octreeRef();
+    for (int d = 0; d < 3; ++d)
+      extent_[d] = static_cast<double>(t.brick()[d]) * static_cast<double>(Index(1) << t.lmax()) *
+                   oct.geoRef().h0;
   }
   // Distributed (mpi4py): run this solver on one ORB block of a DistributedOctree — the whole
   // step then executes multi-rank through the ±2 LeafHalo (docs/amr_distributed_flow.md).
@@ -386,6 +390,47 @@ class Flow : public Releasable {
   // and zero the velocity / pressure fields. Call before stepping; re-call to change the geometry.
   void set_solid(std::function<double(double, double, double)> sdf) {
     flow_.setSolid([&](const Vec<3>& p) { return sdf(p[0], p[1], p[2]); });
+  }
+
+  // Native union-of-spheres SDF — the porous-media geometry evaluated in C++ instead of through
+  // a Python callback. set_solid samples the SDF tens of times per leaf (operator build, overlay
+  // classification at virtual positions, the openness probe), so at bed scale the callback, not
+  // the solve, dominates: measured >1h43m of pure numpy on an 11.35M-leaf 180-sphere bed before
+  // the GPU was touched once. `centers` is (M,3) and `radii` is (M,) or a single scalar-valued
+  // (1,) array; `periodic` applies the minimum-image convention over the octree's own extent.
+  void set_solid_spheres(nb::ndarray<const double, nb::c_contig> centers,
+                         nb::ndarray<const double, nb::c_contig> radii, bool periodic) {
+    if (centers.ndim() != 2 || centers.shape(1) != 3)
+      throw std::runtime_error("set_solid_spheres: centers must be (M, 3)");
+    const std::size_t m = centers.shape(0);
+    if (radii.ndim() != 1 || (radii.shape(0) != m && radii.shape(0) != 1))
+      throw std::runtime_error("set_solid_spheres: radii must be (M,) or (1,)");
+    std::vector<double> cx(m), cy(m), cz(m), rr(m);
+    const double* cp = centers.data();
+    const double* rp = radii.data();
+    const bool oneR = radii.shape(0) == 1;
+    for (std::size_t i = 0; i < m; ++i) {
+      cx[i] = cp[3 * i];
+      cy[i] = cp[3 * i + 1];
+      cz[i] = cp[3 * i + 2];
+      rr[i] = oneR ? rp[0] : rp[i];
+    }
+    const double Lx = extent_[0], Ly = extent_[1], Lz = extent_[2];
+    flow_.setSolid([&, m](const Vec<3>& p) {
+      double best = 1e300;
+      for (std::size_t i = 0; i < m; ++i) {
+        double dx = p[0] - cx[i], dy = p[1] - cy[i], dz = p[2] - cz[i];
+        if (periodic) {
+          dx -= Lx * std::nearbyint(dx / Lx);
+          dy -= Ly * std::nearbyint(dy / Ly);
+          dz -= Lz * std::nearbyint(dz / Lz);
+        }
+        const double d = std::sqrt(dx * dx + dy * dy + dz * dz) - rr[i];
+        if (d < best)
+          best = d;
+      }
+      return best;
+    });
   }
 
   // Momentum solver controls (device path): velocity multigrid + smoother selection.
@@ -442,6 +487,7 @@ class Flow : public Releasable {
  private:
   amr::AmrFlow<> flow_;  // the canonical device (Kokkos) AMR flow
   Index n_;
+  std::array<double, 3> extent_{0.0, 0.0, 0.0};  // world box size (min-image for set_solid_spheres)
 };
 
 // ---- distributed (MPI) octree ------------------------------------------------------------------
@@ -730,6 +776,15 @@ NB_MODULE(amr, m) {
       .def("set_solid", &Flow::set_solid, nb::arg("sdf"),
            "Build the cut-cell operators from a signed-distance callable f(x,y,z) (>0 fluid, <0 "
            "solid) and zero the fields. Call before stepping; re-call to change the geometry.")
+      .def("set_solid_spheres", &Flow::set_solid_spheres, nb::arg("centers"), nb::arg("radii"),
+           nb::arg("periodic") = true,
+           "set_solid for a UNION OF SPHERES, evaluated natively instead of through a Python "
+           "callback — the porous-media geometry. `centers` is (M,3), `radii` is (M,) or (1,); "
+           "`periodic` uses the minimum-image convention over the octree's own box extent. "
+           "Prefer this to set_solid at bed scale: set_solid samples the SDF tens of times per "
+           "leaf (operator build, overlay classification at virtual positions, the openness "
+           "probe), so a Python callback dominates everything else — measured >1h43m of pure "
+           "numpy on an 11.35M-leaf 180-sphere bed before the GPU ran a single kernel.")
       .def("set_body_force", &Flow::set_body_force, nb::arg("fx"), nb::arg("fy"), nb::arg("fz"),
            "Set the per-volume body force (e.g. a pressure gradient) driving the flow.")
       .def("set_advection", &Flow::set_advection, nb::arg("on"),
