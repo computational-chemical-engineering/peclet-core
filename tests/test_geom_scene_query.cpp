@@ -20,6 +20,7 @@
 #include <sstream>
 #include <vector>
 
+#include "peclet/core/geom/scene_builder.hpp"
 #include "peclet/core/geom/scene_query.hpp"
 #include "test_util.hpp"
 
@@ -230,6 +231,148 @@ int main() {
           bitEq(q(p), evalSphereUnion(q.sphereUnion(), Vec3<double>{p[0], p[1], p[2]}, q.box())));
     }
     std::printf("  single sphere          2000 probes grid==brute bitwise (nbHint=4)\n");
+  }
+
+  // --- GENERAL SCENES: periodic instances, bounds, candidate grids, sphere extraction ---------
+  {
+    using namespace peclet::core::geom;
+    // a mixed scene: 40 spheres (certified) + a stirrer CSG (certified) + an ellipsoid
+    // (NOT certified -> always-list)
+    SceneBuilder<double> b;
+    const int sph = b.addLeaf(kSphere, {0.06});
+    const int shaft = b.addLeaf(kHollowCylinder, {0.03, 0.4, 0.03});
+    const int blade =
+        b.addLeaf(kBox, {0.12, 0.02, 0.03}, Transform<double>{Vec3<double>{0.13, 0.0, 0.0}});
+    const int stir = b.addUnion(shaft, blade);
+    const int ell = b.addLeaf(kEllipsoid, {0.09, 0.05, 0.04});
+    for (int i = 0; i < 40; ++i)
+      b.addInstance(sph, Transform<double>{Vec3<double>{rng.u(0, 1), rng.u(0, 1), rng.u(0, 1)}});
+    const double a45 = 0.7853981633974483;
+    b.addInstance(stir, Transform<double>{Vec3<double>{0.5, 0.5, 0.5},
+                                          Quat<double>{0, std::sin(a45), 0, std::cos(a45)}, 1.2});
+    b.addInstance(ell, Transform<double>{Vec3<double>{0.2, 0.7, 0.3}});
+    const SceneView<double> sv = b.view();
+
+    // bounds: every instance's eval must respect its bounding sphere from OUTSIDE it
+    for (int i = 0; i < sv.instanceCount; ++i) {
+      const InstanceBound<double> ib = instanceBound(sv, i);
+      PECLET_CORE_CHECK(ib.r > 0 && ib.r < 1.0);
+      for (int t = 0; t < 200; ++t) {
+        const double th = rng.u(0, 2 * M_PI), uz = rng.u(-1, 1), sr = std::sqrt(1 - uz * uz);
+        const double rr = ib.r * (1.0 + rng.u(0.05, 2.0));
+        const Vec3<double> p{ib.c.x + rr * sr * std::cos(th), ib.c.y + rr * sr * std::sin(th),
+                             ib.c.z + rr * uz};
+        const double e = evalInstance(sv, i, p);
+        PECLET_CORE_CHECK(e > 0);  // outside the ball => outside the solid
+        if (ib.certified)          // certified: eval >= distance to the ball
+          PECLET_CORE_CHECK(e >= rr - ib.r - 1e-12);
+      }
+    }
+    // the ellipsoid instance must be UNcertified (it under-estimates); the stirrer certified
+    PECLET_CORE_CHECK(!instanceBound(sv, sv.instanceCount - 1).certified);
+    PECLET_CORE_CHECK(instanceBound(sv, sv.instanceCount - 2).certified);
+
+    // EXTERNAL truth for the periodic semantics: instantiate the 27 images of every instance in
+    // a second builder and evaluate PLAIN (no wrap). This is what caught the seam bug: wrapping
+    // the displacement to the instance ORIGIN picks the wrong image for body parts offset from
+    // it (a blade at local +0.3, probe at 0.55: origin-wrap said 0.75, truth is 0.25).
+    {
+      SceneBuilder<double> bi;
+      const int s2 = bi.addLeaf(kSphere, {0.06});
+      const int shaft2 = bi.addLeaf(kHollowCylinder, {0.03, 0.4, 0.03});
+      const int blade2 =
+          bi.addLeaf(kBox, {0.12, 0.02, 0.03}, Transform<double>{Vec3<double>{0.13, 0.0, 0.0}});
+      const int stir2 = bi.addUnion(shaft2, blade2);
+      const int ell2 = bi.addLeaf(kEllipsoid, {0.09, 0.05, 0.04});
+      auto addImages = [&](int root, Transform<double> tr) {
+        for (int ix = -1; ix <= 1; ++ix)
+          for (int iy = -1; iy <= 1; ++iy)
+            for (int iz = -1; iz <= 1; ++iz) {
+              Transform<double> t = tr;
+              t.translation =
+                  Vec3<double>{tr.translation.x + ix, tr.translation.y + iy, tr.translation.z + iz};
+              bi.addInstance(root, t);
+            }
+      };
+      for (int i = 0; i < sv.instanceCount; ++i) {
+        const Instance<double>& inst = sv.instances[i];
+        const int root = inst.shapeRoot == 0 ? s2 : inst.shapeRoot == 3 ? stir2 : ell2;
+        addImages(root, inst.transform);
+      }
+      const SceneView<double> iv = bi.view();
+      const PeriodicBox<double> box{1.0, 1.0, 1.0, true};
+      std::vector<double> br((std::size_t)sv.instanceCount);
+      for (int i = 0; i < sv.instanceCount; ++i)
+        br[(std::size_t)i] = instanceBound(sv, i).r;
+      double worst = 0;
+      for (int t = 0; t < 20000; ++t) {
+        const Vec3<double> p{rng.u(0, 1), rng.u(0, 1), rng.u(0, 1)};
+        const double per = evalScenePeriodic(sv, p, box, br.data());
+        const double img = evalScene(iv, p);
+        worst = std::fmax(worst, std::fabs(per - img) / (std::fabs(img) + 0.06));
+      }
+      PECLET_CORE_CHECK(worst < 1e-13);  // different image arithmetic; must agree to rounding
+      std::printf("  periodic vs 27-image   20000 probes, worst rel %.2e (external truth)\n",
+                  worst);
+    }
+
+    for (bool periodic : {true, false}) {
+      const PeriodicBox<double> box{1.0, 1.0, 1.0, periodic};
+      CandidateGrid<double> g =
+          buildSceneCandidateGrid(sv, Vec3<double>{0, 0, 0}, Vec3<double>{1, 1, 1}, box);
+      const CandidateGridView<double> gv = g.view();
+      PECLET_CORE_CHECK(gv.alwaysCount == 1);  // exactly the ellipsoid
+      int nOK = 0;
+      const double* br2 = g.instBoundR.data();
+      for (int t = 0; t < 30000; ++t) {
+        const Vec3<double> p{rng.u(-0.2, 1.2), rng.u(-0.2, 1.2), rng.u(-0.2, 1.2)};
+        const double ref = evalScenePeriodic(sv, p, box, br2);
+        PECLET_CORE_CHECK(bitEq(evalSceneGrid(sv, p, box, gv, br2), ref));
+        // and bounds vs no-bounds must agree BITWISE (the boundR<0 path tries every image)
+        PECLET_CORE_CHECK(bitEq(ref, evalScenePeriodic(sv, p, box)));
+        if (!periodic)  // minImage off must reduce bitwise to the plain scene eval
+          PECLET_CORE_CHECK(bitEq(ref, evalScene(sv, p)));
+        ++nOK;
+      }
+      std::printf(
+          "  mixed scene %-9s %d probes: grid==full bitwise (always-list=%d, "
+          "meanList=%.2f)\n",
+          periodic ? "periodic" : "open", nOK, gv.alwaysCount,
+          double(g.items.size()) / double(g.offsets.size() - 1));
+    }
+
+    // sphere extraction: the mixed scene must NOT extract; a plain sphere scene must, and its
+    // fast path must agree with the general tree walk to a couple of ulp (different but
+    // deterministic expressions -- mode is chosen once per scene).
+    {
+      std::vector<double> ecx, ecy, ecz, er;
+      PECLET_CORE_CHECK(!extractSphereUnion(sv, ecx, ecy, ecz, er));
+      SceneBuilder<double> bs;
+      const int s0 = bs.addLeaf(kSphere, {0.11});
+      for (int i = 0; i < 25; ++i)
+        bs.addInstance(s0, Transform<double>{Vec3<double>{rng.u(0, 1), rng.u(0, 1), rng.u(0, 1)}});
+      const SceneView<double> ssv = bs.view();
+      PECLET_CORE_CHECK(extractSphereUnion(ssv, ecx, ecy, ecz, er) && ecx.size() == 25);
+      SphereUnionView<double> eu;
+      eu.cx = ecx.data();
+      eu.cy = ecy.data();
+      eu.cz = ecz.data();
+      eu.r = er.data();
+      eu.n = 25;
+      eu.equalR = true;
+      eu.r0 = 0.11;
+      const PeriodicBox<double> box{1.0, 1.0, 1.0, true};
+      double worst = 0;
+      for (int t = 0; t < 20000; ++t) {
+        const Vec3<double> p{rng.u(0, 1), rng.u(0, 1), rng.u(0, 1)};
+        const double fast = evalSphereUnion(eu, p, box);
+        const double tree = evalScenePeriodic(ssv, p, box);
+        worst = std::fmax(worst, std::fabs(fast - tree) / (std::fabs(tree) + 0.11));
+      }
+      PECLET_CORE_CHECK(worst < 1e-15);  // ~ a few ulp of the sqrt magnitude
+      std::printf("  sphere fast vs tree    20000 probes, worst rel %.2e (mode-consistency)\n",
+                  worst);
+    }
   }
 
   PECLET_CORE_RETURN_TEST_RESULT();

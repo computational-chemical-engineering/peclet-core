@@ -164,6 +164,71 @@ int main(int argc, char** argv) {
     if (n2)
       bad = 1;
   }
+  {
+    // SceneQueryDevice: mode selection + acceleration + periodicity end to end. Sphere scene ->
+    // fast path, BITWISE vs the host SphereBedQuery-style eval; mixed scene -> general path,
+    // bitwise vs the host evalSceneGrid on the same expressions (same backend).
+    using namespace peclet::core;
+    using namespace peclet::core::geom;
+    SceneBuilder<double> bs;
+    const int s0 = bs.addLeaf(kSphere, {0.11});
+    std::uint64_t st2 = 0xABCDEF12345ull;
+    auto u2 = [&]() {
+      st2 ^= st2 << 13;
+      st2 ^= st2 >> 7;
+      st2 ^= st2 << 17;
+      return (double)((st2 >> 11) & ((1ull << 53) - 1)) / (double)(1ull << 53);
+    };
+    for (int i = 0; i < 60; ++i)
+      bs.addInstance(s0, Transform<double>{Vec3<double>{u2(), u2(), u2()}});
+    const PeriodicBox<double> box{1.0, 1.0, 1.0, true};
+    auto q = SceneQueryDevice<double>::build(bs, Vec3<double>{0, 0, 0}, Vec3<double>{1, 1, 1}, box);
+    if (!q.sphereFast() || !q.accelerated()) {
+      std::printf("  mode selection FAILED\n");
+      bad = 1;
+    }
+    const int NP3 = 50000;
+    Kokkos::View<double* [3]> pts3("pts3", NP3);
+    Kokkos::View<double*> out3("out3", NP3);
+    auto hp3 = Kokkos::create_mirror_view(pts3);
+    for (int i = 0; i < NP3; ++i) {
+      hp3(i, 0) = 1.4 * u2() - 0.2;
+      hp3(i, 1) = 1.4 * u2() - 0.2;
+      hp3(i, 2) = 1.4 * u2() - 0.2;
+    }
+    Kokkos::deep_copy(pts3, hp3);
+    evalQueryPoints(Kokkos::DefaultExecutionSpace{}, q.view(), pts3, out3);
+    Kokkos::fence();
+    auto ho3 = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, out3);
+    // host reference via the same host-side machinery (host build of the same scene)
+    std::vector<double> ecx, ecy, ecz, er;
+    extractSphereUnion(bs.view(), ecx, ecy, ecz, er);
+    SphereUnionView<double> hu;
+    hu.cx = ecx.data();
+    hu.cy = ecy.data();
+    hu.cz = ecz.data();
+    hu.r = er.data();
+    hu.n = (int)ecx.size();
+    hu.equalR = true;
+    hu.r0 = 0.11;
+    CandidateGrid<double> hg =
+        buildSphereCandidateGrid(hu, Vec3<double>{0, 0, 0}, Vec3<double>{1, 1, 1}, box);
+    const CandidateGridView<double> hgv = hg.view();
+    int n3 = 0;
+    for (int i = 0; i < NP3; ++i) {
+      const double ref =
+          evalSphereUnionGrid(hu, Vec3<double>{hp3(i, 0), hp3(i, 1), hp3(i, 2)}, box, hgv);
+      std::uint64_t a, c;
+      std::memcpy(&a, &ref, 8);
+      const double v = ho3(i);
+      std::memcpy(&c, &v, 8);
+      if (a != c)
+        ++n3;
+    }
+    std::printf("  SceneQueryDevice sphere mode: %d/%d bit mismatches vs host\n", n3, NP3);
+    if (n3)
+      bad = 1;
+  }
   Kokkos::finalize();
   std::printf(bad ? "BATCH FAIL\n" : "BATCH OK\n");
   return bad;

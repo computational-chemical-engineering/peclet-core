@@ -221,6 +221,7 @@ PECLET_HD Real evalSphereUnionGrid(const SphereUnionView<Real>& u, Vec3<Real> p,
 template <class Real>
 struct CandidateGrid {
   std::vector<int> offsets, items, always;
+  std::vector<Real> instBoundR;  // per-instance world bounding radii (general-scene builds)
   CandidateGridView<Real> meta;  // pointers unset; use view()
 
   CandidateGridView<Real> view() const {
@@ -350,6 +351,422 @@ CandidateGrid<Real> buildSphereCandidateGrid(const SphereUnionView<Real>& u, Vec
     std::copy(lists[(std::size_t)b].begin(), lists[(std::size_t)b].end(),
               g.items.begin() + g.offsets[(std::size_t)b]);
   return g;
+}
+
+// ---------------------------------------------------------------------------------------------
+// General scenes: periodic evaluation, bounds, candidate grids
+// ---------------------------------------------------------------------------------------------
+
+/// Instance evaluation with MIN-IMAGE periodicity.
+///
+/// SUBTLETY (a bug this replaced): min-imaging the displacement to the instance ORIGIN is only
+/// correct for bodies whose every point sits AT the origin (spheres). A body part offset from the
+/// origin — a stirrer blade — can have its nearest periodic image across the seam the
+/// origin-wrap did not take: body point at local +0.3 in a unit box, probe at 0.55 → origin-wrap
+/// gives displacement −0.45 and distance 0.75, but the true periodic distance is 0.25. So the
+/// evaluation takes the min over the axis images that can matter: the wrapped displacement, plus
+/// the neighbouring image on each axis where the probe is within `boundR` (the instance's world
+/// bounding radius) of the seam. `boundR < 0` means "unknown": every axis neighbour is tried
+/// (up to 8 tree walks — correct, slower; supply bounds via instanceBound for the fast form).
+template <class Real>
+PECLET_HD Real evalInstancePeriodic(const SceneView<Real>& sc, int i, Vec3<Real> p,
+                                    const PeriodicBox<Real>& box, Real boundR = Real(-1)) {
+  if (i < 0 || i >= sc.instanceCount)
+    return Real(1e9);
+  const Instance<Real>& inst = sc.instances[i];
+  if (!box.on) {
+    const Vec3<Real> q =
+        scale(invRotate(inst.transform.rotation, sub(p, inst.transform.translation)),
+              Real(1) / inst.transform.scale);
+    return inst.transform.scale *
+           evalTree<Real>(TablePtr<ShapeNode<Real>>{sc.nodes}, sc.nodeCount, inst.shapeRoot, q,
+                          TablePtr<GridDesc<Real>>{sc.grids}, PoolPtr<float>{sc.samples});
+  }
+  const Vec3<Real> d0 = minImage(sub(p, inst.transform.translation), box);
+  // which axes need the neighbouring image? |d_a| > L_a/2 - boundR (all of them when unknown)
+  const Real Ls[3] = {box.Lx, box.Ly, box.Lz};
+  const Real da[3] = {d0.x, d0.y, d0.z};
+  int nAlt[3] = {1, 1, 1};
+  Real alt[3][2] = {{d0.x, 0}, {d0.y, 0}, {d0.z, 0}};
+  for (int a = 0; a < 3; ++a) {
+    const bool need =
+        boundR < Real(0) || (da[a] < Real(0) ? -da[a] : da[a]) > Ls[a] * Real(0.5) - boundR;
+    if (need) {
+      alt[a][1] = da[a] < Real(0) ? da[a] + Ls[a] : da[a] - Ls[a];
+      nAlt[a] = 2;
+    }
+  }
+  Real best = Real(1e300);
+  for (int kz = 0; kz < nAlt[2]; ++kz)
+    for (int ky = 0; ky < nAlt[1]; ++ky)
+      for (int kx = 0; kx < nAlt[0]; ++kx) {
+        const Vec3<Real> d{alt[0][kx], alt[1][ky], alt[2][kz]};
+        const Vec3<Real> q =
+            scale(invRotate(inst.transform.rotation, d), Real(1) / inst.transform.scale);
+        const Real v = inst.transform.scale * evalTree<Real>(TablePtr<ShapeNode<Real>>{sc.nodes},
+                                                             sc.nodeCount, inst.shapeRoot, q,
+                                                             TablePtr<GridDesc<Real>>{sc.grids},
+                                                             PoolPtr<float>{sc.samples});
+        if (v < best)
+          best = v;
+      }
+  return best;
+}
+
+/// Union over every instance, min-image periodic. `boundR` is an optional per-instance world
+/// bounding-radius array (from instanceBound) that keeps the seam handling to one tree walk away
+/// from seams. The non-periodic case reduces bitwise to evalScene.
+template <class Real>
+PECLET_HD Real evalScenePeriodic(const SceneView<Real>& sc, Vec3<Real> p,
+                                 const PeriodicBox<Real>& box, const Real* boundR = nullptr) {
+  Real m = Real(1e9);
+  for (int i = 0; i < sc.instanceCount; ++i) {
+    const Real d = evalInstancePeriodic(sc, i, p, box, boundR ? boundR[i] : Real(-1));
+    if (d < m)
+      m = d;
+  }
+  return m;
+}
+
+/// World bounding sphere of an instance + the PRUNING CERTIFICATE. `certified` means the whole
+/// tree satisfies eval >= (distance to a ball of radius r about c) AND eval is 1-Lipschitz --
+/// which exact-distance leaves satisfy and CSG preserves (union: all children; intersection /
+/// difference: the LEFT child's ball and certificate suffice, since max(a, .) >= a). The
+/// under-estimating leaves (ellipsoid, superquadric, HollowCylinderShell -- measured under-runs in
+/// the Layer-0 gate) and grid leaves are NOT certified: candidate builds put those instances on
+/// the always-list instead of pruning them.
+template <class Real>
+struct InstanceBound {
+  Vec3<Real> c{0, 0, 0};
+  Real r = 0;
+  bool certified = false;
+};
+
+namespace query_detail {
+
+template <class Real>
+struct NodeBound {
+  Vec3<Real> c{0, 0, 0};  // in the node's PARENT frame
+  Real r = 0;
+  bool certified = false;
+};
+
+template <class Real>
+inline NodeBound<Real> nodeBound(const SceneView<Real>& sc, int node) {
+  NodeBound<Real> nb;
+  if (node < 0 || node >= sc.nodeCount)
+    return nb;
+  const ShapeNode<Real>& n = sc.nodes[node];
+  Real localR = 0;
+  bool cert = false;
+  if (n.kind < kCsgBase) {
+    switch (n.kind) {
+      case kSphere:
+        localR = n.params[0];
+        cert = true;
+        break;
+      case kBox:
+        localR = std::sqrt(n.params[0] * n.params[0] + n.params[1] * n.params[1] +
+                           n.params[2] * n.params[2]);
+        cert = true;
+        break;
+      case kHollowCylinder: {  // (rOuter, height, thickness), about y -- distance-exact
+        const Real ro = n.params[0], h2 = n.params[1] * Real(0.5);
+        localR = std::sqrt(ro * ro + h2 * h2);
+        cert = true;
+        break;
+      }
+      case kCapsule:
+        localR = n.params[1] + n.params[0];
+        cert = true;
+        break;
+      case kTorus:
+        localR = n.params[0] + n.params[1];
+        cert = true;
+        break;
+      case kCone: {
+        const Real rb = std::fmax(n.params[0], n.params[1]), hh = n.params[2];
+        localR = std::sqrt(rb * rb + hh * hh);
+        cert = true;
+        break;
+      }
+      case kHollowCylinderShell: {  // sign-exact only: bounded but NOT certified
+        const Real ro = n.params[0], h2 = n.params[2] * Real(0.5);
+        localR = std::sqrt(ro * ro + h2 * h2);
+        cert = false;
+        break;
+      }
+      case kEllipsoid:
+        localR = std::fmax(n.params[0], std::fmax(n.params[1], n.params[2]));
+        cert = false;
+        break;
+      case kSuperquadric:
+        localR = std::sqrt(n.params[0] * n.params[0] + n.params[1] * n.params[1] +
+                           n.params[2] * n.params[2]);
+        cert = false;
+        break;
+      default:  // kGrid or unknown: no useful bound; never pruned
+        localR = Real(1e30);
+        cert = false;
+        break;
+    }
+    nb.c = n.transform.translation;  // canonical leaves are origin-centred
+    nb.r = n.transform.scale * localR;
+    nb.certified = cert;
+    return nb;
+  }
+  // CSG: children live in this node's frame.
+  const NodeBound<Real> a = nodeBound(sc, n.aux0);
+  const NodeBound<Real> b = nodeBound(sc, n.aux1);
+  NodeBound<Real> comb;
+  if (n.kind == kUnion) {
+    // enclosing sphere of the two child spheres; certified iff BOTH children are
+    const Vec3<Real> d = sub(b.c, a.c);
+    const Real dist = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+    if (dist + b.r <= a.r) {
+      comb.c = a.c;
+      comb.r = a.r;
+    } else if (dist + a.r <= b.r) {
+      comb.c = b.c;
+      comb.r = b.r;
+    } else {
+      const Real R = (dist + a.r + b.r) * Real(0.5);
+      const Real t = dist > Real(0) ? (R - a.r) / dist : Real(0);
+      comb.c = Vec3<Real>{a.c.x + d.x * t, a.c.y + d.y * t, a.c.z + d.z * t};
+      comb.r = R;
+    }
+    comb.certified = a.certified && b.certified;
+  } else {  // intersection / difference: the LEFT child's ball + certificate suffice
+    comb = a;
+  }
+  // apply this node's own transform to the child-frame bound
+  comb.c =
+      add(rotate(n.transform.rotation, scale(comb.c, n.transform.scale)), n.transform.translation);
+  comb.r *= n.transform.scale;
+  return comb;
+}
+
+}  // namespace query_detail
+
+/// World bounding sphere + certificate of one instance (host-side; used by candidate builds).
+template <class Real>
+inline InstanceBound<Real> instanceBound(const SceneView<Real>& sc, int i) {
+  InstanceBound<Real> ib;
+  if (i < 0 || i >= sc.instanceCount)
+    return ib;
+  const Instance<Real>& inst = sc.instances[i];
+  const query_detail::NodeBound<Real> nb = query_detail::nodeBound(sc, inst.shapeRoot);
+  ib.c = add(rotate(inst.transform.rotation, scale(nb.c, inst.transform.scale)),
+             inst.transform.translation);
+  ib.r = inst.transform.scale * nb.r;
+  ib.certified = nb.certified && nb.r < Real(1e29);
+  return ib;
+}
+
+/// Union over a candidate list + the always-list, min-image periodic. Exact when the list is a
+/// certified-argmin superset and every non-certified instance rides the always-list (see the
+/// header comment): min(min_certified-kept, min_always) == the full min.
+template <class Real>
+PECLET_HD Real evalSceneGrid(const SceneView<Real>& sc, Vec3<Real> p, const PeriodicBox<Real>& box,
+                             const CandidateGridView<Real>& g, const Real* boundR = nullptr) {
+  Real m = Real(1e9);
+  for (int k = 0; k < g.alwaysCount; ++k) {
+    const int i = g.always[k];
+    const Real d = evalInstancePeriodic(sc, i, p, box, boundR ? boundR[i] : Real(-1));
+    if (d < m)
+      m = d;
+  }
+  const long b = g.binOf(p);
+  if (b < 0) {  // out of coverage: full scan of the certified instances too
+    const Real full = evalScenePeriodic(sc, p, box, boundR);
+    return full < m ? full : m;
+  }
+  const int lo = g.offsets[b], hi = g.offsets[b + 1];
+  if (lo == hi) {
+    // An EMPTY certified list means no certified instance's band reached this bin — the far
+    // field — where a certified instance may still be the minimum. Fall back to the full scan
+    // (the always-list min in m composes via min; re-evaluating those instances is harmless).
+    // Returning only the always-list here was a bug: probes in uncovered bins got the distance
+    // to the nearest UNCERTIFIED body only.
+    const Real full = evalScenePeriodic(sc, p, box, boundR);
+    return full < m ? full : m;
+  }
+  for (int k = lo; k < hi; ++k) {
+    const int i = g.items[k];
+    const Real d = evalInstancePeriodic(sc, i, p, box, boundR ? boundR[i] : Real(-1));
+    if (d < m)
+      m = d;
+  }
+  return m;
+}
+
+/// Candidate grid for a GENERAL scene: certified instances splat Lipschitz bounds evaluated at
+/// bin centers within their inflated bounding-sphere band (the generateSdfKokkos pattern);
+/// non-certified instances go on the always-list. Bins outside every band keep empty lists and
+/// queries there fall back (exact). For sphere-only scenes prefer the SphereUnion path -- this
+/// build costs one instance eval per (instance, nearby bin).
+template <class Real>
+CandidateGrid<Real> buildSceneCandidateGrid(const SceneView<Real>& sc, Vec3<Real> origin,
+                                            Vec3<Real> extent, const PeriodicBox<Real>& box,
+                                            Real binSizeHint = 0) {
+  CandidateGrid<Real> g;
+  auto& m = g.meta;
+  // default bin ~ half the median certified bounding radius (mirrors the sphere build's target)
+  std::vector<InstanceBound<Real>> ib((std::size_t)sc.instanceCount);
+  g.instBoundR.resize((std::size_t)sc.instanceCount);
+  Real rSum = 0;
+  int nCert = 0;
+  for (int i = 0; i < sc.instanceCount; ++i) {
+    ib[(std::size_t)i] = instanceBound(sc, i);
+    g.instBoundR[(std::size_t)i] = ib[(std::size_t)i].r;
+    if (ib[(std::size_t)i].certified) {
+      rSum += ib[(std::size_t)i].r;
+      ++nCert;
+    } else {
+      g.always.push_back(i);
+    }
+  }
+  const Real rMean = nCert ? rSum / nCert : extent.x / 8;
+  const Real bin = binSizeHint > 0 ? binSizeHint : std::fmax(rMean * Real(0.5), extent.x / 96);
+  auto nbAxis = [&](Real L) {
+    int nb = static_cast<int>(L / bin);
+    return nb < 2 ? 2 : (nb > 96 ? 96 : nb);
+  };
+  m.nx = nbAxis(extent.x);
+  m.ny = nbAxis(extent.y);
+  m.nz = nbAxis(extent.z);
+  m.ox = origin.x;
+  m.oy = origin.y;
+  m.oz = origin.z;
+  m.bx = extent.x / m.nx;
+  m.by = extent.y / m.ny;
+  m.bz = extent.z / m.nz;
+  m.wrap = box.on;
+  const long nbins = (long)m.nx * m.ny * m.nz;
+  const Real halfDiag = Real(0.5) * std::sqrt(m.bx * m.bx + m.by * m.by + m.bz * m.bz);
+  const Real slack = Real(1e-12) * (extent.x + extent.y + extent.z);
+
+  auto binCenter = [&](long b) {
+    const long i = b % m.nx, j = (b / m.nx) % m.ny, k = b / ((long)m.nx * m.ny);
+    return Vec3<Real>{m.ox + (i + Real(0.5)) * m.bx, m.oy + (j + Real(0.5)) * m.by,
+                      m.oz + (k + Real(0.5)) * m.bz};
+  };
+  auto forEachBinNear = [&](const Vec3<Real>& c, Real reach, auto&& fn) {
+    const int riX = static_cast<int>(reach / m.bx) + 1;
+    const int riY = static_cast<int>(reach / m.by) + 1;
+    const int riZ = static_cast<int>(reach / m.bz) + 1;
+    const int ci = static_cast<int>(std::floor((c.x - m.ox) / m.bx));
+    const int cj = static_cast<int>(std::floor((c.y - m.oy) / m.by));
+    const int ck = static_cast<int>(std::floor((c.z - m.oz) / m.bz));
+    for (int dk = -riZ; dk <= riZ; ++dk)
+      for (int dj = -riY; dj <= riY; ++dj)
+        for (int di = -riX; di <= riX; ++di) {
+          long ii = ci + di, jj = cj + dj, kk = ck + dk;
+          if (m.wrap) {
+            ii = ((ii % m.nx) + m.nx) % m.nx;
+            jj = ((jj % m.ny) + m.ny) % m.ny;
+            kk = ((kk % m.nz) + m.nz) % m.nz;
+          } else if (ii < 0 || ii >= m.nx || jj < 0 || jj >= m.ny || kk < 0 || kk >= m.nz) {
+            continue;
+          }
+          fn(ii + (long)m.nx * (jj + (long)m.ny * kk));
+        }
+  };
+  // Certified instances are 1-Lipschitz (their periodic eval is the true torus distance to the
+  // body), so at a bin center bc: upper(B) = eval(bc) + halfDiag, lower(B) = eval(bc) - halfDiag.
+  //
+  // COVERAGE MUST BE TOTAL. A bounded per-instance splat reach reproduces the far-field bug this
+  // replaced: a bin beyond instance i's reach never membership-tests i, so its (non-empty) list
+  // can miss the true argmin — measured as O(1e-2) absolute distance errors in the far field.
+  // Every (bin, certified instance) pair is therefore evaluated once, row-cached per bin:
+  // U(B) = min_i (e_i + hd), keep i iff e_i - hd <= U(B). Cost = nbins x nCertified tree walks —
+  // fine for stirrer-scale scenes (~1e6 walks); MANY-instance scenes belong on the sphere-union
+  // path, and the build() wrapper refuses to build a general grid beyond a cost cap rather than
+  // silently taking minutes.
+  std::vector<int> certIdx;
+  certIdx.reserve((std::size_t)nCert);
+  for (int i = 0; i < sc.instanceCount; ++i)
+    if (ib[(std::size_t)i].certified)
+      certIdx.push_back(i);
+  std::vector<Real> row(certIdx.size());
+  std::vector<std::vector<int>> lists((std::size_t)nbins);
+  for (long b = 0; b < nbins; ++b) {
+    const Vec3<Real> bc = binCenter(b);
+    Real U = Real(1e300);
+    for (std::size_t k = 0; k < certIdx.size(); ++k) {
+      const int i = certIdx[k];
+      row[k] = evalInstancePeriodic(sc, i, bc, box, ib[(std::size_t)i].r);
+      const Real up = row[k] + halfDiag;
+      if (up < U)
+        U = up;
+    }
+    for (std::size_t k = 0; k < certIdx.size(); ++k)
+      if (row[k] - halfDiag <= U + slack)
+        lists[(std::size_t)b].push_back(certIdx[k]);
+  }
+  g.offsets.resize((std::size_t)nbins + 1);
+  g.offsets[0] = 0;
+  for (long b = 0; b < nbins; ++b)
+    g.offsets[(std::size_t)b + 1] =
+        g.offsets[(std::size_t)b] + static_cast<int>(lists[(std::size_t)b].size());
+  g.items.resize((std::size_t)g.offsets[(std::size_t)nbins]);
+  for (long b = 0; b < nbins; ++b)
+    std::copy(lists[(std::size_t)b].begin(), lists[(std::size_t)b].end(),
+              g.items.begin() + g.offsets[(std::size_t)b]);
+  return g;
+}
+
+/// The one POD every consumer captures: sphere-union fast path when the scene is a plain sphere
+/// union, general scene otherwise, candidate-accelerated in both modes, min-image periodic.
+/// Mode selection happens ONCE at build (SceneQueryDevice / SceneQueryHost), so numerics are
+/// deterministic per scene; the sphere path is fma-canonical (bitwise host==device), the general
+/// tree walk is judged by the sign+ULP rule across backends.
+template <class Real>
+struct SceneQueryView {
+  SphereUnionView<Real> u{};       // u.n > 0  => sphere fast path
+  SceneView<Real> scene{};         // otherwise: general scene
+  CandidateGridView<Real> grid{};  // offsets == nullptr => no acceleration
+  PeriodicBox<Real> box{};
+  const Real* instBoundR = nullptr;  // per-instance bounds (general periodic seam handling)
+
+  PECLET_HD Real eval(Vec3<Real> p) const {
+    if (u.n > 0)
+      return grid.offsets ? evalSphereUnionGrid(u, p, box, grid) : evalSphereUnion(u, p, box);
+    return grid.offsets ? evalSceneGrid(scene, p, box, grid, instBoundR)
+                        : evalScenePeriodic(scene, p, box, instBoundR);
+  }
+};
+
+/// Try to view a scene as a PLAIN sphere union: every instance a single kSphere leaf with a
+/// bitwise-identity node transform and a translation-only, scale-1, identity-rotation instance
+/// transform. Returns the centers/radii (world) or empty when any instance fails the test.
+template <class Real>
+inline bool extractSphereUnion(const SceneView<Real>& sc, std::vector<Real>& cx,
+                               std::vector<Real>& cy, std::vector<Real>& cz, std::vector<Real>& r) {
+  cx.clear();
+  cy.clear();
+  cz.clear();
+  r.clear();
+  auto identity = [](const Transform<Real>& t, bool allowTranslate) {
+    const bool q = t.rotation.x == Real(0) && t.rotation.y == Real(0) && t.rotation.z == Real(0) &&
+                   t.rotation.w == Real(1) && t.scale == Real(1);
+    const bool tr = allowTranslate || (t.translation.x == Real(0) && t.translation.y == Real(0) &&
+                                       t.translation.z == Real(0));
+    return q && tr;
+  };
+  for (int i = 0; i < sc.instanceCount; ++i) {
+    const Instance<Real>& inst = sc.instances[i];
+    if (inst.shapeRoot < 0 || inst.shapeRoot >= sc.nodeCount)
+      return false;
+    const ShapeNode<Real>& n = sc.nodes[inst.shapeRoot];
+    if (n.kind != kSphere || !identity(n.transform, false) || !identity(inst.transform, true))
+      return false;
+    cx.push_back(inst.transform.translation.x);
+    cy.push_back(inst.transform.translation.y);
+    cz.push_back(inst.transform.translation.z);
+    r.push_back(n.params[0]);
+  }
+  return !cx.empty();
 }
 
 // ---------------------------------------------------------------------------------------------
