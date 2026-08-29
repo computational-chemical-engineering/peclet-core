@@ -46,6 +46,7 @@
 #include "peclet/core/amr/pcg.hpp"
 #include "peclet/core/amr/poisson.hpp"
 #include "peclet/core/amr/velocity_mg.hpp"
+#include "peclet/core/common/host_parallel.hpp"
 #include "peclet/core/common/types.hpp"
 #include "peclet/core/common/view.hpp"
 
@@ -1536,12 +1537,15 @@ class AmrFlow {
       installGhostMeta();  // metadata for every ghost known so far (same-round hits read it)
       mom_.build(sdfFn, rho_ / dt_, beta);  // ±1 probes (also fills the extended sdfC/fluid)
       // FaceGeom probes: the full face enumeration + the SOU upstream-of-upwind ±2 reach.
-      for (Index i = 0; i < n; ++i)
+      // Host-parallel since the F1 resolution (miss registration is mutex-guarded and the miss
+      // SET is order-canonical — see LeafHalo::resolve); pure discovery, results discarded.
+      hostParFor(n, [&](Index i) {
         pres_.forEachFaceFull(i, [&](Index j, int ax, int dr, double, double, double) {
           (void)pres_.periodicNeighbor(i, ax, -dr);
           if (j >= 0)
             (void)pres_.periodicNeighbor(j, ax, dr);
         });
+      });
       // Overlay / directional-gradient ±2 chains (every cut cell is a non-clean overlay row,
       // so this covers buildGhostGradOverlay's probes too). Discovery only — result discarded.
       if (ghostProj_ || ghostGrad_) {

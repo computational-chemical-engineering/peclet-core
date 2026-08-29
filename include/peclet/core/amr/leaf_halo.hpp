@@ -42,6 +42,8 @@
 
 #include <array>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <vector>
 
@@ -128,7 +130,18 @@ class LeafHalo {
       return it->second;
     if (frozen_)
       throw std::runtime_error("amr::LeafHalo::resolve: unknown coord after finalize()");
-    misses_.emplace(gc, kPending);
+    // THREAD SAFETY (setup-parallel F1, resolved): resolve() may be called concurrently from
+    // the host-parallel builders. During a build pass the only mutation is THIS emplace —
+    // probeSlot_/anchorSlot_/ghost arrays change only in resolveMisses(), BETWEEN passes, and
+    // post-finalize the frozen_ check above makes the whole method mutation-free. Guarding the
+    // miss registration alone therefore makes every caller thread-safe. Determinism is free:
+    // misses_ is a coord-KEYED std::map, so resolveMisses() iterates in sorted-coord order and
+    // ghost-slot numbering depends only on the per-round miss SET, never on emplace order —
+    // any thread interleaving canonicalizes to the serial result bitwise.
+    {
+      std::lock_guard<std::mutex> lk(*missMx_);
+      misses_.emplace(gc, kPending);
+    }
     return kPending;
   }
 
@@ -291,6 +304,9 @@ class LeafHalo {
   std::map<CoordArr, Index> probeSlot_;   // wrapped probe coord → extended slot
   std::map<CoordArr, Index> anchorSlot_;  // canonical covering-leaf anchor → ghost id
   std::map<CoordArr, Index> misses_;      // pending coords (value unused; map for dedup+order)
+  // Miss-registration lock (see resolve()); unique_ptr keeps LeafHalo movable (AmrFlow's
+  // release() move-assigns the owner). Cold: taken only on a MISS, pre-freeze.
+  std::unique_ptr<std::mutex> missMx_ = std::make_unique<std::mutex>();
   std::vector<CoordArr> ghostCoords_;     // ghost id → anchor (global fine lo corner)
   std::vector<int> ghostLevels_;          // ghost id → covering-leaf level
   typename DO::GatherHaloTopology topo_;

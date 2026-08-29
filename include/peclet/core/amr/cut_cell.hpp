@@ -176,21 +176,14 @@ class AmrCutCell {
     off_.assign(static_cast<std::size_t>(n) * 6, 0.0);
     nb_.assign(static_cast<std::size_t>(n) * 6, -1);
 
-    // Host-parallel leaf loop (setup-parallel plan rung 3) — but ONLY when no distributed seam is
-    // installed. `neighbor()` goes through AmrPoisson::probeSlot, which in a distributed build
-    // calls `extResolve_` = LeafHalo::resolveGlobal — and that is a MISS-COLLECTING, NON-CONST
-    // resolver: an unknown coord is inserted into the halo's `misses_` map, which drives the
-    // discovery fixpoint in AmrFlow::prepareDistributed. Concurrent inserts corrupt it (measured:
-    // test_amr_distributed_momentum_mpi np=4 hung for >20 min). Plan §5.1/§5.4 — the distributed
-    // path keeps exactly today's serial behaviour; see docs/amr_setup_parallel_plan.md ## Findings.
-    const bool par = !extResolve_;
-    auto forLeaves = [&](auto&& body) {
-      if (par)
-        hostParFor(n, body);
-      else
-        for (Index i = 0; i < n; ++i)
-          body(i);
-    };
+    // Host-parallel leaf loop (setup-parallel plan rung 3; distributed included since the F1
+    // resolution). `neighbor()` goes through AmrPoisson::probeSlot, which in a distributed
+    // build calls `extResolve_` = LeafHalo::resolveGlobal; that path is now thread-safe — the
+    // miss registration (the ONLY mutation reachable from a build pass) is mutex-guarded, and
+    // the miss SET is order-canonical (coord-keyed std::map), so ghost numbering and the
+    // fixpoint's rounds are bitwise-identical to the serial build at any thread count. See
+    // LeafHalo::resolve and docs/amr_setup_parallel_plan.md ## Findings (F1 RESOLVED).
+    auto forLeaves = [&](auto&& body) { hostParFor(n, body); };
 
     // Pass 1: cell-centre SDF, κ (subsampled), fluid flag, neighbour indices.
     // Single-rank: every write is to leaf i's OWN slots (sdfC_[i], fluid_[i], kappa_[i],
