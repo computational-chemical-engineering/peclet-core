@@ -48,6 +48,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -110,6 +111,84 @@ inline bool gpsSolveDense(int n, double* A, double* b) {
     b[k] /= A[k * n + k];
   }
   return true;
+}
+
+/// DD1 (docs/amr_march_perf_and_distributed_plan.md) — the LS cloud's probe descent.
+///
+/// Enumerate the DISTINCT covering slots of every fine cell in the inclusive, unwrapped,
+/// block-local fine-coord box [lo, hi], reaching the octree through `pres.probeSlot` ALONE — never
+/// through a search over the local leaf array — so the enumerated set is a pure function of the
+/// octree and identical under any decomposition (the D6 discipline). Probe a region's lo corner;
+/// if the covering leaf contains the whole region, emit it; otherwise split the longest axis at
+/// the COARSEST power-of-two boundary inside it (so regions stay octree-aligned) and recurse.
+/// Terminal regions partition the box and each lies inside one leaf, so every leaf overlapping the
+/// box is emitted at least once — and a leaf straddling a split is emitted several times, so
+/// callers must dedup. Cost is O(#leaves overlapping the box) probes.
+///
+/// `wrapLocal(p)` returns the block-local coord of p's canonical (domain-wrapped) image — the
+/// probe frame's offset from the frame `pres.loOf` answers in.
+///
+/// A negative slot (LeafHalo::kPending during the distributed discovery fixpoint, or a
+/// non-periodic exit) is emitted as-is and its region is NOT descended in this round: the leaf's
+/// extent is unknown, and descending blindly would register one miss per fine cell. The next
+/// fixpoint round sees the coord resolved and descends properly, so the box is covered after as
+/// many rounds as the box spans octree levels.
+template <unsigned Bits, class WrapFn, class EmitFn>
+inline void forEachCoveringSlot(const AmrPoisson<3, Bits>& pres, const long lo[3], const long hi[3],
+                                WrapFn&& wrapLocal, EmitFn&& emit) {
+  struct Box {
+    long lo[3], hi[3];
+  };
+  constexpr int kMaxDepth = 192;
+  Box stack[kMaxDepth];
+  int top = 0;
+  for (int d = 0; d < 3; ++d) {
+    stack[0].lo[d] = lo[d];
+    stack[0].hi[d] = hi[d];
+  }
+  ++top;
+  while (top > 0) {
+    const Box r = stack[--top];
+    const std::array<long, 3> q{r.lo[0], r.lo[1], r.lo[2]};
+    const auto [slot, L] = pres.probeSlot(q);
+    if (slot < 0) {
+      emit(slot);
+      continue;
+    }
+    const std::array<long, 3> wq = wrapLocal(q);
+    const std::array<long, 3> llo = pres.loOf(slot);
+    const long s = static_cast<long>(1) << L;
+    bool covers = true;
+    for (int d = 0; d < 3; ++d) {
+      const long u = llo[d] + (r.lo[d] - wq[d]);  // the leaf's lo in the probe's frame
+      if (u + s - 1 < r.hi[d]) {
+        covers = false;
+        break;
+      }
+    }
+    if (covers) {
+      emit(slot);
+      continue;
+    }
+    int ax = 0;
+    for (int d = 1; d < 3; ++d)
+      if (r.hi[d] - r.lo[d] > r.hi[ax] - r.lo[ax])
+        ax = d;
+    // Coarsest 2^k boundary in (lo, hi]: the highest bit where lo and hi differ.
+    unsigned long long x = static_cast<unsigned long long>(r.lo[ax] ^ r.hi[ax]);
+    int k = 0;
+    while (x >>= 1)
+      ++k;
+    const long cut = ((r.lo[ax] >> k) + 1) << k;
+    if (top + 2 > kMaxDepth)
+      throw std::runtime_error("amr::forEachCoveringSlot: descent stack overflow");
+    stack[top] = r;
+    stack[top].hi[ax] = cut - 1;
+    ++top;
+    stack[top] = r;
+    stack[top].lo[ax] = cut;
+    ++top;
+  }
 }
 
 inline void gpsMonomials(const double d[3], int deg, double* m, int& nm) {
@@ -188,30 +267,54 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
     fluid[static_cast<std::size_t>(i)] = sdf(c) > 0.0 ? 1 : 0;
   });
 
-  // Hash bins over leaf centers for LS cloud gathering (bin 4*h0, periodic unit... the domain
-  // spans fineExt*h0 from origin; bin in fine units to stay geometry-agnostic).
+  // ---- DD1 (docs/amr_march_perf_and_distributed_plan.md): the LS cloud candidates are a
+  // DETERMINISTIC PROBE SET, not a search over the local leaf array.
+  //
+  // The set a cloud must contain is "every fluid leaf whose CENTER lies within rho of the sample
+  // position" — a pure function of (octree, geometry). The old hash-bin search enumerated it by
+  // walking THIS RANK's leaf array, which would make the cloud decomposition-DEPENDENT near a
+  // block boundary (D6 forbids that). It is now enumerated by `detail::forEachCoveringSlot`, a
+  // coordinate-space descent through `pres.probeSlot` — the route every other builder already uses
+  // to reach across ranks.
+  //
+  // ORDER is contractual: it fixes the floating-point value of the normal-matrix sums and hence
+  // the weights. The enumeration is therefore re-sorted into the OLD bin traversal order — bins of
+  // 4*h0 in (bx, by, bz) loop order, and within a bin ascending Morton code of the leaf's global
+  // lo corner. That is bit-for-bit the old order (the leaf array is Z-order sorted, so ascending
+  // code == ascending leaf index) and, unlike the leaf index, it is the same under any
+  // decomposition.
   const double hb = 4.0 * h0;
-  long nbx = 0;
-  {
-    // domain extent from the octree via a probe of the wrap in probeSlot is not exposed;
-    // derive from the max leaf bound at level 0 units.
-    long ext = 0;
-    for (Index i = 0; i < n; ++i) {
-      auto b = t.bounds(i);
-      for (int d = 0; d < 3; ++d)
-        ext = std::max(ext, static_cast<long>(b[1][d]));
-    }
-    nbx = std::max<long>(1, ext / 4);  // ext fine cells / 4 per bin
-  }
+  const auto fe = pres.fineExt();
+  const long nbx = std::max<long>(
+      1, static_cast<long>(std::max(std::max(fe[0], fe[1]), fe[2])) / 4);  // ext fine cells / 4
   const double domain = static_cast<double>(nbx) * hb;  // world extent (cubic domains)
-  std::vector<std::vector<Index>> bins(static_cast<std::size_t>(nbx * nbx * nbx));
-  for (Index i = 0; i < n; ++i) {
-    const Vec<3>& c = cen[static_cast<std::size_t>(i)];
-    long bx = static_cast<long>((c[0] - origin[0]) / hb) % nbx;
-    long by = static_cast<long>((c[1] - origin[1]) / hb) % nbx;
-    long bz = static_cast<long>((c[2] - origin[2]) / hb) % nbx;
-    bins[static_cast<std::size_t>((bz * nbx + by) * nbx + bx)].push_back(i);
-  }
+  // Probe frame ↔ octree frame. Single-rank the block IS the domain and the shift is zero; the
+  // distributed rungs (D1/D2) pass the block's global fine origin here.
+  const std::array<long, 3> gfine{static_cast<long>(fe[0]), static_cast<long>(fe[1]),
+                                  static_cast<long>(fe[2])};
+  const std::array<long, 3> shiftG{0, 0, 0};
+  auto wrapLocal = [gfine, shiftG](const std::array<long, 3>& p) {
+    std::array<long, 3> q{};
+    for (int d = 0; d < 3; ++d) {
+      const long g = p[d] + shiftG[d];
+      q[d] = ((g % gfine[d]) + gfine[d]) % gfine[d] - shiftG[d];
+    }
+    return q;
+  };
+  using Oct = BlockOctree<3, Bits>;
+  using Code = typename Oct::Code;
+  auto keyOf = [&](Index j) {
+    auto b = t.bounds(j);
+    std::array<typename Oct::Coord, 3> q{};
+    for (int d = 0; d < 3; ++d)
+      q[d] = static_cast<typename Oct::Coord>(static_cast<long>(b[0][d]) + shiftG[d]);
+    return Oct::M::encode(q).code();
+  };
+  struct Cand {
+    long bin;
+    Code key;
+    Index slot;
+  };
 
   // LS functional at world position p, degree deg, radius rho, scale H: returns the (idx, w)
   // list. Weight vector w_j = mono(d_j) . M^{-1} e0 with M the normal matrix.
@@ -219,7 +322,49 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
                           std::vector<Index>& idx, std::vector<double>& w) -> bool {
     idx.clear();
     w.clear();
+    // (1) every leaf overlapping the fine-cell box that contains the ball (a leaf whose center is
+    //     in the ball contains that center, so it overlaps the box).
+    const long qlo[3] = {static_cast<long>(std::floor((p[0] - origin[0] - rho) / h0)),
+                         static_cast<long>(std::floor((p[1] - origin[1] - rho) / h0)),
+                         static_cast<long>(std::floor((p[2] - origin[2] - rho) / h0))};
+    const long qhi[3] = {static_cast<long>(std::floor((p[0] - origin[0] + rho) / h0)),
+                         static_cast<long>(std::floor((p[1] - origin[1] + rho) / h0)),
+                         static_cast<long>(std::floor((p[2] - origin[2] + rho) / h0))};
+    std::vector<Index> slots;
+    detail::forEachCoveringSlot(pres, qlo, qhi, wrapLocal, [&](Index s) { slots.push_back(s); });
+    std::sort(slots.begin(), slots.end());
+    slots.erase(std::unique(slots.begin(), slots.end()), slots.end());
+    // (2) keep the fluid ones whose center is inside the ball (the old predicate, verbatim).
+    std::vector<Cand> cand;
+    cand.reserve(slots.size());
+    for (Index j : slots) {
+      if (j < 0 || j >= n)
+        continue;  // kPending / ghost slot: the distributed sample halo is rung D1/D2
+      if (!fluid[static_cast<std::size_t>(j)])
+        continue;
+      double r2 = 0;
+      for (int d = 0; d < 3; ++d) {
+        double del = cen[static_cast<std::size_t>(j)][d] - p[d];
+        if (del > 0.5 * domain)
+          del -= domain;
+        if (del < -0.5 * domain)
+          del += domain;
+        r2 += del * del;
+      }
+      if (r2 > rho * rho)
+        continue;
+      const Vec<3>& cj = cen[static_cast<std::size_t>(j)];
+      const long bx = static_cast<long>((cj[0] - origin[0]) / hb) % nbx;
+      const long by = static_cast<long>((cj[1] - origin[1]) / hb) % nbx;
+      const long bz = static_cast<long>((cj[2] - origin[2]) / hb) % nbx;
+      cand.push_back(Cand{(bz * nbx + by) * nbx + bx, keyOf(j), j});
+    }
+    std::sort(cand.begin(), cand.end(), [](const Cand& a, const Cand& b) {
+      return a.bin != b.bin ? a.bin < b.bin : a.key < b.key;
+    });
+    // (3) emit in the canonical bin traversal order.
     std::vector<Index> pts;
+    pts.reserve(cand.size());
     const long lo[3] = {static_cast<long>(std::floor((p[0] - origin[0] - rho) / hb)),
                         static_cast<long>(std::floor((p[1] - origin[1] - rho) / hb)),
                         static_cast<long>(std::floor((p[2] - origin[2] - rho) / hb))};
@@ -231,21 +376,11 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
         for (long bz = lo[2]; bz <= hi[2]; ++bz) {
           const long wx = (bx % nbx + nbx) % nbx, wy = (by % nbx + nbx) % nbx,
                      wz = (bz % nbx + nbx) % nbx;
-          for (Index j : bins[static_cast<std::size_t>((wz * nbx + wy) * nbx + wx)]) {
-            if (!fluid[static_cast<std::size_t>(j)])
-              continue;
-            double r2 = 0;
-            for (int d = 0; d < 3; ++d) {
-              double del = cen[static_cast<std::size_t>(j)][d] - p[d];
-              if (del > 0.5 * domain)
-                del -= domain;
-              if (del < -0.5 * domain)
-                del += domain;
-              r2 += del * del;
-            }
-            if (r2 <= rho * rho)
-              pts.push_back(j);
-          }
+          const long bl = (wz * nbx + wy) * nbx + wx;
+          auto it = std::lower_bound(cand.begin(), cand.end(), bl,
+                                     [](const Cand& c, long v) { return c.bin < v; });
+          for (; it != cand.end() && it->bin == bl; ++it)
+            pts.push_back(it->slot);
         }
     const int need = deg >= 2 ? 12 : 5;
     if (static_cast<long>(pts.size()) < need)
@@ -309,8 +444,9 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
   // Only ~13% of leaves become rows, so stages are allocated per accepted row (a null pointer for
   // every clean/solid leaf) rather than as a dense array.
   //
-  // NOTE the `bins` build above stays SERIAL on purpose: bin membership order sets the order the
-  // LS normal-matrix sums are accumulated, i.e. the floating-point value of the weights.
+  // NOTE the cloud's candidate ORDER sets the order the LS normal-matrix sums are accumulated,
+  // i.e. the floating-point value of the weights; DD1's canonical (bin, Morton) sort above pins it
+  // independently of both the thread schedule and the decomposition.
   struct RowStage {
     Index cell = 0;
     float rescale = 0.0f;
