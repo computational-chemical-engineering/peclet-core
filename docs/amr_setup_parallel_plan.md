@@ -5,7 +5,10 @@ abstraction-design rungs; rungs 1–5 are Opus execution). Companion to
 `amr_mixed_level_cut_band_plan.md` (the campaign this serves) and
 `../../docs/AMR_GEOMETRY_SETUP_REQUIREMENTS.md` §5–6 (the scene-layer handoff this builds on).*
 
-**Status: PLANNED — decisions D1–D4 below are settled by Fable; the rungs are execution.**
+**Status: DONE 2026-08-29 (rungs 0, 0.5, 1, 2, 3, 4, 5 all landed and pushed).
+`setSolid` on the depth-7 RCP bed: 10.5 → 2.4 µs/leaf at 8 threads, 1.7 at 16 — the ≤2.5
+target is met. One escalation, F1 (§Findings): the distributed path stays serial. See §6 for
+the measured result table.**
 
 ## 1. The measured starting point (the current denominator — do not reuse old numbers)
 
@@ -89,6 +92,12 @@ loops are rank-local and safe, but DO NOT restructure any distributed logic).
 
 ## 3. Rungs (commit per rung; every rung ends green and MEASURED)
 
+*Execution log — all landed on `main` (core / umbrella): rung 0 `f990828` / `747b383`,
+0.5 `c74cbee` / `9923dcc`, 1 `f586a9f` / `44d9d3c`, 2 `71a1e7a` / `d3983ec`,
+3 `7704bae` / `c8b09df` (carries finding F1), 4 `409ff48` / `d21419a`, 5 = this document +
+`../../docs/AMR_GEOMETRY_SETUP_REQUIREMENTS.md` §1a + `amr_mixed_level_cut_band_plan.md` P3c
+observation 4. The ctest count is now 149 (148 + `host_parallel`), so read gate (a) as 149/149.*
+
 Gates for every rung: (a) 148/148 core ctests on `build_komp3` (OpenMP battery:
 `OMP_NUM_THREADS=8 OMP_PROC_BIND=false`) and `build_kcuda2`; (b) `time_setsolid.py 7` bitwise
 mask vs `.sdf-campaign-probes/mask6_before.npy` at depth 6; (c) thread-count invariance:
@@ -137,6 +146,39 @@ in the commit message, measured at 1 and 8 threads.
   observation 4; memory hook. If ≤2.5 µs/leaf at 8 threads: DONE. The oracle
   (`flow_oracle.hpp`) shares the cf/overlay builders, so it speeds up for free — verify its
   ctests unchanged, do NOT add oracle-only pragmas beyond what it inherits.
+
+## 3a. Result (rung 5, measured 2026-08-29 — RTX 5080 host, 180-sphere RCP bed)
+
+Per-phase, depth 7 (1.79M leaves), µs/leaf. "before" is the rung-0 denominator; the parallel
+columns are the same build at different `OMP_NUM_THREADS`:
+
+| phase | before | 1 thr | 8 thr | 16 thr | rung |
+|---|---:|---:|---:|---:|---|
+| `mom_.build` | 2.4 | 2.6 | 0.4 | 0.2 | 3 (single-rank only, F1) |
+| `presMG_.build` | 2.4 | 2.4 | 0.3 | 0.2 | 2 |
+| cf overlays | 2.2 | 2.3 | 0.5 | 0.3 | 1 |
+| `buildOpenness` | 1.7 | 1.7 | 0.2 | 0.1 | 2 |
+| `buildGhostOverlaySampled` | 1.1 | 1.3 | 0.3 | 0.2 | 4 |
+| velocity MG build | 0.4 | 0.3 | 0.3 | 0.3 | — still serial |
+| `findPocketCells` | 0.2 | 0.2 | 0.2 | 0.2 | — still serial |
+| device assembly + uploads | 0.1 | 0.1 | 0.1 | 0.1 | — |
+| **total** | **10.5** | **10.9** | **2.4** | **1.7** | |
+
+Totals by depth (µs/leaf at 1 / 8 / 16 threads): depth 6 — 10.0 / 2.5 / 2.0; depth 7 —
+10.9 / 2.3 / 1.7; depth 8 (7.01M leaves) — / 2.4 / 1.8, i.e. `setSolid` in **16.9 s** at 8
+threads where the §1 projection had 95.6 s serial.
+
+The ~4% drift at 1 thread (10.5 → 10.9) is the two-pass restructures paying a second walk
+(the C/F uf slot count, the MG c2p split); it is repaid by ×2 threads.
+
+Every rung passed all four gates: 149/149 ctests on `build_komp3` and `build_kcuda2` (148 + the
+new `host_parallel`), depth-6 fluid mask bitwise vs `mask6_before.npy`, `set_solid` + 200 steps
+bitwise at 1 vs 16 threads, and the sampled overlay's build census unchanged to the last count.
+
+**Where the next µs are.** Loop parallelism is spent: the two largest remaining items are the
+serial velocity-MG build (0.3) and `findPocketCells` (0.2), and everything else is ≤0.5. The
+next lever is device-resident assembly (`amr_device_assembly_plan.md`, which D3 defers to) and,
+for cluster runs, F1's distributed resolver.
 
 ## 4. What Opus must know (traps, verbatim from the handoff + this campaign)
 

@@ -757,6 +757,16 @@ tol 1e-7, 330 steps each). Reading it honestly, four observations:
 4. *~77% of the billed 1h29 job was the serial host `setSolid`* (~34 min/arm of the ~44 min/arm
    total) — the scene-layer priority (AMR_GEOMETRY_SETUP_REQUIREMENTS.md), measured on the
    machine where it costs money.
+   **CLOSED 2026-08-29.** The scene layer took `setSolid` 127 → 10.5 µs/leaf, and
+   `amr_setup_parallel_plan.md` rungs 1–4 then put the five host builders on the Kokkos host
+   execution space: **10.5 → 2.4 µs/leaf at 8 threads, 1.7 at 16** (depth-7 RCP bed), all four
+   per-rung gates bitwise — same fluid mask, same overlay census, and `set_solid` + 200 steps
+   identical to the last bit at 1 vs 16 threads. Depth 8 `setSolid` is **16.9 s** at 8 threads,
+   down from 95.6 s. So a re-run of this job spends ~5.5× less of its bill on host setup; the
+   depth-9 rerun this observation was blocking is now worth doing. One caveat for a CLUSTER
+   re-run: the parallel path is SINGLE-RANK only — with a distributed seam installed
+   `AmrCutCell::build` stays serial (finding F1 in the setup-parallel plan), so a multi-rank arm
+   still pays the old setup cost.
 
 **The local-GPU limits that forced the cluster run (RTX 5080, 16 GB, display attached —
 environment, not code):**
