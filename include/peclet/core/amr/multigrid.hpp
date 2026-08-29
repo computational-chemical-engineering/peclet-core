@@ -37,6 +37,7 @@
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/fv_op.hpp"
 #include "peclet/core/amr/poisson.hpp"
+#include "peclet/core/common/host_parallel.hpp"
 #include "peclet/core/common/view.hpp"
 
 namespace peclet::core::amr {
@@ -273,13 +274,13 @@ class Multigrid {
       // Per-cell κ weight for the optional κ-weighted restriction = mean face aperture
       // (1 fully open ⇒ reduces to plain average; <1 near cuts).
       std::vector<double> kap(static_cast<std::size_t>(lv.n));
-      for (Index i = 0; i < lv.n; ++i) {
+      hostParFor(lv.n, [&](Index i) {  // per-cell disjoint (rung 2); the 2·Dim sum stays in-row
         double s = 0.0;
         for (int axis = 0; axis < Dim; ++axis)
           for (int dir = -1; dir <= 1; dir += 2)
             s += ap.faceOpenness(i, axis, dir);
         kap[static_cast<std::size_t>(i)] = s / static_cast<double>(2 * Dim);
-      }
+      });
       lv.kappa = toDevice(kap, "mg_kappa");
       lv.x = View<double>("mg_x", static_cast<std::size_t>(lv.n));
       lv.b = View<double>("mg_b", static_cast<std::size_t>(lv.n));
@@ -292,14 +293,16 @@ class Multigrid {
       const Index nf = f.numLeaves(), nc = c.numLeaves();
       std::vector<Index> c2p(static_cast<std::size_t>(nf));
       std::vector<Index> cnt(static_cast<std::size_t>(nc), 0);
+      // Covering-leaf construction: identical to ancestor(level+1)+find for merged children,
+      // and CORRECT (identity) for cells already at root level in mixed-depth ladders — the
+      // ancestor form maps those to the 2^(lmax+1)-aligned corner root cell instead (measured:
+      // 49/56 root rows mis-parented on a graded 16^3 ladder), and its alignment depends on
+      // the block origin, which would break the distributed WORLD==SELF transfer contract.
+      // Rung 2: the `find` (the expensive half) is per-fine-row disjoint and runs host-parallel;
+      // the child HISTOGRAM is many-to-one, so it stays serial — integer counts, unchanged.
+      hostParFor(nf, [&](Index i) { c2p[static_cast<std::size_t>(i)] = c.find(f.code(i)); });
       for (Index i = 0; i < nf; ++i) {
-        // Covering-leaf construction: identical to ancestor(level+1)+find for merged children,
-        // and CORRECT (identity) for cells already at root level in mixed-depth ladders — the
-        // ancestor form maps those to the 2^(lmax+1)-aligned corner root cell instead (measured:
-        // 49/56 root rows mis-parented on a graded 16^3 ladder), and its alignment depends on
-        // the block origin, which would break the distributed WORLD==SELF transfer contract.
-        Index p = c.find(f.code(i));
-        c2p[static_cast<std::size_t>(i)] = p;
+        const Index p = c2p[static_cast<std::size_t>(i)];
         if (p >= 0)
           ++cnt[static_cast<std::size_t>(p)];
       }
@@ -361,7 +364,7 @@ class Multigrid {
     const Index n = t.numLeaves();
     std::vector<std::vector<std::pair<Index, double>>> per(static_cast<std::size_t>(n));
     const double h0 = ap.h0();
-    for (Index i = 0; i < n; ++i) {
+    hostParFor(n, [&](Index i) {  // per[i]-disjoint (rung 2)
       const unsigned Li = t.level(i);
       const double invV = 1.0 / ap.cellVolume(i);
       ap.forEachFaceNeighbor(i, [&](Index j, Real c, int axis, double a) {
@@ -374,7 +377,7 @@ class Multigrid {
         addCoarseStarStencil(ap, t, per[static_cast<std::size_t>(i)], coarse, fine, axis, scale,
                              h0);
       });
-    }
+    });
     std::vector<Index> qs(static_cast<std::size_t>(n) + 1, 0);
     for (Index i = 0; i < n; ++i)
       qs[static_cast<std::size_t>(i) + 1] =

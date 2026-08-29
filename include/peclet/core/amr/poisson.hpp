@@ -35,6 +35,7 @@
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/face_csr.hpp"  // shared host+device FV (weight-CSR) row kernels
 #include "peclet/core/amr/leaf_field.hpp"
+#include "peclet/core/common/host_parallel.hpp"
 #include "peclet/core/common/types.hpp"
 
 namespace peclet::core::amr {
@@ -185,13 +186,16 @@ class AmrPoisson {
           alpha_[static_cast<std::size_t>(row) * kFaces + faceIndex(axis, dir)] = a;
         }
     };
-    for (Index i = 0; i < n; ++i) {
+    // Host-parallel (setup-parallel plan rung 2): leaf i writes only its own kFaces α slots and
+    // `openFn` is a pure function of the face centroid — disjoint writes, so α is bitwise
+    // identical under any thread count. Rank-local: the distributed contract is untouched.
+    hostParFor(n, [&](Index i) {
       auto b = t_->bounds(i);
       std::array<long, Dim> lo{};
       for (int d = 0; d < Dim; ++d)
         lo[d] = static_cast<long>(b[0][d]);
       fillRow(i, lo, 1L << t_->level(i));
-    }
+    });
     for (Index g = 0; g < ng; ++g)  // ghost α rows (distributed builds; empty single-rank)
       fillRow(n + g, ghostLo_[static_cast<std::size_t>(g)],
               1L << ghostLv_[static_cast<std::size_t>(g)]);
@@ -636,11 +640,13 @@ class AmrMultigrid {
       const Octree& f = levels_[L];
       const Octree& c = levels_[L + 1];
       c2p_[L].resize(static_cast<std::size_t>(f.numLeaves()));
-      for (Index i = 0; i < f.numLeaves(); ++i) {
+      // Host-parallel (rung 2): `find` is a pure binary search over the frozen coarse octree and
+      // each fine row owns one c2p slot — disjoint writes.
+      hostParFor(f.numLeaves(), [&](Index i) {
         // Covering-leaf c2p (see multigrid.hpp): == ancestor+find for merged children, correct
         // (identity) for root-level rows in mixed-depth ladders, block-alignment-independent.
         c2p_[L][static_cast<std::size_t>(i)] = c.find(f.code(i));
-      }
+      });
     }
   }
 
