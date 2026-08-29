@@ -269,5 +269,74 @@ int main() {
     }
   }
 
+  // --- rigid-body instance velocity (Layer 3 rung 2 primitive) ---------------------------------
+  {
+    // Two instances: one purely translating, one spinning about z with its centre hard against
+    // the periodic seam (0.9375 = 15/16, so every coordinate below is exact in binary and the
+    // checks can be equalities rather than tolerances).
+    const double cen[6] = {0.20, 0.20, 0.20, 0.9375, 0.5, 0.5};
+    const double lin[6] = {1.5, -0.5, 0.25, 0.0, 0.0, 0.0};
+    const double ang[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 3.0};
+    InstanceMotionView<double> m;
+    m.cen = cen;
+    m.lin = lin;
+    m.ang = ang;
+    m.n = 2;
+    const PeriodicBox<double> box{1.0, 1.0, 1.0, true};
+
+    // translation is position-independent
+    int bad = 0;
+    for (int t = 0; t < 200; ++t) {
+      const Vec3<double> p{rng.u(-1, 2), rng.u(-1, 2), rng.u(-1, 2)};
+      const Vec3<double> v = instanceVelocity(m, 0, p, box);
+      if (v.x != 1.5 || v.y != -0.5 || v.z != 0.25)
+        ++bad;
+    }
+    PECLET_CORE_CHECK(bad == 0);
+
+    // rotation about z: v = w x r with r the MIN-IMAGED lever arm
+    double worst = 0;
+    for (int t = 0; t < 2000; ++t) {
+      const Vec3<double> p{rng.u(0, 1), rng.u(0, 1), rng.u(0, 1)};
+      const Vec3<double> v = instanceVelocity(m, 1, p, box);
+      const Vec3<double> r = minImage(Vec3<double>{p.x - 0.9375, p.y - 0.5, p.z - 0.5}, box);
+      worst = std::fmax(worst, std::fabs(v.x - (-3.0 * r.y)));
+      worst = std::fmax(worst, std::fabs(v.y - (3.0 * r.x)));
+      worst = std::fmax(worst, std::fabs(v.z));
+    }
+    PECLET_CORE_CHECK(worst == 0.0);  // exact: the same two products either way
+
+    // THE SEAM CASE. Probe at x=0.0625 with the spin centre at x=0.9375: the raw lever arm is
+    // -0.875 (the long way round the box) while the true one is +0.125. Those give tangential
+    // velocities of OPPOSITE SIGN and 7x the magnitude -- the silent failure the min-image in
+    // instanceVelocity exists to prevent.
+    {
+      const Vec3<double> p{0.0625, 0.5, 0.5};
+      const Vec3<double> v = instanceVelocity(m, 1, p, box);
+      PECLET_CORE_CHECK(v.y == 3.0 * 0.125);
+      PECLET_CORE_CHECK(v.y * (3.0 * -0.875) < 0.0);  // the naive answer has the other sign
+      // the same material point one box over must move identically
+      const Vec3<double> pFar{1.0625, 0.5, 0.5};
+      const Vec3<double> vFar = instanceVelocity(m, 1, pFar, box);
+      PECLET_CORE_CHECK(vFar.x == v.x && vFar.y == v.y && vFar.z == v.z);
+      std::printf(
+          "  instance velocity      translation exact, rotation exact over 2000 probes; seam lever "
+          "arm min-imaged (v_y=%.4f, naive would be %.4f)\n",
+          v.y, 3.0 * -0.875);
+    }
+
+    // a scene with no motion must be recognisable as static WITHOUT evaluating anything
+    const double zero[6] = {0, 0, 0, 0, 0, 0};
+    InstanceMotionView<double> z;
+    z.cen = cen;
+    z.lin = zero;
+    z.ang = zero;
+    z.n = 2;
+    PECLET_CORE_CHECK(motionIsStatic(z));
+    PECLET_CORE_CHECK(!motionIsStatic(m));
+    InstanceMotionView<double> none;
+    PECLET_CORE_CHECK(motionIsStatic(none));
+  }
+
   PECLET_CORE_RETURN_TEST_RESULT();
 }

@@ -217,6 +217,16 @@ class SceneBuilder {
   const std::vector<float>& samples() const { return pool_; }
   const std::vector<Instance<Real>>& instances() const { return instances_; }
 
+  /// Mutable access to one placed instance -- how a MOVING scene advances: a driver updates the
+  /// transform (and linVel/angVel/center) in place and re-derives the geometry, instead of
+  /// re-encoding and re-decoding the whole scene every step. Nodes stay immutable: only the
+  /// placement moves.
+  Instance<Real>& instanceRef(int i) {
+    if (i < 0 || i >= static_cast<int>(instances_.size()))
+      throw std::out_of_range("SceneBuilder::instanceRef: index out of range");
+    return instances_[static_cast<std::size_t>(i)];
+  }
+
   // --- flat encoding out / in (the binding boundary) -------------------------------------------
 
   void encode(std::vector<int>& nodeInts, std::vector<Real>& nodeReals, std::vector<int>& instInts,

@@ -887,6 +887,91 @@ PECLET_HD int sceneOwnerGrid(const SceneView<Real>& sc, Vec3<Real> p, const Peri
   return own;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Rigid-body instance motion (Layer 3 rung 2 of suite/docs/ANALYTIC_SDF_GEOMETRY.md)
+//
+// The kinematic half of moving geometry: given the owner of a wall point (above), what velocity
+// does that wall carry? Kept here, beside the query it pairs with, so every consumer -- flow's
+// staggered momentum operator today, the AMR solver when its campaign resumes -- reads the same
+// rigid-body law instead of re-deriving it.
+// ---------------------------------------------------------------------------------------------
+
+/// Non-owning, POD, device-copyable rigid-body motion state for a scene's instances. All three
+/// arrays are 3*n, x-fastest per instance. `cen` is the instance's world centre of rotation (its
+/// transform translation); a null `lin`/`ang` reads as zero, which is what keeps a STATIC scene on
+/// exactly the old code path.
+template <class Real>
+struct InstanceMotionView {
+  const Real* cen = nullptr;  // 3*n world centres of rotation
+  const Real* lin = nullptr;  // 3*n linear velocities
+  const Real* ang = nullptr;  // 3*n angular velocities
+  int n = 0;
+};
+
+/// Velocity of the material point of instance i currently at world point p:
+///   v = lin_i + ang_i x (p - c_i)
+///
+/// PERIODICITY. The lever arm is MIN-IMAGED. A body can own a wall point across a periodic seam
+/// (that is exactly what the seam-image enumeration in evalInstancePeriodic exists for), and the
+/// raw p - c_i is then a full box length wrong -- which for a rotating body is not a small error
+/// but an O(L*|ang|) wall velocity pointing the wrong way, concentrated on the cells the seam
+/// cuts. Translation is unaffected, so this only ever bites the rotational case, silently.
+template <class Real>
+PECLET_HD Vec3<Real> instanceVelocity(const InstanceMotionView<Real>& m, int i, Vec3<Real> p,
+                                      const PeriodicBox<Real>& box) {
+  Vec3<Real> v{0, 0, 0};
+  if (i < 0 || i >= m.n)
+    return v;
+  if (m.lin) {
+    v.x = m.lin[3 * i + 0];
+    v.y = m.lin[3 * i + 1];
+    v.z = m.lin[3 * i + 2];
+  }
+  if (!m.ang || !m.cen)
+    return v;
+  const Real wx = m.ang[3 * i + 0], wy = m.ang[3 * i + 1], wz = m.ang[3 * i + 2];
+  if (wx == Real(0) && wy == Real(0) && wz == Real(0))
+    return v;
+  const Vec3<Real> r = minImage(
+      Vec3<Real>{p.x - m.cen[3 * i + 0], p.y - m.cen[3 * i + 1], p.z - m.cen[3 * i + 2]}, box);
+  v.x += wy * r.z - wz * r.y;
+  v.y += wz * r.x - wx * r.z;
+  v.z += wx * r.y - wy * r.x;
+  return v;
+}
+
+/// Project a probe onto the zero level set along the local gradient: w = p - sdf(p) * n_hat.
+/// `grad` need not be normalised (it usually arrives as a raw central difference of a sampled
+/// field). Exact for an exact-distance field; O(h) for a sampled one, which is the accuracy of the
+/// wall point the v1 moving-geometry path places. Degenerate gradients (inside a solid pocket, or
+/// at a medial axis where the central difference cancels) return p unchanged rather than a NaN --
+/// the consumer then reads a wall velocity at the probe itself, which is the right fallback for a
+/// rigid body (v varies only over the lever arm) and a bounded one for any body.
+template <class Real>
+PECLET_HD Vec3<Real> wallPoint(Vec3<Real> p, Real sdf, Vec3<Real> grad) {
+  namespace cd = peclet::core::detail;
+  const Real g2 = cd::hdFma(grad.z, grad.z, cd::hdFma(grad.y, grad.y, grad.x * grad.x));
+  if (!(g2 > Real(0)))
+    return p;
+  const Real s = sdf / cd::hdSqrt(g2);
+  return Vec3<Real>{p.x - s * grad.x, p.y - s * grad.y, p.z - s * grad.z};
+}
+
+/// True when no instance carries motion -- the predicate a consumer uses to keep the static path
+/// bit-identical rather than "moving with zero velocity".
+template <class Real>
+inline bool motionIsStatic(const InstanceMotionView<Real>& m) {
+  if (m.n <= 0)
+    return true;
+  for (int i = 0; i < 3 * m.n; ++i) {
+    if (m.lin && m.lin[i] != Real(0))
+      return false;
+    if (m.ang && m.ang[i] != Real(0))
+      return false;
+  }
+  return true;
+}
+
 /// The one POD every consumer captures: sphere-union fast path when the scene is a plain sphere
 /// union, general scene otherwise, candidate-accelerated in both modes, min-image periodic.
 /// Mode selection happens ONCE at build (SceneQueryDevice / SceneQueryHost), so numerics are
