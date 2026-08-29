@@ -256,6 +256,14 @@ target_link_libraries(test_geom_body PRIVATE tpx_core)
 target_include_directories(test_geom_body PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME geom_body COMMAND test_geom_body)
 
+# Analytic tree gradients (evalTreeGrad): value bit-parity with evalTree, chain-rule exactness,
+# O(h^2) FD agreement on smooth regions, and the RIDGE demonstration (exact face normal where a
+# central difference smears by tens of degrees).
+add_executable(test_geom_tree_grad test_geom_tree_grad.cpp)
+target_link_libraries(test_geom_tree_grad PRIVATE tpx_core)
+target_include_directories(test_geom_tree_grad PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME geom_tree_grad COMMAND test_geom_tree_grad)
+
 add_executable(test_sdf test_sdf.cpp)
 target_link_libraries(test_sdf PRIVATE tpx_core)
 target_include_directories(test_sdf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

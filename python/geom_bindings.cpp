@@ -223,6 +223,31 @@ NB_MODULE(geom, m) {
           nb::arg("root"), nb::arg("points"),
           "Signed distance of ONE subtree, in its own canonical frame, at (N,3) points.")
       .def(
+          "eval_root_grad",
+          [](PyScene& s, int root, nb::ndarray<double, nb::shape<-1, 3>, nb::c_contig> pts) {
+            const g::SceneView<double> sv = s.b.view();
+            if (root < 0 || root >= sv.nodeCount)
+              throw std::out_of_range("root node index out of range");
+            const std::size_t n = pts.shape(0);
+            std::vector<double> val(n), grd(3 * n);
+            const double* p = pts.data();
+            for (std::size_t i = 0; i < n; ++i) {
+              Vec3<double> gv;
+              val[i] = g::evalTreeGrad<double>(
+                  g::TablePtr<g::ShapeNode<double>>{sv.nodes}, sv.nodeCount, root,
+                  Vec3<double>{p[3 * i], p[3 * i + 1], p[3 * i + 2]},
+                  g::TablePtr<g::GridDesc<double>>{sv.grids}, g::PoolPtr<float>{sv.samples}, gv);
+              grd[3 * i] = gv.x;
+              grd[3 * i + 1] = gv.y;
+              grd[3 * i + 2] = gv.z;
+            }
+            return nb::make_tuple(toArray(std::move(val), {n}), toArray(std::move(grd), {n, 3}));
+          },
+          nb::arg("root"), nb::arg("points"),
+          "Value AND analytic gradient of one subtree at (N,3) canonical points, one traversal: "
+          "(values (N,), gradients (N,3), unnormalised). At CSG ridges the gradient is the ACTIVE "
+          "branch's exact normal (deterministic left tie-break), not a finite-difference smear.")
+      .def(
           "bake",
           [](PyScene& s, int root, std::array<double, 3> origin, std::array<double, 3> spacing,
              std::array<int, 3> dims) {

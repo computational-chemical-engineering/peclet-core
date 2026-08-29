@@ -304,6 +304,150 @@ PECLET_HD Real evalTree(const Nodes& nodes, int nodeCount, int root, Vec3<Real> 
   return result;
 }
 
+/// Closed-form gradient of one leaf in its canonical frame (unnormalised, mirroring the prim::*
+/// contracts). kGrid has no closed form: a leaf-LOCAL central difference over sampleGrid at half
+/// a lattice spacing per axis -- confined to the one leaf, unlike the old whole-tree difference.
+template <class Real, class Grids, class Pool>
+PECLET_HD Vec3<Real> leafGrad(const ShapeNode<Real>& n, Vec3<Real> p, const Grids& grids,
+                              const Pool& pool) {
+  switch (n.kind) {
+    case kSphere:
+      return prim::Sphere<Real>{n.params[0]}.grad(p);
+    case kBox:
+      return prim::Box<Real>{n.params[0], n.params[1], n.params[2]}.grad(p);
+    case kHollowCylinder:
+      return prim::HollowCylinder<Real>{n.params[0], n.params[1], n.params[2]}.grad(p);
+    case kHollowCylinderShell:
+      return prim::HollowCylinderShell<Real>{n.params[0], n.params[1], n.params[2]}.grad(p);
+    case kCapsule:
+      return prim::Capsule<Real>{n.params[0], n.params[1]}.grad(p);
+    case kTorus:
+      return prim::Torus<Real>{n.params[0], n.params[1]}.grad(p);
+    case kCone:
+      return prim::Cone<Real>{n.params[0], n.params[1], n.params[2]}.grad(p);
+    case kEllipsoid:
+      return prim::Ellipsoid<Real>{n.params[0], n.params[1], n.params[2]}.grad(p);
+    case kSuperquadric:
+      return prim::Superquadric<Real>{n.params[0], n.params[1], n.params[2], n.params[3]}.grad(p);
+    case kGrid: {
+      const GridDesc<Real>& d = grids(n.aux0);
+      const Real hx = Real(0.5) / d.invSpacing.x, hy = Real(0.5) / d.invSpacing.y,
+                 hz = Real(0.5) / d.invSpacing.z;
+      return Vec3<Real>{
+          (sampleGrid(Vec3<Real>{p.x + hx, p.y, p.z}, d, pool) -
+           sampleGrid(Vec3<Real>{p.x - hx, p.y, p.z}, d, pool)) /
+              (Real(2) * hx),
+          (sampleGrid(Vec3<Real>{p.x, p.y + hy, p.z}, d, pool) -
+           sampleGrid(Vec3<Real>{p.x, p.y - hy, p.z}, d, pool)) /
+              (Real(2) * hy),
+          (sampleGrid(Vec3<Real>{p.x, p.y, p.z + hz}, d, pool) -
+           sampleGrid(Vec3<Real>{p.x, p.y, p.z - hz}, d, pool)) /
+              (Real(2) * hz)};
+    }
+    default:
+      return Vec3<Real>{0, 0, 0};
+  }
+}
+
+/// evalTree WITH its analytic gradient, one traversal (Layer 0's runtime layer catching up with
+/// the compile-time leaves' exact grads). Returns the value -- computed with evalTree's own
+/// expressions in evalTree's own order, so the two never disagree -- and fills `grad`
+/// (unnormalised, in p's frame).
+///
+/// THE CHAIN RULE COSTS ONE ROTATION PER NODE. For v = s * f(invRotate(q, p - t) / s) the scale
+/// cancels: grad_p v = rotate(q, grad f). So the gradient rides the same stack as the value, each
+/// pop rotating it into the parent frame.
+///
+/// RIDGES (CSG edges). min/max is a SELECTION: the gradient of the active branch, chosen by the
+/// SAME comparison the value makes (ties keep the left branch, deterministically). At the edge of
+/// a difference this returns one face's EXACT normal -- where a central difference across the
+/// tree smears the two faces into an average that belongs to neither, which is precisely the
+/// failure mode for contact normals on composed particles with sharp features. The gradient is
+/// discontinuous across the ridge because the geometry is; a smeared normal is not a smoother
+/// answer, it is a wrong one.
+template <class Real, class Nodes, class Grids, class Pool>
+PECLET_HD Real evalTreeGrad(const Nodes& nodes, int nodeCount, int root, Vec3<Real> p,
+                            const Grids& grids, const Pool& pool, Vec3<Real>& grad) {
+  struct Frame {
+    int node;
+    int stage;
+    Vec3<Real> can;
+    Real scale;
+    Real left;
+    Vec3<Real> leftGrad;
+  };
+  Frame stack[kMaxTreeDepth];
+  int sp = 0;
+  Real result = Real(1e9);
+  Vec3<Real> resultGrad{0, 0, 0};
+  grad = resultGrad;
+
+  if (root < 0 || root >= nodeCount)
+    return result;
+
+  {
+    const auto& n = nodes(root);
+    stack[0] = Frame{root, 0, toCanonical(n.transform, p), n.transform.scale, Real(0),
+                     Vec3<Real>{0, 0, 0}};
+    sp = 1;
+  }
+
+  while (sp > 0) {
+    Frame& f = stack[sp - 1];
+    const auto& n = nodes(f.node);
+
+    if (n.kind < kCsgBase) {  // leaf: value + closed-form gradient, rotated into the parent frame
+      result = f.scale * evalLeaf(n, f.can, grids, pool);
+      resultGrad = rotate(n.transform.rotation, leafGrad(n, f.can, grids, pool));
+      --sp;
+    } else if (f.stage == 0) {
+      if (n.aux0 < 0 || n.aux0 >= nodeCount || sp >= kMaxTreeDepth) {
+        grad = Vec3<Real>{0, 0, 0};
+        return Real(1e9);
+      }
+      f.stage = 1;
+      const auto& c = nodes(n.aux0);
+      stack[sp] = Frame{n.aux0, 0, toCanonical(c.transform, f.can), c.transform.scale, Real(0),
+                        Vec3<Real>{0, 0, 0}};
+      ++sp;
+      continue;
+    } else if (f.stage == 1) {
+      if (n.aux1 < 0 || n.aux1 >= nodeCount || sp >= kMaxTreeDepth) {
+        grad = Vec3<Real>{0, 0, 0};
+        return Real(1e9);
+      }
+      f.left = result;
+      f.leftGrad = resultGrad;
+      f.stage = 2;
+      const auto& c = nodes(n.aux1);
+      stack[sp] = Frame{n.aux1, 0, toCanonical(c.transform, f.can), c.transform.scale, Real(0),
+                        Vec3<Real>{0, 0, 0}};
+      ++sp;
+      continue;
+    } else {  // combine: same value expressions as evalTree; gradient = the active branch's
+      const Real l = f.left, r = result;
+      Real combined;
+      Vec3<Real> g;
+      if (n.kind == kUnion) {
+        combined = detail::hdMin(l, r);
+        g = (l <= r) ? f.leftGrad : resultGrad;
+      } else if (n.kind == kIntersection) {
+        combined = detail::hdMax(l, r);
+        g = (l >= r) ? f.leftGrad : resultGrad;
+      } else {  // kDifference: max(l, -r); the right branch's gradient enters NEGATED
+        combined = detail::hdMax(l, -r);
+        g = (l >= -r) ? f.leftGrad
+                      : Vec3<Real>{-resultGrad.x, -resultGrad.y, -resultGrad.z};
+      }
+      result = f.scale * combined;
+      resultGrad = rotate(n.transform.rotation, g);
+      --sp;
+    }
+  }
+  grad = resultGrad;
+  return result;
+}
+
 /// Signed distance of ONE instance at world point p. The instance transform maps world -> the
 /// tree's frame and its scale carries the result back, composing with each node's own transform
 /// exactly as nested nodes do.
