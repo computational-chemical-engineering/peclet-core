@@ -168,3 +168,47 @@ in the commit message, measured at 1 and 8 threads.
    possibly the flow/dem owners) must look at, not something to patch around.
 Escalations go in "## Findings" here + the memory file (`amr-mixed-level-cut-band-plan`), so a
 Fable session picks them up with context.
+
+## Findings
+
+### F1 (rung 3, 2026-08-29) — the DISTRIBUTED seam resolver is not thread-safe: `AmrCutCell::build` stays serial on multi-rank
+
+**The loop.** `AmrCutCell::build` Pass 1 (`cut_cell.hpp`), `nb_[6i+k] = neighbor(i, k)`.
+
+**The dependency.** `neighbor()` → `AmrPoisson::periodicNeighbor` → `AmrPoisson::probeSlot`, and
+`probeSlot` calls `extResolve_(p)` for any coord outside the block. In a distributed build that
+callable is `LeafHalo::resolveGlobal` (`leaf_halo.hpp:136` → `resolve`), which is **non-const and
+mutating**: an unknown coord is `misses_.emplace(gc, kPending)`'d into the halo's miss map. That
+map is what drives the discovery fixpoint in `AmrFlow::prepareDistributed`
+(`for (;;) { build; if (dhalo_.resolveMisses() == 0) break; }`). So the loop body has hidden
+shared mutable state — the plan's §5.1 trigger, arriving through a callback rather than through
+the loop's own indices.
+
+**The measurement.** With Pass 1/Pass 2 parallel unconditionally, `build_kcuda2`'s
+`amr_distributed_momentum_np4` hung: >21 minutes wall (the same test passes in ~0.5 s), four
+`prterun` ranks alive and spinning, no output. Consistent with a corrupted `std::map` under
+concurrent `emplace`. Single-rank gates (mask parity, thread invariance, both host batteries'
+serial tests) were all green — the race is only reachable through the seam.
+
+**What was done (not a workaround for the numerics — a scope boundary).** `build` now dispatches
+its two leaf loops through a local `forLeaves`: `hostParFor` when `extResolve_` is null
+(single-rank — `probeSlot` is then a pure wrap + `BlockOctree::find`), the plain serial `for`
+when a resolver is installed. The distributed path therefore executes *exactly* today's code,
+which is what §D4/§5.4 require; multi-rank setup gets no speedup from this rung.
+
+**What a Fable session should decide.** Making the distributed path parallel needs the resolver
+to be parallel-safe. Two shapes, neither attempted here:
+1. *Split discovery from use.* Keep one serial probe-collecting round (the fixpoint's purpose)
+   and make the FINAL round — the one that actually fills `nb_`/`sdfC_` with every ghost already
+   resolved — use `LeafHalo::lookup` (already `const`, throws on an unknown coord) instead of
+   `resolve`. The final round is the expensive one, so this recovers nearly all of the rung.
+2. *Per-thread miss buffers* merged after the loop. Simple, but the miss set's iteration order
+   feeds `resolveMisses`'s collective — the merge would have to restore a canonical order or the
+   ghost-slot numbering could differ from the serial one across ranks.
+Note the same resolver is reachable from `AmrPoisson::forEachFaceNeighbor` / `forEachFaceFull`,
+so it constrains any future parallelization of a builder that walks faces on the distributed
+path. The rung-1 C/F builders are unaffected (`AmrFlow::setSolid` throws for
+`dist_ && cfScheme_ != standard`, so they never run multi-rank) and so is rung 4
+(`setGhostSampled` is single-rank-guarded); rung 2's `buildOpenness` is safe because the
+distributed `openFn`s are pure functions of the face centroid and the loop itself reads only
+`t_->bounds`.

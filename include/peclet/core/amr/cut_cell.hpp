@@ -29,6 +29,7 @@
 #include "peclet/core/amr/face_csr.hpp"  // shared host+device assembled-operator row kernels
 #include "peclet/core/amr/leaf_field.hpp"
 #include "peclet/core/amr/poisson.hpp"
+#include "peclet/core/common/host_parallel.hpp"
 #include "peclet/core/common/types.hpp"
 
 namespace peclet::core::amr {
@@ -175,8 +176,28 @@ class AmrCutCell {
     off_.assign(static_cast<std::size_t>(n) * 6, 0.0);
     nb_.assign(static_cast<std::size_t>(n) * 6, -1);
 
+    // Host-parallel leaf loop (setup-parallel plan rung 3) — but ONLY when no distributed seam is
+    // installed. `neighbor()` goes through AmrPoisson::probeSlot, which in a distributed build
+    // calls `extResolve_` = LeafHalo::resolveGlobal — and that is a MISS-COLLECTING, NON-CONST
+    // resolver: an unknown coord is inserted into the halo's `misses_` map, which drives the
+    // discovery fixpoint in AmrFlow::prepareDistributed. Concurrent inserts corrupt it (measured:
+    // test_amr_distributed_momentum_mpi np=4 hung for >20 min). Plan §5.1/§5.4 — the distributed
+    // path keeps exactly today's serial behaviour; see docs/amr_setup_parallel_plan.md ## Findings.
+    const bool par = !extResolve_;
+    auto forLeaves = [&](auto&& body) {
+      if (par)
+        hostParFor(n, body);
+      else
+        for (Index i = 0; i < n; ++i)
+          body(i);
+    };
+
     // Pass 1: cell-centre SDF, κ (subsampled), fluid flag, neighbour indices.
-    for (Index i = 0; i < n; ++i) {
+    // Single-rank: every write is to leaf i's OWN slots (sdfC_[i], fluid_[i], kappa_[i],
+    // nb_[6i..6i+5]) and sdfFn is a pure geometry query — the disjoint-write pattern,
+    // bitwise-invariant under any thread count. Pass 2 reads NEIGHBOURS' sdfC_, so it must be a
+    // separate parallel region (the shim fences between them).
+    forLeaves([&](Index i) {
       Vec<3> c = cellCenter(i);
       double sc = sdfFn(c);
       sdfC_[static_cast<std::size_t>(i)] = sc;
@@ -184,7 +205,7 @@ class AmrCutCell {
       kappa_[static_cast<std::size_t>(i)] = volumeFraction(i, sdfFn, nsub);
       for (int k = 0; k < 6; ++k)
         nb_[static_cast<std::size_t>(i) * 6 + k] = neighbor(i, k);
-    }
+    });
     // Ghost metadata (distributed): the SAME world SdfFn sampled at the ghost cell centre in
     // the GLOBAL frame — bit-identical to the owner's Pass-1 sample of that leaf, so the
     // ξ-classifications (and hence the CSR coefficients) agree across ranks exactly.
@@ -201,12 +222,13 @@ class AmrCutCell {
 
     // Pass 2: build per-leaf stencil.
     const double AC0 = idiag + 6.0 * beta;
-    for (Index i = 0; i < n; ++i) {
+    forLeaves([&](Index i) {  // own-leaf slots only (rung 3, Fable-pre-cleared: no
+                              // neighbour-indexed stores in this body)
       if (!fluid_[static_cast<std::size_t>(i)]) {  // solid: identity row u=0
         AC_[static_cast<std::size_t>(i)] = 1.0;
         for (int k = 0; k < 6; ++k)
           off_[static_cast<std::size_t>(i) * 6 + k] = 0.0;
-        continue;
+        return;
       }
       double sdf_n[6];
       bool anyGhost = false;
@@ -229,7 +251,7 @@ class AmrCutCell {
         off_[static_cast<std::size_t>(i) * 6 + k] = off[k];
       rscale_[static_cast<std::size_t>(i)] = rscale;
       inhom_[static_cast<std::size_t>(i)] = inhomCoef;
-    }
+    });
   }
 
   /// The assembled linear operator A as a per-cell diagonal + face CSR:
