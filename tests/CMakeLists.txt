@@ -11,6 +11,14 @@ target_link_libraries(test_graph_amg PRIVATE tpx_core)
 target_include_directories(test_graph_amg PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME graph_amg COMMAND test_graph_amg)
 
+# Host-parallel shim (common/host_parallel.hpp): serial ≡ parallel BITWISE on a disjoint-write
+# fill, an integer exclusive scan, and a two-pass CSR fill at the scanned offsets. Runs the Kokkos
+# host space when Kokkos is in the build tree, the serial fallback otherwise — both are gated.
+add_executable(test_host_parallel test_host_parallel.cpp)
+target_link_libraries(test_host_parallel PRIVATE tpx_core)
+target_include_directories(test_host_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME host_parallel COMMAND test_host_parallel)
+
 # Morton/Z-order cell indexer (inert unless PECLET_CORE_HAVE_MORTON — set on tpx_core when
 # the morton sibling checkout is present).
 add_executable(test_morton_indexer test_morton_indexer.cpp)
