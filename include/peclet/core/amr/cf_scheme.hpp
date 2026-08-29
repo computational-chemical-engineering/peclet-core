@@ -47,6 +47,7 @@
 
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/poisson.hpp"
+#include "peclet/core/common/host_parallel.hpp"
 #include "peclet/core/common/types.hpp"
 
 namespace peclet::core::amr {
@@ -232,9 +233,12 @@ inline CfCsr buildCfLapDelta(const AmrPoisson<3, Bits>& ap, const BlockOctree<3,
                              double factor, RowFn&& rowOk, FluidFn&& fluidOk, CfScheme scheme) {
   const Index n = t.numLeaves();
   std::vector<std::vector<detail::ScalarEnt>> per(static_cast<std::size_t>(n));
-  for (Index i = 0; i < n; ++i) {
+  // Host-parallel (setup-parallel plan rung 1): row i writes ONLY per[i] and reads only the frozen
+  // octree/openness — disjoint writes, so the staged rows are bitwise identical under any schedule
+  // and compactCsr below still concatenates them in leaf order.
+  hostParFor(n, [&](Index i) {
     if (!rowOk(i))
-      continue;
+      return;
     const unsigned Li = t.level(i);
     const double invV = 1.0 / ap.cellVolume(i);
     ap.forEachFaceNeighbor(i, [&](Index j, Real c, int axis, double a) {
@@ -247,7 +251,7 @@ inline CfCsr buildCfLapDelta(const AmrPoisson<3, Bits>& ap, const BlockOctree<3,
       detail::cfAppendStencil(ap, t, per[static_cast<std::size_t>(i)], coarse, fine, axis, scale,
                               fluidOk, scheme);
     });
-  }
+  });
   CfCsr csr;
   detail::compactCsr(per, csr, n);
   return csr;
@@ -269,9 +273,9 @@ inline CfCompCsr buildCfDivDelta(const AmrPoisson<3, Bits>& ap, const BlockOctre
   const Index n = t.numLeaves();
   std::vector<std::vector<detail::CompEnt>> per(static_cast<std::size_t>(n));
   if (scheme != CfScheme::standard) {
-    for (Index i = 0; i < n; ++i) {
+    hostParFor(n, [&](Index i) {  // per[i]-disjoint (rung 1)
       if (!rowOk(i))
-        continue;
+        return;
       const unsigned Li = t.level(i);
       const double invV = 1.0 / ap.cellVolume(i);
       ap.forEachFaceFull(i, [&](Index j, int axis, int dir, double area, double, double alpha) {
@@ -297,7 +301,7 @@ inline CfCompCsr buildCfDivDelta(const AmrPoisson<3, Bits>& ap, const BlockOctre
         detail::cfAppendStencil(ap, t, row, coarse, fine, axis, scale * wC, fluidOk, scheme,
                                 proto);
       });
-    }
+    });
   }
   CfCompCsr csr;
   detail::compactCsr(per, csr, n);
@@ -328,9 +332,9 @@ inline std::array<CfCsr, 3> buildCfGradDelta(const AmrPoisson<3, Bits>& ap,
   for (int a = 0; a < 3; ++a)
     per[static_cast<std::size_t>(a)].resize(static_cast<std::size_t>(n));
   if (scheme != CfScheme::standard) {
-    for (Index i = 0; i < n; ++i) {
+    hostParFor(n, [&](Index i) {  // per[axis][i]-disjoint (rung 1)
       if (!rowOk(i))
-        continue;
+        return;
       const unsigned Li = t.level(i);
       // Per axis/side: open-face count, the side's (uniform) center-to-center distance, and
       // whether the side has a level mismatch. slot [axis][side], side 0 = +, 1 = −.
@@ -378,7 +382,7 @@ inline std::array<CfCsr, 3> buildCfGradDelta(const AmrPoisson<3, Bits>& ap,
                                   scheme);
         });
       }
-    }
+    });
   }
   std::array<CfCsr, 3> out;
   for (int a = 0; a < 3; ++a)
@@ -406,20 +410,41 @@ template <unsigned Bits, class FluidFn>
 inline CfUfDelta buildCfUfDelta(const AmrPoisson<3, Bits>& ap, const BlockOctree<3, Bits>& t,
                                 FluidFn&& fluidOk, CfScheme scheme) {
   const Index n = t.numLeaves();
-  Index nSlots = 0;
-  for (Index i = 0; i < n; ++i)
-    ap.forEachFaceFull(i, [&](Index, int, int, double, double, double) { ++nSlots; });
+  // Rung 1, two-pass. forEachFaceFull is CELL-MAJOR, so leaf i owns the contiguous slot range
+  // [slotBase[i], slotBase[i+1]): count the slots per leaf in parallel, then an INTEGER exclusive
+  // scan (exact under any combination order) reproduces today's serial slot numbering exactly.
+  std::vector<Index> slotCnt(static_cast<std::size_t>(n), 0);
+  hostParFor(n, [&](Index i) {
+    Index c = 0;
+    ap.forEachFaceFull(i, [&](Index, int, int, double, double, double) { ++c; });
+    slotCnt[static_cast<std::size_t>(i)] = c;
+  });
+  std::vector<Index> slotBase(static_cast<std::size_t>(n) + 1, 0);
+  hostParScan(n, [&](Index i, Index& acc, bool final) {
+    if (final)
+      slotBase[static_cast<std::size_t>(i)] = acc;
+    acc += slotCnt[static_cast<std::size_t>(i)];
+  });
+  const Index nSlots =
+      (n > 0) ? slotBase[static_cast<std::size_t>(n) - 1] + slotCnt[static_cast<std::size_t>(n) - 1]
+              : 0;
+  slotBase[static_cast<std::size_t>(n)] = nSlots;
   CfUfDelta d;
   d.vel.start.assign(static_cast<std::size_t>(nSlots) + 1, 0);
   d.phi.start.assign(static_cast<std::size_t>(nSlots) + 1, 0);
   if (scheme == CfScheme::standard)
     return d;
-  Index slot = 0;
-  for (Index i = 0; i < n; ++i) {
+  // Pass 1 (parallel): each leaf stages its own entries in its own slot order, and writes its
+  // slots' ROW WIDTHS into start[slot+1] (disjoint: one leaf owns each slot). The prefix sum is
+  // taken serially below, exactly as the single-pass version accumulated it.
+  std::vector<std::vector<detail::CompEnt>> velPer(static_cast<std::size_t>(n));
+  std::vector<std::vector<detail::ScalarEnt>> phiPer(static_cast<std::size_t>(n));
+  hostParFor(n, [&](Index i) {
     const unsigned Li = t.level(i);
+    Index slot = slotBase[static_cast<std::size_t>(i)];
+    auto& vrow = velPer[static_cast<std::size_t>(i)];
+    auto& prow = phiPer[static_cast<std::size_t>(i)];
     ap.forEachFaceFull(i, [&](Index j, int axis, int dir, double, double dist, double) {
-      d.vel.start[static_cast<std::size_t>(slot) + 1] = d.vel.start[static_cast<std::size_t>(slot)];
-      d.phi.start[static_cast<std::size_t>(slot) + 1] = d.phi.start[static_cast<std::size_t>(slot)];
       const unsigned Lj = t.level(j);
       if (Lj != Li && fluidOk(i) && fluidOk(j)) {
         const Index coarse = (Lj > Li) ? j : i;
@@ -437,24 +462,41 @@ inline CfUfDelta buildCfUfDelta(const AmrPoisson<3, Bits>& ap, const BlockOctree
         ve.push_back(eF);
         ve.push_back(eC);
         detail::cfAppendStencil(ap, t, ve, coarse, fine, axis, wC, fluidOk, scheme, proto);
-        for (const auto& e : ve) {
-          d.vel.slot.push_back(e.cell);
-          d.vel.coef.push_back(e.w);
-          d.vel.comp.push_back(e.comp);
-          ++d.vel.start[static_cast<std::size_t>(slot) + 1];
-        }
+        for (const auto& e : ve)
+          vrow.push_back(e);
+        d.vel.start[static_cast<std::size_t>(slot) + 1] = static_cast<Index>(ve.size());
         // φ part: uf −= (φ₊−φ₋)/d; the coarse cell's φ is substituted with coarse*.
         const double sideSign = ((dir > 0) == (coarse == j)) ? 1.0 : -1.0;
         std::vector<detail::ScalarEnt> pe;
         detail::cfAppendStencil(ap, t, pe, coarse, fine, axis, -sideSign / dist, fluidOk, scheme);
-        for (const auto& e : pe) {
-          d.phi.slot.push_back(e.cell);
-          d.phi.coef.push_back(e.w);
-          ++d.phi.start[static_cast<std::size_t>(slot) + 1];
-        }
+        for (const auto& e : pe)
+          prow.push_back(e);
+        d.phi.start[static_cast<std::size_t>(slot) + 1] = static_cast<Index>(pe.size());
       }
       ++slot;
     });
+  });
+  // Pass 2 (serial, order-preserving): widths → offsets, then concatenate leaf-major. Identical to
+  // the single pass's append order (leaf-major, slot-major within a leaf, entry order within slot).
+  for (Index s = 0; s < nSlots; ++s) {
+    d.vel.start[static_cast<std::size_t>(s) + 1] += d.vel.start[static_cast<std::size_t>(s)];
+    d.phi.start[static_cast<std::size_t>(s) + 1] += d.phi.start[static_cast<std::size_t>(s)];
+  }
+  d.vel.slot.reserve(static_cast<std::size_t>(d.vel.start[static_cast<std::size_t>(nSlots)]));
+  d.vel.coef.reserve(static_cast<std::size_t>(d.vel.start[static_cast<std::size_t>(nSlots)]));
+  d.vel.comp.reserve(static_cast<std::size_t>(d.vel.start[static_cast<std::size_t>(nSlots)]));
+  d.phi.slot.reserve(static_cast<std::size_t>(d.phi.start[static_cast<std::size_t>(nSlots)]));
+  d.phi.coef.reserve(static_cast<std::size_t>(d.phi.start[static_cast<std::size_t>(nSlots)]));
+  for (Index i = 0; i < n; ++i) {
+    for (const auto& e : velPer[static_cast<std::size_t>(i)]) {
+      d.vel.slot.push_back(e.cell);
+      d.vel.coef.push_back(e.w);
+      d.vel.comp.push_back(e.comp);
+    }
+    for (const auto& e : phiPer[static_cast<std::size_t>(i)]) {
+      d.phi.slot.push_back(e.cell);
+      d.phi.coef.push_back(e.w);
+    }
   }
   return d;
 }

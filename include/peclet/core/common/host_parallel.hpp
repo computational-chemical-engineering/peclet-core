@@ -53,8 +53,13 @@
 #endif
 #endif  // !defined(PECLET_CORE_HOST_PARALLEL_KOKKOS)
 
+// common/view.hpp, not <Kokkos_Core.hpp> directly: several AMR headers gate their device mirrors on
+// `#ifdef KOKKOS_INLINE_FUNCTION` and, inside those blocks, use peclet::core::View / toDevice
+// without including view.hpp themselves (they rely on the includer having pulled it in first).
+// Bringing Kokkos into a TU therefore has to bring View along, or those blocks light up
+// undefined in the host-oracle TUs that reach this header.
 #if PECLET_CORE_HOST_PARALLEL_KOKKOS
-#include <Kokkos_Core.hpp>
+#include "peclet/core/common/view.hpp"
 #endif
 
 #include <utility>
