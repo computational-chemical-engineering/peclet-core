@@ -42,16 +42,20 @@
 
 #ifdef PECLET_CORE_HAVE_MORTON
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
+#include <memory>
+#include <utility>
 #include <vector>
 
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/cf_scheme.hpp"  // CfCsr + detail::{ScalarEnt, compactCsr} (mom seam delta)
 #include "peclet/core/amr/ghost_projection.hpp"
 #include "peclet/core/amr/poisson.hpp"
+#include "peclet/core/common/host_parallel.hpp"
 #include "peclet/core/common/types.hpp"
 #include "peclet/core/scheme/ghost_closure.hpp"
 
@@ -171,10 +175,10 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
   const Index n = t.numLeaves();
   const double h0 = pres.cellWidth(0) / static_cast<double>(Index(1) << t.level(0));
 
-  // Leaf centers + fluid flags.
+  // Leaf centers + fluid flags. Host-parallel (rung 4): per-leaf disjoint writes.
   std::vector<Vec<3>> cen(static_cast<std::size_t>(n));
   std::vector<char> fluid(static_cast<std::size_t>(n));
-  for (Index i = 0; i < n; ++i) {
+  hostParFor(n, [&](Index i) {
     auto b = t.bounds(i);
     const double s = static_cast<double>(Index(1) << t.level(i));
     Vec<3> c{};
@@ -182,7 +186,7 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
       c[d] = origin[d] + (static_cast<double>(b[0][d]) + 0.5 * s) * h0;
     cen[static_cast<std::size_t>(i)] = c;
     fluid[static_cast<std::size_t>(i)] = sdf(c) > 0.0 ? 1 : 0;
-  }
+  });
 
   // Hash bins over leaf centers for LS cloud gathering (bin 4*h0, periodic unit... the domain
   // spans fineExt*h0 from origin; bin in fine units to stay geometry-agnostic).
@@ -292,9 +296,42 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
   std::vector<Index> sIdx;
   std::vector<double> sW;
 
-  for (Index i = 0; i < n; ++i) {
+  // ---- Rung 4 (setup-parallel plan, D2's third pattern): the single sequential-append pass is
+  // split in two. PASS 1 (below, host-parallel) does ALL the geometry per leaf and stages an
+  // accepted row into that leaf's OWN heap-allocated RowStage — nothing is appended to `ov`, so
+  // there is no `slot = ov.base.n` cursor to serialize on. PASS 2 (serial, after) walks the
+  // leaves IN ORDER and appends the staged rows, which reproduces today's row order and CSR slot
+  // order EXACTLY: row order = leaf order, and within a row the 15 chain slots in (a, q) order
+  // with each slot's entries in the order lsFunctional produced them. Nothing is classified
+  // twice — the plan permits it (row state is a pure function of geometry) but staging is
+  // cheaper.
+  //
+  // Only ~13% of leaves become rows, so stages are allocated per accepted row (a null pointer for
+  // every clean/solid leaf) rather than as a dense array.
+  //
+  // NOTE the `bins` build above stays SERIAL on purpose: bin membership order sets the order the
+  // LS normal-matrix sums are accumulated, i.e. the floating-point value of the weights.
+  struct RowStage {
+    Index cell = 0;
+    float rescale = 0.0f;
+    int8_t coupled = 0;
+    int8_t state[6] = {};
+    float th[6] = {}, w_bc[6] = {}, w_n1[6] = {}, w_n2[6] = {}, wm_n1[6] = {}, wm_n2[6] = {};
+    double invh = 0.0;
+    int8_t sampFluid[15] = {};
+    Index sampCnt[15] = {};
+    std::vector<Index> sIdx;
+    std::vector<double> sW;
+    long nIdentity = 0, nLS2 = 0, nLS1 = 0, nDegraded = 0, nSolidSlot = 0;
+  };
+  std::vector<std::unique_ptr<RowStage>> stages(static_cast<std::size_t>(n));
+  // Per-leaf census slots for the two counters that are tallied over EVERY fluid leaf (clean rows
+  // included), summed in leaf order in pass 2 — integers, so the total is order-independent.
+  std::vector<uint8_t> sfPer(static_cast<std::size_t>(n), 0), mfPer(static_cast<std::size_t>(n), 0);
+
+  hostParFor(n, [&](Index i) {
     if (!fluid[static_cast<std::size_t>(i)])
-      continue;
+      return;
     const unsigned Li = t.level(i);
     const double h = pres.cellWidth(i);
     const Vec<3>& c = cen[static_cast<std::size_t>(i)];
@@ -332,43 +369,57 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
       if (virtOpen != anyOpen[k]) {
         // Marginal face where the virtual and canonical classifications disagree: force the
         // canonical sign (overlay-closed <=> binary-closed), keep the (small) magnitude.
-        ++ov.nSignForced;
+        ++sfPer[static_cast<std::size_t>(i)];
         const float mag = std::fabs(F[a][m]) > 0.0f ? std::fabs(F[a][m]) : 1e-6f;
         F[a][m] = anyOpen[k] ? mag : -mag;
       }
       if (nSub[k] > 1 && !anyOpen[k])
-        ++ov.nMixedFace;  // coarse face fully closed against finer neighbours (all subs closed)
+        ++mfPer[static_cast<std::size_t>(i)];  // coarse face fully closed against finer neighbours
     }
     // Non-clean test (canonical own faces + virtual +/-1 centers), as the classic builder.
     bool clean = true;
     for (int a = 0; a < 3; ++a)
       clean = clean && Cq[a][1] >= 0.0f && Cq[a][3] >= 0.0f && F[a][1] >= 0.0f && F[a][2] >= 0.0f;
     if (clean)
-      continue;
+      return;
 
-    const int slot = static_cast<int>(ov.base.n);
-    auto resize = [&](int nRows) {
-      ov.base.cell.resize(static_cast<std::size_t>(nRows));
-      ov.base.rescale.resize(static_cast<std::size_t>(nRows));
-      ov.base.coupled.resize(static_cast<std::size_t>(nRows));
-      ov.base.state.resize(static_cast<std::size_t>(nRows) * 6);
-      ov.base.th.resize(static_cast<std::size_t>(nRows) * 6);
-      ov.base.w_bc.resize(static_cast<std::size_t>(nRows) * 6);
-      ov.base.w_n1.resize(static_cast<std::size_t>(nRows) * 6);
-      ov.base.w_n2.resize(static_cast<std::size_t>(nRows) * 6);
-      ov.base.wm_n1.resize(static_cast<std::size_t>(nRows) * 6);
-      ov.base.wm_n2.resize(static_cast<std::size_t>(nRows) * 6);
-    };
-    resize(slot + 1);
-    detail::GhostOverlayRef ref{ov.base};
-    if (!scheme::gpFillRow(ref, slot, i, F, Cq, matrixOrder, rhsOrder)) {
-      resize(slot);
-      continue;
+    // Fill the row into a scratch ONE-row overlay (gpFillRow writes ov.field(slot), so it needs a
+    // GhostOverlayRef; slot 0 of a private overlay gives the identical arithmetic).
+    GhostOverlay one;
+    one.cell.resize(1);
+    one.rescale.resize(1);
+    one.coupled.resize(1);
+    one.state.resize(6);
+    one.th.resize(6);
+    one.w_bc.resize(6);
+    one.w_n1.resize(6);
+    one.w_n2.resize(6);
+    one.wm_n1.resize(6);
+    one.wm_n2.resize(6);
+    detail::GhostOverlayRef ref{one};
+    if (!scheme::gpFillRow(ref, 0, i, F, Cq, matrixOrder, rhsOrder))
+      return;  // rejected row: nothing staged (the old code's resize(slot) rollback)
+
+    auto st = std::make_unique<RowStage>();
+    st->cell = one.cell[0];
+    st->rescale = one.rescale[0];
+    st->coupled = one.coupled[0];
+    for (int k = 0; k < 6; ++k) {
+      st->state[k] = one.state[static_cast<std::size_t>(k)];
+      st->th[k] = one.th[static_cast<std::size_t>(k)];
+      st->w_bc[k] = one.w_bc[static_cast<std::size_t>(k)];
+      st->w_n1[k] = one.w_n1[static_cast<std::size_t>(k)];
+      st->w_n2[k] = one.w_n2[static_cast<std::size_t>(k)];
+      st->wm_n1[k] = one.wm_n1[static_cast<std::size_t>(k)];
+      st->wm_n2[k] = one.wm_n2[static_cast<std::size_t>(k)];
     }
+    st->invh = 1.0 / h;
 
     // Sample functionals for the 15 chain slots.
     for (int a = 0; a < 3; ++a)
       for (int q = -2; q <= 2; ++q) {
+        const int sl = a * 5 + (q + 2);
+        const Index nBefore = static_cast<Index>(st->sIdx.size());
         Vec<3> p = c;
         p[a] += static_cast<double>(q) * h;
         // Recover the covering leaf: floor the world position to fine units (a level-L cell
@@ -378,25 +429,25 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
           lc[d] = static_cast<long>(std::floor((p[d] - origin[d]) / h0));
         const Index j = pres.probeSlot(lc).first;
         const bool fluidP = sdf(p) > 0.0;
-        ov.sampFluid.push_back(fluidP ? 1 : 0);
+        st->sampFluid[sl] = fluidP ? 1 : 0;
         if (q == 0 || (j >= 0 && t.level(j) == Li)) {
           // own cell or same-level cover: identity (the classic chain; bit-identical band).
           if (j >= 0 && fluid[static_cast<std::size_t>(j)] == (fluidP ? 1 : 0)) {
-            sIdx.push_back(j);
-            sW.push_back(1.0);
-            ++ov.nIdentity;
+            st->sIdx.push_back(j);
+            st->sW.push_back(1.0);
+            ++st->nIdentity;
           } else if (j >= 0) {
-            sIdx.push_back(j);  // marginal float disagreement: still the covering value
-            sW.push_back(1.0);
-            ++ov.nIdentity;
+            st->sIdx.push_back(j);  // marginal float disagreement: still the covering value
+            st->sW.push_back(1.0);
+            ++st->nIdentity;
           }
-          ov.sampStart.push_back(static_cast<Index>(sIdx.size()));
+          st->sampCnt[sl] = static_cast<Index>(st->sIdx.size()) - nBefore;
           continue;
         }
         if (!fluidP) {
           // solid virtual position: empty functional (reads the masked 0).
-          ++ov.nSolidSlot;
-          ov.sampStart.push_back(static_cast<Index>(sIdx.size()));
+          ++st->nSolidSlot;
+          st->sampCnt[sl] = 0;
           continue;
         }
         const double H = (j >= 0) ? pres.cellWidth(j) : h;
@@ -404,23 +455,60 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
         std::vector<Index> idx;
         std::vector<double> w;
         if (lsFunctional(p, rho, H, 2, idx, w)) {
-          ++ov.nLS2;
+          ++st->nLS2;
         } else if (lsFunctional(p, rho, H, 1, idx, w)) {
-          ++ov.nLS1;
+          ++st->nLS1;
         } else if (j >= 0 && fluid[static_cast<std::size_t>(j)]) {
           idx.assign(1, j);
           w.assign(1, 1.0);
-          ++ov.nDegraded;
+          ++st->nDegraded;
         } else {
-          ++ov.nDegraded;  // no support at all: reads 0 (fluid-only cascade floor)
+          ++st->nDegraded;  // no support at all: reads 0 (fluid-only cascade floor)
         }
         for (std::size_t k = 0; k < idx.size(); ++k) {
-          sIdx.push_back(idx[k]);
-          sW.push_back(w[k]);
+          st->sIdx.push_back(idx[k]);
+          st->sW.push_back(w[k]);
         }
-        ov.sampStart.push_back(static_cast<Index>(sIdx.size()));
+        st->sampCnt[sl] = static_cast<Index>(st->sIdx.size()) - nBefore;
       }
-    ov.base.invh.push_back(1.0 / h);
+    stages[static_cast<std::size_t>(i)] = std::move(st);
+  });
+
+  // PASS 2 (serial, order-preserving): append the staged rows in LEAF order — the row order, the
+  // 15-slot order and the sampStart/sampIdx/sampW concatenation are exactly what the old single
+  // pass produced.
+  for (Index i = 0; i < n; ++i) {
+    ov.nSignForced += sfPer[static_cast<std::size_t>(i)];
+    ov.nMixedFace += mfPer[static_cast<std::size_t>(i)];
+    const RowStage* st = stages[static_cast<std::size_t>(i)].get();
+    if (!st)
+      continue;
+    ov.base.cell.push_back(st->cell);
+    ov.base.rescale.push_back(st->rescale);
+    ov.base.coupled.push_back(st->coupled);
+    for (int k = 0; k < 6; ++k) {
+      ov.base.state.push_back(st->state[k]);
+      ov.base.th.push_back(st->th[k]);
+      ov.base.w_bc.push_back(st->w_bc[k]);
+      ov.base.w_n1.push_back(st->w_n1[k]);
+      ov.base.w_n2.push_back(st->w_n2[k]);
+      ov.base.wm_n1.push_back(st->wm_n1[k]);
+      ov.base.wm_n2.push_back(st->wm_n2[k]);
+    }
+    Index acc = static_cast<Index>(sIdx.size());
+    for (int sl = 0; sl < 15; ++sl) {
+      ov.sampFluid.push_back(st->sampFluid[sl]);
+      acc += st->sampCnt[sl];
+      ov.sampStart.push_back(acc);
+    }
+    sIdx.insert(sIdx.end(), st->sIdx.begin(), st->sIdx.end());
+    sW.insert(sW.end(), st->sW.begin(), st->sW.end());
+    ov.nIdentity += st->nIdentity;
+    ov.nLS2 += st->nLS2;
+    ov.nLS1 += st->nLS1;
+    ov.nDegraded += st->nDegraded;
+    ov.nSolidSlot += st->nSolidSlot;
+    ov.base.invh.push_back(st->invh);
     ov.rowOf[static_cast<std::size_t>(i)] = ov.base.n;
     ++ov.base.n;
   }
