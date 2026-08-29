@@ -147,6 +147,17 @@ class SceneBuilder {
     return static_cast<int>(nodes_.size()) - 1;
   }
 
+  /// Analytic leaf from a prebuilt node (the runtime-parameter sibling of addLeaf, for callers
+  /// whose parameters arrive as data -- the Python binding). CSG kinds refused; use addUnion etc.
+  int addNode(const ShapeNode<Real>& n) {
+    if (n.kind >= kCsgBase)
+      throw std::invalid_argument("SceneBuilder::addNode: CSG kinds go through addUnion/...");
+    if (n.kind == kGrid)
+      throw std::invalid_argument("SceneBuilder::addNode: grid leaves go through addGrid");
+    nodes_.push_back(n);
+    return static_cast<int>(nodes_.size()) - 1;
+  }
+
   /// Sampled field: copies `samples` into the shared pool, registers a descriptor, returns the
   /// node index. The caller never computes a pool offset.
   int addGrid(const std::vector<float>& samples, int nx, int ny, int nz, Vec3<Real> origin,
@@ -216,6 +227,65 @@ class SceneBuilder {
   const std::vector<GridDesc<Real>>& grids() const { return grids_; }
   const std::vector<float>& samples() const { return pool_; }
   const std::vector<Instance<Real>>& instances() const { return instances_; }
+
+  /// Compose two transforms so that toLocal(C, p) == toLocal(B, toLocal(A, p)) -- i.e. C applies
+  /// A first, then B. Worked out from toLocal(T, p) = invR_T (p - t_T) / s_T:
+  ///     C.R = R_A R_B,   C.s = s_A s_B,   C.t = t_A + R_A s_A t_B.
+  static Transform<Real> composeTransform(const Transform<Real>& A, const Transform<Real>& B) {
+    Transform<Real> C;
+    C.rotation = mulQuat(A.rotation, B.rotation);
+    C.scale = A.scale * B.scale;
+    const Vec3<Real> rb = rotate(A.rotation, Vec3<Real>{B.translation.x * A.scale,
+                                                        B.translation.y * A.scale,
+                                                        B.translation.z * A.scale});
+    C.translation = Vec3<Real>{A.translation.x + rb.x, A.translation.y + rb.y,
+                               A.translation.z + rb.z};
+    return C;
+  }
+
+  /// Deep-copy the subtree rooted at `root` and pre-compose transform `W` onto the COPIED root, so
+  /// the new tree evaluates as eval_new(p) = eval_old(toLocal(W, p)). THE reframing move: with
+  /// W = (t = R^T(-com), R = R_principal^T, s = 1) from bodyProperties, the copied tree's canonical
+  /// frame IS the principal body frame -- COM at the origin, axes principal -- exactly, with no
+  /// resampling and the original subtree untouched (other users keep it as-is).
+  int addReframed(int root, const Transform<Real>& W) {
+    requireNode(root, "addReframed");
+    // copy the subtree (post-order via explicit stack), remapping child indices
+    std::vector<int> order;
+    {
+      std::vector<int> stack{root};
+      std::vector<char> seen(nodes_.size(), 0);
+      while (!stack.empty()) {
+        const int nidx = stack.back();
+        stack.pop_back();
+        if (nidx < 0 || seen[(std::size_t)nidx])
+          continue;
+        seen[(std::size_t)nidx] = 1;
+        order.push_back(nidx);
+        const ShapeNode<Real>& nd = nodes_[(std::size_t)nidx];
+        if (nd.kind >= kCsgBase) {
+          stack.push_back(nd.aux0);
+          stack.push_back(nd.aux1);
+        }
+      }
+    }
+    std::vector<int> remap(nodes_.size(), -1);
+    int newRoot = -1;
+    // copy in reverse discovery order so children exist before parents remap to them
+    for (auto it = order.rbegin(); it != order.rend(); ++it) {
+      ShapeNode<Real> nd = nodes_[(std::size_t)*it];
+      if (nd.kind >= kCsgBase) {
+        nd.aux0 = remap[(std::size_t)nd.aux0];
+        nd.aux1 = remap[(std::size_t)nd.aux1];
+      }
+      nodes_.push_back(nd);
+      remap[(std::size_t)*it] = static_cast<int>(nodes_.size()) - 1;
+    }
+    newRoot = remap[(std::size_t)root];
+    nodes_[(std::size_t)newRoot].transform =
+        composeTransform(W, nodes_[(std::size_t)newRoot].transform);
+    return newRoot;
+  }
 
   /// Mutable access to one placed instance -- how a MOVING scene advances: a driver updates the
   /// transform (and linVel/angVel/center) in place and re-derives the geometry, instead of

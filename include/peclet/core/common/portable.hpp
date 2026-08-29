@@ -90,6 +90,16 @@ PECLET_HD Vec3<Real> invRotate(Quat<Real> q, Vec3<Real> v) {
   return rotate(Quat<Real>{-q.x, -q.y, -q.z, q.w}, v);
 }
 
+/// Hamilton product a ⊗ b in the (x, y, z, w) storage convention `rotate` uses, so
+/// rotate(mulQuat(a, b), v) == rotate(a, rotate(b, v)) — i.e. b applies first.
+template <class Real>
+PECLET_HD Quat<Real> mulQuat(Quat<Real> a, Quat<Real> b) {
+  return Quat<Real>{a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+                    a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+                    a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+                    a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z};
+}
+
 namespace detail {
 
 // Math shims. When Kokkos is present the geometry MUST route through Kokkos::* so the formulas are

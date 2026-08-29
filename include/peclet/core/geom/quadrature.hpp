@@ -53,6 +53,7 @@
 #ifndef PECLET_CORE_GEOM_QUADRATURE_HPP
 #define PECLET_CORE_GEOM_QUADRATURE_HPP
 
+#include "peclet/core/common/portable.hpp"  // PECLET_HD, Vec3, Quat
 #include "peclet/core/common/types.hpp"
 
 namespace peclet::core::geom {

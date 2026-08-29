@@ -30,11 +30,20 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/packaging/core_init.py
                ${CMAKE_CURRENT_BINARY_DIR}/peclet/core/__init__.py COPYONLY)
 target_include_directories(mpi_bindings PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 target_link_libraries(mpi_bindings PRIVATE MPI::MPI_CXX)
+# geom_bindings: host-only analytic-SDF scene authoring + rigid-body mass properties. No MPI, no
+# Kokkos -- preprocessing tooling. -> peclet.core.geom (NB_MODULE(geom, ...)).
+nanobind_add_module(geom_bindings NB_STATIC geom_bindings.cpp)
+set_target_properties(geom_bindings PROPERTIES OUTPUT_NAME geom
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/peclet/core"
+  CXX_STANDARD 20)
+target_include_directories(geom_bindings PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+
 # `pip install .` (scikit-build-core, via ../pyproject.toml with cmake.source-dir=python) installs the
 # built modules into the `peclet.core` package. Inert for a plain `cmake --build`, so the developer
 # workflow is unchanged.
 if(DEFINED SKBUILD)
   install(TARGETS mpi_bindings LIBRARY DESTINATION peclet/core COMPONENT python)
+  install(TARGETS geom_bindings LIBRARY DESTINATION peclet/core COMPONENT python)
   install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/packaging/core_init.py
           DESTINATION peclet/core RENAME __init__.py COMPONENT python)
 endif()

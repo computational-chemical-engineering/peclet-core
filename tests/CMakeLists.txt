@@ -248,6 +248,14 @@ target_link_libraries(test_geom_quadrature PRIVATE tpx_core)
 target_include_directories(test_geom_quadrature PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME geom_quadrature COMMAND test_geom_quadrature)
 
+# Rigid-body mass properties by implicit quadrature (geom/body_properties.hpp): closed-form gates
+# incl. the bound-leaf ellipsoid (sign-exact bracketing beats the voxel integrator's bias) and the
+# addReframed principal-frame round trip.
+add_executable(test_geom_body test_geom_body.cpp)
+target_link_libraries(test_geom_body PRIVATE tpx_core)
+target_include_directories(test_geom_body PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME geom_body COMMAND test_geom_body)
+
 add_executable(test_sdf test_sdf.cpp)
 target_link_libraries(test_sdf PRIVATE tpx_core)
 target_include_directories(test_sdf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
