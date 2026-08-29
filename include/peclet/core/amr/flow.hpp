@@ -1005,11 +1005,98 @@ class AmrFlow {
   /// One incompressible step on device (Stokes, or Navier–Stokes with setAdvection). `momIters`
   /// BiCGStab iterations for each momentum component; `presIters` PCG iterations for the
   /// pressure solve.
+  // ---- M0 (docs/amr_march_perf_and_distributed_plan.md): the per-phase STEP profiler -----------
+  // `PECLET_CORE_PROFILE_STEP=1` accumulates FENCED per-phase timings over a window of steps
+  // (`PECLET_CORE_PROFILE_STEP_WINDOW`, default 50) and prints ms/step and µs/leaf per phase next
+  // to the iteration counters — the instrument Phase M's attribution matrix reads. The four
+  // pressure-solve rows are NESTED inside `pressure solve` (the residual is Krylov vector work and
+  // the reductions), so they are printed indented and must not be added to the total.
+  //
+  // OFF (the default) every hook is one bool test: no fence, no clock, no change to the kernel
+  // sequence — so a profiler-off march is bitwise what it was before the profiler existed.
+  enum StepPhase {
+    SP_GLUE,
+    SP_GRAD,
+    SP_CF,
+    SP_OVERLAY,
+    SP_ADV,
+    SP_MOMRHS,
+    SP_MOMSOLVE,
+    SP_DIV,
+    SP_PRES,
+    SP_PRES_MV,
+    SP_PRES_MVOV,
+    SP_PRES_PROJ,
+    SP_PRES_PC,
+    SP_FINISH,
+    SP_N
+  };
+  using SpClock = std::chrono::steady_clock;
+  SpClock::time_point spMark() const {
+    if (!stepProf_)
+      return SpClock::time_point{};
+    Kokkos::fence();
+    return SpClock::now();
+  }
+  void spAdd(int ph, SpClock::time_point t0) {
+    if (!stepProf_)
+      return;
+    Kokkos::fence();
+    spAcc_[ph] += std::chrono::duration<double, std::milli>(SpClock::now() - t0).count();
+  }
+  /// Close a profiled step; print + reset when the window fills.
+  void spEndStep() {
+    if (!stepProf_)
+      return;
+    ++spSteps_;
+    spMom_ += lastMomIters_;
+    spPres_ += lastPresIters_;
+    spOuter_ += lastOuterIters_;
+    if (spSteps_ < spWindow_)
+      return;
+    static const char* kName[SP_N] = {
+        "glue (copies + syncs)", "grad3 (binary)",     "cf delta kernels",
+        "overlay delta kernels", "advection build",    "momentum rhs",
+        "momentum solve",        "divergence",         "pressure solve",
+        "  . binary matvec",     "  . overlay matvec", "  . projection",
+        "  . MG preconditioner", "finish projection"};
+    const double w = static_cast<double>(spSteps_);
+    const double leaves = static_cast<double>(n_);
+    if (!spHeader_) {  // the static hierarchy shape, once (H-mg's denominator)
+      std::fprintf(stderr, "[step-prof] leaves %lld | pressure MG levels %zu:", (long long)n_,
+                   dist_ ? presMGD_.numLevels() : presMG_.numLevels());
+      const std::size_t nl = dist_ ? presMGD_.numLevels() : presMG_.numLevels();
+      for (std::size_t L = 0; L < nl; ++L)
+        std::fprintf(stderr, " %lld",
+                     (long long)(dist_ ? presMGD_.numLeaves(L) : presMG_.numLeaves(L)));
+      std::fprintf(stderr, "\n");
+      spHeader_ = true;
+    }
+    double tot = 0.0;
+    for (int k = 0; k < SP_N; ++k)
+      if (k < SP_PRES_MV || k > SP_PRES_PC)
+        tot += spAcc_[k];
+    std::fprintf(stderr, "[step-prof] %d steps | %.3f ms/step (%.3f us/leaf) | mom %.1f it, "
+                         "pres %.1f it, outer %.2f\n",
+                 spSteps_, tot / w, 1e3 * tot / w / leaves, spMom_ / w, spPres_ / w, spOuter_ / w);
+    for (int k = 0; k < SP_N; ++k) {
+      const bool nested = (k >= SP_PRES_MV && k <= SP_PRES_PC);
+      std::fprintf(stderr, "[step-prof]   %-22s %8.3f ms/step  %8.4f us/leaf  %5.1f%%%s\n",
+                   kName[k], spAcc_[k] / w, 1e3 * spAcc_[k] / w / leaves,
+                   100.0 * spAcc_[k] / (tot > 0 ? tot : 1.0), nested ? "  (nested)" : "");
+    }
+    for (int k = 0; k < SP_N; ++k)
+      spAcc_[k] = 0.0;
+    spSteps_ = 0;
+    spMom_ = spPres_ = spOuter_ = 0.0;
+  }
+
   void step(int momIters = 100, int presIters = 60) {
     const Index n = n_;
     const double idiag = rho_ / dt_;
     lastMomIters_ = 0;
     lastOuterIters_ = 1;
+    const auto spT0 = spMark();
     // Freeze the time-level uⁿ for the backward-Euler mass term + warm start; it stays anchored
     // across the Picard outer iterations (only the advecting velocity re-lags). For outerIters_==1
     // this is just a copy of uⁿ ⇒ bit-identical to the single lagged step.
@@ -1018,11 +1105,18 @@ class AmrFlow {
     // −∇p^n is constant across the outer iterations (pressure is projected once, after the loop,
     // like flow's single per-step projection) ⇒ hoist it out.
     syncScalar(p_);  // ghost tail of pⁿ before the gradient reads (no-op single-rank)
+    spAdd(SP_GLUE, spT0);
+    auto spT = spMark();
     grad3(geom_, View<const double>(p_), gx_[0], gx_[1], gx_[2]);
+    spAdd(SP_GRAD, spT);
+    spT = spMark();
     for (int a = 0; a < 3; ++a)  // 2nd-order C/F face gradients (level-boundary rows)
       cfApply(cfGrad_[static_cast<std::size_t>(a)], View<const double>(p_), gx_[a]);
+    spAdd(SP_CF, spT);
+    spT = spMark();
     applyGhostGrad(gc_, View<const double>(p_), gx_[0], gx_[1], gx_[2]);
     applyGhostGradCsr(gcS_, View<const double>(p_), gx_[0], gx_[1], gx_[2]);
+    spAdd(SP_OVERLAY, spT);
     // Picard outer loop over the lagged advection only (the momentum nonlinearity); for
     // outerIters_==1 this is the single lagged predictor, then one projection — bit-identical to
     // before.
@@ -1032,6 +1126,7 @@ class AmrFlow {
       // during each solve (the advecting velocity is frozen in advDiag_/advCoef_). With advection
       // OFF the operator and RHS are identical every pass, so a second pass reproduces the first ⇒
       // instant early-stop. ---
+      spT = spMark();
       if (advect_) {
         momOp_.hasAdv = implicitFou_;
         syncVel();  // ghost tails of the (lagged) advecting velocity for buildFou/deferredSou
@@ -1059,17 +1154,23 @@ class AmrFlow {
         if (momMGon_ && useStaircaseMG_)
           velMG_.setFineOp(momOp_);
       }
+      spAdd(SP_ADV, spT);
       // --- predictor: incremental BE viscous (+ implicit-FOU) solve per component, RHS carries
       // −∇p^n and −ρ(SOU−FOU); the mass term is anchored at uⁿ (u0_), the solve warm-starts at the
       // current iterate. ---
       for (int c = 0; c < 3; ++c) {
+        spT = spMark();
         momRhs(View<const double>(u0_[c]), View<const double>(gx_[c]), View<const double>(defc_[c]),
                View<const double>(rscale_), View<const char>(fluid_), idiag, f_[c], bmom_, n);
+        spAdd(SP_MOMRHS, spT);
+        spT = spMark();
         // C/F-scheme deferred correction on the velocity diffusion: b += μ(∇²_scheme − ∇²_std)
         // of the lagged component (regular rows only, rscale = 1 there).
         cfApply(cfMom_, View<const double>(u_[c]), bmom_);
         // Momentum ξ-row seam correction (sampled mode; rscale re-folded at upload).
         cfApply(gpsMomDelta_, View<const double>(u_[c]), bmom_);
+        spAdd(SP_CF, spT);
+        spT = spMark();
         // P4 (opt-in): the velocity-MG used as the *solver* — MG-preconditioned defect correction,
         // no Krylov (the flow RB-GS/velocity-MG mirror; cannot break down on the non-symmetric
         // operator) — vs the default MG-preconditioned BiCGStab. Both reach the same solution (the
@@ -1080,6 +1181,7 @@ class AmrFlow {
                           : momSolver_.solveBiCGStab(momOp_, u_[c], View<const double>(bmom_),
                                                      momIters, momTol_))
                 .iters;
+        spAdd(SP_MOMSOLVE, spT);
       }
       // Outer-loop convergence on the predictor velocity (skipped for the default outerIters_==1,
       // so that path is untouched). With advection off the second iterate equals the first ⇒ stops
@@ -1099,26 +1201,37 @@ class AmrFlow {
       }
     }
     project(presIters);  // single pressure projection per step (flow structure)
+    spEndStep();
   }
 
   /// Pressure projection of the current velocity in place.
   void project(int presIters = 60) {
     const Index n = n_;
+    auto spT = spMark();
     syncVel();  // ghost tails of u* for the divergence (+ the ghost-closed overlay delta)
     divergence(geom_, View<const double>(u_[0]), View<const double>(u_[1]),
                View<const double>(u_[2]), div_);
+    spAdd(SP_DIV, spT);
+    spT = spMark();
     cfApplyComp(cfDiv_, View<const double>(u_[0]), View<const double>(u_[1]),
                 View<const double>(u_[2]), div_);  // 2nd-order C/F face averages (setCfScheme)
+    spAdd(SP_CF, spT);
+    spT = spMark();
     if (ghostProj_) {  // ghost-closed constraint: binary div (geom_ carries binary α) + overlay
       ghostDivergDelta(gpOv_, View<const double>(u_[0]), View<const double>(u_[1]),
                        View<const double>(u_[2]), div_);
       ghostDivergDeltaSampled(gpOvS_, View<const double>(u_[0]), View<const double>(u_[1]),
                               View<const double>(u_[2]), div_);
     }
+    spAdd(SP_OVERLAY, spT);
     Kokkos::deep_copy(phi_, 0.0);
     if (ghostProj_) {
+      spT = spMark();
       lastPresIters_ = solveGhostBiCGStab(phi_, View<const double>(div_), presIters);
+      spAdd(SP_PRES, spT);
+      spT = spMark();
       finishProjection(n);
+      spAdd(SP_FINISH, spT);
       return;
     }
     // Two selectable pressure drivers, like flow's CutcellMG: MG-PCG (default, presPCG_) and the
@@ -1193,6 +1306,7 @@ class AmrFlow {
                      yLx, xLy, std::fabs(yLx - xLy) / (std::fabs(yLx) + 1e-300), xLx, yLy);
       }
     }
+    spT = spMark();
     if (presPCG_) {
       const auto R =
           dist_ ? pcg_.solve(presMGD_, phi_, View<const double>(div_), presIters, 1e-10)
@@ -1227,7 +1341,10 @@ class AmrFlow {
       Kokkos::deep_copy(phi_, presMG_.x(0));
       lastPresIters_ = presIters;
     }
+    spAdd(SP_PRES, spT);
+    spT = spMark();
     finishProjection(n);
+    spAdd(SP_FINISH, spT);
   }
 
   /// Shared projection tail: build the div-free face field from u* + φ, correct the cell
@@ -1591,14 +1708,21 @@ class AmrFlow {
   // Nonsymmetric ghost pressure matvec: y = P[rho·(L_bin x + Delta x)]. The caller keeps x's
   // ghost tail current (syncScalar before every call in distributed mode).
   void ghostMatvec(View<const double> x, View<double> y) {
+    auto spT = spMark();
     applyFv(gpOp0(), x, y);
+    spAdd(SP_PRES_MV, spT);
+    spT = spMark();
     ghostApplyDelta(gpOv_, x, y);
     ghostApplyDeltaSampled(gpOvS_, x, y);
+    spAdd(SP_PRES_MVOV, spT);
+    spT = spMark();
     gpProject(y);
+    spAdd(SP_PRES_PROJ, spT);
   }
 
   // Preconditioner: two binary-openness V-cycles (the unchanged MG hierarchy) + projection.
   void ghostPrec(View<const double> r, View<double> z) {
+    const auto spT = spMark();
     if (dist_) {
       Kokkos::deep_copy(presMGD_.b(0), r);
       Kokkos::deep_copy(presMGD_.x(0), 0.0);
@@ -1613,6 +1737,7 @@ class AmrFlow {
       Kokkos::deep_copy(z, presMG_.x(0));
     }
     gpProject(z);
+    spAdd(SP_PRES_PC, spT);
   }
 
   // MG-preconditioned BiCGStab on the ghost pressure operator (device mirror of the oracle's
@@ -1872,6 +1997,17 @@ class AmrFlow {
   int advScheme_ = 0;        // high-order flux: 0 = SOU (default), 1 = Koren TVD
   Index n_ = 0;
   int lastMomIters_ = 0, lastPresIters_ = 0, lastOuterIters_ = 1;
+  // M0 step profiler (PECLET_CORE_PROFILE_STEP): all inert unless stepProf_.
+  bool stepProf_ = amrEnvFlag("PECLET_CORE_PROFILE_STEP");
+  bool spHeader_ = false;
+  int spWindow_ = [] {
+    const char* e = std::getenv("PECLET_CORE_PROFILE_STEP_WINDOW");
+    const int v = e ? std::atoi(e) : 0;
+    return v > 0 ? v : 50;
+  }();
+  int spSteps_ = 0;
+  double spAcc_[SP_N] = {};
+  double spMom_ = 0.0, spPres_ = 0.0, spOuter_ = 0.0;
 
   AmrCutCell<Bits> mom_;
   AmrPoisson<3, Bits> pres_;
