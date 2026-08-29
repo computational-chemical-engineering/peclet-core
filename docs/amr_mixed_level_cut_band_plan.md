@@ -735,17 +735,41 @@ Z&H-like nor two-sphere-like.
 3. **Pockets are plentiful on a real bed** (826 components at depth 8), which makes "pocket
    exclusion in LS clouds" a concrete rather than theoretical rung.
 
-**Why the depth-8 headline is not here: two hard limits of the local RTX 5080 (16 GB, display
-attached), neither a code defect.**
+**THE HEADLINE (depth 8, Snellius H100, job 26154251, log
+`docs/data/amr_bed_graded_d8_h100.log`): the gap-graded bed reproduces the uniform-band
+permeability to −1.79% at 1.62× fewer cells** (7,010,669 vs 11,350,032 leaves; both arms to
+tol 1e-7, 330 steps each). Reading it honestly, four observations:
+
+1. *The uniform arms are converging across resolution*: k in cell units should scale ×4 per
+   depth halving of h0 — uniform d7 gives 0.584044 × 4 = 2.3362 vs d8's 2.3459, agreement to
+   0.41% across the doubling.
+2. *The graded−uniform offset GREW with resolution* (+0.26% at d7 → −1.79% at d8) — because at
+   d7 the policy barely engaged (1.07× saving), while at d8 half the surface actually coarsens.
+   −1.8% is the n = 4 policy cost when the floor genuinely bites, consistent with the
+   two-sphere calibration (~1% at 4 cells across a throat) accumulated over the bed's many
+   throats. The n-dial trades this against cells (P3a's table); at production resolution the
+   saving grows (M1: 2.9× at d9) while per-throat resolution in cells stays pinned by the floor.
+3. *Cell savings did NOT translate to march-time savings*: 1.85 s/step (uniform) vs 1.81 s/step
+   (graded) at d8, and d7 was 0.89 vs 0.92 — the graded march costs the same per step at 1.62×
+   fewer cells. An open PERFORMANCE item ([[performance-sota-yardstick]]): candidate causes are
+   the extra C/F faces, MG hierarchy shape, and per-level launch overheads on small levels. The
+   memory saving is real and load-bearing (the graded arm fits where the uniform arm OOMs).
+4. *~77% of the billed 1h29 job was the serial host `setSolid`* (~34 min/arm of the ~44 min/arm
+   total) — the scene-layer priority (AMR_GEOMETRY_SETUP_REQUIREMENTS.md), measured on the
+   machine where it costs money.
+
+**The local-GPU limits that forced the cluster run (RTX 5080, 16 GB, display attached —
+environment, not code):**
 - *Memory.* The uniform control (11.35M leaves) dies in `setSolid` — `Kokkos ERROR: Cuda memory
   space failed to allocate 531 MiB (label="df_uf")`. The graded arm (7.01M) fits at 13.3 GB of
   16.3 GB, i.e. ~1.9 kB/leaf, which puts the wall at ≈8.5M leaves — the control needs ≈21.5 GB.
 - *Kernel watchdog.* The depth-8 graded arm then died mid-march with
   `cudaErrorLaunchTimeout`: at 7M leaves a single kernel exceeds the driver's launch limit.
 
-So **the accuracy-matched headline at production resolution needs a compute-mode GPU** (no
-watchdog, ≥40 GB — Snellius). Everything needed to run it is in place; only the hardware is
-short. Depth 9 (R/h₀ = 48, where M1 measured 2.9×) is firmly cluster work.
+Those limits were cleared on a Snellius H100 (95 GB, no watchdog): the recipe is
+`tools/snellius_amr_bed.md`. Depth 9 (R/h₀ = 48, where M1 measured 2.9× and the offset picture
+of observation 2 gets its next data point) is a straightforward rerun of the same recipe —
+worth doing AFTER the scene layer lands, since setup dominates the bill.
 
 **Study-side lesson worth not re-deriving:** `set_solid` samples the SDF tens of times per leaf
 (operator build, overlay classification at virtual positions, openness probe), so a *Python*

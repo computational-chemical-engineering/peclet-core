@@ -1,0 +1,12 @@
+NVIDIA H100, 95830 MiB
+=== Phase-3 bed headline: depth 8, uniform vs gap-graded (n=4), tol 1e-7 ===
+sphere bed: 180 spheres, R/h0 = 24.1, phi = 63.0%, N = 256 (depth 8), LFAR=3 band=4.0 n_gap=4.0 tol=1e-07
+gap field precomputed (0s): min -33.0 h0, median 6.2 h0, max 36.8 h0
+[peclet.core.amr] sampled ghost overlay: 953419 rows | slots identity 14301285, LS2 0, LS1 0, degraded 0, solid 0 | sign-forced faces 0, closed mixed faces 0
+[peclet.core.amr] ghost projection: binary coupled-face graph fragments into 826 components — decoupling 968 pocket cells outside the main component
+ uniform: k=2.345850e+00 leaves=11350032 steps=330 (610s) levels [10773080, 552165, 24786, 1]
+[peclet.core.amr] sampled ghost overlay: 691813 rows | slots identity 9811344, LS2 429694, LS1 0, degraded 0, solid 136157 | sign-forced faces 32639, closed mixed faces 10846
+[peclet.core.amr] ghost projection: binary coupled-face graph fragments into 826 components — decoupling 968 pocket cells outside the main component
+  graded: k=2.303837e+00 leaves=7010669 steps=330 (597s) levels [5961232, 1006230, 43205, 2]
+
+HEADLINE: graded k differs by -1.791% at 1.62x fewer cells (7010669 vs 11350032)
