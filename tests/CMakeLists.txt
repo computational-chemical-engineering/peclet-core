@@ -241,6 +241,13 @@ target_include_directories(test_geom_owner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME geom_owner COMMAND test_geom_owner
          WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+# Layer 2: implicit-quadrature face apertures / cell volume fractions (geom/quadrature.hpp),
+# gated against the closed-form disk-rectangle overlap and for the order they actually deliver.
+add_executable(test_geom_quadrature test_geom_quadrature.cpp)
+target_link_libraries(test_geom_quadrature PRIVATE tpx_core)
+target_include_directories(test_geom_quadrature PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME geom_quadrature COMMAND test_geom_quadrature)
+
 add_executable(test_sdf test_sdf.cpp)
 target_link_libraries(test_sdf PRIVATE tpx_core)
 target_include_directories(test_sdf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
