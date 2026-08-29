@@ -1,6 +1,7 @@
 # Parallel AMR setup: the builder restructure (post-scene-layer)
 
-*Plan, 2026-08-30 (Fable analysis; implementation intended for an Opus session). Companion to
+*Plan, 2026-08-30 (Fable analysis; rungs 0/0.5 EXECUTED BY FABLE — the shared-dependency and
+abstraction-design rungs; rungs 1–5 are Opus execution). Companion to
 `amr_mixed_level_cut_band_plan.md` (the campaign this serves) and
 `../../docs/AMR_GEOMETRY_SETUP_REQUIREMENTS.md` §5–6 (the scene-layer handoff this builds on).*
 
@@ -94,8 +95,12 @@ mask vs `.sdf-campaign-probes/mask6_before.npy` at depth 6; (c) thread-count inv
 `set_solid` + 200 steps, fields bitwise at OMP_NUM_THREADS=1 vs 16; (d) the rung's µs/leaf,
 in the commit message, measured at 1 and 8 threads.
 
-- **Rung 0 — the prefix rebuild + no-regression fence (D1′ piece 1; the only rung that touches
-  a SHARED dependency — coordinate with the dem agent before starting).**
+- **Rung 0 (FABLE — executed 2026-08-30) — the prefix rebuild + no-regression fence (D1′
+  piece 1; the only rung that touches a SHARED dependency).** Pre-verified before enabling:
+  no code in core/flow/dem names a host execution space explicitly, so existing kernels keep
+  their spaces; static Kokkos linkage means already-built flow/dem binaries are UNAFFECTED
+  until their owners rebuild — but do NOT run mixed-prefix processes (e.g. coupling imports
+  flow+dem in one interpreter) until both sides are rebuilt against the new prefix.
   (a) `bootstrap_deps.sh`: add `-DKokkos_ENABLE_OPENMP=ON` to the nvidia-cuda variant; rebuild
   the prefix; rebuild the dependent trees used by the gates (`build_kcuda2`,
   `python/build_cuda2`; flow/dem trees as their owners need them).
@@ -118,9 +123,10 @@ in the commit message, measured at 1 and 8 threads.
   per-face slot ownership is cell-major (it is — `forEachFaceFull` is cell-major) before
   writing. 4.6 → ~0.6.
 - **Rung 3 — `mom_.build` parallel.** The largest phase; several consecutive per-leaf loops.
-  Watch for: the ±probe classification writing neighbour metadata (if any loop writes to
-  OTHER leaves' slots, that loop stays serial or becomes owner-computed — check first, escalate
-  if ambiguous). 4.2 → ~0.6.
+  PRE-CLEARED by Fable 2026-08-30: the build loops contain NO neighbour-indexed writes (grep
+  over the build body: zero `[...j...] =` stores) — all writes are own-leaf slots, so the
+  disjoint-write pattern applies directly. If implementation contradicts this, escalate. 4.2 →
+  ~0.6.
 - **Rung 4 — sampled overlay two-pass.** D2's third pattern. The delicate one: row order and
   slot CSR order are CONTRACTUAL (device upload, parity ctest, oracle equivalence). Pass-1
   classification must call the same gates as today's single pass (D6 determinism of the plan:

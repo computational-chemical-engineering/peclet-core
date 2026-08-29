@@ -68,6 +68,13 @@ if(EXISTS "${_morton_inc}/morton/morton.hpp" AND Kokkos_FOUND)
   target_compile_definitions(amr_bindings PRIVATE PECLET_CORE_HAVE_MORTON=1 MORTON_ENABLE_KOKKOS=1)
   target_compile_features(amr_bindings PRIVATE cxx_std_20)
   target_link_libraries(amr_bindings PRIVATE MPI::MPI_CXX Kokkos::kokkos)
+  # -mfma on the HOST halves only (docs/amr_setup_parallel_plan.md rung 0b): the scene layer's
+  # fma-canonical expressions otherwise compile std::fma to a libm CALL — measured ~15% of
+  # setSolid at 1 thread. nvcc route: -Xcompiler; the flag changes no results (std::fma is
+  # correctly rounded with or without the instruction — that is why the scene layer chose it).
+  target_compile_options(amr_bindings PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:-mfma>
+    $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-mfma>)
   if(DEFINED SKBUILD)
     install(TARGETS amr_bindings LIBRARY DESTINATION peclet/core COMPONENT python)
   endif()
