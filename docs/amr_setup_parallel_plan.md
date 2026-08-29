@@ -28,27 +28,46 @@ allocation hygiene. Re-measure every rung against the CURRENT number (handoff tr
 
 ## 2. Decisions (settled here — Opus implements, does not revisit)
 
-**D1 — Host parallelism via OpenMP pragmas in the builders, NOT a Kokkos host-space change.**
-The python module builds Kokkos SERIAL+CUDA; switching its host execution space would change the
-device build globally and every downstream consumer. Instead: `#pragma omp parallel for
-schedule(static)` on the builder loops, guarded `#ifdef _OPENMP`, with `-fopenmp` (and `-mfma`,
-the §5 note) added to the **amr_bindings target's host flags only** (`python/CMakeLists.txt`;
-`-Xcompiler` through nvcc where applicable). Serial build stays byte-identical in behaviour.
+**D1′ — Host parallelism via PURE KOKKOS over an OpenMP host execution space (user decision
+2026-08-30, revising the first-draft OpenMP-pragma route).** The suite's parallel model is
+Kokkos, single-source — CUDA was retired for exactly that reason, and raw pragmas would be a
+second model and a dead end for the later device-assembly campaign (Kokkos lambdas over a host
+space are already the right shape to move to the device space).
+
+Mechanically, three pieces:
+1. **Prefix rebuild**: the `nvidia-cuda` Kokkos install is `SERIAL;CUDA`
+   (`tools/bootstrap_deps.sh:49`), so host `parallel_for` runs serial today. Add
+   `-DKokkos_ENABLE_OPENMP=ON` to that variant (OpenMP host + CUDA device is a standard Kokkos
+   configuration) and rebuild the prefix + every dependent build tree (locally and on
+   Snellius). This changes the shared dependency for flow/dem too — see rung 0's coordination
+   and no-regression gates.
+2. **Builders**: plain `Kokkos::parallel_for` / `parallel_scan` over
+   `Kokkos::DefaultHostExecutionSpace` — no pragmas anywhere.
+3. **Shim for the Kokkos-free builds**: the shared builder headers (`cf_scheme.hpp`,
+   `ghost_projection_sampled.hpp`) also compile in the no-Kokkos host/oracle builds. A ~20-line
+   `peclet::core::hostParFor(n, body)` / `hostParScan(...)` in `common/` maps to the Kokkos host
+   space when compiled with Kokkos and to a serial loop otherwise — one abstraction, one place,
+   serial semantics bitwise-unchanged.
+
+`-mfma` on the amr_bindings host flags rides along (the §5 note; independent of the above).
 *Why not device assembly now:* these builders are host-by-design for oracle parity (weights
 host-built, shared verbatim — the parity-by-construction contract); device-resident overlay
-assembly is a later campaign (`amr_device_assembly_plan.md`), not this one.
+assembly is a later campaign (`amr_device_assembly_plan.md`), which D1′ feeds but does not
+start.
 
 **D2 — Determinism by construction, verified by thread-count invariance.** Every parallelized
 builder must produce BITWISE-identical output at OMP_NUM_THREADS=1 and =16. This is achievable
 because none of the five builders carries a cross-leaf floating-point reduction — each leaf's
 rows/values depend only on (octree, scene). The patterns:
 - per-leaf array writes (`mom_.build`, `buildOpenness`, `presMG_.build` per level): disjoint
-  writes, `schedule(static)` — nothing else needed.
+  writes — deterministic under ANY schedule; nothing else needed (determinism must never
+  depend on scheduling policy).
 - per-leaf staged vectors (`cf` builders): parallelize the leaf loop filling `per[i]`;
   `compactCsr` stays serial (cheap, order-preserving).
 - sequential append (`buildGhostOverlaySampled`): TWO-PASS — pass 1 (parallel) classifies each
-  leaf (clean/row) and computes its slot counts; exclusive scan (serial) assigns row indices
-  and CSR offsets in leaf order; pass 2 (parallel) fills each row at its precomputed offsets.
+  leaf (clean/row) and computes its slot counts; an exclusive `parallel_scan` on the INTEGER
+  counts (exact regardless of execution order) assigns row indices and CSR offsets in leaf
+  order; pass 2 (parallel) fills each row at its precomputed offsets.
   Row order = leaf order = today's serial order ⇒ the CSR is bitwise-identical, and the
   `test_seam_sampled` parity and mask references hold without re-blessing.
 If any builder turns out to carry hidden sequential state, that is an ESCALATION (see §5),
@@ -64,8 +83,8 @@ localized per leaf).
 **D4 — Scope guard.** No numerics change anywhere: same samples, same gates, same row content,
 same order. No `geom/` edits (the scene layer is frozen; trap 6.3.1: never touch the
 fma-canonical expressions). `findPocketCells`, nullspace, MG hierarchy internals, device
-assembly: untouched. Distributed path: untouched (the builders run identically per rank; the
-pragmas are rank-local and safe, but DO NOT restructure any distributed logic).
+assembly: untouched. Distributed path: untouched (the builders run identically per rank; host-parallel
+loops are rank-local and safe, but DO NOT restructure any distributed logic).
 
 ## 3. Rungs (commit per rung; every rung ends green and MEASURED)
 
@@ -75,11 +94,26 @@ mask vs `.sdf-campaign-probes/mask6_before.npy` at depth 6; (c) thread-count inv
 `set_solid` + 200 steps, fields bitwise at OMP_NUM_THREADS=1 vs 16; (d) the rung's µs/leaf,
 in the commit message, measured at 1 and 8 threads.
 
-- **Rung 0 — build flags.** `-fopenmp -mfma` on amr_bindings host flags (D1). Expect ~15% from
-  `-mfma` alone at 1 thread (§5 note: fma is a libm call today). No source change.
-- **Rung 1 — cf builders parallel.** The `per[i]` leaf loops in `buildCfLapDelta` /
-  `buildCfDivDelta` / `buildCfGradDelta` / `buildCfUfDelta`. Lowest risk (staging already
-  per-leaf), a clean template for the rest. 2.2 → ~0.3 µs/leaf expected at 8 threads.
+- **Rung 0 — the prefix rebuild + no-regression fence (D1′ piece 1; the only rung that touches
+  a SHARED dependency — coordinate with the dem agent before starting).**
+  (a) `bootstrap_deps.sh`: add `-DKokkos_ENABLE_OPENMP=ON` to the nvidia-cuda variant; rebuild
+  the prefix; rebuild the dependent trees used by the gates (`build_kcuda2`,
+  `python/build_cuda2`; flow/dem trees as their owners need them).
+  (b) `-mfma` on amr_bindings host flags (expect ~15% at 1 thread — fma is a libm call today).
+  (c) NO-REGRESSION FENCE before any builder change: 148/148 core ctests both nets;
+  `.sdf-campaign-probes/flow_probe.py` at its pinned 4 threads (u_sum must still print
+  6.74193610583927948e+05); `time_setsolid.py` depth 6/7 unchanged vs the §1 numbers (the
+  OpenMP runtime being merely PRESENT must not move anything — builders are still serial
+  here); geom bit-parity gates (`geom_batch_device` etc.) green. Document
+  `OMP_NUM_THREADS`/`OMP_PROC_BIND=false` guidance in the suite CLAUDE.md — with OpenMP in the
+  default prefix, the 48-unbound-threads trap becomes suite-wide.
+- **Rung 0.5 — the `hostParFor`/`hostParScan` shim (D1′ piece 3)** in `common/`, with a unit
+  test asserting serial ≡ parallel bitwise on a synthetic disjoint-write fill and an integer
+  scan. No builder touched yet.
+- **Rung 1 — cf builders parallel** (via the shim). The `per[i]` leaf loops in
+  `buildCfLapDelta` / `buildCfDivDelta` / `buildCfGradDelta` / `buildCfUfDelta`. Lowest risk
+  (staging already per-leaf), a clean template for the rest. 2.2 → ~0.3 µs/leaf expected at 8
+  threads.
 - **Rung 2 — `buildOpenness` + `presMG_.build` parallel.** Per-cell/per-level loops; verify
   per-face slot ownership is cell-major (it is — `forEachFaceFull` is cell-major) before
   writing. 4.6 → ~0.6.
@@ -119,7 +153,12 @@ in the commit message, measured at 1 and 8 threads.
    the diff magnitude, and the rung.
 3. Any temptation to change WHAT a builder computes (gates, sample positions, row content) —
    forbidden outright; if a rung seems to require it, that rung is mis-scoped: stop.
-4. Anything touching `geom/`, the distributed path's logic, or Kokkos configuration beyond the
-   amr_bindings host flags — out of scope; stop.
+4. Anything touching `geom/` or the distributed path's logic — out of scope; stop. Kokkos
+   configuration: the ONE sanctioned change is rung 0's `Kokkos_ENABLE_OPENMP=ON` on the
+   nvidia-cuda bootstrap variant; anything else (arch flags, other backends, other prefixes) —
+   stop.
+5. Rung 0's fence failing — any flow/dem probe or ctest moved by the prefix rebuild alone —
+   stop IMMEDIATELY, before any builder work: that is a suite-wide interaction Fable (and
+   possibly the flow/dem owners) must look at, not something to patch around.
 Escalations go in "## Findings" here + the memory file (`amr-mixed-level-cut-band-plan`), so a
 Fable session picks them up with context.
