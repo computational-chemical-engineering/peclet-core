@@ -110,6 +110,102 @@ bed as the two test geometries; a new ctest pinning np=1 bitwise on a seamed mes
   cloud redesign ONLY if it falls out naturally; otherwise unchanged), device-resident
   assembly (next campaign after these).
 
+## Findings
+
+### F2 (D0, 2026-08-30) — the LS cloud's periodic period is 4 fine cells SHORT: DD1 cannot be made bitwise without fixing it
+
+**Status: D0 BLOCKED on a [FABLE] decision (DD1's own escalation clause). The probe-set rewrite is
+written, gated and green everywhere EXCEPT this; it is parked on branch `dev/d0-probe-clouds`
+(core), not on `main`, because landing it would silently change march numerics.**
+
+**The bug.** `buildGhostOverlaySampled` sizes its LS hash bins from the octree:
+
+```cpp
+long ext = 0;
+for (Index i = 0; i < n; ++i) { auto b = t.bounds(i);
+  for (int d = 0; d < 3; ++d) ext = std::max(ext, (long)b[1][d]); }
+nbx = std::max<long>(1, ext / 4);              // "ext fine cells / 4 per bin"
+const double domain = (double)nbx * hb;        // hb = 4*h0 — "world extent (cubic domains)"
+```
+
+`BlockOctree::bounds` returns **inclusive** bounds, so `ext = fineExt − 1`, and for every
+power-of-two domain the truncating divide loses exactly one bin:
+
+| N (fine) | ext | nbx | nbx should be | `domain` | true period | error |
+|---:|---:|---:|---:|---:|---:|---:|
+| 32 | 31 | 7 | 8 | 28 | 32 | 4 |
+| 64 | 63 | 15 | 16 | 60 | 64 | 4 |
+| 128 | 127 | 31 | 32 | 124 | 128 | 4 |
+| 256 | 255 | 63 | 64 | 252 | 256 | 4 |
+| 512 | 511 | 127 | 128 | 508 | 512 | 4 |
+
+`domain` is the period the cloud's minimum-image wrap uses, both for the `r2 <= rho²` membership
+test and for the monomial offsets `d = del/H` that BUILD the least-squares weights. So every cloud
+whose ball crosses a periodic domain face gets its across-the-seam candidates placed **4 fine cells
+away from where they are**, and its membership decided at those wrong positions.
+
+**Why it went unnoticed.** It is invisible unless the cut band reaches within `rho` of a domain
+face. Every calibration geometry in this campaign is a centred sphere or sphere pair (Z&H, M2, P2b
+latitude, the two-sphere gap ladder) whose seams sit in the middle of the box, so `del` never
+approaches `0.5*domain` and the wrap never fires — the classic uniform-band path has no clouds at
+all. The RCP **bed** is the first geometry whose surface crosses the periodic boundary, and it is
+the one the P3c numbers come from.
+
+**Measured blast radius.**
+- Mini-bed harness (5 periodic spheres, one ON the corner, three-level graded map, N=64):
+  **66.8%** of LS clouds (41 009 / 61 362) get both a wrong candidate set and wrong offsets;
+  worst offset error exactly 4 fine cells. The bin gather agrees with brute force under its own
+  (wrong) metric — the enumeration is faithful, the METRIC is wrong.
+- Depth-7 gap-graded RCP bed, `set_ghost_sampled`, cf-quadratic, 20 steps from rest: the census is
+  unchanged to the last count (229 485 rows, 31 095 LS2, 0 degraded, 453 closed mixed faces, 410
+  pocket cells) and the fluid mask is bitwise identical, but the velocity field moves —
+  `max|Δu_x| = 6.9e-3` against a field max of `1.5e-1` (4.5% locally), `Σu_x` by **5.0e-5
+  relative**, and the pressure iteration count at step 20 goes 54 → 60. Geometrically ~19% of the
+  depth-7 bed's LS clouds sit within `rho ≈ 4.4 h0` of a face.
+- So the P3c headline is NOT at risk: a 5e-5 shift in `Σu_x` is four orders below the 0.26% / 1.79%
+  policy numbers. It is a correctness fix, not a headline revision.
+
+**Why DD1 cannot route around it.** The bin search's candidate set is not a geometric
+neighbourhood: a leaf at `c` enters `p`'s cloud through `del = wrap_{124}(c − p)`, i.e. it is
+treated as sitting at `p + del`, which is **not a periodic image of `c` under the true period**.
+`probeSlot` — the only route to a leaf that works across ranks — wraps by the TRUE domain, so no
+probe pattern can return that leaf at that position. Reproducing the bin search bitwise would mean
+probing three shifted boxes at `p + k·124·h0` deliberately, i.e. re-implementing the bug in a more
+elaborate form. That is DD1's pre-registered stop condition, so I stopped.
+
+**Why Phase D cannot carry it forward either** (the reason this is a blocker, not a nit): `ext` is a
+reduction over **the local leaf array**. On one rank that is the domain; on four ranks each rank
+gets its own block's extent, so each rank would use a DIFFERENT period, and the cloud metric itself
+would become decomposition-dependent — exactly what D6 forbids and what DD1 exists to remove. The
+period has to become a global, geometry-derived quantity before `setGhostSampled` can drop its
+single-rank guard. The fix is a prerequisite for D, not an optional cleanup.
+
+**What the parked rung already establishes** (so the decision is cheap to act on):
+- The probe descent `detail::forEachCoveringSlot` (probe a region's lo corner; if the covering leaf
+  contains the region, take it, else split the longest axis at its coarsest power-of-two boundary)
+  enumerates exactly the leaves overlapping a fine-coord box in `O(#leaves)` probes, through
+  `probeSlot` alone, and handles a `kPending` region by not descending it — the discovery fixpoint
+  then needs one extra round per octree level the box spans (D1 must measure that round count).
+- The canonical order `(bin in the old traversal order, then Morton code of the leaf's global lo
+  corner)` reproduces today's accumulation order bit-for-bit — the leaf array is Z-order sorted, so
+  ascending code IS ascending leaf index — and unlike the leaf index it is decomposition-independent.
+- Cost of the route change, measured on the same machine and thread count (8): `setSolid` on the
+  depth-7 graded bed 4.35 s → 4.82 s, i.e. **2.4 → 2.7 µs/leaf** (+15%); depth 6 is 2.5 → 2.5,
+  unchanged. The descent's `probeSlot` is a binary search over the leaf array where the bin gather
+  was O(1), and that is paid back in part by dropping the serial `bins` build (an O(n) pass over
+  every leaf). Still inside the setup-parallel plan's ≤2.5 target at depth 6 and just outside at
+  depth 7; if that matters, hoisting one descent per ROW (the 15 slots share a centre) is the
+  obvious lever and was not attempted.
+- Gate evidence: the FULL sampled overlay (sampStart/sampIdx/sampW/sampFluid/rowOf + every base row
+  field) is **bitwise identical** old vs new on the P2b latitude two-level meshes at N = 64, 128 and
+  256, and the depth-7 bed's census and fluid mask are unchanged. The bed's field difference above
+  is entirely the period fix.
+
+**The decision Fable owns.** Take the fix (`nbx = fineExt/4`, `domain = nbx·hb`, and in the
+distributed build the GLOBAL fine extent rather than `pres.fineExt()`, which is the block's), which
+re-blesses any bed reference that carries sampled clouds near a boundary — or specify a different
+period convention. Either way D0 lands the same refactor; only the constant changes.
+
 ## Standing rules (unchanged)
 
 Escalation contract = setup-parallel plan §5 verbatim. Every rung: 149/149 both nets, the
