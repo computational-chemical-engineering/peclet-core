@@ -187,11 +187,34 @@ struct LeafField {
   const std::vector<char>* fluid;
 };
 
+// M2a cloud-economy knobs, mirroring buildGhostOverlaySampled's (PECLET_CORE_GPS_RHO /
+// PECLET_CORE_GPS_MAXN) so this study can report the seam-reconstruction verdict PER VARIANT.
+// It is the instrument that established the degree-2 requirement in the first place, and it
+// costs ~2 s where the P2b march ladder costs hours.
+inline double gpsRhoFactor() {
+  const char* e = std::getenv("PECLET_CORE_GPS_RHO");
+  const double v = e ? std::atof(e) : 0.0;
+  return v > 0.0 ? v : 2.2;
+}
+inline long gpsMaxN() {
+  const char* e = std::getenv("PECLET_CORE_GPS_MAXN");
+  const long v = e ? std::atol(e) : 0;
+  return v > 0 ? v : 0;
+}
+
 bool lsFit(const LeafField& lf, const std::vector<std::vector<Index>>& bins, long nb, double hb,
            const Vec<3>& p, double rho, double H, int deg, double& out) {
   double A[100] = {}, b[10] = {};
   int nm = 0, npts = 0;
   double mono[10];
+  // Candidates are collected first (bin-loop order preserved) so the nearest-N cap can drop the
+  // far ones before the normal equations are accumulated.
+  const long capN = gpsMaxN();
+  struct Cd {
+    double r2;
+    Index i;
+  };
+  std::vector<Cd> cds;
   const long b0[3] = {static_cast<long>(std::floor((p[0] - rho) / hb)),
                       static_cast<long>(std::floor((p[1] - rho) / hb)),
                       static_cast<long>(std::floor((p[2] - rho) / hb))};
@@ -219,16 +242,47 @@ bool lsFit(const LeafField& lf, const std::vector<std::vector<Index>>& bins, lon
           }
           if (r2 > rho * rho)
             continue;
-          monomials(d, deg, mono, nm);
-          const double val = (*lf.v)[static_cast<std::size_t>(i)];
-          for (int r = 0; r < nm; ++r) {
-            for (int cc = 0; cc < nm; ++cc)
-              A[r * nm + cc] += mono[r] * mono[cc];
-            b[r] += mono[r] * val;
-          }
-          ++npts;
+          cds.push_back(Cd{r2, i});
         }
       }
+  if (capN > 0 && static_cast<long>(cds.size()) > capN) {
+    std::vector<Cd> byDist = cds;
+    std::nth_element(byDist.begin(), byDist.begin() + capN, byDist.end(),
+                     [](const Cd& a, const Cd& c) {
+                       return a.r2 != c.r2 ? a.r2 < c.r2 : a.i < c.i;
+                     });
+    std::vector<Index> keep;
+    keep.reserve(static_cast<std::size_t>(capN));
+    for (long q = 0; q < capN; ++q)
+      keep.push_back(byDist[static_cast<std::size_t>(q)].i);
+    std::sort(keep.begin(), keep.end());
+    std::vector<Cd> kept;
+    for (const Cd& c : cds)
+      if (std::binary_search(keep.begin(), keep.end(), c.i))
+        kept.push_back(c);
+    cds.swap(kept);
+  }
+  for (const Cd& cd : cds) {  // accumulate in the ORIGINAL bin-loop order
+    const Index i = cd.i;
+    Vec<3> c = centerOf(lf.g->t, lf.g->h0, i);
+    Vec<3> d{};
+    for (int dd = 0; dd < 3; ++dd) {
+      double del = c[dd] - p[dd];
+      if (del > 0.5)
+        del -= 1.0;
+      if (del < -0.5)
+        del += 1.0;
+      d[dd] = del / H;
+    }
+    monomials(d, deg, mono, nm);
+    const double val = (*lf.v)[static_cast<std::size_t>(i)];
+    for (int r = 0; r < nm; ++r) {
+      for (int cc = 0; cc < nm; ++cc)
+        A[r * nm + cc] += mono[r] * mono[cc];
+      b[r] += mono[r] * val;
+    }
+    ++npts;
+  }
   const int need = deg >= 2 ? 12 : 5;
   if (npts < need)
     return false;
@@ -439,7 +493,7 @@ DepthResult runDepth(unsigned depth) {
         }
         const unsigned Lj = t.level(j);
         const double H = g.h0 * static_cast<double>(Index(1) << Lj);
-        const double rho = 2.2 * std::max(h, H);
+        const double rho = gpsRhoFactor() * std::max(h, H);
         const bool fluidP = sdfSphere(p) > 0.0;
         // exact
         Xe[a][q] = fluidP ? phiMan(p) : 0.0;
@@ -614,7 +668,7 @@ MomResult runMomDepth(unsigned depth) {
         fLs[k] = 0.0;
       else if (j >= 0 && t.level(j) == Li)
         fLs[k] = fv[static_cast<std::size_t>(j)];
-      else if (lsFit(lf, bins, nb, hb, p, 2.2 * std::max(h, H), H, 2, out))
+      else if (lsFit(lf, bins, nb, hb, p, gpsRhoFactor() * std::max(h, H), H, 2, out))
         fLs[k] = out;
       else
         fLs[k] = fVirt[k];  // (degenerate cloud: exact fallback, counted elsewhere)

@@ -420,6 +420,57 @@ stacks recorded; the known battery-load flake class, now seen on the view tests)
 set_solid + 20 steps BITWISE vs the D2 baseline; depth-6 mask bitwise; seam acceptance unchanged
 (np=1 bitwise, np=2/4 in the 3e-7 class).
 
+## M2a results — the cloud-economy table (Opus, 2026-08-30; `tests/study/amr_cloud_economy.py`)
+
+Measurement only, per the M2 verdict; **M2b (picking the production rho/N) is FABLE's** and is
+deliberately not taken here. Knobs (both inert at their defaults, verified bitwise on the depth-7
+bed): `PECLET_CORE_GPS_RHO` (radius factor, default 2.2) and `PECLET_CORE_GPS_MAXN` (keep the N
+nearest by (distance², global Morton key), default 0 = no cap; the kept set is emitted in the
+unchanged canonical (bin, Morton) order, so only the WEIGHTS move, never the accumulation
+discipline).
+
+| variant | CSR d7 | ÷base | CSR d8 | ÷base | vs uniform d8 | LS1 d7 | LS1 d8 | bed k (d7) | offset vs uniform | seam gates |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|:--|
+| rho 2.2, no cap (shipped) | 8 251 091 | 1.00 | 61 887 407 | 1.00 | 4.33× | 0 | 0 | 5.854858e-01 | +0.247% | 4/4 |
+| rho 1.8 | 5 980 191 | 0.72 | 38 577 176 | 0.62 | 2.70× | 0 | 5 | 5.853315e-01 | +0.220% | 4/4 |
+| rho 1.5 | 5 182 401 | 0.63 | 29 721 806 | 0.48 | 2.08× | 7 | 747 | 5.852880e-01 | +0.213% | 4/4 |
+| N ≤ 32 | 4 401 625 | 0.53 | 23 561 296 | 0.38 | 1.65× | 7 | 53 | 5.852828e-01 | +0.212% | 4/4 |
+| N ≤ 24 | 4 152 865 | 0.50 | 20 123 997 | 0.33 | 1.41× | 103 | 1 310 | 5.852714e-01 | +0.210% | **3/4** |
+| N ≤ 16 | 3 904 105 | 0.47 | 16 686 448 | 0.27 | 1.17× | 2 742 | 49 683 | **DIVERGED** (step 40) | — | **1/4** |
+
+Uniform control (variant-independent — it has no sample slots): k = 5.840443e-01, reproducing
+P3c's published value exactly. The shipped graded arm reads +0.247% where P3c published +0.256%;
+the 9.4e-5 shift is the F2 period fix, exactly the ~5th-digit move F2's resolution predicted.
+Overlay rows, identity slots and degraded-row count are IDENTICAL across every variant (229 485
+rows / 0 degraded at d7; 691 813 / 0 at d8) — the cascade floor never fires, so `degraded` is not
+the discriminator here. `LS1` is: it counts slots that fell to degree 1, which M2 established is
+an O(1) non-decaying perturbation.
+
+**The finding that matters: the bed permeability is NOT a sensitive enough instrument on its
+own.** N ≤ 24 halves the d7 CSR and looks *better* than the shipped arm on the bed (+0.210% vs
++0.247%, i.e. closer to the uniform control) — and yet it FAILS the seam gate "LS2 matrix
+perturbation decays (agg ord ≥ 0.6)", meaning the degree-2 reconstruction has stopped converging
+and the arm is only accidentally close at this one resolution. N ≤ 16 fails three of four gates
+and diverges the march outright. Reading the offsets alone would have selected exactly the wrong
+variant; this is why the M2 verdict pre-registered a convergence instrument alongside the
+permeability.
+
+**Instrument coverage, honestly.** (ii) bed permeability, (iii) CSR, (iv) degraded rows: complete,
+all variants, both depths where applicable. For (i) the seam-order instrument I ran
+`tests/study_amr_seam_sample_order.cpp` — the study that ESTABLISHED the degree-2 requirement,
+now carrying the same two knobs — which measures the LS2 reconstruction's convergence order
+against the exact virtual sample across N = 64/128/256 in ~2 s per variant. That is a supplement,
+NOT the thing the M2 verdict named: the **P2b march ladder's seam-offset convergence order was
+not run**. Its cost is the reason — arm b alone at three resolutions is ~2 h per variant (Z&H
+relaxes in ~9000 steps), so six variants is a >12 h unattended run on a box that has been
+contended all session. If M2b wants it before committing, the command is
+`tests/study/amr_zh_ladder.py --cf 1 --arms ab 64 128 256` per variant with the knobs exported;
+the uniform arm a is variant-independent and needs running once.
+
+**Timing (iii, ms/step) is also not reported**: the same contention that blocked M2c's wall-clock
+number (a fixed workload wandered 886 → 5886 ms/step across windows today) makes it meaningless.
+The CSR column is the contention-free proxy, and it is exact.
+
 ## D3 rulings (Fable, 2026-08-30)
 
 **D3(a) — the ~3e-7 np>1 class: ACCEPTED as the sampled path's march-level

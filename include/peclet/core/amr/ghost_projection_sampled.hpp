@@ -413,7 +413,29 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
     long bin;
     Code key;
     Index slot;
+    double d2;
   };
+
+  // ---- M2a cloud-economy knobs (STUDY ONLY; both default to today's behaviour exactly) --------
+  // A degree-2 least squares needs 12 points; the shipped radius gathers 95-162 (M1). These two
+  // env knobs let the cloud-economy study vary the sampling without touching production defaults:
+  //   PECLET_CORE_GPS_RHO   radius factor, default 2.2  (rho = factor * max(h, H))
+  //   PECLET_CORE_GPS_MAXN  keep only the N nearest candidates, default 0 = no cap
+  // The cap selects by (distance^2, then global Morton key) — a total order that is a pure
+  // function of geometry, so the kept SET is decomposition-independent like everything else here;
+  // the kept candidates are then emitted in the unchanged canonical (bin, Morton) order, so the
+  // accumulation discipline is untouched. Capping changes the WEIGHTS, which is exactly what the
+  // study measures — it is never on by default.
+  const double gpsRhoFactor = [] {
+    const char* e = std::getenv("PECLET_CORE_GPS_RHO");
+    const double v = e ? std::atof(e) : 0.0;
+    return v > 0.0 ? v : 2.2;
+  }();
+  const long gpsMaxN = [] {
+    const char* e = std::getenv("PECLET_CORE_GPS_MAXN");
+    const long v = e ? std::atol(e) : 0;
+    return v > 0 ? v : 0;
+  }();
 
   // LS functional at world position p, degree deg, radius rho, scale H: returns the (idx, w)
   // list. Weight vector w_j = mono(d_j) . M^{-1} e0 with M the normal matrix.
@@ -460,7 +482,15 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
       const long bx = static_cast<long>((cj[0] - origin[0]) / hb) % nbx;
       const long by = static_cast<long>((cj[1] - origin[1]) / hb) % nbx;
       const long bz = static_cast<long>((cj[2] - origin[2]) / hb) % nbx;
-      cand.push_back(Cand{(bz * nbx + by) * nbx + bx, keyOf(j), j});
+      cand.push_back(Cand{(bz * nbx + by) * nbx + bx, keyOf(j), j, r2});
+    }
+    if (gpsMaxN > 0 && static_cast<long>(cand.size()) > gpsMaxN) {
+      // nearest-N by (distance^2, global Morton key): a strict, geometry-only total order.
+      std::nth_element(cand.begin(), cand.begin() + gpsMaxN, cand.end(),
+                       [](const Cand& a, const Cand& b) {
+                         return a.d2 != b.d2 ? a.d2 < b.d2 : a.key < b.key;
+                       });
+      cand.resize(static_cast<std::size_t>(gpsMaxN));
     }
     std::sort(cand.begin(), cand.end(), [](const Cand& a, const Cand& b) {
       return a.bin != b.bin ? a.bin < b.bin : a.key < b.key;
@@ -694,7 +724,7 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
           continue;
         }
         const double H = (j >= 0) ? pres.cellWidth(j) : h;
-        const double rho = 2.2 * std::max(h, H);
+        const double rho = gpsRhoFactor * std::max(h, H);
         std::vector<Index> idx;
         std::vector<double> w;
         if (discovery) {
