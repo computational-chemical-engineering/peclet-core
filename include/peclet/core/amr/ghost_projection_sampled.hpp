@@ -129,13 +129,19 @@ inline bool gpsSolveDense(int n, double* A, double* b) {
 /// probe frame's offset from the frame `pres.loOf` answers in.
 ///
 /// A negative slot (LeafHalo::kPending during the distributed discovery fixpoint, or a
-/// non-periodic exit) is emitted as-is and its region is NOT descended in this round: the leaf's
-/// extent is unknown, and descending blindly would register one miss per fine cell. The next
-/// fixpoint round sees the coord resolved and descends properly, so the box is covered after as
-/// many rounds as the box spans octree levels.
+/// non-periodic exit) is emitted as-is; by default its region is NOT descended (the leaf's extent
+/// is unknown), so the fixpoint learns one octree level per round. `descendPending` (discovery
+/// rounds ONLY — never the final build, whose enumeration must stay exact) splits a pending
+/// region anyway, down to 4 fine cells per axis: every lo-corner probe registers a miss, so the
+/// pending part of a box resolves at 4-cell granularity in ONE collective round and leaves finer
+/// than 4 cells take at most two more — the D3 fix for the 5–9-round setup fixpoint. The extra
+/// probes stay inside the box, and any leaf covering a coord in the box overlaps the box, which
+/// the final enumeration visits anyway — so discovery resolves a superset of nothing: the ghost
+/// set is unchanged.
 template <unsigned Bits, class WrapFn, class EmitFn>
 inline void forEachCoveringSlot(const AmrPoisson<3, Bits>& pres, const long lo[3], const long hi[3],
-                                WrapFn&& wrapLocal, EmitFn&& emit) {
+                                WrapFn&& wrapLocal, EmitFn&& emit,
+                                bool descendPending = false) {
   struct Box {
     long lo[3], hi[3];
   };
@@ -153,22 +159,48 @@ inline void forEachCoveringSlot(const AmrPoisson<3, Bits>& pres, const long lo[3
     const auto [slot, L] = pres.probeSlot(q);
     if (slot < 0) {
       emit(slot);
-      continue;
-    }
-    const std::array<long, 3> wq = wrapLocal(q);
-    const std::array<long, 3> llo = pres.loOf(slot);
-    const long s = static_cast<long>(1) << L;
-    bool covers = true;
-    for (int d = 0; d < 3; ++d) {
-      const long u = llo[d] + (r.lo[d] - wq[d]);  // the leaf's lo in the probe's frame
-      if (u + s - 1 < r.hi[d]) {
-        covers = false;
-        break;
+      if (descendPending) {
+        // Discovery: probe an ALIGNED lattice inside the pending region instead of splitting it.
+        // Stride = a power of two chosen so the lattice is at most ~9 points per axis, floored at
+        // 4: a leaf of size >= stride is stride-aligned (octree) and so is caught this round;
+        // finer leaves surface next round as pending sub-regions a stride smaller — the unknown
+        // shrinks geometrically, so the fixpoint needs O(log span) CHEAP rounds. Both properties
+        // were learnt the hard way on the lmax=6 seam mesh: a recursive blind split's terminal
+        // corners inherit each box's own offset and defeat the miss map's dedup (560184 distinct
+        // pending coords, 8.5 s round 1), and a FIXED stride of 4 turns a coarse background
+        // row's cloud — rho = 2.2·h(L) is domain-sized for a level-6 row — into a lattice over
+        // the whole remote domain (263876 coords). Power-of-two alignment makes coords SHARED
+        // between overlapping boxes; blocks are root-aligned, so local alignment IS global.
+        long ext = 0;
+        for (int d = 0; d < 3; ++d)
+          ext = std::max(ext, r.hi[d] - r.lo[d] + 1);
+        int k = 2;
+        while ((1L << (k + 3)) < ext)
+          ++k;  // stride*8 >= ext ⇒ <= 9 lattice points per axis
+        const long st = 1L << k;
+        auto alignUp = [k, st](long v) { return ((v + st - 1) >> k) << k; };
+        for (long z = alignUp(r.lo[2]); z <= r.hi[2]; z += st)
+          for (long y = alignUp(r.lo[1]); y <= r.hi[1]; y += st)
+            for (long x = alignUp(r.lo[0]); x <= r.hi[0]; x += st)
+              (void)pres.probeSlot(std::array<long, 3>{x, y, z});
       }
-    }
-    if (covers) {
-      emit(slot);
       continue;
+    } else {
+      const std::array<long, 3> wq = wrapLocal(q);
+      const std::array<long, 3> llo = pres.loOf(slot);
+      const long s = static_cast<long>(1) << L;
+      bool covers = true;
+      for (int d = 0; d < 3; ++d) {
+        const long u = llo[d] + (r.lo[d] - wq[d]);  // the leaf's lo in the probe's frame
+        if (u + s - 1 < r.hi[d]) {
+          covers = false;
+          break;
+        }
+      }
+      if (covers) {
+        emit(slot);
+        continue;
+      }
     }
     int ax = 0;
     for (int d = 1; d < 3; ++d)
@@ -260,13 +292,23 @@ inline auto makeBinaryOpenFnMixed(const BlockOctree<3, Bits>& t, const AmrPoisso
 /// coords. `frameShift` is this block's global fine origin and `globalFine` the whole domain's
 /// fine extent; both default to the single-rank values (zero shift, the block's own extent), which
 /// makes every expression below reduce to what it was, bit for bit.
+///
+/// `discovery` (D3 setup-cost fix; prepareDistributed's fixpoint rounds ONLY, never the real
+/// build): probe-only mode. The control flow — every SDF evaluation, every gate, every probe —
+/// is IDENTICAL to a real build, so the miss set registered through the resolver seam is a
+/// superset of what the real build needs (the descent additionally splits pending regions), but
+/// the least-squares work whose results a discovery round discards is skipped: no candidate
+/// collection, no sort, no normal matrix, no solve, no second (degree-1) descent of the same box,
+/// no pass 2, no census print. If discovery ever under-probed, the real build would hit
+/// `LeafHalo::resolve: unknown coord after finalize()` — a throw, never silent corruption.
 template <unsigned Bits, class SdfFn>
 inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& t,
                                                     const AmrPoisson<3, Bits>& pres, SdfFn&& sdf,
                                                     int matrixOrder, int rhsOrder,
                                                     Vec<3> origin = Vec<3>{},
                                                     const std::array<long, 3>* globalFine = nullptr,
-                                                    std::array<long, 3> frameShift = {}) {
+                                                    std::array<long, 3> frameShift = {},
+                                                    bool discovery = false) {
   GhostOverlaySampled ov;
   const Index n = t.numLeaves();
   const double h0 = pres.cellWidth(0) / static_cast<double>(Index(1) << t.level(0));
@@ -388,7 +430,11 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
                          static_cast<long>(std::floor((p[1] - origin[1] + rho) / h0)) - shiftG[1],
                          static_cast<long>(std::floor((p[2] - origin[2] + rho) / h0)) - shiftG[2]};
     std::vector<Index> slots;
-    detail::forEachCoveringSlot(pres, qlo, qhi, wrapLocal, [&](Index s) { slots.push_back(s); });
+    detail::forEachCoveringSlot(
+        pres, qlo, qhi, wrapLocal, [&](Index s) { if (!discovery) slots.push_back(s); },
+        /*descendPending=*/discovery);
+    if (discovery)
+      return false;  // probe-only: the misses are registered, the weights are never consumed
     std::sort(slots.begin(), slots.end());
     slots.erase(std::unique(slots.begin(), slots.end()), slots.end());
     // (2) keep the fluid ones whose center is inside the ball (the old predicate, verbatim).
@@ -651,6 +697,12 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
         const double rho = 2.2 * std::max(h, H);
         std::vector<Index> idx;
         std::vector<double> w;
+        if (discovery) {
+          // Probe-only: one descent registers the box's misses; the degree-1 retry would descend
+          // the SAME box, so it is skipped along with everything below that reads the weights.
+          (void)lsFunctional(p, rho, H, 2, idx, w);
+          continue;
+        }
         if (lsFunctional(p, rho, H, 2, idx, w)) {
           ++st->nLS2;
         } else if (lsFunctional(p, rho, H, 1, idx, w)) {
@@ -670,6 +722,12 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
       }
     stages[static_cast<std::size_t>(i)] = std::move(st);
   });
+
+  if (discovery) {
+    // A discovery round consumes nothing staged: the misses are in the resolver, which is the
+    // whole point. Return the empty overlay without pass 2 or the census line.
+    return ov;
+  }
 
   // PASS 2 (serial, order-preserving): append the staged rows in LEAF order — the row order, the
   // 15-slot order and the sampStart/sampIdx/sampW concatenation are exactly what the old single

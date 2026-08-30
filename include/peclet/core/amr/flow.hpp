@@ -1680,10 +1680,17 @@ class AmrFlow {
     const Index n = t_->numLeaves();
     const double beta = mu_ / (h0_ * h0_);
     int rounds = 0;
+    const bool profSetup = amrEnvFlag("PECLET_CORE_PROFILE_SETUP");
     for (;;) {
       ++rounds;
+      const auto rT0 = std::chrono::steady_clock::now();
       installGhostMeta();  // metadata for every ghost known so far (same-round hits read it)
-      mom_.build(sdfFn, rho_ / dt_, beta);  // ±1 probes (also fills the extended sdfC/fluid)
+      // Classic path: mom_.build stays in the loop because its sdfC feeds the classic overlay
+      // prober below. Sampled path (D3 setup-cost fix): its ±1 probes are a subset of the face
+      // sweep's explicit periodicNeighbor probes, so the full build runs ONCE after the fixpoint
+      // instead of once per round.
+      if (!ghostSampled_)
+        mom_.build(sdfFn, rho_ / dt_, beta);  // ±1 probes (also fills the extended sdfC/fluid)
       // FaceGeom probes: the full face enumeration + the SOU upstream-of-upwind ±2 reach.
       // Host-parallel since the F1 resolution (miss registration is mutex-guarded and the miss
       // SET is order-canonical — see LeafHalo::resolve); pure discovery, results discarded.
@@ -1699,14 +1706,15 @@ class AmrFlow {
       if (ghostSampled_) {
         // D1 (DD2): the SAMPLED builders are probers too, and they reach further than the classic
         // ±2 chain — an LS cloud descends a whole box of radius 2.2·max(h,H) around each virtual
-        // position, and the mixed openness rule probes ±¼h0 off every face centroid. Both run here
-        // exactly as they will run for real, tolerating kPending (results discarded until the last
-        // round) the way mom_.build does. Note the descent deliberately does NOT descend into a
-        // pending region: it learns one octree level per round, so this fixpoint takes a few more
-        // rounds than the classic ±2 one — which is why it is a fixpoint and not a fixed count.
+        // position, and the mixed openness rule probes ±¼h0 off every face centroid. The overlay
+        // runs in PROBE-ONLY discovery mode (D3 setup-cost fix): identical control flow and probe
+        // pattern, pending regions blind-descended at 4-cell granularity so their misses register
+        // in one collective round instead of one octree level per round, and none of the
+        // least-squares work a discovery round would discard is done. The REAL build (setSolid,
+        // after this fixpoint) runs with every ghost resolved and never sets the flag.
         const auto gfine = globalFineExtent();
         (void)buildGhostOverlaySampled(*t_, pres_, sdfFn, gpMatrixOrder_, gpRhsOrder_, origin_,
-                                       &gfine, shiftD_);
+                                       &gfine, shiftD_, /*discovery=*/true);
         auto binFn = makeBinaryOpenFnMixed(
             *t_, pres_, [&sdfFn](const Vec<3>& p) { return sdfFn(p); }, h0_, origin_, shiftD_);
         pres_.buildOpenness(binFn);  // discovery only; setSolid rebuilds it after the fixpoint
@@ -1714,10 +1722,17 @@ class AmrFlow {
         bool viol = false;
         (void)buildGhostOverlay(*t_, pres_, mom_.sdfCRaw(), gpMatrixOrder_, gpRhsOrder_, &viol);
       }
-      if (dhalo_.resolveMisses() == 0)
+      const double rBuildMs = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - rT0)
+                                  .count();
+      const long pend = dhalo_.resolveMisses();
+      if (profSetup)
+        std::fprintf(stderr, "[setSolid]   round %d: build %.1f ms, %lld ghosts, %ld pending\n",
+                     rounds, rBuildMs, (long long)dhalo_.numGhosts(), pend);
+      if (pend == 0)
         break;
     }
-    if (amrEnvFlag("PECLET_CORE_PROFILE_SETUP"))
+    if (profSetup)
       // The discovery fixpoint's round count. The classic +-2 chain converges in <=3; the SAMPLED
       // builders reach a whole LS box, and D0's descent deliberately learns one octree level per
       // round rather than registering a miss per fine cell, so the sampled path needs more (it
@@ -1725,6 +1740,8 @@ class AmrFlow {
       std::fprintf(stderr, "[setSolid] distributed discovery fixpoint: %d rounds (%lld ghosts)\n",
                    rounds, (long long)dhalo_.numGhosts());
     installGhostMeta();
+    if (ghostSampled_)
+      mom_.build(sdfFn, rho_ / dt_, beta);  // once, every coord it probes already resolved
     dhalo_.finalize();
     nExt_ = dhalo_.extendedSize();
     dhex_.init(dhalo_);

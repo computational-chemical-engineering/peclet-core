@@ -326,6 +326,63 @@ BOUNDED set of probes inside a pending region (e.g. at the coarsest level presen
 so it learns several levels per round, trading a larger miss set for fewer collectives. That is a
 design choice with a real trade-off, so it is flagged here rather than taken: **a D3 item.**
 
+#### D3 resolution (Fable, 2026-08-30): discovery is probe-only + aligned-lattice pending regions
+
+Taken and landed. Two independent pieces, and two wrong turns worth recording because each was
+caught by a measurement, not by review:
+
+1. **Probe-only discovery** (`discovery` flag on `buildGhostOverlaySampled`; only
+   `prepareDistributed`'s fixpoint sets it). Control flow — every SDF evaluation, gate, and
+   probe — is IDENTICAL to a real build, so the registered miss set is what the real build
+   needs; but the least-squares work a discovery round discards is skipped: no candidate
+   collection, no sorts, no normal matrices, no solves, no second (degree-1) descent of the same
+   box, no pass 2, no census print. If discovery ever under-probed, the real build would hit
+   `LeafHalo::resolve: unknown coord after finalize()` — a throw, never silent corruption.
+   `mom_.build` also leaves the sampled loop (its ±1 probes are verbatim a subset of the face
+   sweep's explicit `periodicNeighbor` calls — checked in `cut_cell.hpp`, whose only build-time
+   probe is `neighbor(i,k)`) and runs ONCE after the fixpoint. The classic path's loop is
+   untouched.
+2. **Aligned-lattice pending regions** (`descendPending` on `forEachCoveringSlot`; discovery
+   only). A pending region is no longer abandoned for the round (one octree level learnt per
+   round): it is probed on an ALIGNED power-of-two lattice, stride chosen so the lattice is at
+   most ~9 points per axis, floored at 4. Every leaf of size ≥ stride is stride-aligned, so it
+   resolves this round; finer leaves surface next round as pending sub-regions one stride class
+   smaller — the unknown shrinks geometrically, and each round is cheap.
+
+   *Wrong turn #1*: recursive blind splitting to a 4-cell cap. Terminal-region corners inherit
+   each cloud box's own offset, so overlapping boxes register DISJOINT coord sets and the miss
+   map's dedup is defeated: 560 184 distinct pending coords and an 8.5 s round 1 on the lmax=6
+   seam mesh (vs 0.4 s for the whole fixpoint before the "fix"). Alignment is what makes coords
+   shared.
+   *Wrong turn #2*: a FIXED stride of 4. A coarse background row (level L) has a cloud of radius
+   2.2·h(L) — domain-sized at L=6 — and a stride-4 lattice over it IS the remote domain: 263 876
+   coords. Single-rank the same box is cheap because the covers-shortcut steps through coarse
+   leaves; the stride must scale with the region.
+
+**Measured** (two-level latitude seam mesh, `SEAM_LMAX`, slowest-rank wall for `setSolid`,
+`PECLET_CORE_PROFILE_SETUP=1` prints per-round build time + pending count):
+
+| | np=2 | np=4 |
+|---|---|---|
+| lmax=6 before (D2) | 0.405 s (8 rounds × full builds) | 0.593 s |
+| lmax=6 after | **0.104 s** (7 rounds ≈ 30 ms each + one full build) | **0.098 s** |
+| lmax=4 before / after | 0.106 / 0.103 s | 0.101 / 0.087 s |
+
+Round count at lmax=6 np=2: 8 full-build rounds → 7 cheap rounds (pending trace
+8416 → 23376 → 7056 → 2478 → 542 → 42 → 0), final ghost count **2020 — identical to before**, so
+the lattice inflates nothing. The absolute per-leaf numbers on these 1–6k-leaf test meshes are
+fixed-cost dominated (collectives + launches ÷ tiny leaf counts); at bed scale the discovery
+rounds cost ~µs/leaf against the one full build. Remaining slack if it ever matters: the
+openness prober still writes its (discarded) α values each round, and the 542→42→0 tail rounds
+could be trimmed by a finer lattice floor — both diminishing returns, neither taken.
+
+Gates: 153/153 both nets (one battery run had `amr_distributed_view_np4/np8` livelock in
+`MPI_Waitall` inside `DistributedGatherHalo::gather` — code this change does not touch — while a
+SECOND MPI test battery from a concurrent session ran on the same box; both pass standalone,
+stacks recorded; the known battery-load flake class, now seen on the view tests); depth-7 bed
+set_solid + 20 steps BITWISE vs the D2 baseline; depth-6 mask bitwise; seam acceptance unchanged
+(np=1 bitwise, np=2/4 in the 3e-7 class).
+
 ## Findings
 
 ### F2 (D0, 2026-08-30) — the LS cloud's periodic period is 4 fine cells SHORT: DD1 cannot be made bitwise without fixing it
