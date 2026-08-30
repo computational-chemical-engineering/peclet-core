@@ -56,6 +56,40 @@ Whatever M1 attributes, the fix is a design decision (MG cycle shape, kernel fus
 level-batched launches, or "accept: the win is memory + capacity, document it honestly").
 Opus stops after M1.
 
+#### M2 VERDICT (Fable, 2026-08-30) — accept H-launch; attack H-band through cloud economy
+
+M1's attribution splits into a term worth accepting and a term worth one bounded campaign.
+
+**H-launch: ACCEPTED as-is.** The ~178 ms/step floor is a SMALL-MESH tax: 20% of a depth-7 step,
+65% of a depth-6 one — and a vanishing fraction at the production sizes the campaign actually
+targets (7M cells at depth 8, ~5× that at depth 9). Fusing V-cycle launches / CUDA graphs is
+device-side engineering whose natural home is the device-assembly campaign
+(`amr_device_assembly_plan.md`); it is noted there, not here.
+
+**H-band: the clouds are ~10× oversampled, and that is the honest lever.** A degree-2 LS needs
+12 points; the shipped rho = 2.2·max(h,H) gathers 95–162. Shrinking the cloud attacks the CSR
+directly (the +210 ms/step term) — but it changes the WEIGHTS, i.e. march numerics, so it goes
+through a pre-registered a-priori ladder, not a tuning loop ([[first-principles-over-literature]]):
+
+- **M2a [OPUS] — the cloud-economy study. Measurement only, no production change.** Sweep
+  rho ∈ {2.2, 1.8, 1.5}·max(h,H) and, orthogonally, a nearest-N candidate cap
+  (N ∈ {16, 24, 32}; order by (distance², then global Morton key) — deterministic and
+  decomposition-independent; the weights change under any cap, so re-sorting is licensed here,
+  unlike in D0). For each variant: (i) the P2b ladder's seam-offset convergence order (the
+  campaign's accuracy instrument — must stay in the 1.7–1.9 class), (ii) the depth-7 bed
+  permeability offset vs the uniform arm (current class: +0.26%), (iii) overlay CSR size and the
+  M0-profiled overlay-matvec ms/step, (iv) the degraded-row count (must stay 0 on the bed —
+  a cloud too small to solve falls down the cascade, and M1 retired that risk at rho = 2.2).
+  Deliverable: one table. STOP (do not pick a winner) — that is M2b.
+- **M2b [FABLE] — pick the production rho/N from M2a's table.** Not before the data exists.
+- **M2c [OPUS] — slot-value caching in the sampled matvec kernels. Bitwise, independent of
+  M2a/M2b.** `ghostApplyDeltaSampled` / `ghostDivergDeltaSampled` re-gather the same slot's CSR
+  sum up to twice per row (the ±faces share interior slots). Evaluate each of the row's 15 slot
+  sums ONCE into scratch, in today's per-slot CSR order, then combine in today's order — pure
+  read-dedup, bit-identical by construction, gated by the standing bitwise gates (depth-7 bed
+  fields, seam ctest) + an M0 before/after on the bed. Expected ~1.3–1.6× on the overlay matvec;
+  worth taking regardless of where M2b lands.
+
 ## Phase D — the distributed mixed-level cut band
 
 Goal: `setGhostSampled` drops its single-rank guard, so graded beds decompose across ranks —
@@ -116,6 +150,9 @@ bed as the two test geometries; a new ctest pinning np=1 bitwise on a seamed mes
   *DONE 2026-08-30 — see §D2 results below.*
 - **D3 [FABLE]** — review the np>1 numbers, decide whether the ~5e-12 class holds for the
   sampled path or the deviation needs attribution; then the depth-9 TWO-ARM run on 2×H100
+  *Status 2026-08-30: the setup-cost item is RESOLVED (see the D3 resolution under §D2 results)
+  and the ~3e-7 class is RULED ON (accepted — see below). Remaining: the depth-9 two-arm run,
+  now unblocked and queued as D3b [OPUS-executable] below.*
   (the uniform control finally fits split) — the full accuracy-matched headline at R/h₀=48.
 - **Backlog, explicitly NOT this phase**: sub-face closures (accuracy item, bounded at ≤1.6%
   of rows — needs its own Fable design pass), pocket exclusion in LS clouds (fold into D0's
@@ -382,6 +419,38 @@ SECOND MPI test battery from a concurrent session ran on the same box; both pass
 stacks recorded; the known battery-load flake class, now seen on the view tests); depth-7 bed
 set_solid + 20 steps BITWISE vs the D2 baseline; depth-6 mask bitwise; seam acceptance unchanged
 (np=1 bitwise, np=2/4 in the 3e-7 class).
+
+## D3 rulings (Fable, 2026-08-30)
+
+**D3(a) — the ~3e-7 np>1 class: ACCEPTED as the sampled path's march-level
+decomposition-independence class; no further attribution required.** The evidence Opus assembled
+is exactly what an acceptance needs: the overlay BUILD is bitwise identical across decompositions
+(per-row fingerprints keyed by global Morton code), the residual enters at the reduction floor
+(~5e-9 after one step), peaks mid-transient and CONTRACTS toward the fixed point (1.4e-7 at
+6 steps and falling), and the identity-only band shows the same mechanism at 1.5e-8 — the sample
+clouds only amplify the transient, never the steady state. DD4's "~5e-12" was an operator-level
+number; three steps of MG-preconditioned BiCGStab compose hundreds of reassociated global
+reductions, and ~e-7 mid-transient is the expected shape of that. The ctest gate stays 5e-6.
+What would REOPEN this ruling: a residual that grows with step count instead of decaying, or any
+np-dependence in the steady-state permeability beyond the ~1e-10 class.
+
+**D3(b) [OPUS-executable] — the cluster runs, now unblocked.** Two jobs, one recipe
+(`tools/snellius_amr_bed.md`), in this order:
+1. **Prefix first**: the Snellius `nvidia-cuda` prefix has NOT had rung 0's
+   `-DKokkos_ENABLE_OPENMP=ON` rebuild yet — without it every setup gain of this campaign is
+   absent on the machine where it costs money. Same one-liner as local; rebuild the dependent
+   trees; rerun the standing fence (flow probe, ctest subset) before any billed arm.
+2. **M1's missing cell**: the depth-8 UNIFORM bed per-phase table —
+   `tests/study/amr_march_profile.py --geom bed --depth 8 --arms u,g4 --time --steps 200
+   --repeats 3` on one H100 (fits in 80 GB). Confirmatory only; the M2 verdict does not wait
+   for it.
+3. **The depth-9 TWO-ARM run on 2×H100** — the accuracy-matched headline at R/h₀ = 48, the
+   uniform control finally fitting split. Check job 26205730 (the pending single-GPU depth-9
+   graded arm) before submitting: if it ran on the OLD code its numbers predate the F2 period
+   fix and must not be mixed into the two-arm comparison. Right-size `--gpus-per-node`
+   ([[snellius-access]]: billed per allocated GPU) and remember `--export=ALL,VAR=…`
+   ([[snellius-sbatch-env-vars]]). Report the k pair, the census, and the fixpoint round count
+   at np=2 — then stop; reading the headline is FABLE.
 
 ## Findings
 
