@@ -110,6 +110,135 @@ bed as the two test geometries; a new ctest pinning np=1 bitwise on a seamed mes
   cloud redesign ONLY if it falls out naturally; otherwise unchanged), device-resident
   assembly (next campaign after these).
 
+## M1 — the attribution matrix (measured 2026-08-30, RTX 5080; `tests/study/amr_march_profile.py`)
+
+**Verdict: H-band and H-launch, in that order. H-iters and H-mg are refuted. The graded mesh's
+cell saving is real and it is SPENT, not lost — on the least-squares sample clouds that make a
+mixed-level band legal, and on a per-step cost floor that does not shrink with the mesh.**
+
+### How the measurement was made honest
+
+Two things had to be controlled before any of this was quotable.
+
+1. *The box is shared.* A neighbouring job on the same GPU moved a FIXED workload from 3540 to
+   1210 ms/step across three consecutive 200-step windows while its iteration counts stayed at
+   58/59/56 — every phase scaled by the same factor, so it is contention, not physics. So the
+   script has a `--structure` mode whose outputs (cells, band, MG shape, iteration counts) are
+   wall-clock-free, and a `--time` mode that INTERLEAVES the arms window by window, both Flows
+   resident, so a ratio survives what an absolute number does not. Every window's ms/step is
+   printed; the numbers below are from windows where the box was quiet (the depth-7 uniform arm
+   at 892 ms/step against P3c's 895 on the same mesh).
+2. *The depth-7 pair has no lever.* At the shipped gap floor n = 4 the arms differ by 1.07× in
+   cells — smaller than the contention noise. The lever comes from the policy dial instead: the
+   `g<K>` arms are the same graded policy at gap floor n = K, and **n = 2 reproduces the depth-8
+   pair's cell ratio (1.586× vs 1.619×) at a depth where both arms fit in one 16 GB GPU**. That is
+   what makes the anomaly reproducible under a profiler.
+
+(Trap found on the way, worth knowing suite-wide: with the OpenMP host backend in the default
+prefix, a mesh/`set_solid` path driven by a PYTHON-callback SDF at `OMP_NUM_THREADS=8` becomes a
+GIL convoy — the Z&H arm sat at 3% CPU for 20 minutes and finished in ~1 minute at
+`OMP_NUM_THREADS=1`. The bed is immune because it uses the native `set_solid_spheres`.)
+
+### The structure table — RCP bed, depth 7, gap-floor ladder (contention-free)
+
+| arm | leaves | cells ÷ u | overlay rows | LS2 slots | overlay CSR | CSR × u | MG levels / Σ cells | pres it | mom it |
+|---|---:|---:|---:|---:|---:|---:|---|---:|---:|
+| u (uniform band) | 1 923 587 | 1.00 | 232 227 | 0 | 3 483 405 | 1.00 | 8 / 2 214 143 | 49.6 | 20.0 |
+| g n=4 (shipped) | 1 794 535 | 1.07 | 229 485 | 31 095 | 8 456 826 | 2.43 | 8 / 2 078 105 | 50.5 | 19.3 |
+| g n=3 | 1 592 032 | 1.21 | 212 872 | 119 891 | 20 882 784 | 5.99 | 8 / 1 862 516 | 58.3 | 17.6 |
+| g n=2 | 1 212 730 | 1.59 | 163 438 | 223 191 | 32 658 174 | 9.38 | 8 / 1 446 159 | 54.3 | 14.7 |
+| g n=1 | 690 488 | 2.79 | 79 647 | 188 458 | 18 735 248 | 5.38 | 8 / 857 403 | 53.8 | 11.8 |
+
+Depth 8, the resolution P3c's headline came from:
+
+| arm | leaves | overlay rows | LS2 slots | overlay CSR | MG levels / Σ cells |
+|---|---:|---:|---:|---:|---|
+| u | 11 350 032 | 953 419 | 0 | 14 301 285 | — (see the gap below) |
+| g n=4 | 7 010 669 | 691 813 | 429 694 | 64 352 523 | 9 / 8 364 736 |
+
+**1.619× fewer cells, 1.378× fewer band rows — and 4.50× MORE overlay CSR.**
+
+### The timed table — depth 7, arms interleaved, quiet window (ms/step)
+
+| phase | u | g n=2 | Δ |
+|---|---:|---:|---:|
+| momentum solve | 66.7 | 32.2 | −34.5 |
+| pressure solve | 821.0 | 842.0 | +21.0 |
+| &nbsp;&nbsp;· binary matvec | 33.7 | 22.3 | −11.4 |
+| &nbsp;&nbsp;· **overlay matvec** | **17.2** | **227.0** | **+209.8** |
+| &nbsp;&nbsp;· projection | 31.2 | 22.8 | −8.4 |
+| &nbsp;&nbsp;· MG preconditioner | 718.4 | 554.3 | −164.1 |
+| cf delta kernels | 1.1 | 3.9 | +2.8 |
+| finish projection | 2.4 | 3.8 | +1.4 |
+| **step** | **892.5** | **886.7** | **−5.8 (1.007×)** |
+
+1.586× fewer cells buys 1.007×. The books balance exactly: the coarser mesh saves 164 ms in the MG
+preconditioner and 35 ms in the momentum solve, and hands 210 ms of it straight back to the overlay
+matvec.
+
+### The second geometry family — Z&H N=128, arms interleaved (ms/step)
+
+| | a (uniform control) | b (two-level latitude) |
+|---|---:|---:|
+| leaves | 268 752 | 118 812 (2.26× fewer) |
+| overlay rows / LS2 / CSR | 16 776 / 0 / 251 640 | 7 284 / 444 / 195 192 |
+| momentum solve | 148.8 | 133.8 |
+| · overlay matvec | 7.3 | 10.6 |
+| · MG preconditioner | 246.3 | 242.8 |
+| pressure iters | 13.0 | 14.0 |
+| **step** | **449.2** | **438.5 (1.024×)** |
+
+The anomaly reproduces off the bed — **2.26× fewer cells, 1.02× faster** — but by the OTHER
+mechanism: this arm has almost no sample clouds (444 LS2 slots, and a SMALLER CSR than the
+control), and its MG preconditioner is nonetheless unchanged (246.3 → 242.8 ms) at less than half
+the cells. At a few hundred thousand cells the V-cycle is entirely launch-bound.
+
+### The floor, quantified
+
+| mesh | leaves | MG levels | ms/step | pres it |
+|---|---:|---:|---:|---:|
+| bed depth 6 (levels [262 128, 2] — effectively uniform) | 262 130 | 7 | 275.6 | 59.9 |
+| bed depth 7 uniform | 1 923 587 | 8 | 892.5 | 58.4 |
+
+7.34× cells → 3.24× time. A linear fit gives **t ≈ 178 ms + 3.71e-4 ms/cell**: a per-step cost of
+~178 ms that does not depend on the mesh at all — 20% of a depth-7 step and 65% of a depth-6 one.
+That is the right order for launch latency: a step runs ~60 BiCGStab iterations × 2 preconditioner
+calls × 2 V-cycles = ~240 V-cycles, and a 7–8 level V-cycle with a 60-iteration bottom solve is
+~110 kernel launches, so 178 ms/240 ≈ 0.74 ms per cycle ≈ 7 µs per launch.
+
+### The hypotheses, judged
+
+- **H-iters — REFUTED.** Pressure iterations move by less than 20% across a ladder spanning 2.79×
+  in cells (49.6 → 58.3 → 54.3 → 53.8), both arms sit at the 60-iteration cap for most of the
+  march, and momentum iterations FALL on the coarser arms (20.0 → 11.8), which helps the graded
+  side. Conditioning is not what eats the saving.
+- **H-mg — REFUTED.** Every depth-7 arm has the same 8 MG levels, and the hierarchy's total cell
+  count tracks the leaf count closely (Σ levels ÷ leaves: 1.151 for u, 1.192 for g n=2, 1.242 for
+  g n=1). The V-cycle's WORK does shrink with the mesh; what does not shrink is its launch count.
+- **H-launch — CONFIRMED, and it is the whole story on small meshes.** The ~178 ms/step floor
+  above; on the Z&H pair it is the entire explanation (MG preconditioner flat at half the cells).
+  On the depth-7 bed it explains the shortfall in the MG saving (1.30× where the cells give 1.586×)
+  but not the sign of the result.
+- **H-band — CONFIRMED, in a SHARPER form than pre-registered.** The pre-registration said "both
+  arms have identical bands at matched depth". They do not: the graded band has FEWER rows
+  (163 438 vs 232 227 at depth 7 n=2; 691 813 vs 953 419 at depth 8). The cost is not the row
+  count, it is **what the rows contain**. On a uniform band all 15 chain slots of a row are
+  IDENTITY slots — one CSR entry each. On a mixed-level band every slot crossing a 2:1 boundary
+  becomes a degree-2 least-squares cloud, measured at **95–162 CSR entries per slot** (162.4 at
+  n=4, 148.8 at n=3, 136.6 at n=2, 94.5 at n=1). So the overlay CSR GROWS as the mesh coarsens:
+  9.38× at depth 7 n=2 for 1.59× fewer cells, and 4.50× at depth 8 for 1.62× fewer cells. Applied
+  twice per BiCGStab iteration as a scattered gather, that is +210 ms/step at depth 7 n=2 — more
+  than the 164 ms the smaller mesh saves in the preconditioner. Measured 13.2× on a 9.38× CSR
+  ratio, so the gather's irregularity costs a further ~1.4× on top of the raw entry count.
+
+**The one cell of the matrix that is missing.** The depth-8 UNIFORM bed cannot be marched here: it
+needs ~20 GB and this GPU has 16, and it dies in `set_solid` (the overlay census still prints,
+which is where its band and CSR numbers above come from). Its per-phase table needs the H100:
+`core/tests/study/amr_march_profile.py --geom bed --depth 8 --arms u,g4 --time --steps 200
+--repeats 3`. Nothing in the verdict depends on it — the depth-7 n=2 pair reproduces the same cell
+ratio with the same signature, and depth 8's structural numbers (4.50× CSR at 1.62× fewer cells)
+point the same way — but the confirmation is worth one job.
+
 ## Findings
 
 ### F2 (D0, 2026-08-30) — the LS cloud's periodic period is 4 fine cells SHORT: DD1 cannot be made bitwise without fixing it

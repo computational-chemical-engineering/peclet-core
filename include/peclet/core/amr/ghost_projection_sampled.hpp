@@ -514,11 +514,16 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
   }
   ov.sampIdx = std::move(sIdx);
   ov.sampW = std::move(sW);
+  // `csr` is the length of the sample functional CSR — the work every overlay matvec does, and
+  // the quantity Phase M's attribution turns on (an identity slot is ONE entry; a least-squares
+  // slot is a whole cloud), so it is reported next to the slot census.
   std::fprintf(stderr,
                "[peclet.core.amr] sampled ghost overlay: %lld rows | slots identity %ld, LS2 %ld, "
-               "LS1 %ld, degraded %ld, solid %ld | sign-forced faces %ld, closed mixed faces %ld\n",
+               "LS1 %ld, degraded %ld, solid %ld | csr %lld | sign-forced faces %ld, closed mixed "
+               "faces %ld\n",
                static_cast<long long>(ov.base.n), ov.nIdentity, ov.nLS2, ov.nLS1, ov.nDegraded,
-               ov.nSolidSlot, ov.nSignForced, ov.nMixedFace);
+               ov.nSolidSlot, static_cast<long long>(ov.sampIdx.size()), ov.nSignForced,
+               ov.nMixedFace);
   return ov;
 }
 
