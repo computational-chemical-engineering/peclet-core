@@ -1052,6 +1052,16 @@ class AmrFlow {
     spMom_ += lastMomIters_;
     spPres_ += lastPresIters_;
     spOuter_ += lastOuterIters_;
+    if (!spHeader_) {  // the static hierarchy shape, on the first profiled step (H-mg's
+                       // denominator, and the one line a contention-exposed box can still trust)
+      const std::size_t nl = dist_ ? presMGD_.numLevels() : presMG_.numLevels();
+      std::fprintf(stderr, "[step-prof] leaves %lld | pressure MG levels %zu:", (long long)n_, nl);
+      for (std::size_t L = 0; L < nl; ++L)
+        std::fprintf(stderr, " %lld",
+                     (long long)(dist_ ? presMGD_.numLeaves(L) : presMG_.numLeaves(L)));
+      std::fprintf(stderr, "\n");
+      spHeader_ = true;
+    }
     if (spSteps_ < spWindow_)
       return;
     static const char* kName[SP_N] = {
@@ -1062,16 +1072,6 @@ class AmrFlow {
         "  . MG preconditioner", "finish projection"};
     const double w = static_cast<double>(spSteps_);
     const double leaves = static_cast<double>(n_);
-    if (!spHeader_) {  // the static hierarchy shape, once (H-mg's denominator)
-      std::fprintf(stderr, "[step-prof] leaves %lld | pressure MG levels %zu:", (long long)n_,
-                   dist_ ? presMGD_.numLevels() : presMG_.numLevels());
-      const std::size_t nl = dist_ ? presMGD_.numLevels() : presMG_.numLevels();
-      for (std::size_t L = 0; L < nl; ++L)
-        std::fprintf(stderr, " %lld",
-                     (long long)(dist_ ? presMGD_.numLeaves(L) : presMG_.numLeaves(L)));
-      std::fprintf(stderr, "\n");
-      spHeader_ = true;
-    }
     double tot = 0.0;
     for (int k = 0; k < SP_N; ++k)
       if (k < SP_PRES_MV || k > SP_PRES_PC)
