@@ -99,6 +99,11 @@ bed as the two test geometries; a new ctest pinning np=1 bitwise on a seamed mes
 
 - **D0 [OPUS]** — DD1 single-rank: probe-set clouds, bitwise vs today's bin-search clouds on
   the P2b meshes + depth-7 bed (this is a pure refactor gate; any diff ⇒ stop per DD1).
+  *Status 2026-08-30: escalated as F2 (the bin search's period was 4 fine cells short — a
+  pre-existing bug, not an enumeration failure), RESOLVED by Fable (true-period fix landed on
+  `main` first, separately). The rewrite is parked on `dev/d0-probe-clouds`, already proven
+  bitwise against the FIXED bin search on every gate geometry; remaining work = the merge +
+  gate rerun per the F2-resolution instruction in §Findings.*
 - **D1 [OPUS]** — DD2: wire the sampled builders into the fixpoint; np=1 bitwise ctest.
 - **D2 [OPUS]** — drop the single-rank guard; np=2,4 acceptance per DD4; measure distributed
   setSolid scaling (the F1 fix should give near-single-rank per-rank cost).
@@ -243,9 +248,14 @@ point the same way — but the confirmation is worth one job.
 
 ### F2 (D0, 2026-08-30) — the LS cloud's periodic period is 4 fine cells SHORT: DD1 cannot be made bitwise without fixing it
 
-**Status: D0 BLOCKED on a [FABLE] decision (DD1's own escalation clause). The probe-set rewrite is
-written, gated and green everywhere EXCEPT this; it is parked on branch `dev/d0-probe-clouds`
-(core), not on `main`, because landing it would silently change march numerics.**
+**Status: RESOLVED 2026-08-30 (Fable) — the true-period fix is TAKEN and is on `main` (see the
+resolution at the end of this finding). D0 is unblocked; the parked branch's remaining diff is
+enumeration-only.**
+
+*(The finding as escalated, kept verbatim for the record:)* D0 BLOCKED on a [FABLE] decision
+(DD1's own escalation clause). The probe-set rewrite is written, gated and green everywhere
+EXCEPT this; it is parked on branch `dev/d0-probe-clouds` (core), not on `main`, because landing
+it would silently change march numerics.
 
 **The bug.** `buildGhostOverlaySampled` sizes its LS hash bins from the octree:
 
@@ -334,6 +344,67 @@ single-rank guard. The fix is a prerequisite for D, not an optional cleanup.
 distributed build the GLOBAL fine extent rather than `pres.fineExt()`, which is the block's), which
 re-blesses any bed reference that carries sampled clouds near a boundary — or specify a different
 period convention. Either way D0 lands the same refactor; only the constant changes.
+
+#### F2 RESOLUTION (Fable, 2026-08-30) — take the true period; land it FIRST, separately from D0
+
+There is no alternative convention to weigh. The minimum-image period of a periodic domain of
+`fineExt` fine cells is `fineExt·h0` — the value `probeSlot`, `LeafHalo::wrap`, and every other
+wrap in the codebase already uses. `((fineExt−1)/4)·4·h0` is an off-by-one (inclusive `bounds()`)
+fed through a truncating divide, not a design. Blessed as found.
+
+**Landing shape: two steps, so the numerics change and the refactor never share a diff.**
+
+*Step 1 (done, this commit): fix the period inside the OLD bin-search code on `main`* — replace
+the inclusive-bounds `ext` derivation with `nbx = max(fineExt)/4`, byte-for-byte the expression
+the parked branch uses, everything else untouched. This makes `main` correct independent of the
+D0 refactor, and it shrinks the branch's remaining diff to enumeration only.
+
+*Step 2 (Opus): re-gate and land `dev/d0-probe-clouds`* — see the instruction below.
+
+**Verification of step 1** (all against artifacts produced this session, single process,
+`np.array_equal` / `cmp`, never printed hashes):
+
+- *Inert where it must be inert*: the full sampled-overlay dumps on the P2b latitude meshes at
+  N = 64/128/256 are BITWISE unchanged by the fix (centred geometry: same bin coordinates, no
+  wrap engaged) — so every existing parity ctest and bitwise reference stands un-re-blessed.
+- *The strong cross-check*: with the period fixed, `main`'s bin search is **bitwise equal to the
+  parked D0 branch** on the mini-bed overlay dumps (N = 64, 128 — the harness where 66.8% of
+  clouds engage the wrap) AND on the depth-7 RCP bed march (mask + all three velocity components
+  after set_solid + 20 steps; `Σu_x = 9.07850260547263315e+03`, matching the branch's recorded
+  value exactly). Two consequences: the bed's field shift under the branch was 100% the period
+  fix and 0% the enumeration — and **the branch's probe enumeration is thereby proven faithful
+  to the (fixed) bin search on boundary-crossing geometry**, retroactively completing the piece
+  of D0's gate the wrong period had made unreachable.
+- *Batteries*: 149/149 on `build_komp3` and `build_kcuda2`; depth-6 fluid mask bitwise vs
+  `mask6_before.npy` (the mask never depended on clouds).
+
+**Re-blessing consequences, stated honestly**: no stored reference changes (none carries sampled
+clouds near a periodic face). The P3c bed permeabilities (d7 +0.256%, d8 −1.79%) were computed
+with the short period; the depth-7 20-step probe moves `Σu_x` by 5.0e-5 relative under the fix,
+so a rerun will shift k in the ~5th digit — the P3c conclusions are untouched, but bed numbers
+from now on are corrected-period ones and must not be compared to the old logs at finer than
+~1e-4 relative.
+
+**Instruction for Opus (step 2 + the unblocked D rungs):**
+
+1. **Land D0**: merge `dev/d0-probe-clouds` (core `76144a5`) onto the fixed `main`. The
+   `ghost_projection_sampled.hpp` merge must leave exactly the enumeration change (the
+   `detail::forEachCoveringSlot` descent + the canonical `(bin, Morton)` re-sort); the period
+   expression is now IDENTICAL on both sides — if the merge shows any other semantic diff in
+   that region, stop. Gates (all expected bitwise-clean, since fixed-main == branch was already
+   measured this session): latitude dumps N = 64/128/256, mini-bed dumps, depth-7 bed march
+   (mask + u bitwise vs the step-1 baseline), depth-6 mask, 149/149 both nets. Record in the
+   commit message the branch's measured setSolid cost (2.4 → 2.7 µs/leaf @8t on the d7 bed); if
+   that regression matters later the noted lever is hoisting one descent per ROW — the 15 slots
+   share a centre — but do NOT attempt it inside D0.
+2. **D1 as planned (DD2)**, with one addition now settled by F2: `buildGhostOverlaySampled` must
+   receive the **GLOBAL fine extent and the block's frame shift** — `pres.fineExt()` is the
+   block's on np>1, which would be F2's decomposition-dependence in a new coat. Thread
+   `DistributedOctree`'s global fine size / block fine origin through to the builder's
+   `gfine`/`shiftG` (the branch already stubs both, with a comment saying exactly this);
+   default them to `(pres.fineExt(), {0,0,0})` so np=1 stays bit-identical by construction. The
+   `keyOf` Morton sort key must use the GLOBAL lo (the branch already writes `b[0] + shiftG`).
+3. **D2 as planned.** Nothing in DD3/DD4 changes.
 
 ## Standing rules (unchanged)
 

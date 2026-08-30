@@ -188,21 +188,23 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
     fluid[static_cast<std::size_t>(i)] = sdf(c) > 0.0 ? 1 : 0;
   });
 
-  // Hash bins over leaf centers for LS cloud gathering (bin 4*h0, periodic unit... the domain
-  // spans fineExt*h0 from origin; bin in fine units to stay geometry-agnostic).
+  // Hash bins over leaf centers for LS cloud gathering (bin 4*h0; the domain spans fineExt*h0
+  // from origin — cubic domains).
+  //
+  // F2 FIX (docs/amr_march_perf_and_distributed_plan.md §Findings, resolved 2026-08-30): the
+  // period was previously derived from the max leaf bound, which is INCLUSIVE (ext = fineExt−1),
+  // and the truncating /4 then lost one whole bin — so the minimum-image period used for cloud
+  // membership AND for the LS monomial offsets came out 4 fine cells short at every power-of-two
+  // domain (N=64 → 60, 128 → 124, …), displacing every across-the-seam candidate. The period is
+  // now the octree's fine extent — the same period probeSlot and every other wrap already uses.
+  // Centred geometries (all the P2b/M2 calibration meshes) never engage the wrap and are
+  // bitwise-unchanged; a cut band crossing a periodic face (the RCP bed) moves at the ~5e-5
+  // relative level in Σu. Single-rank the block IS the domain; the distributed rungs (D1/D2)
+  // must pass the GLOBAL fine extent through here instead of the block's.
   const double hb = 4.0 * h0;
-  long nbx = 0;
-  {
-    // domain extent from the octree via a probe of the wrap in probeSlot is not exposed;
-    // derive from the max leaf bound at level 0 units.
-    long ext = 0;
-    for (Index i = 0; i < n; ++i) {
-      auto b = t.bounds(i);
-      for (int d = 0; d < 3; ++d)
-        ext = std::max(ext, static_cast<long>(b[1][d]));
-    }
-    nbx = std::max<long>(1, ext / 4);  // ext fine cells / 4 per bin
-  }
+  const auto fe = pres.fineExt();
+  const long nbx = std::max<long>(
+      1, static_cast<long>(std::max(std::max(fe[0], fe[1]), fe[2])) / 4);
   const double domain = static_cast<double>(nbx) * hb;  // world extent (cubic domains)
   std::vector<std::vector<Index>> bins(static_cast<std::size_t>(nbx * nbx * nbx));
   for (Index i = 0; i < n; ++i) {
