@@ -670,19 +670,12 @@ class AmrFlow {
     const bool wantGhost = (ghostProjReq_ != 0);  // explicit on (1) or AUTO (-1)
     ghostProj_ = wantGhost;                       // provisional; AUTO may fall back below
     ghostSampled_ = (ghostSampledReq_ == 1) && wantGhost;
-    if (ghostSampled_ && dist_) {
-      // D1 (docs/amr_march_perf_and_distributed_plan.md): the sampled builders now run through the
-      // distributed seam — their probes join prepareDistributed's miss-collect fixpoint below and
-      // the builder works in the global frame. np=1 is enabled and gated bit-identical to the
-      // single-rank path (tests/test_amr_distributed_seam_mpi.cpp); np>1 additionally needs the
-      // clouds to READ ghost slots, which is rung D2, so it still refuses.
-      int sz = 1;
-      MPI_Comm_size(dist_->comm(), &sz);
-      if (sz > 1)
-        throw std::runtime_error(
-            "amr::AmrFlow: setGhostSampled is np=1 only so far (the LS clouds do not yet read "
-            "ghost slots — rung D2)");
-    }
+    // D1/D2 (docs/amr_march_perf_and_distributed_plan.md): the mixed-level cut band is
+    // DISTRIBUTED. The sampled builders probe through the LeafHalo seam inside
+    // prepareDistributed's fixpoint (D1) and their least-squares clouds read ghost slots like any
+    // other CSR the step consumes (D2), so there is no single-rank guard left. Acceptance:
+    // np=1 bitwise, np=2,4 within the established decomposition-independence class
+    // (tests/test_amr_distributed_seam_mpi.cpp).
     if (dist_) {
       // Distributed: install the resolver seams and run every prober to the miss-collect
       // fixpoint (docs/amr_distributed_flow.md). Freezes the ±2 halo, leaves mom_ FULLY built
@@ -931,7 +924,8 @@ class AmrFlow {
       // + the CSR directional-gradient overlay (cascade over sample functionals; classic
       // same-level fallback on cut cells without a row — the oracle's gradP split).
       if (ghostSampled_) {
-        CfCsr msd = buildMomSeamDelta(hovS, *t_, pres_, mom_, sdfFn, origin_, rho_ / dt_, mu_);
+        CfCsr msd = buildMomSeamDelta(hovS, *t_, pres_, mom_, sdfFn, origin_, rho_ / dt_, mu_,
+                                      /*nSkipped=*/nullptr, shiftD_);
         for (Index i = 0; i < n; ++i) {
           const double rs = mom_.rhsScale(i);
           for (Index k = msd.start[static_cast<std::size_t>(i)];
@@ -1176,6 +1170,12 @@ class AmrFlow {
       // --- predictor: incremental BE viscous (+ implicit-FOU) solve per component, RHS carries
       // −∇p^n and −ρ(SOU−FOU); the mass term is anchored at uⁿ (u0_), the solve warm-starts at the
       // current iterate. ---
+      // D2: the momentum ξ-seam delta is a CSR over the overlay's SAMPLE functionals, so on a
+      // mixed-level band it reads ghost slots — and with advection off nothing else has refreshed
+      // uⁿ's ghost tail since the previous step's projection. (Zero ghosts single-rank / np=1, so
+      // this is a no-op exchange there and the path stays bit-identical.)
+      if (dist_ && ghostSampled_)
+        syncVel();
       for (int c = 0; c < 3; ++c) {
         spT = spMark();
         momRhs(View<const double>(u0_[c]), View<const double>(gx_[c]), View<const double>(defc_[c]),
@@ -1679,7 +1679,9 @@ class AmrFlow {
     pres_.setResolver(resv);
     const Index n = t_->numLeaves();
     const double beta = mu_ / (h0_ * h0_);
+    int rounds = 0;
     for (;;) {
+      ++rounds;
       installGhostMeta();  // metadata for every ghost known so far (same-round hits read it)
       mom_.build(sdfFn, rho_ / dt_, beta);  // ±1 probes (also fills the extended sdfC/fluid)
       // FaceGeom probes: the full face enumeration + the SOU upstream-of-upwind ±2 reach.
@@ -1715,6 +1717,13 @@ class AmrFlow {
       if (dhalo_.resolveMisses() == 0)
         break;
     }
+    if (amrEnvFlag("PECLET_CORE_PROFILE_SETUP"))
+      // The discovery fixpoint's round count. The classic +-2 chain converges in <=3; the SAMPLED
+      // builders reach a whole LS box, and D0's descent deliberately learns one octree level per
+      // round rather than registering a miss per fine cell, so the sampled path needs more (it
+      // grows with the level span the clouds cover). Each round is a full rebuild + a collective.
+      std::fprintf(stderr, "[setSolid] distributed discovery fixpoint: %d rounds (%lld ghosts)\n",
+                   rounds, (long long)dhalo_.numGhosts());
     installGhostMeta();
     dhalo_.finalize();
     nExt_ = dhalo_.extendedSize();

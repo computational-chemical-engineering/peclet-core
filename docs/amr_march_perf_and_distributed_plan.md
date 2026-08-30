@@ -105,8 +105,15 @@ bed as the two test geometries; a new ctest pinning np=1 bitwise on a seamed mes
   bitwise against the FIXED bin search on every gate geometry; remaining work = the merge +
   gate rerun per the F2-resolution instruction in §Findings.*
 - **D1 [OPUS]** — DD2: wire the sampled builders into the fixpoint; np=1 bitwise ctest.
+  *DONE 2026-08-30 (core `fe86380`).* Frames threaded (global fine extent + block frame shift,
+  defaulting to the single-rank values); the sampled builders and the mixed openness rule joined
+  `prepareDistributed`'s fixpoint; new ctest `tests/test_amr_distributed_seam_mpi.cpp` at
+  np=1,2,4,8 (ctest count 149 → **153**). Found and fixed a latent bug the guard had been hiding:
+  sampled mode built `presMG_` unconditionally while `gpOp0()` reads `presMGD_` when distributed,
+  so the ghost solver pointed at an empty operator.
 - **D2 [OPUS]** — drop the single-rank guard; np=2,4 acceptance per DD4; measure distributed
   setSolid scaling (the F1 fix should give near-single-rank per-rank cost).
+  *DONE 2026-08-30 — see §D2 results below.*
 - **D3 [FABLE]** — review the np>1 numbers, decide whether the ~5e-12 class holds for the
   sampled path or the deviation needs attribution; then the depth-9 TWO-ARM run on 2×H100
   (the uniform control finally fits split) — the full accuracy-matched headline at R/h₀=48.
@@ -243,6 +250,81 @@ which is where its band and CSR numbers above come from). Its per-phase table ne
 --repeats 3`. Nothing in the verdict depends on it — the depth-7 n=2 pair reproduces the same cell
 ratio with the same signature, and depth 8's structural numbers (4.50× CSR at 1.62× fewer cells)
 point the same way — but the confirmation is worth one job.
+
+## D2 results — the mixed-level cut band is distributed (2026-08-30)
+
+`setGhostSampled` has no single-rank guard left. Test geometry: the two-level LATITUDE map (the
+seam family that actually produces sample rows — a perpendicular jump produces none), WORLD
+(`initMpi`) vs SELF, leaf-matched by global Morton code.
+
+### Acceptance (DD4)
+
+| np | WORLD vs SELF, 3 steps | gate |
+|---:|---|---|
+| 1 | `|d|max = 0.000e+00` (scale 1.58e-01) — **BITWISE** | == 0 |
+| 2 | rel 3.08e-07 | ≤ 5e-6 |
+| 4 | rel 2.63e-07 | ≤ 5e-6 |
+
+The overlay BUILD is exact: at np=2 the two ranks produce 42 rows / 570 identity / 36 LS2 / 6718
+CSR entries each — 2× each of those is 84 / 1140 / 72 / 13436, the single-rank build to the last
+count — and a per-row fingerprint (CSR length + Σw + Σ|w| keyed by global Morton code) is **bitwise
+identical** to the single-rank overlay. So the residual is the solvers' global reductions, not the
+clouds.
+
+Its shape, for D3 to judge (the same run at several step counts):
+
+| steps | np=2 | np=4 |
+|---:|---|---|
+| 1 | 4.73e-09 | 5.25e-09 |
+| 2 | 5.85e-07 | 5.07e-07 |
+| 3 | 3.08e-07 | 2.63e-07 |
+| 6 | 1.40e-07 | 5.64e-08 |
+
+It starts at the reduction floor (~5e-9), peaks mid-transient and **decays** toward the steady
+state — it does not accumulate. The identity-only reference (same test, `SEAM_UNIFORM=1`, so the
+band is uniform and every chain slot is an identity slot) sits at 1.5e-8 / 2.5e-8 at 3 steps, so
+the sample clouds add about an order of magnitude to the transient peak and nothing at the fixed
+point. **This is not the ~5e-12 class DD4 names**; that class was measured on operator-level
+comparisons, whereas this is three steps of a Krylov march. D3 owns whether it needs attribution
+beyond "global reductions reassociate".
+
+### Two bugs the acceptance caught (both invisible single-rank)
+
+1. **`t.level(j)` on an extended slot.** D2 made the covering-leaf probe `j` an EXTENDED slot, and
+   the identity-slot test still asked the LOCAL octree for its level — reading past the end of the
+   level array for any ghost, reporting a wrong level, and so sending same-level covers down the
+   least-squares branch. Signature: the np=2 census summed to 129 LS2 slots where single-rank had
+   72. Same bug in `buildMomSeamDelta`'s seam test. Both now go through `pres.levelOf`.
+2. **`buildMomSeamDelta` built its stencil in the LOCAL frame.** The row's centre and its virtual
+   ±1 probe positions are WORLD coordinates; without the frame shift every rank whose block does
+   not start at the origin evaluated the geometry of the wrong place. This one was worth ~1e-2
+   relative after one step and diverged the march by ~1e3 per step. Signature: the overlay
+   fingerprint matched bitwise while the march still blew up — i.e. the build was right and a
+   consumer was wrong.
+
+### Distributed setup cost — the honest number
+
+`setSolid` per rank does NOT stay at the single-rank cost, and the reason is the discovery
+fixpoint, not the builders:
+
+| lmax | np=1 | np=2 | np=4 |
+|---:|---|---|---|
+| 2 | 1 round, 0 ghosts | 5 rounds, 606 ghosts | 7 rounds, 909 ghosts |
+| 4 | 1 round, 0 ghosts | 8 rounds, 2860 ghosts | 9 rounds, 4290 ghosts |
+| 6 | 1 round, 0 ghosts | 8 rounds, 2020 ghosts | 8 rounds, 3030 ghosts |
+
+(`PECLET_CORE_PROFILE_SETUP=1` now prints the round count and ghost count.) The classic ±2 chain
+converges in ≤3 rounds; the sampled path needs **5–9**, because an LS cloud descends a whole box
+and D0's descent deliberately does not descend into a `kPending` region — it learns one octree
+level per round rather than registering one miss per fine cell. Each round is a full rebuild plus
+a collective, so on the small test mesh the wall cost per rank rises with np instead of falling.
+The ghost count is also much larger than the classic registry (np=4, lmax=4: 4290 ghosts against
+1430 local leaves), because the clouds reach ~2.2·max(h,H) rather than ±2 cells.
+
+Bounded, correct, and clearly improvable — the obvious lever is to let the descent register a
+BOUNDED set of probes inside a pending region (e.g. at the coarsest level present in the block)
+so it learns several levels per round, trading a larger miss set for fewer collectives. That is a
+design choice with a real trade-off, so it is flagged here rather than taken: **a D3 item.**
 
 ## Findings
 

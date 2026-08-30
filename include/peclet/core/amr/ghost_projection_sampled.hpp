@@ -295,6 +295,29 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
     fluid[static_cast<std::size_t>(i)] = sdf(c) > 0.0 ? 1 : 0;
   });
 
+  // D2: the same two per-slot facts for the GHOST tail [n, n+nGhost). A ghost's geometry is
+  // recomputed here rather than exchanged: `loOf` is the covering leaf's global anchor and the
+  // level is the owner's, so `sdf(centre)` reproduces the owner's own value bit for bit (the same
+  // argument buildOpenness's ghost rows rest on). Empty single-rank — there are no ghosts.
+  const Index ng = pres.numGhosts();
+  std::vector<Vec<3>> cenG(static_cast<std::size_t>(ng));
+  std::vector<char> fluidG(static_cast<std::size_t>(ng));
+  for (Index g = 0; g < ng; ++g) {
+    const auto lo = pres.loOf(n + g);
+    const double s = static_cast<double>(Index(1) << pres.levelOf(n + g));
+    Vec<3> c{};
+    for (int d = 0; d < 3; ++d)
+      c[d] = origin[d] + (static_cast<double>(lo[d] + shiftG[d]) + 0.5 * s) * h0;
+    cenG[static_cast<std::size_t>(g)] = c;
+    fluidG[static_cast<std::size_t>(g)] = sdf(c) > 0.0 ? 1 : 0;
+  }
+  auto centerOf = [&](Index j) -> const Vec<3>& {
+    return j < n ? cen[static_cast<std::size_t>(j)] : cenG[static_cast<std::size_t>(j - n)];
+  };
+  auto fluidOf = [&](Index j) -> char {
+    return j < n ? fluid[static_cast<std::size_t>(j)] : fluidG[static_cast<std::size_t>(j - n)];
+  };
+
   // ---- DD1 (docs/amr_march_perf_and_distributed_plan.md): the LS cloud candidates are a
   // DETERMINISTIC PROBE SET, not a search over the local leaf array.
   //
@@ -333,11 +356,15 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
   };
   using Oct = BlockOctree<3, Bits>;
   using Code = typename Oct::Code;
+  // The order key: the Morton code of the slot's GLOBAL lo corner. `loOf` serves local leaves and
+  // ghosts alike (a ghost's lo IS its owner's, in this block's frame), so the key of a leaf is the
+  // same number on every rank that can see it — which is what makes the cloud's accumulation order
+  // decomposition-independent (D6) rather than merely deterministic.
   auto keyOf = [&](Index j) {
-    auto b = t.bounds(j);
+    const auto lo = pres.loOf(j);
     std::array<typename Oct::Coord, 3> q{};
     for (int d = 0; d < 3; ++d)
-      q[d] = static_cast<typename Oct::Coord>(static_cast<long>(b[0][d]) + shiftG[d]);
+      q[d] = static_cast<typename Oct::Coord>(lo[d] + shiftG[d]);
     return Oct::M::encode(q).code();
   };
   struct Cand {
@@ -368,13 +395,13 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
     std::vector<Cand> cand;
     cand.reserve(slots.size());
     for (Index j : slots) {
-      if (j < 0 || j >= n)
-        continue;  // kPending / ghost slot: the distributed sample halo is rung D1/D2
-      if (!fluid[static_cast<std::size_t>(j)])
+      if (j < 0)
+        continue;  // kPending: a discovery round; this pass's result is discarded anyway
+      if (!fluidOf(j))
         continue;
       double r2 = 0;
       for (int d = 0; d < 3; ++d) {
-        double del = cen[static_cast<std::size_t>(j)][d] - p[d];
+        double del = centerOf(j)[d] - p[d];
         if (del > 0.5 * domain)
           del -= domain;
         if (del < -0.5 * domain)
@@ -383,7 +410,7 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
       }
       if (r2 > rho * rho)
         continue;
-      const Vec<3>& cj = cen[static_cast<std::size_t>(j)];
+      const Vec<3>& cj = centerOf(j);
       const long bx = static_cast<long>((cj[0] - origin[0]) / hb) % nbx;
       const long by = static_cast<long>((cj[1] - origin[1]) / hb) % nbx;
       const long bz = static_cast<long>((cj[2] - origin[2]) / hb) % nbx;
@@ -421,7 +448,7 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
     for (Index j : pts) {
       double d[3];
       for (int dd = 0; dd < 3; ++dd) {
-        double del = cen[static_cast<std::size_t>(j)][dd] - p[dd];
+        double del = centerOf(j)[dd] - p[dd];
         if (del > 0.5 * domain)
           del -= domain;
         if (del < -0.5 * domain)
@@ -439,7 +466,7 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
     for (Index j : pts) {
       double d[3];
       for (int dd = 0; dd < 3; ++dd) {
-        double del = cen[static_cast<std::size_t>(j)][dd] - p[dd];
+        double del = centerOf(j)[dd] - p[dd];
         if (del > 0.5 * domain)
           del -= domain;
         if (del < -0.5 * domain)
@@ -521,8 +548,8 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
     pres.forEachFaceFull(i, [&](Index j, int axis, int dir, double, double, double) {
       const int face = 2 * axis + (dir > 0 ? 0 : 1);
       ++nSub[face];
-      if (j >= 0 && fluid[static_cast<std::size_t>(j)]) {
-        const float sj = static_cast<float>(sdf(cen[static_cast<std::size_t>(j)]));
+      if (j >= 0 && fluidOf(j)) {
+        const float sj = static_cast<float>(sdf(centerOf(j)));
         if (0.5f * (si0 + sj) >= 0.0f)
           anyOpen[face] = true;
       }
@@ -597,9 +624,12 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
         const Index j = pres.probeSlot(lc).first;
         const bool fluidP = sdf(p) > 0.0;
         st->sampFluid[sl] = fluidP ? 1 : 0;
-        if (q == 0 || (j >= 0 && t.level(j) == Li)) {
+        // `pres.levelOf`, never `t.level`: D2 made `j` an EXTENDED slot, and a ghost index
+        // read out of the local level array — silently reporting a wrong level, which sent
+        // same-level covers down the least-squares branch instead of the identity one.
+        if (q == 0 || (j >= 0 && pres.levelOf(j) == Li)) {
           // own cell or same-level cover: identity (the classic chain; bit-identical band).
-          if (j >= 0 && fluid[static_cast<std::size_t>(j)] == (fluidP ? 1 : 0)) {
+          if (j >= 0 && fluidOf(j) == (fluidP ? 1 : 0)) {
             st->sIdx.push_back(j);
             st->sW.push_back(1.0);
             ++st->nIdentity;
@@ -625,7 +655,7 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
           ++st->nLS2;
         } else if (lsFunctional(p, rho, H, 1, idx, w)) {
           ++st->nLS1;
-        } else if (j >= 0 && fluid[static_cast<std::size_t>(j)]) {
+        } else if (j >= 0 && fluidOf(j)) {
           idx.assign(1, j);
           w.assign(1, 1.0);
           ++st->nDegraded;
@@ -681,9 +711,6 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
   }
   ov.sampIdx = std::move(sIdx);
   ov.sampW = std::move(sW);
-  // `csr` is the length of the sample functional CSR — the work every overlay matvec does, and
-  // the quantity Phase M's attribution turns on (an identity slot is ONE entry; a least-squares
-  // slot is a whole cloud), so it is reported next to the slot census.
   std::fprintf(stderr,
                "[peclet.core.amr] sampled ghost overlay: %lld rows | slots identity %ld, LS2 %ld, "
                "LS1 %ld, degraded %ld, solid %ld | csr %lld | sign-forced faces %ld, closed mixed "
@@ -795,10 +822,15 @@ inline void ghostDivergDeltaSampledHost(const GhostOverlaySampled& ov,
 ///
 /// Application (oracle step): src += cfApplyHost(csr, u^n) BEFORE makeRhs — the coefficients
 /// fold in 1/rscale so makeRhs's rscale multiply lands the correction at unit row scale.
+/// `frameShift` (D2) is this block's global fine origin: the row's centre and its virtual +-1
+/// probe positions are WORLD coordinates, so on a rank whose block does not start at the origin
+/// they must carry the shift, or the whole stencil is built from the geometry of the wrong place.
+/// Zero single-rank.
 template <unsigned Bits, class Mom, class SdfFn>
 inline CfCsr buildMomSeamDelta(const GhostOverlaySampled& ov, const BlockOctree<3, Bits>& t,
                                const AmrPoisson<3, Bits>& pres, const Mom& mom, SdfFn&& sdf,
-                               Vec<3> origin, double idiag, double mu, long* nSkipped = nullptr) {
+                               Vec<3> origin, double idiag, double mu, long* nSkipped = nullptr,
+                               std::array<long, 3> frameShift = {}) {
   const Index n = t.numLeaves();
   const double h0 = pres.cellWidth(0) / static_cast<double>(Index(1) << t.level(0));
   std::vector<std::vector<detail::ScalarEnt>> per(static_cast<std::size_t>(n));
@@ -811,7 +843,7 @@ inline CfCsr buildMomSeamDelta(const GhostOverlaySampled& ov, const BlockOctree<
     bool seam = false;
     for (int k = 0; k < 6; ++k) {
       const Index nb = mom.neighborOf(i, k);
-      if (nb < 0 || t.level(nb) != Li)
+      if (nb < 0 || pres.levelOf(nb) != Li)  // extended slot: ghost-safe (D2)
         seam = true;
     }
     if (!seam)
@@ -821,7 +853,8 @@ inline CfCsr buildMomSeamDelta(const GhostOverlaySampled& ov, const BlockOctree<
     const double s = static_cast<double>(Index(1) << Li);
     Vec<3> c{};
     for (int d = 0; d < 3; ++d)
-      c[d] = origin[d] + (static_cast<double>(b[0][d]) + 0.5 * s) * h0;
+      c[d] = origin[d] +
+             (static_cast<double>(b[0][d]) + static_cast<double>(frameShift[d]) + 0.5 * s) * h0;
     const double h = pres.cellWidth(i);
     const double sdfC = sdf(c);
     double sdfNv[6];

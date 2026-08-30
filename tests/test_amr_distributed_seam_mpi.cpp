@@ -8,12 +8,14 @@
 // compared leaf by leaf through the global Morton code.
 //   np = 1 : BITWISE (the classic distributed contract — every wrapped probe lands back in the
 //            block, so zero ghosts exist and the two paths must execute identical arithmetic).
-//   np > 1 : the established ~5e-12 decomposition-independence class (rung D2; until the LS
-//            clouds read ghost slots, setSolid refuses np>1 and this test only checks that it
-//            refuses cleanly rather than corrupting).
+//   np > 1 : the established decomposition-independence class. The clouds themselves are
+//            order-canonical by construction (candidates are sorted by bin then by the GLOBAL
+//            Morton code of the leaf's lo corner, so a cloud accumulates in the same order on
+//            every rank that can see it); what remains is the solvers' own global reductions.
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 #include "test_util.hpp"
@@ -55,7 +57,8 @@ void makeSeamedMesh(DO& d, double h0) {
       Vec<3> ctr{};
       for (int a = 0; a < 3; ++a)
         ctr[a] = (static_cast<double>((long)o[a] + d.blockFineOrigin()[a]) + 0.5 * s) * h0;
-      const unsigned tgt = ctr[2] < c - 0.5 * R ? 0u : 1u;
+      const unsigned tgt =
+          std::getenv("SEAM_UNIFORM") ? 0u : (ctr[2] < c - 0.5 * R ? 0u : 1u);
       if (lvl <= tgt)
         return false;
       const double w = s * h0;
@@ -92,7 +95,9 @@ void configure(AmrFlow<kBits>& f) {
 
 void run() {
   const long Nr = 4;  // 4^3 roots, lmax 2 ⇒ 16^3 fine, periodic [0,1)^3
-  const unsigned lmax = 2;
+  // SEAM_LMAX raises the resolution (lmax 4 ⇒ 64^3 fine): the gated ctest runs the small mesh,
+  // while the D2 setup-scaling measurement wants enough leaves for a meaningful us/leaf.
+  const unsigned lmax = std::getenv("SEAM_LMAX") ? (unsigned)std::atoi(std::getenv("SEAM_LMAX")) : 2;
   const double h0 = 1.0 / (Nr * (1 << lmax));
   AmrGeometry<3> geo;
   geo.h0 = h0;
@@ -109,32 +114,37 @@ void run() {
   self.init(IVec<3>{Nr, Nr, Nr}, lmax, geo, per, MPI_COMM_SELF);
   makeSeamedMesh(self, h0);
 
-  if (size > 1) {
-    // D2 not landed: setSolid must refuse np>1 cleanly (a wrong answer would be worse).
-    AmrFlow<kBits> fw;
-    fw.initMpi(world);
-    bool threw = false;
-    try {
-      configure(fw);
-    } catch (const std::exception&) {
-      threw = true;
-    }
-    PECLET_CORE_CHECK(threw);
-    if (rank == 0)
-      std::printf("[seam-mpi] np=%d: setGhostSampled refused (rung D2 pending) — OK\n", size);
-    return;
-  }
-
   AmrFlow<kBits> fw;
   fw.initMpi(world);
+  const double tSolid0 = MPI_Wtime();
   configure(fw);
-  PECLET_CORE_CHECK_EQ(fw.numGhostCells(), 0);  // np=1: every wrapped probe lands back in-block
-  const Fields w = runSteps(fw, 3);
+  const double tSolid = MPI_Wtime() - tSolid0;
+  {  // D2: what a rank pays for the seamed distributed setup.
+    double tmax = 0.0;
+    long nl = (long)n, ntot = 0;
+    MPI_Allreduce(&tSolid, &tmax, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(&nl, &ntot, 1, MPI_LONG, MPI_SUM, MPI_COMM_WORLD);
+    if (rank == 0)
+      std::printf("[seam-mpi] setup np=%d: %ld leaves total, slowest rank %.3f s = %.1f us/leaf "
+                  "(per-rank mean %ld leaves)\n",
+                  size, ntot, tmax, 1e6 * tmax / ((double)ntot / size), ntot / size);
+  }
+  if (size > 1)
+    PECLET_CORE_CHECK(fw.numGhostCells() > 0);
+  else
+    PECLET_CORE_CHECK_EQ(fw.numGhostCells(), 0);  // np=1: every wrapped probe lands back in-block
+  // Two diagnostic knobs, both defaulting to the gated configuration: SEAM_STEPS shortens or
+  // lengthens the march (the WORLD/SELF difference peaks mid-transient and DECAYS, so a single
+  // step count hides the shape), and SEAM_UNIFORM rebuilds the band uniform, which turns every
+  // chain slot into an identity slot and so isolates the sample machinery from the rest of the
+  // distributed path. Both earned their keep finding the D2 frame bug.
+  const int kSteps = std::getenv("SEAM_STEPS") ? std::atoi(std::getenv("SEAM_STEPS")) : 3;
+  const Fields w = runSteps(fw, kSteps);
 
   AmrFlow<kBits> fs;
   fs.init(self.local(), h0, Vec<3>{0.0, 0.0, 0.0});
   configure(fs);
-  const Fields s = runSteps(fs, 3);
+  const Fields s = runSteps(fs, kSteps);
 
   double dmax = 0.0, scale = 0.0;
   for (Index i = 0; i < n; ++i) {
@@ -147,9 +157,17 @@ void run() {
     }
     dmax = std::max(dmax, std::fabs(w.p[(std::size_t)i] - s.p[(std::size_t)si]));
   }
-  std::printf("[seam-mpi] np=1 sampled overlay WORLD vs SELF: |d|max %.3e (scale %.3e)\n", dmax,
-              scale);
-  PECLET_CORE_CHECK(dmax == 0.0);  // BITWISE, the np=1 contract
+  double gdmax = 0.0, gscale = 0.0;
+  MPI_Allreduce(&dmax, &gdmax, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+  MPI_Allreduce(&scale, &gscale, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+  if (rank == 0)
+    std::printf("[seam-mpi] np=%d sampled overlay WORLD vs SELF: |d|max %.3e (scale %.3e, rel "
+                "%.3e)\n",
+                size, gdmax, gscale, gdmax / (gscale + 1e-300));
+  if (size == 1)
+    PECLET_CORE_CHECK(gdmax == 0.0);  // BITWISE, the np=1 contract
+  else
+    PECLET_CORE_CHECK(gdmax <= 5e-6 * gscale);  // decomposition independence (DD4)
 }
 
 }  // namespace
