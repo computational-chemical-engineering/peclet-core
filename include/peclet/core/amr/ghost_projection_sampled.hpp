@@ -214,25 +214,33 @@ inline void gpsMonomials(const double d[3], int deg, double* m, int& nm) {
 /// leaf centers are fluid AND the float mean of the center samples is >= 0. Reduces to
 /// makeBinaryOpenFn on a uniform finest band (centers at ±h0/2). Level-aware by construction —
 /// the adjacent leaves are located through the octree, whatever their levels.
-/// `origin` is the world origin of the octree's fine units (AmrFlow's origin).
+/// `origin` is the world origin of the octree's fine units (AmrFlow's origin). `frameShift` is
+/// this block's global fine origin (D1): the face centroid `fc` arrives in GLOBAL world
+/// coordinates — `buildOpenness` evaluates it there so every rank agrees bit for bit — while
+/// `probeSlot` wants block-local coords. Zero single-rank, where the two frames coincide.
+/// The adjacent slot is read through `pres.loOf`/`levelOf`, not `t.bounds`, so a GHOST slot
+/// answers as well as a local leaf.
 template <unsigned Bits, class SdfFn>
 inline auto makeBinaryOpenFnMixed(const BlockOctree<3, Bits>& t, const AmrPoisson<3, Bits>& pres,
-                                  SdfFn sdfFn, double h0, Vec<3> origin) {
-  return [&t, &pres, sdfFn, h0, origin](const Vec<3>& fc, int axis) -> double {
+                                  SdfFn sdfFn, double h0, Vec<3> origin,
+                                  std::array<long, 3> frameShift = {}) {
+  return [&t, &pres, sdfFn, h0, origin, frameShift](const Vec<3>& fc, int axis) -> double {
+    (void)t;
     auto centerSample = [&](int side) -> std::pair<bool, float> {
       Vec<3> probe = fc;
       probe[axis] += side * 0.25 * h0;  // strictly inside the adjacent leaf
       std::array<long, 3> q{};
       for (int d = 0; d < 3; ++d)
-        q[d] = static_cast<long>(std::floor((probe[d] - origin[d]) / h0));
+        q[d] = static_cast<long>(std::floor((probe[d] - origin[d]) / h0)) - frameShift[d];
       const Index j = pres.probeSlot(q).first;
       if (j < 0)
         return {false, -1.0f};
-      auto b = t.bounds(j);
-      const double s = static_cast<double>(Index(1) << t.level(j));
+      const auto lo = pres.loOf(j);
+      const double s = static_cast<double>(Index(1) << pres.levelOf(j));
       Vec<3> c{};
       for (int d = 0; d < 3; ++d)
-        c[d] = origin[d] + (static_cast<double>(b[0][d]) + 0.5 * s) * h0;
+        c[d] = origin[d] +
+               (static_cast<double>(lo[d] + frameShift[d]) + 0.5 * s) * h0;
       const double sd = sdfFn(c);
       return {sd > 0.0, static_cast<float>(sd)};
     };
@@ -245,14 +253,34 @@ inline auto makeBinaryOpenFnMixed(const BlockOctree<3, Bits>& t, const AmrPoisso
 /// Build the sampled overlay. Rows: fluid-centered leaves that are non-clean under the
 /// canonical/virtual classification (see header). Requires pres.init done; does NOT require
 /// openness built (the canonical rule is self-computed from the SDF).
+///
+/// DISTRIBUTED (rung D1). Two frames meet in this builder and they only coincide single-rank:
+/// geometry is evaluated at GLOBAL world points (so every rank samples the SDF at bit-identical
+/// coordinates — `AmrPoisson::setFrameShift`'s contract), while `probeSlot` takes BLOCK-LOCAL fine
+/// coords. `frameShift` is this block's global fine origin and `globalFine` the whole domain's
+/// fine extent; both default to the single-rank values (zero shift, the block's own extent), which
+/// makes every expression below reduce to what it was, bit for bit.
 template <unsigned Bits, class SdfFn>
 inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& t,
                                                     const AmrPoisson<3, Bits>& pres, SdfFn&& sdf,
                                                     int matrixOrder, int rhsOrder,
-                                                    Vec<3> origin = Vec<3>{}) {
+                                                    Vec<3> origin = Vec<3>{},
+                                                    const std::array<long, 3>* globalFine = nullptr,
+                                                    std::array<long, 3> frameShift = {}) {
   GhostOverlaySampled ov;
   const Index n = t.numLeaves();
   const double h0 = pres.cellWidth(0) / static_cast<double>(Index(1) << t.level(0));
+  const auto fe = pres.fineExt();
+  const std::array<long, 3> shiftG = frameShift;
+  const std::array<long, 3> gfine =
+      globalFine ? *globalFine
+                 : std::array<long, 3>{static_cast<long>(fe[0]), static_cast<long>(fe[1]),
+                                       static_cast<long>(fe[2])};
+  // World position -> block-local fine coord (the probe frame). Single-rank the shift is 0.
+  auto probeCoord = [&](const Vec<3>& p, long q[3]) {
+    for (int d = 0; d < 3; ++d)
+      q[d] = static_cast<long>(std::floor((p[d] - origin[d]) / h0)) - shiftG[d];
+  };
 
   // Leaf centers + fluid flags. Host-parallel (rung 4): per-leaf disjoint writes.
   std::vector<Vec<3>> cen(static_cast<std::size_t>(n));
@@ -262,7 +290,7 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
     const double s = static_cast<double>(Index(1) << t.level(i));
     Vec<3> c{};
     for (int d = 0; d < 3; ++d)
-      c[d] = origin[d] + (static_cast<double>(b[0][d]) + 0.5 * s) * h0;
+      c[d] = origin[d] + (static_cast<double>(b[0][d]) + static_cast<double>(shiftG[d]) + 0.5 * s) * h0;
     cen[static_cast<std::size_t>(i)] = c;
     fluid[static_cast<std::size_t>(i)] = sdf(c) > 0.0 ? 1 : 0;
   });
@@ -289,17 +317,12 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
   // this rung) derived it from the max leaf bound, which is INCLUSIVE, and the truncating /4 then
   // lost a whole bin — 4 fine cells short at every power-of-two domain. It is the octree's fine
   // extent, the period probeSlot and every other wrap already use. Single-rank the block IS the
-  // domain; D1/D2 pass the GLOBAL fine extent and this block's frame shift instead.
+  // domain; distributed (D1) it is `gfine`, the GLOBAL fine extent — a per-rank period would be
+  // F2 all over again, in a decomposition-dependent coat.
   const double hb = 4.0 * h0;
-  const auto fe = pres.fineExt();
   const long nbx = std::max<long>(
-      1, static_cast<long>(std::max(std::max(fe[0], fe[1]), fe[2])) / 4);  // ext fine cells / 4
+      1, std::max(std::max(gfine[0], gfine[1]), gfine[2]) / 4);  // ext fine cells / 4
   const double domain = static_cast<double>(nbx) * hb;  // world extent (cubic domains)
-  // Probe frame ↔ octree frame. Single-rank the block IS the domain and the shift is zero; the
-  // distributed rungs (D1/D2) pass the block's global fine origin here.
-  const std::array<long, 3> gfine{static_cast<long>(fe[0]), static_cast<long>(fe[1]),
-                                  static_cast<long>(fe[2])};
-  const std::array<long, 3> shiftG{0, 0, 0};
   auto wrapLocal = [gfine, shiftG](const std::array<long, 3>& p) {
     std::array<long, 3> q{};
     for (int d = 0; d < 3; ++d) {
@@ -331,12 +354,12 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
     w.clear();
     // (1) every leaf overlapping the fine-cell box that contains the ball (a leaf whose center is
     //     in the ball contains that center, so it overlaps the box).
-    const long qlo[3] = {static_cast<long>(std::floor((p[0] - origin[0] - rho) / h0)),
-                         static_cast<long>(std::floor((p[1] - origin[1] - rho) / h0)),
-                         static_cast<long>(std::floor((p[2] - origin[2] - rho) / h0))};
-    const long qhi[3] = {static_cast<long>(std::floor((p[0] - origin[0] + rho) / h0)),
-                         static_cast<long>(std::floor((p[1] - origin[1] + rho) / h0)),
-                         static_cast<long>(std::floor((p[2] - origin[2] + rho) / h0))};
+    const long qlo[3] = {static_cast<long>(std::floor((p[0] - origin[0] - rho) / h0)) - shiftG[0],
+                         static_cast<long>(std::floor((p[1] - origin[1] - rho) / h0)) - shiftG[1],
+                         static_cast<long>(std::floor((p[2] - origin[2] - rho) / h0)) - shiftG[2]};
+    const long qhi[3] = {static_cast<long>(std::floor((p[0] - origin[0] + rho) / h0)) - shiftG[0],
+                         static_cast<long>(std::floor((p[1] - origin[1] + rho) / h0)) - shiftG[1],
+                         static_cast<long>(std::floor((p[2] - origin[2] + rho) / h0)) - shiftG[2]};
     std::vector<Index> slots;
     detail::forEachCoveringSlot(pres, qlo, qhi, wrapLocal, [&](Index s) { slots.push_back(s); });
     std::sort(slots.begin(), slots.end());
@@ -566,10 +589,11 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
         Vec<3> p = c;
         p[a] += static_cast<double>(q) * h;
         // Recover the covering leaf: floor the world position to fine units (a level-L cell
-        // center is lo + 0.5*2^L in fine units, so the floor lands inside the cell).
-        std::array<long, 3> lc{};
-        for (int d = 0; d < 3; ++d)
-          lc[d] = static_cast<long>(std::floor((p[d] - origin[d]) / h0));
+        // center is lo + 0.5*2^L in fine units, so the floor lands inside the cell), then into
+        // the block-local probe frame.
+        long lcq[3];
+        probeCoord(p, lcq);
+        const std::array<long, 3> lc{lcq[0], lcq[1], lcq[2]};
         const Index j = pres.probeSlot(lc).first;
         const bool fluidP = sdf(p) > 0.0;
         st->sampFluid[sl] = fluidP ? 1 : 0;

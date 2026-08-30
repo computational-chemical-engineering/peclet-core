@@ -670,9 +670,19 @@ class AmrFlow {
     const bool wantGhost = (ghostProjReq_ != 0);  // explicit on (1) or AUTO (-1)
     ghostProj_ = wantGhost;                       // provisional; AUTO may fall back below
     ghostSampled_ = (ghostSampledReq_ == 1) && wantGhost;
-    if (ghostSampled_ && dist_)
-      throw std::runtime_error(
-          "amr::AmrFlow: setGhostSampled is single-rank only (distributed sample halo pending)");
+    if (ghostSampled_ && dist_) {
+      // D1 (docs/amr_march_perf_and_distributed_plan.md): the sampled builders now run through the
+      // distributed seam — their probes join prepareDistributed's miss-collect fixpoint below and
+      // the builder works in the global frame. np=1 is enabled and gated bit-identical to the
+      // single-rank path (tests/test_amr_distributed_seam_mpi.cpp); np>1 additionally needs the
+      // clouds to READ ghost slots, which is rung D2, so it still refuses.
+      int sz = 1;
+      MPI_Comm_size(dist_->comm(), &sz);
+      if (sz > 1)
+        throw std::runtime_error(
+            "amr::AmrFlow: setGhostSampled is np=1 only so far (the LS clouds do not yet read "
+            "ghost slots — rung D2)");
+    }
     if (dist_) {
       // Distributed: install the resolver seams and run every prober to the miss-collect
       // fixpoint (docs/amr_distributed_flow.md). Freezes the ±2 halo, leaves mom_ FULLY built
@@ -689,7 +699,9 @@ class AmrFlow {
     GhostOverlay hov;
     GhostOverlaySampled hovS;
     if (ghostSampled_) {  // mixed-level cut band: sample-slot overlay, no band-margin probe
-      hovS = buildGhostOverlaySampled(*t_, pres_, sdfFn, gpMatrixOrder_, gpRhsOrder_, origin_);
+      const auto gfine = globalFineExtent();
+      hovS = buildGhostOverlaySampled(*t_, pres_, sdfFn, gpMatrixOrder_, gpRhsOrder_, origin_,
+                                      &gfine, shiftD_);
       profPhase("buildGhostOverlaySampled");
     } else if (ghostProj_) {  // probe the band margin; explicit request throws on violation, AUTO falls
       bool viol = false;
@@ -717,13 +729,19 @@ class AmrFlow {
       // Ghost projection: the pressure geometry is the BINARY openness on the unchanged MG
       // rails; the closure physics lives in the overlay (built above). Sampled mode: the
       // level-aware canonical rule (the sampled overlay's face states are FORCED to it — the
-      // overlay-closed <=> binary-closed invariant; single-rank, guarded above).
+      // overlay-closed <=> binary-closed invariant).
       if (ghostSampled_) {
         auto binFn = makeBinaryOpenFnMixed(
-            *t_, pres_, [&sdfFn](const Vec<3>& p) { return sdfFn(p); }, h0_, origin_);
+            *t_, pres_, [&sdfFn](const Vec<3>& p) { return sdfFn(p); }, h0_, origin_, shiftD_);
         pres_.buildOpenness(binFn);
         profPhase("buildOpenness (mixed)");
-        presMG_.build(*t_, h0_, binFn, /*periodic=*/true);
+        // D1: the pressure hierarchy has to be the DISTRIBUTED one when a seam is installed —
+        // gpOp0() reads presMGD_ whenever dist_ is set, so building presMG_ here left the ghost
+        // solver pointing at an empty operator.
+        if (dist_)
+          presMGD_.build(*dist_, h0_, binFn, &dhalo_);
+        else
+          presMG_.build(*t_, h0_, binFn, /*periodic=*/true);
         profPhase("presMG.build");
       } else {
         auto binFn = makeBinaryOpenFn([&sdfFn](const Vec<3>& p) { return sdfFn(p); }, h0_);
@@ -1627,6 +1645,17 @@ class AmrFlow {
     MPI_Allreduce(&s, &g, 1, MPI_DOUBLE, MPI_SUM, dist_->comm());
     return g;
   }
+  /// The DOMAIN's fine extent (D1): the block's own single-rank, where block == domain. The
+  /// sampled overlay's minimum-image period must be this and never the block's, or the cloud
+  /// metric would differ per rank (finding F2 in decomposition-dependent form).
+  std::array<long, 3> globalFineExtent() const {
+    std::array<long, 3> g{};
+    for (int a = 0; a < 3; ++a)
+      g[a] = dist_ ? static_cast<long>(dist_->globalFineSize()[a])
+                   : static_cast<long>(pres_.fineExt()[a]);
+    return g;
+  }
+
   /// The pressure operator the ghost solver runs on (distributed MG level 0 or presMG_'s).
   const FvOp& gpOp0() { return dist_ ? presMGD_.op(0) : presMG_.op(0); }
 
@@ -1665,7 +1694,21 @@ class AmrFlow {
       });
       // Overlay / directional-gradient ±2 chains (every cut cell is a non-clean overlay row,
       // so this covers buildGhostGradOverlay's probes too). Discovery only — result discarded.
-      if (ghostProj_ || ghostGrad_) {
+      if (ghostSampled_) {
+        // D1 (DD2): the SAMPLED builders are probers too, and they reach further than the classic
+        // ±2 chain — an LS cloud descends a whole box of radius 2.2·max(h,H) around each virtual
+        // position, and the mixed openness rule probes ±¼h0 off every face centroid. Both run here
+        // exactly as they will run for real, tolerating kPending (results discarded until the last
+        // round) the way mom_.build does. Note the descent deliberately does NOT descend into a
+        // pending region: it learns one octree level per round, so this fixpoint takes a few more
+        // rounds than the classic ±2 one — which is why it is a fixpoint and not a fixed count.
+        const auto gfine = globalFineExtent();
+        (void)buildGhostOverlaySampled(*t_, pres_, sdfFn, gpMatrixOrder_, gpRhsOrder_, origin_,
+                                       &gfine, shiftD_);
+        auto binFn = makeBinaryOpenFnMixed(
+            *t_, pres_, [&sdfFn](const Vec<3>& p) { return sdfFn(p); }, h0_, origin_, shiftD_);
+        pres_.buildOpenness(binFn);  // discovery only; setSolid rebuilds it after the fixpoint
+      } else if (ghostProj_ || ghostGrad_) {
         bool viol = false;
         (void)buildGhostOverlay(*t_, pres_, mom_.sdfCRaw(), gpMatrixOrder_, gpRhsOrder_, &viol);
       }
