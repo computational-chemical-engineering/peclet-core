@@ -1159,12 +1159,30 @@ inline void ghostApplyDeltaSampled(const GhostOverlaySampledDev& ov, View<const 
           y(c) = 0.0;
           return;
         }
+        // M2c: the +/- faces of an axis read overlapping slots, so a row re-gathered the same
+        // slot's CSR sum up to twice. k = 2a and 2a+1 are consecutive, so a FIVE-entry cache for
+        // the current axis, invalidated when the axis changes, catches every repeat at negligible
+        // register cost. Each slot is still summed in its own CSR order, exactly once, and delta
+        // still accumulates over k in the same sequence ⇒ pure read-dedup, bit-identical.
+        double Sv[5];
+        bool Sh[5] = {false, false, false, false, false};
+        int aCur = -1;
         auto X = [&](int a, int q) {
-          const Index s = r * 15 + a * 5 + (q + 2);
-          double v = 0.0;
-          for (Index e = ss(s); e < ss(s + 1); ++e)
-            v += sw(e) * x(si(e));
-          return v;
+          if (a != aCur) {
+            aCur = a;
+            for (int m = 0; m < 5; ++m)
+              Sh[m] = false;
+          }
+          const int idx = q + 2;
+          if (!Sh[idx]) {
+            const Index s = r * 15 + a * 5 + idx;
+            double v = 0.0;
+            for (Index e = ss(s); e < ss(s + 1); ++e)
+              v += sw(e) * x(si(e));
+            Sv[idx] = v;
+            Sh[idx] = true;
+          }
+          return Sv[idx];
         };
         double delta = 0.0;
         for (int k = 0; k < 6; ++k) {
@@ -1208,14 +1226,30 @@ inline void ghostDivergDeltaSampled(const GhostOverlaySampledDev& ov, View<const
           d(c) = 0.0;
           return;
         }
+        // M2c (see ghostApplyDeltaSampled): per-axis five-slot cache. Here the sharing is even
+        // heavier — every U() straddles two slots and consecutive faces overlap — so the same
+        // dedup applies verbatim, and each slot keeps its own CSR summation order.
+        double Sv[5];
+        bool Sh[5] = {false, false, false, false, false};
+        int aCur = -1;
         auto S = [&](int a, int q) {
-          const Index s = r * 15 + a * 5 + (q + 2);
-          double v = 0.0;
-          for (Index e = ss(s); e < ss(s + 1); ++e) {
-            const Index j = si(e);
-            v += sw(e) * ((a == 0) ? u0(j) : (a == 1) ? u1(j) : u2(j));
+          if (a != aCur) {
+            aCur = a;
+            for (int m = 0; m < 5; ++m)
+              Sh[m] = false;
           }
-          return v;
+          const int idx = q + 2;
+          if (!Sh[idx]) {
+            const Index s = r * 15 + a * 5 + idx;
+            double v = 0.0;
+            for (Index e = ss(s); e < ss(s + 1); ++e) {
+              const Index j = si(e);
+              v += sw(e) * ((a == 0) ? u0(j) : (a == 1) ? u1(j) : u2(j));
+            }
+            Sv[idx] = v;
+            Sh[idx] = true;
+          }
+          return Sv[idx];
         };
         auto U = [&](int a, int m) { return 0.5 * (S(a, m - 1) + S(a, m)); };
         double dd = 0.0;
