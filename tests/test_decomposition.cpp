@@ -190,6 +190,110 @@ void checkAlignedCoarsen(IVec<Dim> globalSize, std::size_t numBlocks, IVec<Dim> 
     }
 }
 
+// Coarse-level telescoping primitive: agglomerated(depth) merges ORB siblings by truncating the
+// bisection tree. For every depth from the full tree down to the root it must (i) tile the grid
+// exactly with ownerOf() agreeing, (ii) map every old block into exactly one new block whose box is
+// the exact union of its members (volumes add up, members are a CONTIGUOUS index range, root is the
+// lowest member), (iii) be the identity at full depth and one whole-grid block at depth 0, and
+// (iv) nest with coarsened() once the merged blocks are even -- the multigrid use.
+template <int Dim>
+void checkAgglomerated(IVec<Dim> globalSize, std::size_t numBlocks) {
+  BlockDecomposer<Dim> dec(numBlocks, globalSize);
+  const int depth = dec.treeDepth();
+  PECLET_CORE_CHECK(depth >= 0);
+  std::size_t prevBlocks = dec.numBlocks() + 1;
+  for (int d = depth; d >= 0; --d) {
+    std::vector<int> groupOf, rootOf;
+    BlockDecomposer<Dim> a = dec.agglomerated(d, &groupOf, &rootOf);
+    // (i) tiling + ownerOf
+    Index summed = 0;
+    for (std::size_t b = 0; b < a.numBlocks(); ++b)
+      summed += volume<Dim>(a.sizes()[b]);
+    PECLET_CORE_CHECK_EQ(summed, volume<Dim>(globalSize));
+    std::vector<Index> count(a.numBlocks(), 0);
+    IVec<Dim> bgn{}, end = globalSize;
+    forEachInBox<Dim>(bgn, end, [&](const IVec<Dim>& g) {
+      const int owner = a.ownerOf(g);
+      PECLET_CORE_CHECK(owner >= 0 && owner < static_cast<int>(a.numBlocks()));
+      const auto& o = a.origins()[owner];
+      const auto& sz = a.sizes()[owner];
+      for (int i = 0; i < Dim; ++i)
+        PECLET_CORE_CHECK(g[i] >= o[i] && g[i] < o[i] + sz[i]);
+      ++count[owner];
+    });
+    for (std::size_t b = 0; b < a.numBlocks(); ++b)
+      PECLET_CORE_CHECK_EQ(count[b], volume<Dim>(a.sizes()[b]));
+    // (ii) group map: exact union, contiguous members, lowest-member root
+    PECLET_CORE_CHECK_EQ(static_cast<Index>(groupOf.size()), static_cast<Index>(dec.numBlocks()));
+    PECLET_CORE_CHECK_EQ(static_cast<Index>(rootOf.size()), static_cast<Index>(a.numBlocks()));
+    std::vector<Index> memberVol(a.numBlocks(), 0);
+    std::vector<int> lo(a.numBlocks(), 1 << 30), hi(a.numBlocks(), -1), cnt(a.numBlocks(), 0);
+    for (std::size_t b = 0; b < dec.numBlocks(); ++b) {
+      const int g = groupOf[b];
+      PECLET_CORE_CHECK(g >= 0 && g < static_cast<int>(a.numBlocks()));
+      memberVol[g] += volume<Dim>(dec.sizes()[b]);
+      for (int i = 0; i < Dim; ++i) {  // member inside its group box
+        PECLET_CORE_CHECK(dec.origins()[b][i] >= a.origins()[g][i]);
+        PECLET_CORE_CHECK(dec.origins()[b][i] + dec.sizes()[b][i] <=
+                          a.origins()[g][i] + a.sizes()[g][i]);
+      }
+      lo[g] = std::min(lo[g], static_cast<int>(b));
+      hi[g] = std::max(hi[g], static_cast<int>(b));
+      ++cnt[g];
+    }
+    for (std::size_t g = 0; g < a.numBlocks(); ++g) {
+      PECLET_CORE_CHECK_EQ(memberVol[g], volume<Dim>(a.sizes()[g]));  // exact union
+      PECLET_CORE_CHECK_EQ(static_cast<Index>(hi[g] - lo[g] + 1), static_cast<Index>(cnt[g]));  // contiguous
+      PECLET_CORE_CHECK_EQ(static_cast<Index>(rootOf[g]), static_cast<Index>(lo[g]));
+    }
+    // monotone: merging never increases the block count
+    PECLET_CORE_CHECK(a.numBlocks() < prevBlocks);
+    prevBlocks = a.numBlocks() + (d == depth ? 1 : 0);
+    if (d == depth) {  // (iii) identity
+      PECLET_CORE_CHECK_EQ(static_cast<Index>(a.numBlocks()), static_cast<Index>(dec.numBlocks()));
+      for (std::size_t b = 0; b < dec.numBlocks(); ++b)
+        for (int i = 0; i < Dim; ++i) {
+          PECLET_CORE_CHECK_EQ(a.origins()[b][i], dec.origins()[b][i]);
+          PECLET_CORE_CHECK_EQ(a.sizes()[b][i], dec.sizes()[b][i]);
+        }
+    }
+    if (d == 0) {
+      PECLET_CORE_CHECK_EQ(static_cast<Index>(a.numBlocks()), static_cast<Index>(1));
+      for (int i = 0; i < Dim; ++i)
+        PECLET_CORE_CHECK_EQ(a.sizes()[0][i], globalSize[i]);
+    }
+  }
+}
+
+// (iv) The multigrid scenario end to end: 8 blocks of 12^3 halve twice in place to 3^3 (odd, stuck);
+// the whole-grid agglomeration restores even blocks and coarsened() proceeds to 3^3 on one block.
+void checkAgglomeratedUnblocksCoarsening() {
+  BlockDecomposer<3> dec(8, {24, 24, 24});
+  BlockDecomposer<3> c2 = dec.coarsened({2, 2, 2}).coarsened({2, 2, 2});  // global 6^3, blocks 3^3
+  bool anyOdd = false;
+  for (std::size_t b = 0; b < c2.numBlocks(); ++b)
+    for (int k = 0; k < 3; ++k)
+      anyOdd = anyOdd || (c2.sizes()[b][k] % 2) || (c2.origins()[b][k] % 2);
+  PECLET_CORE_CHECK(anyOdd);  // the in-place path is genuinely blocked here
+  BlockDecomposer<3> one = c2.agglomerated(0);
+  PECLET_CORE_CHECK_EQ(static_cast<Index>(one.numBlocks()), static_cast<Index>(1));
+  BlockDecomposer<3> c3 = one.coarsened({2, 2, 2});
+  PECLET_CORE_CHECK_EQ(c3.sizes()[0][0], static_cast<Index>(3));
+  PECLET_CORE_CHECK_EQ(c3.globalSize()[0], static_cast<Index>(3));
+  // merging one tree level: 4 blocks; the merged axis is even, the others still odd
+  std::vector<int> groupOf;
+  BlockDecomposer<3> half = c2.agglomerated(c2.treeDepth() - 1, &groupOf);
+  PECLET_CORE_CHECK_EQ(static_cast<Index>(half.numBlocks()), static_cast<Index>(4));
+  int evenAxes = 0;
+  for (int k = 0; k < 3; ++k) {
+    bool even = true;
+    for (std::size_t b = 0; b < half.numBlocks(); ++b)
+      even = even && !(half.sizes()[b][k] % 2) && !(half.origins()[b][k] % 2);
+    evenAxes += even;
+  }
+  PECLET_CORE_CHECK_EQ(static_cast<Index>(evenAxes), static_cast<Index>(1));
+}
+
 int main() {
   // A spread of dimensions, grid sizes (incl. non-powers-of-two) and block counts.
   checkCase<1>({100}, 1);
@@ -224,6 +328,16 @@ int main() {
   checkAlignedCoarsen<3>({132, 32, 131}, 2, {4, 16, 1}, {2, 2, 1});     // the local repro (axis-flip)
   checkAlignedCoarsen<3>({132, 32, 131}, 4, {4, 16, 1}, {2, 2, 1});
   checkAlignedCoarsen<3>({64, 64, 64}, 8, {16, 16, 16}, {2, 2, 2});     // cubic, all axes coarsen
+
+  // Coarse-level telescoping (agglomerated): tiling, exact-union groups, identity/whole-grid ends,
+  // and the multigrid unblocking scenario. Non-powers-of-two are the interesting cases.
+  checkAgglomerated<2>({64, 64}, 4);
+  checkAgglomerated<2>({97, 31}, 5);
+  checkAgglomerated<3>({32, 32, 32}, 8);
+  checkAgglomerated<3>({40, 24, 16}, 12);
+  checkAgglomerated<3>({48, 48, 48}, 24);
+  checkAgglomerated<3>({17, 19, 23}, 16);
+  checkAgglomeratedUnblocksCoarsening();
 
   PECLET_CORE_RETURN_TEST_RESULT();
 }

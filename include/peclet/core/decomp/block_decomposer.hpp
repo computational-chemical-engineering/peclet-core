@@ -216,6 +216,118 @@ class BlockDecomposer {
     Index splitValue = 0;  ///< split coordinate (internal) or leaf/block index (leaf)
   };
 
+ public:
+  /// Depth of the deepest leaf of the ORB tree (root = 0). A decomposition of P blocks has depth
+  /// ceil(log2 P) when balanced, more when P is not a power of two.
+  int treeDepth() const {
+    int best = 0;
+    depthWalk(0, 0, best);
+    return best;
+  }
+
+  /// Coarse-level TELESCOPING: the decomposition obtained by merging ORB siblings — truncate the
+  /// bisection tree at `depth`, so every node at that depth (and every original leaf above it)
+  /// becomes a block whose box is exactly the union of its subtree's leaf boxes. The result tiles
+  /// the domain, nests with this decomposition by construction (each of its blocks is a union of a
+  /// CONTIGUOUS run of this decomposition's blocks, since leaves are numbered in-order), needs no
+  /// partitioner and no graph, and — the point — restores the parity a geometric multigrid needs:
+  /// a merged block's origin is its PARENT's split value, one tree level up, so a partition whose
+  /// blocks have gone odd after k halvings recovers even blocks by merging. `groupOf[b]` receives
+  /// the new block index of each old block `b`; the new block's owning rank is by convention the
+  /// LOWEST old rank in its group (`rootOf`). depth 0 is the whole grid on one block.
+  /// Tree heap indices are preserved for the kept nodes, so `coarsened()`/`refined()`/`ownerOf`
+  /// work on the result unchanged; dropped nodes are reset to leaves so `coarsened()` skips them.
+  BlockDecomposer<Dim> agglomerated(int depth, std::vector<int>* groupOf = nullptr,
+                                    std::vector<int>* rootOf = nullptr) const {
+    assert(depth >= 0 && "agglomerated(): depth must be >= 0");
+    BlockDecomposer<Dim> a;
+    a.globalSize_ = globalSize_;
+    a.align_ = align_;
+    a.cellExtent_ = cellExtent_;
+    a.tree_.assign(tree_.size(), TreeNode{});  // everything a leaf until visited
+    std::vector<int> gmap(origins_.size(), -1);
+    std::vector<int> roots;
+    agglomWalk(0, 0, depth, IVec<Dim>{}, globalSize_, a, gmap, roots);
+    a.tree_.resize(prunedSize(a.tree_));
+    if (groupOf)
+      *groupOf = gmap;
+    if (rootOf)
+      *rootOf = roots;
+    return a;
+  }
+
+ private:
+  void depthWalk(Index node, int d, int& best) const {
+    if (node >= static_cast<Index>(tree_.size()))
+      return;
+    if (tree_[node].splitDim == -1) {
+      if (d > best)
+        best = d;
+      return;
+    }
+    depthWalk(2 * node + 1, d + 1, best);
+    depthWalk(2 * node + 2, d + 1, best);
+  }
+  // Collect the (in-order) original leaf indices under `node`.
+  void leavesUnder(Index node, std::vector<int>& out) const {
+    if (tree_[node].splitDim == -1) {
+      out.push_back(static_cast<int>(tree_[node].splitValue));
+      return;
+    }
+    leavesUnder(2 * node + 1, out);
+    leavesUnder(2 * node + 2, out);
+  }
+  void agglomWalk(Index node, int d, int depth, IVec<Dim> origin, IVec<Dim> size,
+                  BlockDecomposer<Dim>& a, std::vector<int>& gmap,
+                  std::vector<int>& roots) const {
+    const TreeNode& nd = tree_[node];
+    if (nd.splitDim == -1 || d == depth) {
+      // becomes a block of the agglomerated decomposition
+      const int newIdx = static_cast<int>(a.origins_.size());
+      a.tree_[node] = TreeNode{-1, newIdx};
+      a.origins_.push_back(origin);
+      a.sizes_.push_back(size);
+      std::vector<int> leaves;
+      leavesUnder(node, leaves);
+      int root = leaves.front();
+      for (int b : leaves) {
+        gmap[b] = newIdx;
+        if (b < root)
+          root = b;
+      }
+      roots.push_back(root);
+      return;
+    }
+    a.tree_[node] = nd;  // kept internal node: same split
+    IVec<Dim> lsize = size, rorigin = origin, rsize = size;
+    lsize[nd.splitDim] = nd.splitValue - origin[nd.splitDim];
+    rorigin[nd.splitDim] = nd.splitValue;
+    rsize[nd.splitDim] = origin[nd.splitDim] + size[nd.splitDim] - nd.splitValue;
+    agglomWalk(2 * node + 1, d + 1, depth, origin, lsize, a, gmap, roots);
+    agglomWalk(2 * node + 2, d + 1, depth, rorigin, rsize, a, gmap, roots);
+  }
+  static std::size_t prunedSize(const std::vector<TreeNode>& t) {
+    // keep up to the last node that is reachable (an internal node or a numbered leaf); leaves
+    // default to {-1, 0} which is indistinguishable from block 0, so keep by reachability instead
+    std::size_t last = 0;
+    std::vector<Index> stack{0};
+    while (!stack.empty()) {
+      const Index n = stack.back();
+      stack.pop_back();
+      if (n >= static_cast<Index>(t.size()))
+        continue;
+      if (static_cast<std::size_t>(n) > last)
+        last = static_cast<std::size_t>(n);
+      if (t[n].splitDim != -1) {
+        stack.push_back(2 * n + 1);
+        stack.push_back(2 * n + 2);
+      }
+    }
+    return last + 1;
+  }
+
+ private:
+
   /// Shared decomposition driver. `weights == nullptr` ⇒ equal-cell-count split (the classic ORB);
   /// otherwise the split position balances cumulative weight.
   void initImpl(std::size_t numBlocks, IVec<Dim> globalSize, const std::vector<Real>* weights);
