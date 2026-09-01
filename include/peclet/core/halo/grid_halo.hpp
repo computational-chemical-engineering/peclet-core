@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <type_traits>
+#include <string>
 #include <vector>
 
 #include "peclet/core/common/mpi.hpp"
@@ -116,6 +117,16 @@ inline bool gpuAwareMpi() {
   }();
   return v;
 }
+
+/// PECLET_CORE_HALO_TIMEOUT=<seconds>: turn every exchangeEnd into a deadline wait that names the
+/// pending messages and aborts (see GridHalo::waitAllDiagnosed). 0 / unset = plain MPI_Waitall.
+inline double haloTimeout() {
+  static const double v = [] {
+    const char* e = std::getenv("PECLET_CORE_HALO_TIMEOUT");
+    return e ? std::atof(e) : 0.0;
+  }();
+  return v;
+}
 }  // namespace detail
 
 /// GPU ghost-layer exchange for a contiguous device field `peclet::core::View<T>` (one element per
@@ -161,6 +172,10 @@ class GridHalo {
     h_sendBuf_ = Kokkos::create_mirror_view(d_sendBuf_);
     h_recvBuf_ = Kokkos::create_mirror_view(d_recvBuf_);
   }
+
+  /// Name printed by the PECLET_CORE_HALO_TIMEOUT diagnostic (e.g. "mg L4 g1"), so a stuck
+  /// exchange can be told apart from the others that share a communicator.
+  void setLabel(std::string label) { label_ = std::move(label); }
 
   /// Exchange ghost layers of the device field `field`. Blocking (== exchangeBegin+exchangeEnd).
   void exchange(const View<T>& field, int tag = 0) {
@@ -217,8 +232,12 @@ class GridHalo {
   /// Complete the exchange started by exchangeBegin: wait, then scatter the received halo cells
   /// into `field`'s ghost region (must be the same field).
   void exchangeEnd(const View<T>& field) {
-    if (!reqs_.empty())
-      MPI_Waitall(static_cast<int>(reqs_.size()), reqs_.data(), MPI_STATUSES_IGNORE);
+    if (!reqs_.empty()) {
+      if (detail::haloTimeout() > 0)
+        waitAllDiagnosed(detail::haloTimeout());
+      else
+        MPI_Waitall(static_cast<int>(reqs_.size()), reqs_.data(), MPI_STATUSES_IGNORE);
+    }
     reqs_.clear();
     if (nRecv_) {
       if (!inFlightAware_)
@@ -240,7 +259,59 @@ class GridHalo {
   std::vector<MPI_Request> reqs_;  // in-flight requests between exchangeBegin and exchangeEnd
   bool inFlightAware_ = false;     // staging mode of the in-flight exchange
   Index nSend_ = 0, nRecv_ = 0, nSelf_ = 0;
+  std::string label_;
   IndexView d_sendIdx_, d_recvIdx_, d_selfSrc_, d_selfDst_;
+
+  /// MPI_Waitall with a deadline (PECLET_CORE_HALO_TIMEOUT seconds). On expiry, print every
+  /// request still pending — direction, partner (communicator AND world rank), byte count — and
+  /// abort the job. A hang in a halo exchange is otherwise invisible (every rank sits in
+  /// MPI_Waitall and a stack sample cannot say WHICH message never arrived); this names it.
+  void waitAllDiagnosed(double timeout) {
+    const double t0 = MPI_Wtime();
+    const int n = static_cast<int>(reqs_.size());
+    int done = 0;
+    while (!done) {
+      MPI_Testall(n, reqs_.data(), &done, MPI_STATUSES_IGNORE);
+      if (done || MPI_Wtime() - t0 < timeout)
+        continue;
+      int rank = -1, size = -1, wrank = -1, wsize = -1;
+      MPI_Comm_rank(comm_, &rank);
+      MPI_Comm_size(comm_, &size);
+      MPI_Comm_rank(MPI_COMM_WORLD, &wrank);
+      MPI_Comm_size(MPI_COMM_WORLD, &wsize);
+      MPI_Group g, wg;
+      MPI_Comm_group(comm_, &g);
+      MPI_Comm_group(MPI_COMM_WORLD, &wg);
+      auto world = [&](int r) {
+        int w = -1;
+        MPI_Group_translate_ranks(g, 1, &r, wg, &w);
+        return w;
+      };
+      std::string msg = "peclet.core halo TIMEOUT after " + std::to_string(int(timeout)) + " s [" +
+                        label_ + "] world " + std::to_string(wrank) + "/" + std::to_string(wsize) +
+                        " comm " + std::to_string(rank) + "/" + std::to_string(size) + ": " +
+                        std::to_string(recvRanks_.size()) + " recv + " +
+                        std::to_string(sendRanks_.size()) + " send partners\n";
+      const std::size_t nr = recvRanks_.size();
+      for (std::size_t k = 0; k < reqs_.size(); ++k) {
+        int flag = 0;
+        MPI_Request_get_status(reqs_[k], &flag, MPI_STATUS_IGNORE);
+        if (flag)
+          continue;
+        const bool recv = k < nr;
+        const int q = recv ? recvRanks_[k] : sendRanks_[k - nr];
+        const int c = recv ? recvCounts_[k] : sendCounts_[k - nr];
+        msg += std::string("   pending ") + (recv ? "RECV from" : "SEND to  ") + " comm " +
+               std::to_string(q) + " (world " + std::to_string(world(q)) + ") " +
+               std::to_string(c * static_cast<long>(sizeof(T))) + " bytes\n";
+      }
+      std::fputs(msg.c_str(), stderr);
+      std::fflush(stderr);
+      MPI_Group_free(&g);
+      MPI_Group_free(&wg);
+      MPI_Abort(MPI_COMM_WORLD, 77);
+    }
+  }
   View<T> d_sendBuf_, d_recvBuf_;
   HostView<T> h_sendBuf_, h_recvBuf_;
 };
