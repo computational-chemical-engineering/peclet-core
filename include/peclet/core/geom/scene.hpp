@@ -203,12 +203,20 @@ struct Instance {
   Vec3<Real> linVel{0, 0, 0};
   Vec3<Real> angVel{0, 0, 0};
   Vec3<Real> center{0, 0, 0};  ///< reference point of the rotation, in world coordinates
+  bool centerPinned = false;   ///< true: `center` is an explicit world point (the origin included);
+                               ///< false: the centre follows the body (consumers use the translation)
 };
 
-/// Rigid-body surface velocity of instance `inst` at world point p: linVel + angVel x (p - center).
+/// Rigid-body surface velocity of instance `inst` at world point p: linVel + angVel x (p - c),
+/// with c the pinned centre when there is one and the body's translation otherwise (an unpinned
+/// `center` is the NaN sentinel and must never enter the arithmetic).
+template <class Real>
+PECLET_HD Vec3<Real> instanceCentre(const Instance<Real>& inst) {
+  return inst.centerPinned ? inst.center : inst.transform.translation;
+}
 template <class Real>
 PECLET_HD Vec3<Real> instanceVelocity(const Instance<Real>& inst, Vec3<Real> p) {
-  return add(inst.linVel, cross(inst.angVel, sub(p, inst.center)));
+  return add(inst.linVel, cross(inst.angVel, sub(p, instanceCentre(inst))));
 }
 
 /// Non-owning bundle of everything a scene evaluation needs (resolved decision 4). Raw pointers,

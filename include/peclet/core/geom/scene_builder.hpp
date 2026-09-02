@@ -39,6 +39,7 @@
 #include <string>
 #include <tuple>
 #include <vector>
+#include <limits>
 
 #include "peclet/core/geom/scene.hpp"
 
@@ -47,7 +48,8 @@ namespace peclet::core::geom {
 inline constexpr int kNodeIntStride = 3;
 inline constexpr int kNodeRealStride = 16;
 inline constexpr int kInstanceIntStride = 2;
-inline constexpr int kInstanceRealStride = 17;
+inline constexpr int kInstanceRealStride = 18;        // reals[17] = centerPinned flag (2026-09-02)
+inline constexpr int kInstanceRealStrideLegacy = 17;  // pre-flag records: an all-zero centre = follows the body
 
 // --- flat <-> POD conversion (the binding boundary) --------------------------------------------
 
@@ -103,10 +105,11 @@ void encodeInstance(const Instance<Real>& v, int* ints, Real* reals) {
   reals[14] = v.center.x;
   reals[15] = v.center.y;
   reals[16] = v.center.z;
+  reals[17] = v.centerPinned ? Real(1) : Real(0);
 }
 
 template <class Real>
-Instance<Real> decodeInstance(const int* ints, const Real* reals) {
+Instance<Real> decodeInstance(const int* ints, const Real* reals, int stride = kInstanceRealStride) {
   Instance<Real> v;
   v.shapeRoot = ints[0];
   v.materialId = ints[1];
@@ -116,6 +119,15 @@ Instance<Real> decodeInstance(const int* ints, const Real* reals) {
   v.linVel = Vec3<Real>{reals[8], reals[9], reals[10]};
   v.angVel = Vec3<Real>{reals[11], reals[12], reals[13]};
   v.center = Vec3<Real>{reals[14], reals[15], reals[16]};
+  // Legacy 17-real records carry no flag: a finite, non-zero centre was the only way to pin one,
+  // and an all-zero centre meant "follows the body" (every producer wrote zeros). Consumers keep
+  // that reading for legacy records; the 18-real record says it explicitly.
+  if (stride >= 18)
+    v.centerPinned = reals[17] > Real(0.5);
+  else
+    v.centerPinned = (v.center.x != 0 || v.center.y != 0 || v.center.z != 0) &&
+                     std::isfinite(v.center.x) && std::isfinite(v.center.y) &&
+                     std::isfinite(v.center.z);
   return v;
 }
 
@@ -194,8 +206,14 @@ class SceneBuilder {
   int addDifference(int a, int b, Transform<Real> tr = {}) { return addCsg(kDifference, a, b, tr); }
 
   /// Place a tree in the world. Returns the instance index.
+  /// `center`: the centre of rotation for angVel. NaN (the default) = follows the body — consumers
+  /// rotate about the translation and re-anchor it when the body moves; any finite point = PINNED
+  /// there in world coordinates, the origin included.
   int addInstance(int shapeRoot, Transform<Real> tr = {}, Vec3<Real> linVel = {0, 0, 0},
-                  Vec3<Real> angVel = {0, 0, 0}, Vec3<Real> center = {0, 0, 0},
+                  Vec3<Real> angVel = {0, 0, 0},
+                  Vec3<Real> center = {std::numeric_limits<Real>::quiet_NaN(),
+                                       std::numeric_limits<Real>::quiet_NaN(),
+                                       std::numeric_limits<Real>::quiet_NaN()},
                   int materialId = -1) {
     requireNode(shapeRoot, "addInstance");
     Instance<Real> v;
@@ -205,6 +223,7 @@ class SceneBuilder {
     v.linVel = linVel;
     v.angVel = angVel;
     v.center = center;
+    v.centerPinned = std::isfinite(center.x) && std::isfinite(center.y) && std::isfinite(center.z);
     instances_.push_back(v);
     return static_cast<int>(instances_.size()) - 1;
   }
@@ -332,10 +351,21 @@ class SceneBuilder {
       b.nodes_.push_back(
           decodeNode<Real>(&nodeInts[i * kNodeIntStride], &nodeReals[i * kNodeRealStride]));
     const std::size_t ni = instInts.size() / kInstanceIntStride;
+    // Accept both record widths: 18 (with the centre-pinned flag) and the legacy 17.
+    int stride = kInstanceRealStride;
+    if (ni > 0) {
+      if (instReals.size() == ni * (std::size_t)kInstanceRealStride)
+        stride = kInstanceRealStride;
+      else if (instReals.size() == ni * (std::size_t)kInstanceRealStrideLegacy)
+        stride = kInstanceRealStrideLegacy;
+      else
+        throw std::invalid_argument(
+            "SceneBuilder::decode: instance reals are neither 18 nor 17 per instance record");
+    }
     b.instances_.reserve(ni);
     for (std::size_t i = 0; i < ni; ++i)
       b.instances_.push_back(decodeInstance<Real>(&instInts[i * kInstanceIntStride],
-                                                  &instReals[i * kInstanceRealStride]));
+                                                  &instReals[i * (std::size_t)stride], stride));
     return b;
   }
 

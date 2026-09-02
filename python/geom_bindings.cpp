@@ -17,6 +17,7 @@
 #include <nanobind/stl/vector.h>
 
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -179,9 +180,18 @@ NB_MODULE(geom, m) {
           nb::arg("rotation") = std::array<double, 4>{0, 0, 0, 1}, nb::arg("scale") = 1.0,
           nb::arg("lin_vel") = std::array<double, 3>{0, 0, 0},
           nb::arg("ang_vel") = std::array<double, 3>{0, 0, 0},
-          nb::arg("center") = std::array<double, 3>{0, 0, 0}, nb::arg("material") = -1,
+          nb::arg("center") =
+              std::array<double, 3>{std::numeric_limits<double>::quiet_NaN(),
+                                    std::numeric_limits<double>::quiet_NaN(),
+                                    std::numeric_limits<double>::quiet_NaN()},
+          nb::arg("material") = -1,
           "Place a tree in the world; returns the instance index. What flow's set_scene and the "
-          "resolved coupling consume.")
+          "resolved coupling consume. `center` is the centre of rotation for ang_vel: leave it NaN "
+          "(the default) and it FOLLOWS the body (the translation, re-anchored on every "
+          "set_instance_transform); give any finite point and it is PINNED there in world "
+          "coordinates -- (0, 0, 0) included. (Raw instance arrays keep the legacy reading of an "
+          "all-zero centre as 'follows the body'; pin a world-origin centre from a raw array through "
+          "flow's set_instance_motion(center=...).)")
       .def(
           "encode",
           [](PyScene& s) {
