@@ -19,6 +19,8 @@
 
 #include <cstring>
 #include <map>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "peclet/core/common/mpi.hpp"
@@ -125,6 +127,24 @@ class GridHaloTopology {
       sendIdx_.push_back(std::move(sidx));
     };
     nbx.exchange(packNext, onRecv, /*tag=*/7301);
+
+    // The pattern is symmetric by construction (every requested cell has exactly one owner), so
+    // the global number of cells promised equals the number requested. One allreduce; a mismatch
+    // means the consensus round lost a message, which would otherwise surface as a hang in the
+    // first exchange with nothing to say which rank never learned it had to send.
+    {
+      long cnt[2] = {0, 0};
+      for (const auto& g : recvGlob_)
+        cnt[0] += static_cast<long>(g.size());
+      for (const auto& sidx : sendIdx_)
+        cnt[1] += static_cast<long>(sidx.size());
+      long tot[2] = {0, 0};
+      MPI_Allreduce(cnt, tot, 2, MPI_LONG, MPI_SUM, comm_);
+      if (tot[0] != tot[1])
+        throw std::runtime_error("peclet.core GridHaloTopology: asymmetric halo topology (" +
+                                 std::to_string(tot[0]) + " cells requested, " +
+                                 std::to_string(tot[1]) + " promised) -- the NBX round lost messages");
+    }
 
     buildRecvLookup();
     persistentReady_ = false;

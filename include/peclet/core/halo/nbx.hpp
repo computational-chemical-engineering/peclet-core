@@ -23,6 +23,24 @@
 
 namespace peclet::core::halo {
 
+namespace detail {
+/// Per-communicator round counter, kept as an MPI attribute so it lives and dies with the
+/// communicator (a handle-keyed map would confuse a freed handle with its reuse). Every rank of a
+/// communicator runs the same sequence of NBX rounds on it, so the counter agrees globally.
+constexpr long kNbxRoundTags = 64;
+inline int nbxRoundTag(MPI_Comm comm, int baseTag) {
+  static int keyval = MPI_KEYVAL_INVALID;
+  if (keyval == MPI_KEYVAL_INVALID)
+    MPI_Comm_create_keyval(MPI_COMM_NULL_COPY_FN, MPI_COMM_NULL_DELETE_FN, &keyval, nullptr);
+  void* attr = nullptr;
+  int flag = 0;
+  MPI_Comm_get_attr(comm, keyval, &attr, &flag);
+  const long round = flag ? reinterpret_cast<long>(attr) : 0;
+  MPI_Comm_set_attr(comm, keyval, reinterpret_cast<void*>(round + 1));
+  return baseTag + static_cast<int>(round % kNbxRoundTags);
+}
+}  // namespace detail
+
 class NbxEngine {
  public:
   explicit NbxEngine(MPI_Comm comm = MPI_COMM_WORLD) : comm_(comm) {}
@@ -43,8 +61,18 @@ class NbxEngine {
   //   packNext(std::vector<char>& out) -> int : fill `out` with the next outgoing message and
   //       return its destination rank; return < 0 when this rank has no more messages to send.
   //   onRecv(int src, std::vector<char>& msg)  : handle a received message.
+  //
+  // `baseTag` is the caller's tag FAMILY: the round actually uses baseTag + (round % 64), where
+  // the round counter is per communicator. Consecutive rounds on one communicator MUST NOT share a
+  // tag: a rank that has already observed the Ibarrier complete goes on to post the next round's
+  // Issends, while a neighbour that has not yet observed completion is still probing — and would
+  // receive the next round's message as this round's (Hoefler et al. §4). Measured on Snellius
+  // 2026-09-02: back-to-back topology builds (one per multigrid level) on a 64-rank
+  // sub-communicator lost 0-20 of 26 send partners per rank, hanging the first exchange. Keep
+  // families >= 64 apart.
   template <typename PackNext, typename OnRecv>
-  void exchange(PackNext&& packNext, OnRecv&& onRecv, int tag = 0) {
+  void exchange(PackNext&& packNext, OnRecv&& onRecv, int baseTag = 0) {
+    const int tag = detail::nbxRoundTag(comm_, baseTag);
     // 1) Post all sends as synchronous nonblocking.
     std::vector<std::unique_ptr<std::vector<char>>> sendBufs;
     std::vector<MPI_Request> sendReqs;

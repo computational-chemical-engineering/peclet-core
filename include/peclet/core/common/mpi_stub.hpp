@@ -12,6 +12,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <map>
 
 using MPI_Comm = int;
 using MPI_Request = int;
@@ -69,6 +70,39 @@ inline int MPI_Comm_rank(MPI_Comm, int* r) {
 inline int MPI_Comm_size(MPI_Comm, int* s) {
   *s = 1;
   return MPI_SUCCESS;
+}
+// Communicator attributes (NbxEngine's per-communicator round counter). Keyed by (comm, keyval).
+using MPI_Comm_copy_attr_function = int(MPI_Comm, int, void*, void*, void*, int*);
+using MPI_Comm_delete_attr_function = int(MPI_Comm, int, void*, void*);
+#define MPI_COMM_NULL_COPY_FN (static_cast<MPI_Comm_copy_attr_function*>(nullptr))
+#define MPI_COMM_NULL_DELETE_FN (static_cast<MPI_Comm_delete_attr_function*>(nullptr))
+#define MPI_KEYVAL_INVALID (-1)
+namespace peclet::core::mpi_stub {
+inline std::map<std::pair<int, int>, void*>& attrs() {
+  static std::map<std::pair<int, int>, void*> m;
+  return m;
+}
+inline int& nextKeyval() {
+  static int k = 100;
+  return k;
+}
+}  // namespace peclet::core::mpi_stub
+inline int MPI_Comm_create_keyval(MPI_Comm_copy_attr_function*, MPI_Comm_delete_attr_function*,
+                                  int* keyval, void*) {
+  *keyval = peclet::core::mpi_stub::nextKeyval()++;
+  return 0;
+}
+inline int MPI_Comm_get_attr(MPI_Comm c, int keyval, void* val, int* flag) {
+  auto& m = peclet::core::mpi_stub::attrs();
+  auto it = m.find({c, keyval});
+  *flag = it != m.end();
+  if (*flag)
+    *static_cast<void**>(val) = it->second;
+  return 0;
+}
+inline int MPI_Comm_set_attr(MPI_Comm c, int keyval, void* val) {
+  peclet::core::mpi_stub::attrs()[{c, keyval}] = val;
+  return 0;
 }
 inline int MPI_Comm_free(MPI_Comm*) {
   return MPI_SUCCESS;

@@ -288,6 +288,10 @@ if(MPI_FOUND)
   target_link_libraries(test_grid_halo PRIVATE tpx_halo)
   target_include_directories(test_grid_halo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+  add_executable(test_nbx_rounds test_nbx_rounds.cpp)
+  target_link_libraries(test_nbx_rounds PRIVATE tpx_halo)
+  target_include_directories(test_nbx_rounds PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
   add_executable(test_particle_migration test_particle_migration.cpp)
   target_link_libraries(test_particle_migration PRIVATE tpx_halo)
   target_include_directories(test_particle_migration PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -439,6 +443,9 @@ if(MPI_FOUND)
     add_test(NAME grid_halo_np${np}
              COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
                      ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_grid_halo> ${MPIEXEC_POSTFLAGS})
+    add_test(NAME nbx_rounds_np${np}
+             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
+                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_nbx_rounds> ${MPIEXEC_POSTFLAGS})
     add_test(NAME particle_migration_np${np}
              COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
                      ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_particle_migration> ${MPIEXEC_POSTFLAGS})
