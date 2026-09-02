@@ -134,6 +134,17 @@ Header-only under `include/peclet/core/`:
 - `GridHalo` caches a distributed-graph `MPI_Comm`. Its destructor guards `MPI_Comm_free` with
   `MPI_Finalized` so an instance that outlives `MPI_Finalize` (e.g. on `main`'s stack) does not abort.
   Don't remove that guard. The class is non-copyable (it owns the comm).
+- **Consecutive NBX rounds on one communicator must use different tags**, and `NbxEngine` does
+  that itself: `exchange(…, baseTag)` sends on `baseTag + round % 64` with the round counter kept
+  as an MPI attribute of the communicator. A rank that has observed the Ibarrier complete starts
+  the next round while a neighbour is still probing the old tag and would receive the new message
+  as an old one — with one topology build per multigrid level this lost up to all 26 send
+  partners of a rank at 1536 ranks on Snellius (2026-09-02), hanging the first exchange or,
+  worse, silently corrupting ghost values. Keep tag families ≥ 64 apart (7301 / 7401 / 7402 /
+  7501 …), and never call `MPI_Comm_free` on a communicator with a round in flight.
+  `buildTopology` cross-checks promised against requested cells with one allreduce and throws
+  on a mismatch, so a lost consensus message now fails at build time. Gate:
+  `tests/test_nbx_rounds.cpp` (fails on a laptop with the rotation ablated).
 - The halo is owner-based, not adjacency-based: a ghost cell maps to whichever rank owns its wrapped
   global cell, so it is correct for ORB's irregular block neighbours and any ghost width — no
   Cartesian-grid assumption.
