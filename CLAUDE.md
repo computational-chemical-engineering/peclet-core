@@ -97,6 +97,20 @@ Header-only under `include/peclet/core/`:
 - `geom/` — shared SDF solids. `geom/sdf.hpp` is the `Sdf` concept + analytic primitives;
   `geom/grid_sdf.hpp` is the trilinearly-sampled `GridSdf`; `geom/vti_io.hpp` reads/writes scalar &
   vector VTI (`.vti`). The shared geometry representation behind flow's and dem's cut-cell IBM.
+- `vof/` — **layer L1 of the VoF stack** (`peclet::core::vof`, `../docs/VOF_PLAN.md` §11), promoted
+  out of `flow/src/vof/` by WO-W0 (2026-09-02) as a plain file move. Container-free
+  `KOKKOS_INLINE_FUNCTION`s of scalars and small local arrays — **no `Kokkos::View`, no grid
+  indexing, no halo types in any signature**, which is exactly what lets ONE copy serve all three
+  VoF containers (flow's structured colour field, the per-bubble block container of Part III, and
+  the future AMR path). `vof/plic.hpp` is the PLIC toolbox (SZ2000 / Lehmann–Gekle plane↔volume,
+  MYC and Youngs normals on a supplied 3³ array, slab flux volumes); `vof/curvature.hpp` the
+  Popinet height-function cascade + the PLIC-volumetric paraboloid fallback on supplied column sums
+  and points; `vof/cutcell.hpp` the cut-cell colour-transport rules (`eps_eff`, Weymouth's
+  admissible flux interval on a cut donor, the solid-band fill state machine); `vof/wetting.hpp`
+  the θ-consistent band-fill math. **Keep them container-free**: the drivers (`WyAdvector`,
+  `VofCurvature`, `VofBlockSet`) stay in `flow`, and flow's `src/vof/{plic,curvature,cutcell,
+  wetting}.hpp` are thin includes + a using-directive so every `peclet::flow::vof::` spelling still
+  resolves. Gate on the move: every flow VoF ctest bit-identical, both backends.
 - `amr/` — block-local-Morton **AMR octree** flow subsystem (`peclet::core::amr`, guarded by `PECLET_CORE_HAVE_MORTON`).
   `amr/block_octree.hpp` is the per-block octree; `amr/flow.hpp` is the canonical device `AmrFlow`
   (collocated-projection Navier–Stokes with `maskSolid` and a div-free face field), with
