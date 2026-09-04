@@ -21,6 +21,9 @@ suite_require_nanobind()
 # nanobind module leaf name is `mpi`; NB_MODULE(mpi, ...) in mpi_bindings.cpp), so the CMake target keeps its
 # descriptive name but the built extension is `mpi.*.so` installed under peclet/core/.
 nanobind_add_module(mpi_bindings NB_STATIC mpi_bindings.cpp)
+if(Kokkos_ENABLE_HIP)
+  set_target_properties(mpi_bindings PROPERTIES CXX_VISIBILITY_PRESET default)  # HIP/lld vtable experiment, see flow/CMakeLists.txt
+endif()
 # -> peclet.core.mpi (NB_MODULE(mpi)). The peclet/core package __init__.py is kept as a plain file under
 # packaging/ (OUTSIDE any importable peclet/ dir, so an incomplete source package can never shadow the
 # installed one) and staged into <build>/peclet/core so `PYTHONPATH=<build> python …` works in dev too.
@@ -33,6 +36,9 @@ target_link_libraries(mpi_bindings PRIVATE MPI::MPI_CXX)
 # geom_bindings: host-only analytic-SDF scene authoring + rigid-body mass properties. No MPI, no
 # Kokkos -- preprocessing tooling. -> peclet.core.geom (NB_MODULE(geom, ...)).
 nanobind_add_module(geom_bindings NB_STATIC geom_bindings.cpp)
+if(Kokkos_ENABLE_HIP)
+  set_target_properties(geom_bindings PROPERTIES CXX_VISIBILITY_PRESET default)  # HIP/lld vtable experiment, see flow/CMakeLists.txt
+endif()
 set_target_properties(geom_bindings PROPERTIES OUTPUT_NAME geom
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/peclet/core"
   CXX_STANDARD 20)
@@ -62,6 +68,9 @@ if(EXISTS "${_morton_inc}/morton/morton.hpp" AND Kokkos_FOUND)
   # NOMINSIZE: nanobind's default -Os is rejected by nvcc ("'s': expected a number") since the Kokkos
   # AMR device sources compile as CXX through the launch compiler.
   nanobind_add_module(amr_bindings NB_STATIC NOMINSIZE amr_bindings.cpp)
+  if(Kokkos_ENABLE_HIP)
+    set_target_properties(amr_bindings PROPERTIES CXX_VISIBILITY_PRESET default)  # HIP/lld vtable experiment, see flow/CMakeLists.txt
+  endif()
   set_target_properties(amr_bindings PROPERTIES OUTPUT_NAME amr   # -> peclet.core.amr (NB_MODULE(amr, ...))
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/peclet/core")
   target_include_directories(amr_bindings PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include ${_morton_inc})
