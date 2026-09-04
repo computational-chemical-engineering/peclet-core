@@ -11,5 +11,11 @@ Submodules (compiled nanobind extensions, built by python/CMakeLists.txt):
 so it deliberately has no top-level ``__init__.py``.
 """
 
-__version__ = "0.2.0"
+# The installed distribution's metadata (pyproject.toml) is the single source of truth for the version;
+# a build-tree import (PYTHONPATH=<build>) has no metadata and reports "0+unknown".
+try:
+    from importlib.metadata import version as _dist_version
+    __version__ = _dist_version("peclet-core")
+except Exception:  # PackageNotFoundError (dev build), or a broken metadata install
+    __version__ = "0+unknown"
 __all__ = ["mpi", "amr"]  # noqa: F822 — compiled nanobind submodules, resolved lazily (amr optional)
