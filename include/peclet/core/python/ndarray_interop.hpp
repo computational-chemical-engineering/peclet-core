@@ -12,7 +12,9 @@
 //     zero-copy via `cupy.from_dlpack(...)` / `torch.from_dlpack(...)`.
 // Lifetime is correct because the exported array owns a capsule holding a *copy* of the View, and
 // Kokkos Views are reference-counted — the allocation lives exactly as long as Python references
-// it.
+// it. The capsule is also a `Releasable` (kokkos_teardown.hpp): the module's shutdown drops its View
+// before Kokkos::finalize, so an array still referenced at interpreter exit (a notebook global) can
+// no longer abort the process with "deallocated after Kokkos::finalize".
 //
 // This header is only included by binding translation units (which link nanobind + Kokkos). It is
 // NOT pulled into the device kernels. Layout note: the suite is x-fastest (LayoutLeft), so a
@@ -33,6 +35,7 @@
 #include <vector>
 
 #include "peclet/core/common/view.hpp"
+#include "peclet/core/python/kokkos_teardown.hpp"
 
 namespace peclet::core::python {
 
@@ -66,29 +69,30 @@ inline void require_dtype(const nb::ndarray<>& a, const char* who) {
     throw std::runtime_error(std::string(who) + ": array dtype does not match the expected scalar");
 }
 
-/// Export a Kokkos View to a Python array **without copying**. Works for any rank and either a host
-/// or device View. The returned array references `view`'s memory and keeps it alive via a capsule
-/// owning a copy of the (ref-counted) View. Host views come back as `numpy.ndarray`; device views
-/// come back as a DLPack array (consume with `cupy.from_dlpack`). Shape and element-unit strides
-/// are taken from the View, so non-contiguous / padded views (e.g. a ghosted inner region) export
-/// correctly.
+/// The payload of a zero-copy capsule: a reference to the exported View, registered as a
+/// Releasable so the module's shutdown can drop it before Kokkos::finalize. The capsule deleter
+/// (run whenever Python frees the array — possibly after finalize, at interpreter teardown) then
+/// only destroys an empty View, which makes no Kokkos call.
 template <class V>
-auto view_to_ndarray(const V& view) {
+struct ViewCapsule final : Releasable {
+  V view;
+  explicit ViewCapsule(const V& v) : view(v) {}
+  void release() noexcept override { view = V{}; }
+};
+
+/// Export a Kokkos View to a Python array **without copying**, with an explicit logical `shape` and
+/// element-unit `strides` over the View's memory (e.g. a flat padded field re-shaped to its 3-D
+/// block). Either a host or device View. The returned array references `view`'s memory and keeps it
+/// alive via a capsule owning a (ref-counted) reference to the View; host views come back as
+/// `numpy.ndarray`, device views as a DLPack array (consume with `cupy.from_dlpack`).
+template <class V, std::size_t N>
+auto view_to_ndarray(const V& view, const std::array<std::size_t, N>& shape,
+                     const std::array<std::int64_t, N>& strides) {
   using T = std::remove_const_t<typename V::value_type>;
   using Mem = typename V::memory_space;
-  constexpr std::size_t N = V::rank;
 
-  std::array<std::size_t, N> shape;
-  std::array<std::int64_t, N> strides;
-  for (std::size_t i = 0; i < N; ++i) {
-    shape[i] = view.extent(i);
-    strides[i] = static_cast<std::int64_t>(view.stride(i));
-  }
-
-  // Capsule owns a heap copy of the View; Kokkos ref-counts the allocation, so the buffer lives as
-  // long as the Python array (or any array derived from it) does.
-  auto* held = new V(view);
-  nb::capsule owner(held, [](void* p) noexcept { delete static_cast<V*>(p); });
+  auto* held = new ViewCapsule<V>(view);
+  nb::capsule owner(held, [](void* p) noexcept { delete static_cast<ViewCapsule<V>*>(p); });
 
   auto* data = const_cast<T*>(view.data());
   if constexpr (is_host_space_v<Mem>) {
@@ -98,6 +102,22 @@ auto view_to_ndarray(const V& view) {
     auto [dev, id] = dlpack_device<Mem>();
     return nb::ndarray<T>(data, N, shape.data(), owner, strides.data(), nb::dtype<T>(), dev, id);
   }
+}
+
+/// Export a Kokkos View to a Python array **without copying**. Works for any rank and either a host
+/// or device View. Shape and element-unit strides are taken from the View, so non-contiguous /
+/// padded views (e.g. a ghosted inner region) export correctly. See the overload above for the
+/// ownership contract.
+template <class V>
+auto view_to_ndarray(const V& view) {
+  constexpr std::size_t N = V::rank;
+  std::array<std::size_t, N> shape;
+  std::array<std::int64_t, N> strides;
+  for (std::size_t i = 0; i < N; ++i) {
+    shape[i] = view.extent(i);
+    strides[i] = static_cast<std::int64_t>(view.stride(i));
+  }
+  return view_to_ndarray(view, shape, strides);
 }
 
 /// Export a host `std::vector<T>` as a NumPy array of the given logical `shape` and element-unit

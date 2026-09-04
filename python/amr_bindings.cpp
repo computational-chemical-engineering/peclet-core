@@ -52,12 +52,17 @@
 #include "peclet/core/amr/vtu_io.hpp"
 #include "peclet/core/common/types.hpp"
 #include "peclet/core/geom/sdf.hpp"
+#include "peclet/core/python/kokkos_teardown.hpp"
 #include "peclet/core/python/ndarray_interop.hpp"
 
 namespace nb = nanobind;
 using namespace peclet::core;
 
-namespace {
+// The wrapper classes live in a NAMED namespace on purpose: they have virtual methods (Releasable),
+// and with an anonymous namespace hipcc's host/device split leaves their vtables unemitted, so the
+// HIP link fails with `ld.lld: undefined hidden symbol: vtable for (anonymous namespace)::Octree`
+// (and Poisson / Flow / DistributedOctree). OpenMP/CUDA builds are indifferent.
+namespace peclet::core::pybind_amr {
 
 using BO = amr::BlockOctree<3>;       // 3D, Bits=21 (default) — codes fit a uint64
 using DO = amr::DistributedOctree<3>;
@@ -128,22 +133,12 @@ std::vector<double> asField(const BO& t, const DArray& field, const char* who) {
 }
 
 // ---- teardown registry -------------------------------------------------------------------------
-// On CUDA, Kokkos::finalize() MUST run at exit (else cudaErrorCudartUnloading), but any wrapper that
-// still holds device Views at that point aborts ("deallocated after Kokkos::finalize"). Test/driver
-// scripts routinely keep an Octree/Flow at module scope, so we track live wrappers and drop their
-// Views (release()) BEFORE finalize, in the atexit hook. Mirrors dem/voro's releaseAll().
-struct Releasable {
-  Releasable() { registry().insert(this); }
-  virtual ~Releasable() { registry().erase(this); }
-  virtual void release() = 0;
-  static std::set<Releasable*>& registry() {
-    static std::set<Releasable*> s;
-    return s;
-  }
-  static void releaseAll() {
-    for (Releasable* r : registry()) r->release();
-  }
-};
+// The suite-wide pattern (peclet/core/python/kokkos_teardown.hpp): Kokkos::finalize() MUST run from
+// the atexit hook (else cudaErrorCudartUnloading on CUDA), but any wrapper that still holds Views at
+// that point -- an Octree/Flow at script or notebook scope, the normal case -- is destroyed after
+// finalize and Kokkos::abort()s the process. Every wrapper below is a Releasable (registered on
+// construction); the hook drops their Views (release()) BEFORE finalize.
+using peclet::core::python::Releasable;
 
 // ---- serial single-block octree ----------------------------------------------------------------
 
@@ -158,7 +153,7 @@ class Octree : public Releasable {
     geo_.origin = {origin[0], origin[1], origin[2]};
     geo_.h0 = h0;
   }
-  void release() override { t_ = BO{}; }
+  void release() noexcept override { t_ = BO{}; }
 
   // ---- introspection ----
   Index num_leaves() const { return t_.numLeaves(); }
@@ -277,7 +272,7 @@ class Poisson : public Releasable {
     mg_.build(oct.octreeRef(), oct.geoRef().h0);
     mg_.setPeriodic(periodic);
   }
-  void release() override { mg_ = amr::AmrMultigrid<3>{}; }
+  void release() noexcept override { mg_ = amr::AmrMultigrid<3>{}; }
 
   Index num_leaves() const { return n_; }
   std::size_t num_levels() const { return mg_.numLevels(); }
@@ -362,7 +357,7 @@ class Flow : public Releasable {
     flow_.rebalanceMpi([&](const Vec<3>& p) { return sdf(p[0], p[1], p[2]); });
     n_ = flow_.numLeaves();
   }
-  void release() override { flow_ = amr::AmrFlow<>{}; }
+  void release() noexcept override { flow_ = amr::AmrFlow<>{}; }
 
   Index num_leaves() const { return n_; }
   void set_body_force(double fx, double fy, double fz) { flow_.setBodyForce(fx, fy, fz); }
@@ -504,7 +499,7 @@ class DistributedOctree : public Releasable {
     d_.init(IVec<3>{global_root_size[0], global_root_size[1], global_root_size[2]}, lmax, g,
             {periodic[0], periodic[1], periodic[2]}, MPI_COMM_WORLD);
   }
-  void release() override { d_ = DO{}; }
+  void release() noexcept override { d_ = DO{}; }
 
   // ---- introspection ----
   int rank() const { return d_.rank(); }
@@ -638,20 +633,15 @@ inline Flow::Flow(DistributedOctree& d, double rho, double mu, double dt)
   flow_.setDt(dt);
 }
 
-}  // namespace
+}  // namespace peclet::core::pybind_amr
 
 NB_MODULE(amr, m) {
+  using namespace peclet::core::pybind_amr;
   // The Flow path runs Kokkos kernels — initialise the device runtime on import (the backend/arch is
-  // fixed by the prefix the module was built against), and finalize via a Python atexit hook. The
-  // atexit hook is REQUIRED on CUDA: without it, Kokkos's internal device state is torn down by static
-  // destructors AFTER the CUDA runtime unloads, aborting with cudaErrorCudartUnloading at exit. The
-  // hook runs while the driver is up. Release every Flow/Octree before exit (it goes out of scope, or
-  // `del`) so no Kokkos View outlives finalize. Per-leaf arrays are host-vector-backed (no Views).
-  if (!Kokkos::is_initialized()) Kokkos::initialize();
-  nb::module_::import_("atexit").attr("register")(nb::cpp_function([]() {
-    Releasable::releaseAll();  // drop every live Octree/Flow/... View before finalize
-    if (Kokkos::is_initialized() && !Kokkos::is_finalized()) Kokkos::finalize();
-  }));
+  // fixed by the prefix the module was built against); the release-then-finalize atexit hook,
+  // finalize() and execution_space are the suite-wide pattern (teardown registry above). Per-leaf
+  // arrays are host-vector-backed (no Views).
+  peclet::core::python::install(m);
   m.attr("__doc__") =
       "core adaptive-mesh-refinement: per-block BlockOctree (serial) and DistributedOctree "
       "(MPI ORB) for the mesh, plus the device (Kokkos) AmrFlow cut-cell Stokes/Navier-Stokes solver. "
