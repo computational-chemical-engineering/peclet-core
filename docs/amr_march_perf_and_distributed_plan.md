@@ -5,7 +5,27 @@
 against settled decisions) or **[FABLE]** (a decision gate — Opus stops there and hands back,
 same escalation contract as the setup-parallel plan §5, which applies verbatim here).*
 
-**Status: PLANNED.** Two phases, independent — M can run before, after, or interleaved with D.
+**Status (2026-09-04): BOTH PHASES EXECUTED except two items, one of which needs a decision and
+one of which needs cluster time.** Everything below is on `main` and gated; read this box first
+and the rung bodies only for detail.
+
+| rung | state |
+|---|---|
+| M0 profiler | DONE (`bef993b`, `3d7c896`) — `PECLET_CORE_PROFILE_STEP=1`; off = one bool test |
+| M1 attribution matrix | DONE (`1c9517d`) — verdict: H-band + H-launch; H-iters, H-mg refuted |
+| M2 verdict | DONE (`bc2b117`) — H-launch accepted; H-band → cloud economy |
+| M2a cloud-economy table | DONE (`94cdc28`) — §M2a results |
+| **M2b pick production rho/N** | **OPEN — [FABLE] decision, the table is waiting** |
+| M2c slot caching | DONE (`dd5bc83`) — bitwise; wall-clock unmeasured (box contended) |
+| F2 (LS cloud period) | RESOLVED (`dfe8065`) — §Findings |
+| D0 probe-set clouds | DONE (`c8c19fc`) |
+| D1 fixpoint wiring | DONE (`fe86380`) — ctest count 149 → **153** |
+| D2 distributed band | DONE (`96fc78d`) — np=1 bitwise, np=2/4 ~3e-7 |
+| D3(a) np>1 class | RULED — accepted; §D3 rulings |
+| D3 setup cost | RESOLVED (`5a271a2`) — probe-only discovery + aligned lattice |
+| **D3(b) cluster runs** | **OPEN — needs billed Snellius time; user go-ahead required** |
+
+Two phases, independent — M can run before, after, or interleaved with D.
 
 ## Why these two, in this order ahead of device assembly
 
@@ -664,6 +684,64 @@ from now on are corrected-period ones and must not be compared to the old logs a
    default them to `(pres.fineExt(), {0,0,0})` so np=1 stays bit-identical by construction. The
    `keyOf` Morton sort key must use the GLOBAL lo (the branch already writes `b[0] + shiftG`).
 3. **D2 as planned.** Nothing in DD3/DD4 changes.
+
+## Resuming this campaign (written at session close, 2026-09-04)
+
+Two items are open. Neither is blocked on code — one is a decision, one is machine time.
+
+### 1. M2b — pick the production cloud (FABLE decision; the data is in §M2a results)
+
+The table is complete and the shape is clean: **rho 1.8, rho 1.5 and N ≤ 32 all pass every gate**;
+N ≤ 24 passes the bed permeability while FAILING the LS2-convergence gate; N ≤ 16 fails three
+gates and diverges. N ≤ 32 is the aggressive end of the safe set and takes the depth-8 overlay CSR
+from 4.33× the uniform arm's down to 1.65×, which is where M1's +210 ms/step penalty lives.
+
+Before deciding, two things a reviewer should know:
+- The **P2b march ladder was not run** (cost: >12 h for six variants). The per-variant seam
+  evidence in the table comes from `study_amr_seam_sample_order.cpp`, the study that established
+  the degree-2 requirement, now carrying the same knobs at ~2 s per variant. If M2b wants the
+  named instrument first: `tests/study/amr_zh_ladder.py --cf 1 --arms ab 64 128 256` per variant
+  with `PECLET_CORE_GPS_RHO` / `PECLET_CORE_GPS_MAXN` exported; arm a is variant-independent and
+  needs running once.
+- Whatever is chosen, changing the DEFAULT is a numerics change: it re-blesses the bed references
+  (the shipped arm reads +0.247% today) and needs the standing bitwise gates re-baselined, not
+  merely re-run. The knobs themselves are already on `main` and inert at their defaults.
+
+### 2. D3(b) — the cluster runs (needs billed Snellius time; ask the user first)
+
+In this order, one recipe (`tools/snellius_amr_bed.md`):
+
+1. **Prefix rebuild FIRST.** The Snellius `nvidia-cuda` prefix still has never had rung 0's
+   `-DKokkos_ENABLE_OPENMP=ON`. Until it does, every setup gain of this campaign (setSolid
+   127 → 2.4 µs/leaf, and D3's fixpoint fix) is absent on the machine that bills. Same one-liner
+   as local; rebuild the dependent trees; rerun the standing fence before any billed arm.
+2. **M1's missing cell** — the depth-8 UNIFORM bed per-phase table, one H100 (it needs ~20 GB and
+   dies in `set_solid` on the local 16 GB card):
+   `tests/study/amr_march_profile.py --geom bed --depth 8 --arms u,g4 --time --steps 200
+   --repeats 3`. Confirmatory only; the M2 verdict does not depend on it.
+3. **The depth-9 two-arm run on 2×H100** — the accuracy-matched headline at R/h₀ = 48.
+
+Three cautions carried forward:
+- Job **26205730** (the pending single-GPU depth-9 graded arm) predates the F2 period fix. If it
+  ran, its k is on the old cloud metric and must NOT be mixed into the two-arm comparison.
+- Bed k values from now on are corrected-period ones; do not compare to pre-F2 logs finer than
+  ~1e-4 relative (measured: the d7 graded arm moved +0.256% → +0.247%).
+- The **NBX per-round tag rotation** (`10294e6`, 2026-09-02, landed after this campaign) fixed an
+  at-scale halo hang/corruption that bit at 1536 ranks with one topology build per MG level. Every
+  distributed number in this document predates it and was taken at np ≤ 8 locally; the cluster
+  runs are the first that exercise both together.
+
+### Things measured but NOT quotable, and why
+
+Two numbers this campaign owes and could not take: **M2c's wall-clock speed-up** and **any
+ms/step in M2a**. This box was shared with another agent's GPU work throughout, and a *fixed*
+workload wandered 886 → 1887 → 3853 → 5886 ms/step across consecutive windows of one run;
+normalising against an untouched kernel did not stabilise it either. The contention-free proxies
+(analytic gather counts for M2c, CSR sizes for M2a) are in their commits and are exact. To close
+them, wait for a quiet box and run
+`tests/study/amr_march_profile.py --geom bed --depth 7 --arms u,g2 --time --steps 60 --repeats 3`,
+comparing the overlay-matvec row against M1's recorded quiet values (u 17.2, g2 227.0 ms/step at
+892.5 / 886.7 ms/step total).
 
 ## Standing rules (unchanged)
 
