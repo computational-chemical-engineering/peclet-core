@@ -42,6 +42,7 @@ wheel.install-dir = "."
 # Everything shipped in the wheel is placed by the CMake install() rules (compiled modules + the
 # peclet/core/__init__.py); disable scikit-build-core's package auto-discovery so it doesn't also try.
 wheel.packages = []
-# Note: SuiteNanobind.cmake lives in the umbrella (../../cmake), so `pip install .` resolves it from a
-# suite checkout; a standalone sdist of just this repo is not self-contained (by design).
-sdist.include = ["include", "python", "CMakeLists.txt", "README.md", "LICENSE"]
+# SuiteNanobind.cmake is the umbrella's (../../cmake) in a suite checkout and the vendored copy in cmake/
+# in a standalone sdist, so `pip install peclet-core` builds without the suite (it did not from 0.1.0
+# through 0.6.0 -- the `peclet[mpi]` extra was unusable).
+sdist.include = ["include", "python", "cmake", "CMakeLists.txt", "README.md", "LICENSE"]

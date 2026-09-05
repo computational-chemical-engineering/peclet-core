@@ -13,7 +13,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(MPI REQUIRED COMPONENTS CXX)
 
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../cmake")
+# SuiteNanobind: the umbrella's copy (../../cmake) in a suite checkout, the vendored copy in ../cmake
+# otherwise -- an sdist built from this repo alone has no ../../cmake (pip install peclet-core /
+# peclet[mpi] failed on exactly that include from 0.1.0 through 0.6.0). Keep core/cmake/SuiteNanobind.cmake
+# byte-identical to the umbrella's; the suite path is searched first.
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../cmake" "${CMAKE_CURRENT_SOURCE_DIR}/../cmake")
 include(SuiteNanobind)
 suite_require_nanobind()
 
