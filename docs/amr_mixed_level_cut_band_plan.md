@@ -25,8 +25,19 @@ CELL-COUNT headline is not yet quotable: the saving is only 1.07× at depth 7 (t
 covers 92% of that domain) and 1.62× at depth 8 — but depth 8 exceeds the local RTX 5080 twice
 over (the control needs ~21.5 GB of 16.3; the graded arm then hits `cudaErrorLaunchTimeout`).
 **The headline needs a compute-mode cluster GPU; everything else is ready.** Still open:
-pocket exclusion in LS clouds, **sub-face closures** (now bounded — an accuracy item, not a
-stability blocker), and the distributed sample halo.
+pocket exclusion in LS clouds and **sub-face closures** (now bounded — an accuracy item, not a
+stability blocker).
+
+**UPDATE 2026-08-30 — the distributed sample halo is DONE**, so that risk-register row is retired.
+The follow-on campaign `amr_march_perf_and_distributed_plan.md` carries it (rungs D0–D2: the LS
+clouds became a deterministic `probeSlot` set, the sampled builders joined the discovery fixpoint,
+and the clouds read ghost slots; np=1 bitwise, np=2/4 in the ~3e-7 march class). That campaign also
+DIAGNOSED P3c's "1.62× fewer cells, ~0% step time" (its M1 matrix: the cell saving is SPENT on the
+LS clouds, whose CSR grows as the mesh coarsens) and fixed a pre-existing bug this plan's clouds
+had carried since Phase 0 — the minimum-image PERIOD was 4 fine cells short, which displaced every
+cloud candidate crossing a periodic face (finding F2). Bed permeabilities computed before that fix
+differ in the ~5th digit: the depth-7 graded arm reads +0.247% today where P3c published +0.256%.
+Read that plan's status table before quoting any number from this one.
 
 *Original gating note, kept for the record:* implementation was gated on flow's clean-ladder
 R=24/32 order result + the np>=16 instability re-diagnosis; if that ladder had disappointed, the

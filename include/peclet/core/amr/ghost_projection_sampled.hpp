@@ -27,16 +27,23 @@
 // device mirror (`GhostOverlaySampledDev`, `ghostApplyDeltaSampled`, `ghostDivergDeltaSampled`,
 // `GhostGradCsrDev`) lives in the `#ifdef KOKKOS_INLINE_FUNCTION` section at the bottom, so a
 // non-Kokkos TU can include this header and get the host half only. Driven from the device
-// solver by `AmrFlow::setGhostSampled` (flow.hpp), single-rank — the distributed sample halo is
-// a later rung.
+// solver by `AmrFlow::setGhostSampled` (flow.hpp), single-rank AND distributed.
 //
-// STATUS (2026-08-27, plan §Phase 2): Phase-1 rungs 1–4 and Phase 2 are done — momentum ξ-row
-// seam correction, wall-aware C/F gates, the device mirror, the graded refinement policy API
-// (refine.hpp `refineToSdfGraded`), family-free on a seamed mesh, and a seam offset converging
-// at ~1.7–1.9 so seams do not set the order. KNOWN GAPS, in the plan's risk register: sub-face
-// closures are unimplemented (the closed sub-faces of a mixed face are Neumann-zero — counted
-// by `nMixedFace`, measured non-vanishing), pocket cells are not excluded from LS clouds, and
-// there is no distributed sample halo.
+// STATUS (2026-08-30, plans §Phase 2 + amr_march_perf_and_distributed_plan.md): Phase-1 rungs 1–4
+// and Phase 2 are done — momentum ξ-row seam correction, wall-aware C/F gates, the device mirror,
+// the graded refinement policy API (refine.hpp `refineToSdfGraded`), family-free on a seamed mesh,
+// and a seam offset converging at ~1.7–1.9 so seams do not set the order. DISTRIBUTED since rungs
+// D0–D2: the cloud candidates are a deterministic `probeSlot` set (never a search over the local
+// leaf array — that would make a cloud depend on what this rank owns), the builder probes inside
+// prepareDistributed's discovery fixpoint, and the clouds read GHOST slots. Two frames meet here
+// and coincide only single-rank: geometry is sampled at GLOBAL world points, `probeSlot` takes
+// BLOCK-LOCAL fine coords — `frameShift`/`globalFine` carry that, and every default reduces the
+// expressions to their single-rank form bit for bit. Anything reached through a probe is an
+// EXTENDED slot: use `pres.levelOf`/`loOf`, never `t.level`/`t.bounds`, or a ghost reads past the
+// end of the local arrays.
+// KNOWN GAPS, in the plan's risk register: sub-face closures are unimplemented (the closed
+// sub-faces of a mixed face are Neumann-zero — counted by `nMixedFace`, measured non-vanishing)
+// and pocket cells are not excluded from LS clouds.
 #ifndef PECLET_CORE_AMR_GHOST_PROJECTION_SAMPLED_HPP
 #define PECLET_CORE_AMR_GHOST_PROJECTION_SAMPLED_HPP
 

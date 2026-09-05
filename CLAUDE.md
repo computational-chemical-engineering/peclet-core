@@ -130,12 +130,22 @@ Header-only under `include/peclet/core/`:
   boundary become degree-2 least-squares virtual samples, and identity weights at same level keep a
   uniform band bit-identical to the classic path. Its mesh-generator side is
   `refine.hpp::refineToSdfGraded` / `gapFloorTarget` (Python `Octree.refine_to_sdf_graded` /
-  `refine_to_gap_floor`). Single-rank for now. Read `docs/amr_mixed_level_cut_band_plan.md` before
-  touching any of it: it holds the design (§4), six decisions each with the alternative to revisit
-  (§5), the measured phase results, and the risk register naming the three unfinished rungs
-  (sub-face closures, pocket exclusion in LS clouds, distributed sample halo).
+  `refine_to_gap_floor`). **DISTRIBUTED since 2026-08-30** (rungs D0–D2): the least-squares clouds
+  are a deterministic probe set resolved through `probeSlot` (never a search over the local leaf
+  array, which would make a cloud depend on what the rank happens to own), the sampled builders
+  probe inside `prepareDistributed`'s miss-collect fixpoint, and the clouds read ghost slots like
+  any other CSR the step consumes. Acceptance: np=1 bitwise vs single-rank, np=2/4 in the ~3e-7
+  march class (`tests/test_amr_distributed_seam_mpi.cpp`, np=1,2,4,8).
+  Two knobs exist for the cloud-economy study and are INERT at their defaults — do not set them in
+  production without reading the M2a table: `PECLET_CORE_GPS_RHO` (LS radius factor, default 2.2)
+  and `PECLET_CORE_GPS_MAXN` (nearest-N candidate cap, default 0 = uncapped).
+  Read `docs/amr_mixed_level_cut_band_plan.md` before touching any of it: it holds the design (§4),
+  six decisions each with the alternative to revisit (§5), the measured phase results, and the risk
+  register — of whose three unfinished rungs the distributed sample halo is now DONE, leaving
+  sub-face closures and pocket exclusion in LS clouds.
   Design notes: `docs/amr_collocated_projection.md`, `docs/amr_mixed_level_cut_band_plan.md`,
-  `docs/amr_device_assembly_plan.md`.
+  `docs/amr_march_perf_and_distributed_plan.md` (march economics + the distributed band; its status
+  table names the two items still open), `docs/amr_device_assembly_plan.md`.
 - `python/` + `python/include/peclet/core/python/ndarray_interop.hpp` — **nanobind** Python bindings over a
   shared **zero-copy `peclet::core::View`↔ndarray bridge** (`include/peclet/core/python/ndarray_interop.hpp`).
   `python/tpx_mpi.cpp` is host-only (no Kokkos): exposes `ParticleMigrator` / `ParticleHaloTopology` /
