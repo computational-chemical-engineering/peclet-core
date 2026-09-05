@@ -25,6 +25,7 @@
 #include <array>
 #include <cmath>
 #include <chrono>
+#include <stdexcept>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -1011,6 +1012,7 @@ class AmrFlow {
     pcg_.setVcycle(2, 2, 60, 0.8);
     pcg_.setSingular(true);
     n_ = n;
+    ready_ = true;
     profPhase("overlays upload + state alloc");
   }
 
@@ -1103,7 +1105,19 @@ class AmrFlow {
     spMom_ = spPres_ = spOuter_ = 0.0;
   }
 
+  /// Every solve entry point needs the cut-cell operators that setSolid builds; without them the
+  /// state views are unallocated and the kernels dereference null (measured: a segfault from
+  /// Python's Flow.step() before set_solid). Throw a named error instead.
+  void requireOperator(const char* what) const {
+    if (!ready_)
+      throw std::runtime_error(std::string("amr::AmrFlow::") + what +
+                               ": no cut-cell operator -- call setSolid() first (Python: "
+                               "Flow.set_solid / set_solid_spheres; after begin_adapt, "
+                               "finish_adapt)");
+  }
+
   void step(int momIters = 100, int presIters = 60) {
+    requireOperator("step");
     const Index n = n_;
     const double idiag = rho_ / dt_;
     lastMomIters_ = 0;
@@ -1224,6 +1238,7 @@ class AmrFlow {
 
   /// Pressure projection of the current velocity in place.
   void project(int presIters = 60) {
+    requireOperator("project");
     const Index n = n_;
     auto spT = spMark();
     syncVel();  // ghost tails of u* for the divergence (+ the ghost-closed overlay delta)
@@ -1406,6 +1421,8 @@ class AmrFlow {
   /// setSolid rebuilds the ±2 halo/operators on the new local mesh (collective). For
   /// OWNERSHIP changes use rebalanceMpi instead.
   void beginAdapt() {
+    requireOperator("beginAdapt");
+    ready_ = false;  // no operator until finishAdapt rebuilds it on the new topology
     adaptOldT_ = std::make_unique<Octree>(*t_);
     for (int c = 0; c < 3; ++c)
       adaptU_[static_cast<std::size_t>(c)] = velocity(c);
@@ -2065,6 +2082,7 @@ class AmrFlow {
   bool implicitFou_ = true;  // implicit-FOU deferred-correction (stable) vs fully-explicit
   int advScheme_ = 0;        // high-order flux: 0 = SOU (default), 1 = Koren TVD
   Index n_ = 0;
+  bool ready_ = false;  // an operator exists (setSolid ran; cleared by beginAdapt)
   int lastMomIters_ = 0, lastPresIters_ = 0, lastOuterIters_ = 1;
   // M0 step profiler (PECLET_CORE_PROFILE_STEP): all inert unless stepProf_.
   bool stepProf_ = amrEnvFlag("PECLET_CORE_PROFILE_STEP");

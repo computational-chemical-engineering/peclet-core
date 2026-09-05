@@ -139,6 +139,16 @@ if rank == 0:
     a, b = 0.25, 0.75  # wall planes (cell-aligned at 4*h0, 12*h0)
     tc = tpx_amr.Octree(brick=[Nc, Nc, Nc], lmax=0, origin=[0, 0, 0], h0=h0)
     flow = tpx_amr.Flow(tc, density=1.0, viscosity=1.0, dt=1e6)
+    # No operator yet: step()/project() must raise, not dereference the unallocated state.
+    for name, call in (("step", lambda: flow.step(mom_iters=1, pres_iters=1)),
+                       ("project", lambda: flow.project(pres_iters=1))):
+        try:
+            call()
+            check(False, f"Flow.{name}() before set_solid did not raise")
+        except RuntimeError as e:
+            check("setSolid" in str(e), f"Flow.{name}() before set_solid: unexpected message {e!r}")
+    # The Python-callable SDF is sampled from the host builders' parallel regions (GIL released
+    # in the binding; a hang here at OMP_NUM_THREADS > 1 is the regression).
     flow.set_solid(lambda x, y, z: min(x - a, b - x))  # >0 inside the channel
     flow.set_body_force(0.0, 1.0, 0.0)
     for _ in range(5):

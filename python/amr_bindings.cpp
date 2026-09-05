@@ -354,6 +354,7 @@ class Flow : public Releasable {
   // Distributed load rebalance: weighted-ORB re-decomposition migrating u/p with the leaves +
   // full rebuild (collective; distributed constructor only).
   void rebalance_mpi(std::function<double(double, double, double)> sdf) {
+    nb::gil_scoped_release nogil;  // see set_solid
     flow_.rebalanceMpi([&](const Vec<3>& p) { return sdf(p[0], p[1], p[2]); });
     n_ = flow_.numLeaves();
   }
@@ -378,6 +379,7 @@ class Flow : public Releasable {
   }
   void set_dt(double dt) { flow_.setDt(dt); }
   void finish_adapt(std::function<double(double, double, double)> sdf) {
+    nb::gil_scoped_release nogil;  // see set_solid
     flow_.finishAdapt([&](const Vec<3>& p) { return sdf(p[0], p[1], p[2]); });
     n_ = flow_.numLeaves();
   }
@@ -387,6 +389,14 @@ class Flow : public Releasable {
   // Build the cut-cell operators from a signed-distance callable f(x,y,z) (>0 in fluid, <0 in solid),
   // and zero the velocity / pressure fields. Call before stepping; re-call to change the geometry.
   void set_solid(std::function<double(double, double, double)> sdf) {
+    // The host operator builders sample the SDF from Kokkos host parallel regions. nanobind's
+    // std::function wrapper takes the GIL for every call, so with the calling thread still
+    // holding it while it waits at the parallel region's barrier, the worker threads block
+    // forever (measured: a hang under the OpenMP host backend at OMP_NUM_THREADS > 1). Release
+    // it here; the callback re-acquires it per sample, which serialises the sampling but
+    // cannot deadlock. The same holds for finish_adapt / rebalance_mpi, which rebuild through
+    // setSolid.
+    nb::gil_scoped_release nogil;
     flow_.setSolid([&](const Vec<3>& p) { return sdf(p[0], p[1], p[2]); });
   }
 

@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <Kokkos_Core.hpp>
+#include <stdexcept>
 #include <vector>
 
 #include "peclet/core/amr/block_octree.hpp"
@@ -73,6 +74,20 @@ void test_poiseuille() {
   dfl.setViscosity(mu);
   dfl.setDt(1e6);
   dfl.setBodyForce(G, 0, 0);
+  {  // no operator yet: step()/project() throw a named error instead of dereferencing null
+    bool threwStep = false, threwProj = false;
+    try {
+      dfl.step(1, 1);
+    } catch (const std::runtime_error&) {
+      threwStep = true;
+    }
+    try {
+      dfl.project(1);
+    } catch (const std::runtime_error&) {
+      threwProj = true;
+    }
+    PECLET_CORE_CHECK(threwStep && threwProj);
+  }
   dfl.setSolid(sdf);
   for (int s = 0; s < 5; ++s)
     dfl.step(/*momIters=*/400, /*presIters=*/80);
