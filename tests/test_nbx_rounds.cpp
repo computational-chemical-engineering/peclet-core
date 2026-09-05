@@ -10,6 +10,7 @@
 // MPI_COMM_WORLD and on a split sub-communicator (the telescoped-multigrid shape).
 #include <mpi.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -63,16 +64,51 @@ int main(int argc, char** argv) {
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
   MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-  // The per-communicator counter advances by one per round and starts at 0 on a fresh comm.
+  // The per-communicator counter advances by one per round and starts at 0 on a fresh comm; the
+  // wire tag sits in the reserved block of the caller's family, never on a direct tag.
+  using namespace peclet::core::halo::detail;
   int fail = 0;
   {
     MPI_Comm dup;
     MPI_Comm_dup(MPI_COMM_WORLD, &dup);
-    const int t0 = peclet::core::halo::detail::nbxRoundTag(dup, 7301);
-    const int t1 = peclet::core::halo::detail::nbxRoundTag(dup, 7301);
-    const int w0 = peclet::core::halo::detail::nbxRoundTag(MPI_COMM_WORLD, 100);
-    if (t0 != 7301 || t1 != 7302 || w0 != 100)
+    const int t0 = nbxRoundTag(dup, 7301);
+    const int t1 = nbxRoundTag(dup, 7301);
+    const int w0 = nbxRoundTag(MPI_COMM_WORLD, 100);
+    const int base7301 = kNbxTagBase + (7301 % kNbxFamilies) * static_cast<int>(kNbxRoundTags);
+    if (t0 != base7301 || t1 != base7301 + 1 ||
+        w0 != kNbxTagBase + (100 % kNbxFamilies) * static_cast<int>(kNbxRoundTags))
       ++fail;
+    MPI_Comm_free(&dup);
+  }
+  {
+    // The suite's NBX families land in distinct blocks, every rotated tag stays inside the
+    // reserved range, and none of them can ever equal a direct point-to-point tag (all < base).
+    // 2026-09-05: with tag = baseTag + round, family 7501's second round hit the particle halo's
+    // direct forwardPositions tag 7502 (particle_halo_np8 hung on an oversubscribed 2-core
+    // runner) and family 0 walked over the AMR gather tags 11/41/45 (wrong ghosts at np=4,8).
+    const int families[] = {0, 11, 7301, 7401, 7402, 7411, 7501};
+    const int directTags[] = {11, 41, 45, 7502, 7503, 7601, 7603, 7604, 4096, 20479};
+    MPI_Comm dup;
+    MPI_Comm_dup(MPI_COMM_WORLD, &dup);
+    std::vector<int> seen;
+    for (int f : families) {
+      MPI_Comm fresh;
+      MPI_Comm_dup(MPI_COMM_WORLD, &fresh);
+      for (int r = 0; r < 200; ++r) {
+        const int tag = nbxRoundTag(fresh, f);
+        if (tag < kNbxTagBase || tag >= kNbxTagBase + kNbxFamilies * kNbxRoundTags)
+          ++fail;
+        for (int d : directTags)
+          if (tag == d)
+            ++fail;
+        if (r < kNbxRoundTags)
+          seen.push_back(tag);
+      }
+      MPI_Comm_free(&fresh);
+    }
+    std::sort(seen.begin(), seen.end());
+    if (std::adjacent_find(seen.begin(), seen.end()) != seen.end())
+      ++fail;  // two families shared a wire tag within the first 64 rounds
     MPI_Comm_free(&dup);
   }
 

@@ -159,13 +159,21 @@ Header-only under `include/peclet/core/`:
   `MPI_Finalized` so an instance that outlives `MPI_Finalize` (e.g. on `main`'s stack) does not abort.
   Don't remove that guard. The class is non-copyable (it owns the comm).
 - **Consecutive NBX rounds on one communicator must use different tags**, and `NbxEngine` does
-  that itself: `exchange(…, baseTag)` sends on `baseTag + round % 64` with the round counter kept
-  as an MPI attribute of the communicator. A rank that has observed the Ibarrier complete starts
+  that itself: `exchange(…, baseTag)` sends on a wire tag in the RESERVED range [24576, 32768)
+  — block `baseTag % 128` (64 tags each), rotated by a round counter kept as an MPI attribute of
+  the communicator (`detail::nbxRoundTag`). A rank that has observed the Ibarrier complete starts
   the next round while a neighbour is still probing the old tag and would receive the new message
   as an old one — with one topology build per multigrid level this lost up to all 26 send
   partners of a rank at 1536 ranks on Snellius (2026-09-02), hanging the first exchange or,
-  worse, silently corrupting ghost values. Keep tag families ≥ 64 apart (7301 / 7401 / 7402 /
-  7501 …), and never call `MPI_Comm_free` on a communicator with a round in flight.
+  worse, silently corrupting ghost values. Two rules: **direct point-to-point tags stay below
+  24576** (the suite's: 0–63, AMR 11/41/45, particle 7502/7503/7603/7604, voro 7601, flow VoF
+  4096–20479) and **distinct NBX call sites use baseTags distinct modulo 128** (0, 11, 7301, 7401,
+  7402, 7411, 7501 today). Until 2026-09-05 the wire tag was `baseTag + round`, so the particle
+  topology's second round (7501 + 1) matched the direct forwardPositions tag 7502 — `particle_halo_np8`
+  hung on GitHub's oversubscribed 2-core runners (CI red from 09-04) — and family-0 rounds walked
+  over the AMR gather tags: `amr_distributed_{fv,mg,graded_mg,openness,poisson}_np{4,8}` returned
+  wrong ghosts (intermittent, 1–3 failures per run on a pristine main). Never call `MPI_Comm_free`
+  on a communicator with a round in flight.
   `buildTopology` cross-checks promised against requested cells with one allreduce and throws
   on a mismatch, so a lost consensus message now fails at build time. Gate:
   `tests/test_nbx_rounds.cpp` (fails on a laptop with the rotation ablated).
