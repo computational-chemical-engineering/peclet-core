@@ -99,7 +99,10 @@ class DistributedOctree {
   const IVec<Dim>& globalFineSize() const { return globalFineSize_; }
   const std::array<bool, Dim>& periodic() const { return periodic_; }
   Index rootSpan() const { return rootSpan_; }
-  double h0() const { return globalGeo_.h0; }
+  /// Phase 3: the FINEST spacing per axis (`docs/amr_anisotropic.md` §2).
+  const Vec<Dim>& h0() const { return globalGeo_.h0; }
+  /// The single spacing of a CUBIC global grid.
+  double h0Scalar() const { return globalGeo_.h0[0]; }
   const AmrGeometry<Dim>& globalGeometry() const { return globalGeo_; }
 
   /// Global root-cell coordinate of local leaf `i` (lmax==0: the leaf is one root cell).
@@ -128,7 +131,8 @@ class DistributedOctree {
   AmrGeometry<Dim> localGeometry() const {
     AmrGeometry<Dim> g = globalGeo_;
     for (int d = 0; d < Dim; ++d)
-      g.origin[d] = globalGeo_.origin[d] + static_cast<Real>(blockFineOrigin_[d]) * globalGeo_.h0;
+      g.origin[d] = globalGeo_.origin[d] +
+                    static_cast<Real>(blockFineOrigin_[d]) * globalGeo_.h0[d];
     return g;
   }
 

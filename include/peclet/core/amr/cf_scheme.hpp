@@ -89,7 +89,6 @@ inline void cfAppendStencil(const AmrPoisson<3, Bits>& ap, const BlockOctree<3, 
     return;
   auto bc = t.bounds(coarse);
   auto bf = t.bounds(fine);
-  const double H = ap.cellWidth(coarse);
   const double sc = static_cast<double>(Index(1) << t.level(coarse));
   const double sf = static_cast<double>(Index(1) << t.level(fine));
   auto push = [&](Index cell, double w) {
@@ -101,9 +100,13 @@ inline void cfAppendStencil(const AmrPoisson<3, Bits>& ap, const BlockOctree<3, 
   for (int tt = 0; tt < 3; ++tt) {
     if (tt == axis)
       continue;
+    // Phase 3: BOTH the tangential offset and the differencing width belong to the TANGENTIAL
+    // axis `tt` — they were one `H` when the cells were cubes (`docs/amr_anisotropic.md` §3).
+    const double H = ap.cellWidth(coarse, tt);
+    // Phase 3: the tangential offset is a length along axis `tt` (`docs/amr_anisotropic.md` §3).
     const double dt = ((static_cast<double>(bf[0][tt]) + 0.5 * sf) -
                        (static_cast<double>(bc[0][tt]) + 0.5 * sc)) *
-                      ap.h0();
+                      ap.h0()[tt];
     // Tangential samples at the coarse cell's ± neighbours. Same-level neighbours contribute
     // directly. A FINER neighbour (an island corner/edge: the region across the tangential face
     // is refined — by 2:1 exactly one level finer) is sampled by the volume average of the 2^Dim

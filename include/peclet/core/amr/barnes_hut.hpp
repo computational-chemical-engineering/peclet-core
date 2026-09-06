@@ -141,7 +141,7 @@ class BarnesHut {
   std::array<Coord, Dim> fineCoord(std::size_t p) const {
     std::array<Coord, Dim> c{};
     for (int d = 0; d < Dim; ++d) {
-      long v = static_cast<long>(std::floor((pos_[p][d] - geo_.origin[d]) / geo_.h0));
+      long v = static_cast<long>(std::floor((pos_[p][d] - geo_.origin[d]) / geo_.h0[d]));
       if (v < 0)
         v = 0;
       if (v >= static_cast<long>(fineExt_))
@@ -196,7 +196,9 @@ class BarnesHut {
       double dd = com[d] - x[d];
       r2 += dd * dd;
     }
-    const double width = geo_.h0 * static_cast<double>(Index(1) << L);
+    // Phase 3: the opening criterion is a single length, so it takes the COARSEST axis — the
+    // conservative reading (a box opens no later than the cube inscribing it).
+    const double width = geo_.hMax() * static_cast<double>(Index(1) << L);
     if (width * width < theta_ * theta_ * r2) {
       addPair(x, com, g.m, a);
       return;

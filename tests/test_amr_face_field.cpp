@@ -75,7 +75,7 @@ void run_test() {
   const long Nf = 1L << lmax;
   BO tg(IVec<3>{2, 2, 2}, lmax);
   AmrGeometry<3> geo;
-  geo.h0 = 1.0;
+  geo.setIsotropic(1.0);
   const double Rg = std::pow(0.125 * 3.0 / (4.0 * M_PI), 1.0 / 3.0) * (2 * Nf),
                cg = (2.0 * Nf) / 2.0;
   refineToSdf(

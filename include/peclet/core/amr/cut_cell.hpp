@@ -85,6 +85,9 @@ class AmrCutCell {
   static constexpr int OPP[6] = {1, 0, 3, 2, 5, 4};
 
   void init(const Octree& t, Real h0, Vec<3> origin = Vec<3>{}) {
+    init(t, detail::filledVec<3>(h0), origin);
+  }
+  void init(const Octree& t, const Vec<3>& h0, Vec<3> origin = Vec<3>{}) {
     t_ = &t;
     h0_ = h0;
     origin_ = origin;
@@ -140,7 +143,13 @@ class AmrCutCell {
   const std::vector<double>& rscaleRaw() const { return rscale_; }
   double idiag() const { return idiag_; }
   double mu() const { return mu_; }
-  double beta() const { return mu_ / (h0_ * h0_); }  ///< buildCutStencil's β (= mu_/h0²)
+  /// buildCutStencil's β PER AXIS (= mu_/h0_a²) — Phase 3, `docs/amr_anisotropic.md` §3/§4.
+  Vec<3> beta() const {
+    Vec<3> b{};
+    for (int d = 0; d < 3; ++d)
+      b[d] = mu_ / (h0_[d] * h0_[d]);
+    return b;
+  }
   bool hasAdv() const { return hasAdv_; }
   const std::vector<double>& advDiagRaw() const { return advDiag_; }
   const std::vector<double>& advCoefRaw() const { return advCoef_; }
@@ -151,7 +160,13 @@ class AmrCutCell {
   /// <0 solid). Operator A = idiag*I - beta*Laplacian (grid units, dx=1). `nsub`
   /// is the per-axis subsampling for the volume fraction κ.
   template <class SdfFn>
-  void build(SdfFn&& sdfFn, double idiag = 0.0, double beta = 1.0, int nsub = 4) {
+  void build(SdfFn&& sdfFn, double idiag, double beta, int nsub = 4) {
+    build(std::forward<SdfFn>(sdfFn), idiag, detail::filledVec<3>(beta), nsub);
+  }
+  /// Phase 3: `beta[a] = mu/h0_a²` (the octree twin of the structured fold's `beta_b`).
+  template <class SdfFn>
+  void build(SdfFn&& sdfFn, double idiag = 0.0, const Vec<3>& beta = detail::filledVec<3>(1.0),
+             int nsub = 4) {
     const Index n = numLeaves();
     const Index ng = numGhosts();
     // C/F-aware Laplacian provider for regular (non-cut) fluid cells: an AmrPoisson
@@ -164,7 +179,7 @@ class AmrCutCell {
       lap_.setFrameShift(frameShift_);
     }
     idiag_ = idiag;
-    mu_ = beta * h0_ * h0_;  // physical μ (operator A = idiag·I − μ∇²)
+    mu_ = beta[0] * h0_[0] * h0_[0];  // physical μ (operator A = idiag·I − μ∇²)
     sdfC_.assign(static_cast<std::size_t>(n + ng), 0.0);
     kappa_.assign(static_cast<std::size_t>(n), 0.0);
     fluid_.assign(static_cast<std::size_t>(n + ng), false);
@@ -207,14 +222,17 @@ class AmrCutCell {
       const double s = static_cast<double>(1L << ghostLv_[static_cast<std::size_t>(g)]);
       Vec<3> c{};
       for (int d = 0; d < 3; ++d)
-        c[d] = origin_[d] + (static_cast<double>(lo[d] + frameShift_[d]) + 0.5 * s) * h0_;
+        c[d] = origin_[d] + (static_cast<double>(lo[d] + frameShift_[d]) + 0.5 * s) * h0_[d];
       const double sc = sdfFn(c);
       sdfC_[static_cast<std::size_t>(n + g)] = sc;
       fluid_[static_cast<std::size_t>(n + g)] = sc > 0.0;
     }
 
     // Pass 2: build per-leaf stencil.
-    const double AC0 = idiag + 6.0 * beta;
+    // Phase 3: the diagonal is 2*(beta_x + beta_y + beta_z), parenthesised as ONE sum so a cubic
+    // octree reproduces the single correctly-rounded `6.0*beta` (Rule B).
+    const double AC0 = idiag + ((2.0 * beta[0] + 2.0 * beta[1]) + 2.0 * beta[2]);
+    const double betaArr[3] = {beta[0], beta[1], beta[2]};
     forLeaves([&](Index i) {  // own-leaf slots only (rung 3, Fable-pre-cleared: no
                               // neighbour-indexed stores in this body)
       if (!fluid_[static_cast<std::size_t>(i)]) {  // solid: identity row u=0
@@ -234,10 +252,10 @@ class AmrCutCell {
       cut_[static_cast<std::size_t>(i)] = anyGhost ? 1 : 0;
       double AC = AC0, off[6];
       for (int k = 0; k < 6; ++k)
-        off[k] = -beta;
+        off[k] = -beta[k / 2];  // face k belongs to axis k/2
       double rscale = 1.0, inhomCoef = 0.0;
       if (anyGhost)
-        buildCutStencil(sdfC_[static_cast<std::size_t>(i)], sdf_n, beta, AC0, AC, off, rscale,
+        buildCutStencil(sdfC_[static_cast<std::size_t>(i)], sdf_n, betaArr, AC0, AC, off, rscale,
                         inhomCoef);
       AC_[static_cast<std::size_t>(i)] = AC;
       for (int k = 0; k < 6; ++k)
@@ -587,7 +605,9 @@ class AmrCutCell {
  public:
   // Port of ibmFillEntry<0> + ibmModifyStencil for one cut cell (Dirichlet). Public + MORTON_HD so
   // the device assembler (momentum_assembly.hpp) runs the SAME per-cell stencil build on device.
-  MORTON_HD static void buildCutStencil(double sdf_c, const double sdf_n[6], double beta,
+  /// Phase 3: `beta[3]` — the viscous coefficient of each AXIS; face `k` uses `beta[k/2]`. On a
+  /// cubic octree all three are the same double and every expression below is the pre-Phase-3 one.
+  MORTON_HD static void buildCutStencil(double sdf_c, const double sdf_n[6], const double beta[3],
                                         double AC0, double& ACout, double off[6], double& rscaleOut,
                                         double& inhomOut) {
     bool ghost[6];
@@ -664,7 +684,7 @@ class AmrCutCell {
     constexpr int OPP_[6] = {1, 0, 3, 2, 5, 4};
     double aC = AC0 * descale, mod[6] = {0, 0, 0, 0, 0, 0}, inhom = 0.0;
     for (int k = 0; k < 6; ++k) {
-      double vnb = -beta;
+      double vnb = -beta[k / 2];
       aC += vnb * K[k];
       inhom += Nbc[k] * vnb;
       mod[k] += vnb * (descale * Mf[k] - 1.0);
@@ -672,7 +692,7 @@ class AmrCutCell {
     }
     ACout = aC;
     for (int k = 0; k < 6; ++k)
-      off[k] = -beta + mod[k];
+      off[k] = -beta[k / 2] + mod[k];
     rscaleOut = descale;
     inhomOut = inhom;
   }
@@ -684,7 +704,8 @@ class AmrCutCell {
     Vec<3> c{};
     for (int d = 0; d < 3; ++d)
       c[d] = origin_[d] +
-             (static_cast<double>(static_cast<long>(b[0][d]) + frameShift_[d]) + 0.5 * s) * h0_;
+             (static_cast<double>(static_cast<long>(b[0][d]) + frameShift_[d]) + 0.5 * s) *
+                 h0_[d];
     return c;
   }
 
@@ -692,17 +713,20 @@ class AmrCutCell {
   double volumeFraction(Index i, SdfFn&& sdfFn, int nsub) const {
     auto b = t_->bounds(i);
     double s = static_cast<double>(Index(1) << t_->level(i));
-    double w = s * h0_;
+    // Phase 3: the subsample grid spans the BOX leaf, so the step is per axis.
+    Vec<3> w{};
     int inside = 0, total = nsub * nsub * nsub;
     Vec<3> base{};
-    for (int d = 0; d < 3; ++d)
+    for (int d = 0; d < 3; ++d) {
+      w[d] = s * h0_[d];
       base[d] =
-          origin_[d] + static_cast<double>(static_cast<long>(b[0][d]) + frameShift_[d]) * h0_;
+          origin_[d] + static_cast<double>(static_cast<long>(b[0][d]) + frameShift_[d]) * h0_[d];
+    }
     for (int a = 0; a < nsub; ++a)
       for (int bb = 0; bb < nsub; ++bb)
         for (int cc2 = 0; cc2 < nsub; ++cc2) {
-          Vec<3> p{base[0] + (a + 0.5) / nsub * w, base[1] + (bb + 0.5) / nsub * w,
-                   base[2] + (cc2 + 0.5) / nsub * w};
+          Vec<3> p{base[0] + (a + 0.5) / nsub * w[0], base[1] + (bb + 0.5) / nsub * w[1],
+                   base[2] + (cc2 + 0.5) / nsub * w[2]};
           if (sdfFn(p) > 0.0)
             ++inside;
         }
@@ -717,7 +741,7 @@ class AmrCutCell {
   }
 
   const Octree* t_ = nullptr;
-  Real h0_ = 1.0;
+  Vec<3> h0_ = detail::filledVec<3>(1.0);
   Vec<3> origin_{};
   std::array<Coord, 3> fineExt_{};
   ExtResolver extResolve_;                     // distributed seam (forwarded into lap_ by build)

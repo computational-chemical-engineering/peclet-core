@@ -110,6 +110,12 @@ class DistributedFlowMultigrid {
   template <class OpenFn>
   void build(const DO& finest, double h0, OpenFn&& openFn,
              const LeafHalo<Dim, Bits>* shared0 = nullptr) {
+    build(finest, detail::filledVec<Dim>(h0), std::forward<OpenFn>(openFn), shared0);
+  }
+  /// Phase 3: the finest spacing per axis; every level inherits the aspect ratio (AM1).
+  template <class OpenFn>
+  void build(const DO& finest, const Vec<Dim>& h0, OpenFn&& openFn,
+             const LeafHalo<Dim, Bits>* shared0 = nullptr) {
     buildImpl(finest, h0, shared0);
     // Openness ladder: finest level directly from the world-coord openFn (local + ghost rows,
     // both exact); coarser levels by the exact single-rank child-face averaging for local rows
@@ -183,7 +189,7 @@ class DistributedFlowMultigrid {
     std::vector<Index> c2pHost;  // kept for the openness coarsening
   };
 
-  void buildImpl(const DO& finest, double h0, const LeafHalo<Dim, Bits>* shared0) {
+  void buildImpl(const DO& finest, const Vec<Dim>& h0, const LeafHalo<Dim, Bits>* shared0) {
     comm_ = finest.comm();
     h0_ = h0;
     levels_.clear();
@@ -386,7 +392,7 @@ class DistributedFlowMultigrid {
   }
 
   MPI_Comm comm_ = MPI_COMM_NULL;
-  double h0_ = 1.0;
+  Vec<Dim> h0_ = detail::filledVec<Dim>(1.0);
   std::array<long, Dim> shift_{};
   std::vector<std::unique_ptr<Level>> levels_;
   bool removeMean_ = false;

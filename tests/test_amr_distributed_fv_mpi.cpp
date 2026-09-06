@@ -64,7 +64,7 @@ void run() {
   const unsigned lmax = 2;
   const double h0 = 1.0 / (Nr * (1 << lmax));
   AmrGeometry<3> geo;
-  geo.h0 = h0;
+  geo.setIsotropic(h0);
   const std::array<bool, 3> per{true, true, true};
 
   // ----- distributed (COMM_WORLD) -----

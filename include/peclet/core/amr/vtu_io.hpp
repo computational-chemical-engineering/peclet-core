@@ -79,7 +79,7 @@ void writeVtu(const std::string& path, const BlockOctree<Dim, Bits>& t, const Am
     for (int c = 0; c < NP; ++c) {
       Real xyz[3] = {0, 0, 0};
       for (int d = 0; d < Dim; ++d)
-        xyz[d] = geo.origin[d] + static_cast<Real>(lo[d] + corners[c][d] * sz) * geo.h0;
+        xyz[d] = geo.origin[d] + static_cast<Real>(lo[d] + corners[c][d] * sz) * geo.h0[d];
       f << xyz[0] << ' ' << xyz[1] << ' ' << xyz[2] << '\n';
     }
   }

@@ -100,7 +100,7 @@ void run() {
   const unsigned lmax = std::getenv("SEAM_LMAX") ? (unsigned)std::atoi(std::getenv("SEAM_LMAX")) : 2;
   const double h0 = 1.0 / (Nr * (1 << lmax));
   AmrGeometry<3> geo;
-  geo.h0 = h0;
+  geo.setIsotropic(h0);
   const std::array<bool, 3> per{true, true, true};
   int rank = 0, size = 1;
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);

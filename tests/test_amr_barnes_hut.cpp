@@ -53,7 +53,7 @@ void run() {
   AmrGeometry<3> geo;  // origin 0, h0 1 ... but box must span the particles
   geo.origin = {0.0, 0.0, 0.0};
   const unsigned lmax = 6;  // 64^3 fine cells over the unit box
-  geo.h0 = 1.0 / static_cast<double>(1u << lmax);
+  geo.setIsotropic(1.0 / static_cast<double>(1u << lmax));
 
   // Direct reference.
   BarnesHut<3> bh;

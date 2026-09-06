@@ -73,11 +73,11 @@ BO baseMesh() {
 
 void run() {
   AmrGeometry<3> geo;
-  geo.h0 = 1.0 / kN;
+  geo.setIsotropic(1.0 / kN);
 
   const double U = 1.0;  // x-velocity (world/time), divergence-free
   auto vel = [&](const Vec<3>&, int axis) { return axis == 0 ? U : 0.0; };
-  const double hFine = geo.h0;        // finest spacing
+  const double hFine = geo.hMin();    // finest spacing (Phase 3: h0 is per axis)
   const double dt = 0.4 * hFine / U;  // CFL
   const int steps = 16, adaptEvery = 4;
   const double cx0 = 0.3;

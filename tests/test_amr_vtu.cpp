@@ -57,7 +57,7 @@ void run() {
     lvl[i] = static_cast<double>(t.level(i));
   AmrGeometry<3> geo;
   geo.origin = {1.0, -2.0, 0.5};
-  geo.h0 = 0.25;
+  geo.setIsotropic(0.25);
 
   const std::string path = "amr_test.vtu";
   writeVtu(path, t, geo, "level", lvl);

@@ -51,8 +51,13 @@ class AmrPoisson {
 
   AmrPoisson() = default;
   AmrPoisson(const Octree& t, Real h0) { init(t, h0); }
+  AmrPoisson(const Octree& t, const Vec<Dim>& h0) { init(t, h0); }
 
-  void init(const Octree& t, Real h0) {
+  /// Cubic-cell overload — the pre-Phase-3 spelling, and exactly the per-axis one with all three
+  /// spacings equal (`docs/amr_anisotropic.md` §2).
+  void init(const Octree& t, Real h0) { init(t, detail::filledVec<Dim>(h0)); }
+
+  void init(const Octree& t, const Vec<Dim>& h0) {
     t_ = &t;
     h0_ = h0;
     alpha_.clear();
@@ -177,10 +182,10 @@ class AmrPoisson {
           Vec<Dim> fc{};
           for (int d = 0; d < Dim; ++d)
             fc[d] = (d == axis)
-                        ? origin_[d] + static_cast<Real>(plane) * h0_
+                        ? origin_[d] + static_cast<Real>(plane) * h0_[d]
                         : origin_[d] + (static_cast<Real>(lo[d] + frameShift_[d]) +
                                         0.5 * static_cast<Real>(s)) *
-                                           h0_;
+                                           h0_[d];
           double a = static_cast<double>(openFn(fc, axis));
           a = a < 0.0 ? 0.0 : (a > 1.0 ? 1.0 : a);
           alpha_[static_cast<std::size_t>(row) * kFaces + faceIndex(axis, dir)] = a;
@@ -230,9 +235,11 @@ class AmrPoisson {
     auto b = t_->bounds(i);
     const auto& lo = b[0];
     const Coord si = Coord(Coord(1) << t_->level(i));
-    const double wall = areaOf(si) / (0.5 * static_cast<Real>(si) * h0_);
     double s = 0.0;
-    for (int axis = 0; axis < Dim; ++axis)
+    for (int axis = 0; axis < Dim; ++axis) {
+      // Phase 3: A_f/d_f of a BOX cell — the face area normal to `axis` over the half width along
+      // `axis`. Identical to the old single `wall` when the three spacings are equal.
+      const double wall = areaOf(si, axis) / (0.5 * static_cast<Real>(si) * h0_[axis]);
       for (int dir = -1; dir <= 1; dir += 2) {
         const long pc = (dir > 0) ? static_cast<long>(lo[axis]) + static_cast<long>(si)
                                   : static_cast<long>(lo[axis]) - 1;
@@ -243,15 +250,23 @@ class AmrPoisson {
         else if (immersedWall_)
           s += (1.0 - faceOpenness(i, axis, dir)) * wall;  // immersed no-slip wall (solid part)
       }
+    }
     return s;
   }
 
-  Real cellWidth(Index i) const { return h0_ * static_cast<Real>(Index(1) << levelOf(i)); }
+  /// Cell width along `axis` (Phase 3: per axis).
+  Real cellWidth(Index i, int axis) const {
+    return h0_[axis] * static_cast<Real>(Index(1) << levelOf(i));
+  }
+  /// The cell width when the octree is CUBIC. Kept because the whole ghost-projection /
+  /// cut-cell / cf-scheme family is written on "the" cell width; on an anisotropic octree the
+  /// per-axis form above is the one to use, and the callers that must were converted with it.
+  Real cellWidth(Index i) const { return h0_[0] * static_cast<Real>(Index(1) << levelOf(i)); }
   Real cellVolume(Index i) const {
-    Real w = cellWidth(i);
+    const Real f = static_cast<Real>(Index(1) << levelOf(i));
     Real v = 1;
     for (int d = 0; d < Dim; ++d)
-      v *= w;
+      v *= h0_[d] * f;
     return v;
   }
 
@@ -282,7 +297,7 @@ class AmrPoisson {
         if (Lj >= Li) {
           // same level or coarser: one neighbour, shared face = this cell's face.
           // Openness lives on the finer side (here, this cell i).
-          fn(j, coeff(si, Coord(Coord(1) << Lj)), axis, faceOpenness(i, axis, dir));
+          fn(j, coeff(si, Coord(Coord(1) << Lj), axis), axis, faceOpenness(i, axis, dir));
         } else {
           // finer neighbour: 2^(Dim-1) sub-faces, each the fine face area.
           const Coord sj = Coord(si >> 1);
@@ -303,7 +318,7 @@ class AmrPoisson {
             // (si+sj)/2 — same value the fine side computes, so the operator is
             // symmetric / conservative across the 2:1 interface. Openness lives on
             // the finer side (the neighbour jj), its face toward i is -dir.
-            fn(jj, coeff(si, sj), axis, faceOpenness(jj, axis, -dir));
+            fn(jj, coeff(si, sj, axis), axis, faceOpenness(jj, axis, -dir));
           }
         }
       }
@@ -332,7 +347,8 @@ class AmrPoisson {
           continue;  // unresolved during the distributed discovery fixpoint only
         if (Lj >= Li) {
           const Coord sj = Coord(Coord(1) << Lj);
-          fn(j, axis, dir, areaOf(si), 0.5 * (static_cast<Real>(si) + static_cast<Real>(sj)) * h0_,
+          fn(j, axis, dir, areaOf(si, axis),
+             0.5 * (static_cast<Real>(si) + static_cast<Real>(sj)) * h0_[axis],
              faceOpenness(i, axis, dir));
         } else {
           const Coord sj = Coord(si >> 1);
@@ -349,8 +365,8 @@ class AmrPoisson {
             const Index jj = probeSlot(q).first;
             if (jj < 0)
               continue;
-            fn(jj, axis, dir, areaOf(sj),
-               0.5 * (static_cast<Real>(si) + static_cast<Real>(sj)) * h0_,
+            fn(jj, axis, dir, areaOf(sj, axis),
+               0.5 * (static_cast<Real>(si) + static_cast<Real>(sj)) * h0_[axis],
                faceOpenness(jj, axis, -dir));
           }
         }
@@ -377,16 +393,18 @@ class AmrPoisson {
     const double uc = u[static_cast<std::size_t>(coarse)];
     const std::array<long, Dim> bc = loOf(coarse);  // ghost-safe (block-local longs)
     const std::array<long, Dim> bf = loOf(fine);
-    const double H = cellWidth(coarse);
     const double sc = static_cast<double>(Index(1) << levelOf(coarse));
     const double sf = static_cast<double>(Index(1) << levelOf(fine));
     double val = uc;
     for (int t = 0; t < Dim; ++t) {
       if (t == axis)
         continue;
+      // Phase 3: the tangential offset AND the differencing width are the spacings of the
+      // TANGENTIAL axis `t` (they were one `H` when the cells were cubes).
+      const double H = cellWidth(coarse, t);
       const double dt = ((static_cast<double>(bf[t]) + 0.5 * sf) -
                          (static_cast<double>(bc[t]) + 0.5 * sc)) *
-                        h0_;
+                        h0_[t];
       Index cp = periodicNeighbor(coarse, t, +1);
       Index cm = periodicNeighbor(coarse, t, -1);
       if (cp < 0 || cm < 0)
@@ -569,7 +587,9 @@ class AmrPoisson {
   }
 
   const Octree& octree() const { return *t_; }
-  Real h0() const { return h0_; }
+  const Vec<Dim>& h0() const { return h0_; }
+  /// The single spacing of a CUBIC octree (`h0()[0]`); every anisotropic path uses `h0()`.
+  Real h0Scalar() const { return h0_[0]; }
   /// Per-axis fine-grid extent (brick·2^lmax) — the periodic wrap modulus. Needed by the device
   /// assembler to reproduce `wrap()` / the domain-boundary test on device.
   const std::array<Coord, Dim>& fineExt() const { return fineExt_; }
@@ -581,20 +601,25 @@ class AmrPoisson {
     return static_cast<Coord>(((c % e) + e) % e);
   }
   // A_f / d_f (physical) for a cell of width-units `si` next to one of `sj`.
-  Real coeff(Coord si, Coord sj) const {
-    Real dist = 0.5 * (static_cast<Real>(si) + static_cast<Real>(sj)) * h0_;
-    return areaOf(si < sj ? si : sj) / dist;
+  /// A_f/d_f across a face normal to `axis` between cells of width-units `si`, `sj`.
+  Real coeff(Coord si, Coord sj, int axis) const {
+    Real dist = 0.5 * (static_cast<Real>(si) + static_cast<Real>(sj)) * h0_[axis];
+    return areaOf(si < sj ? si : sj, axis) / dist;
   }
-  // Physical area of a face of a cell of width-units `s`: (s*h0)^(Dim-1).
-  Real areaOf(Coord s) const {
+  Real coeff(Coord si, Coord sj) const { return coeff(si, sj, 0); }
+  // Physical area of a face NORMAL TO `axis` of a cell of width-units `s`: prod_{d != axis} s*h0_d.
+  Real areaOf(Coord s, int axis) const {
     Real area = 1;
-    for (int d = 0; d < Dim - 1; ++d)
-      area *= static_cast<Real>(s) * h0_;
+    for (int d = 0; d < Dim; ++d)
+      if (d != axis)
+        area *= static_cast<Real>(s) * h0_[d];
     return area;
   }
+  /// Cubic-octree face area (`areaOf(s, 0)`); anisotropic callers pass the axis.
+  Real areaOf(Coord s) const { return areaOf(s, 0); }
 
   const Octree* t_ = nullptr;
-  Real h0_ = 1.0;
+  Vec<Dim> h0_ = detail::filledVec<Dim>(1.0);
   std::array<Coord, Dim> fineExt_{};
   Vec<Dim> origin_{};
   ExtResolver extResolve_;                    // distributed seam: out-of-block probe resolver
@@ -617,7 +642,11 @@ class AmrMultigrid {
 
   /// Build the hierarchy from a finest octree by uniform coarsening until a single
   /// leaf remains (or no full sibling group can be merged).
-  void build(const Octree& finest, Real h0) {
+  void build(const Octree& finest, Real h0) { build(finest, detail::filledVec<Dim>(h0)); }
+  /// Phase 3: every level shares the same PER-AXIS finest spacing — a coarse leaf carries a
+  /// higher `level`, and `cellWidth = h0[d]*2^level` already encodes its width on each axis, so
+  /// the root aspect ratio is inherited by the whole hierarchy (`docs/amr_anisotropic.md` AM1).
+  void build(const Octree& finest, const Vec<Dim>& h0) {
     levels_.clear();
     levels_.push_back(finest);
     for (;;) {

@@ -22,22 +22,89 @@
 
 namespace peclet::core::amr {
 
+namespace detail {
+/// `Vec<Dim>` with every component set to `v` (C++ has no aggregate-fill initializer).
+template <int Dim>
+inline Vec<Dim> filledVec(Real v) {
+  Vec<Dim> x{};
+  for (int d = 0; d < Dim; ++d)
+    x[d] = v;
+  return x;
+}
+}  // namespace detail
+
 /// World-space placement of a block-local octree: fine coordinate (0,..,0) sits at
-/// `origin`, and one level-0 fine cell is `h0` wide in every axis.
+/// `origin`, and one level-0 fine cell is `h0[d]` wide on axis `d`.
+///
+/// **`h0` is PER AXIS** (Phase 3 of `suite/docs/PHYSICAL_UNITS_PLAN.md`; the design is
+/// `docs/amr_anisotropic.md`). The octree refines by 2 on every axis, so a level-`l` leaf is
+/// `h0[d] * 2^l` wide on axis `d` and **every level inherits the root aspect ratio** — the Morton
+/// codes, `bounds()`, `level()`, the halo, the ORB and the 2:1 balance are integer fine-unit
+/// arithmetic and know nothing about it.
+///
+/// `leafSize()` and `lowerCorner()` are the two funnels every world-coordinate computation goes
+/// through; making `h0` a `Vec` breaks every scalar caller at COMPILE time, which is the inventory
+/// mechanism the port relies on. Cubic geometry is `AmrGeometry::isotropicAt(origin, h)`.
 template <int Dim>
 struct AmrGeometry {
   Vec<Dim> origin{};
-  Real h0 = 1.0;
+  Vec<Dim> h0 = detail::filledVec<Dim>(1.0);
 
-  /// World width of a leaf at `level` (covers 2^level fine cells).
-  Real leafSize(unsigned level) const { return h0 * static_cast<Real>(Index(1) << level); }
+  /// Cubic-cell convenience: the pre-Phase-3 `{origin, h}` construction.
+  static AmrGeometry isotropicAt(const Vec<Dim>& o, Real h) {
+    AmrGeometry g;
+    g.origin = o;
+    g.h0 = detail::filledVec<Dim>(h);
+    return g;
+  }
+  /// Set all axes to one spacing (the cubic case), in place.
+  void setIsotropic(Real h) { h0 = detail::filledVec<Dim>(h); }
+
+  Real hMin() const {
+    Real m = h0[0];
+    for (int d = 1; d < Dim; ++d)
+      m = h0[d] < m ? h0[d] : m;
+    return m;
+  }
+  Real hMax() const {
+    Real m = h0[0];
+    for (int d = 1; d < Dim; ++d)
+      m = h0[d] > m ? h0[d] : m;
+    return m;
+  }
+  bool isotropic() const {
+    for (int d = 1; d < Dim; ++d)
+      if (h0[d] != h0[0])
+        return false;
+    return true;
+  }
+  /// World volume of a level-0 fine cell.
+  Real cellVolume() const {
+    Real v = h0[0];
+    for (int d = 1; d < Dim; ++d)
+      v *= h0[d];
+    return v;
+  }
+
+  /// World width of a leaf at `level` on axis `d` (it covers 2^level fine cells).
+  Real leafSize(unsigned level, int d) const {
+    return h0[d] * static_cast<Real>(Index(1) << level);
+  }
+  /// World widths of a leaf at `level`, per axis.
+  Vec<Dim> leafSize(unsigned level) const {
+    Vec<Dim> s{};
+    const Real f = static_cast<Real>(Index(1) << level);
+    for (int d = 0; d < Dim; ++d)
+      s[d] = h0[d] * f;
+    return s;
+  }
 
   /// World coordinate of a leaf's lower corner, given its integer lower bound (fine units).
   template <class Coord>
   Vec<Dim> lowerCorner(const std::array<Coord, Dim>& lo) const {
     Vec<Dim> p{};
     for (int d = 0; d < Dim; ++d)
-      p[d] = origin[d] + static_cast<Real>(lo[d]) * h0;
+      p[d] = origin[d] + static_cast<Real>(lo[d]) * h0[d];
     return p;
   }
 
@@ -46,8 +113,9 @@ struct AmrGeometry {
   Vec<Dim> center(const std::array<std::array<Coord, Dim>, 2>& b) const {
     Vec<Dim> p{};
     for (int d = 0; d < Dim; ++d)
-      p[d] = origin[d] +
-             (static_cast<Real>(b[0][d]) + 0.5 * (static_cast<Real>(b[1][d] - b[0][d]) + 1.0)) * h0;
+      p[d] = origin[d] + (static_cast<Real>(b[0][d]) +
+                          0.5 * (static_cast<Real>(b[1][d] - b[0][d]) + 1.0)) *
+                             h0[d];
     return p;
   }
 };

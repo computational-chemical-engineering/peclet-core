@@ -62,6 +62,9 @@ class AmrFlow {
   using Octree = BlockOctree<3, Bits>;
 
   void init(const Octree& t, Real h0, Vec<3> origin = Vec<3>{}) {
+    init(t, detail::filledVec<3>(h0), origin);
+  }
+  void init(const Octree& t, const Vec<3>& h0, Vec<3> origin = Vec<3>{}) {
     t_ = &t;
     h0_ = h0;
     origin_ = origin;
@@ -133,7 +136,10 @@ class AmrFlow {
   template <class SdfFn>
   void setSolid(SdfFn&& sdfFn) {
     mom_.init(*t_, h0_, origin_);
-    mom_.build(sdfFn, /*idiag=*/rho_ / dt_, /*beta=*/mu_ / (h0_ * h0_));
+    Vec<3> betaA{};
+    for (int d = 0; d < 3; ++d)
+      betaA[d] = mu_ / (h0_[d] * h0_[d]);
+    mom_.build(sdfFn, /*idiag=*/rho_ / dt_, /*beta=*/betaA);
     pres_.init(*t_, h0_);
     pres_.setOrigin(origin_);
     presMG_.build(*t_, h0_);
@@ -733,14 +739,14 @@ class AmrFlow {
       if (sdfFn(fc) <= 0.0)
         return 0.0;  // center gate (kept from order 1; see flow ccFaceOpenMS)
       const int t1 = (axis + 1) % 3, t2 = (axis + 2) % 3;
-      const double e = 0.5 * h0_;
+      const double e1 = 0.5 * h0_[t1], e2 = 0.5 * h0_[t2];
       auto at = [&](double d1, double d2) {
         Vec<3> p = fc;
         p[t1] += d1;
         p[t2] += d2;
         return sdfFn(p);
       };
-      const double c00 = at(-e, -e), c10 = at(e, -e), c11 = at(e, e), c01 = at(-e, e);
+      const double c00 = at(-e1, -e2), c10 = at(e1, -e2), c11 = at(e1, e2), c01 = at(-e1, e2);
       const double cc = sdfFn(fc);
       const double frac = 0.25 * (triFrac(c00, c10, cc) + triFrac(c10, c11, cc) +
                                   triFrac(c11, c01, cc) + triFrac(c01, c00, cc));
@@ -752,15 +758,15 @@ class AmrFlow {
     Vec<3> g{};
     for (int d = 0; d < 3; ++d) {
       Vec<3> pp = fc, pm = fc;
-      pp[d] += h0_;
-      pm[d] -= h0_;
-      g[d] = (sdfFn(pp) - sdfFn(pm)) / (2.0 * h0_);
+      pp[d] += h0_[d];
+      pm[d] -= h0_[d];
+      g[d] = (sdfFn(pp) - sdfFn(pm)) / (2.0 * h0_[d]);
     }
     double gmag = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
     if (gmag < 1e-6)
       gmag = 1e-6;
     int t1 = (axis + 1) % 3, t2 = (axis + 2) % 3;
-    double denom = (std::fabs(g[t1]) + std::fabs(g[t2])) / gmag * h0_;
+    double denom = (std::fabs(g[t1]) * h0_[t1] + std::fabs(g[t2]) * h0_[t2]) / gmag;
     if (denom < 1e-9)
       denom = 1e-9;
     double frac = 0.5 + sd / denom;
@@ -768,7 +774,7 @@ class AmrFlow {
   }
 
   const Octree* t_ = nullptr;
-  Real h0_ = 1.0;
+  Vec<3> h0_ = detail::filledVec<3>(1.0);
   Vec<3> origin_{};
   double rho_ = 1.0, mu_ = 1.0, dt_ = 1e6;
   bool advect_ = false;

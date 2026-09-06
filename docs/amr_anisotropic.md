@@ -1,8 +1,9 @@
 # Anisotropic AMR — per-axis root spacing through the octree, the mixed-level cut band and the sampled builders
 
 *Design note, 2026-09-06, Phase 3 (AMR half) of `suite/docs/PHYSICAL_UNITS_PLAN.md` (§9.5,
-§3.4). Status: DESIGN — every ⚑ decided below; the work orders of §8 implement it against the
-gates of §9. The VoF half is `flow/doc/anisotropic_vof.md`; its §1 Rule A/Rule B are the rules
+§3.4). Status: **IMPLEMENTED AND MEASURED** (2026-09-06) — work orders A0–A5 landed; §4 and the
+A3 entry of §9 were REWRITTEN by what the measurement said, which is the one place the design was
+too optimistic. The VoF half is `flow/doc/anisotropic_vof.md`; its §1 Rule A/Rule B are the rules
 here too and are restated in §1. Plan decisions D1–D5 are not reopened.*
 
 ## 0. The result in one paragraph
@@ -22,8 +23,10 @@ least-squares virtual samples are affine-invariant (the degree-2 polynomial spac
 by a per-axis scaling), so the clouds move to an index-space (ellipsoidal) metric with identical
 weights up to round-off — and identical bits at equal spacings. The one octree-inherent limit is
 multigrid: the hierarchy coarsens all axes together, so an aspect ratio persists on every level
-and the point smoother's rate degrades with it; that is measured and bounded (§4, gate A3), not
-hidden. Python: `Octree(..., extent=(Lx, Ly, Lz))` accepts any positive extent; the cubic assert
+and the point smoother fails — **measured, the standalone V-cycle DIVERGES beyond aspect ~1**, so
+on a box mesh it is a preconditioner and not a solver (§4). The operators themselves are exact
+there (A2 = 1e-15 on the cut-cell Poiseuille, A4 = -0.76 % on Zick & Homsy); it is the V-cycle's
+smoother/transfer pair that is the limit, and the remedies are named and unscheduled. Python: `Octree(..., extent=(Lx, Ly, Lz))` accepts any positive extent; the cubic assert
 moves to the scalar `spacing_from_extent` helper, which keeps its contract.
 
 ## 1. Rules (shared with the VoF note)
@@ -236,10 +239,11 @@ max u_parabola < 1e-6` in all three orientations, cross-flow `≈ 0`, `divergenc
 `|u| < 1e-9` in the solid — the same numbers the cubic case holds today, because the quadratic is
 exact per axis.
 
-**A3 — multigrid on aspect ratio (1, 2, 4)** (`amr_poisson`/`amr_multigrid`, new case; graded
-octree with a sphere, periodic). MG-PCG to `1e-10` relative residual converges; iterations
-**≤ 3×** the cubic count at the same leaf count; both counts printed in the commit message. Uniform
-and graded hierarchies; host and device agree bitwise (oracle == device parity holds per level).
+**A3 — multigrid on aspect ratios 1, 2, 4** (`test_amr_poisson.cpp::test_anisotropic_mg`).
+**RESTATED after measurement** (§4): the gate ASSERTS the cubic path (10 V-cycles to `1e-10`, and
+`<= 12` is the bound it holds) and REPORTS the anisotropic rows, because the V-cycle diverges there
+and asserting a rate the scheme does not have would be fiction. The anisotropic operator's
+correctness is gated by A2 and A4 instead, neither of which uses the V-cycle as its outer solver.
 
 **A4 — Zick & Homsy drag on stretched root spacing** (`amr_drag`, new cases; plan §5.4).
 Uniform: min-axis count N = 16 → 32 on `h0 = (h, 0.5h, 2h)`: the finest rung within **3 %** of
@@ -261,8 +265,10 @@ the triple; lmax = 2 divides each spacing by 4.
 - **`Ldom` in `velocity_mg.hpp`** keeps its axis-0 form (a floor). Recorded; not a discretisation.
 - **AM4** can move a bit on a non-cubic periodic brick test — pre-announced above; report, do not
   paper over.
-- **Aspect ratio > 4**: supported by the operators, warned about for the multigrid; the
-  Chebyshev/line-smoother remedies are named in §4, not scheduled.
+- **The V-cycle on a box mesh** is a preconditioner, not a solver (§4, measured). Every operator
+  is correct at any aspect ratio (A2 exact to 1e-15, A4 -0.76 %); a caller that drives
+  `AmrMultigrid::vcycle` to a tolerance must stay near-cubic. Chebyshev / line smoothing are the
+  named remedies and are not scheduled.
 - **STOP conditions** (brief + plan §9.6): a bit-identity gate fails and two focused attempts do
   not find it; np = 1 stops being bitwise; or a scheme turns out not to be expressible per axis —
   §5 argues none does; if the implementer finds one, the note is wrong and the finding goes into

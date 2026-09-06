@@ -309,7 +309,7 @@ void test_graded_ghostproj() {
   auto makeTree = [&](double band) {
     BO t(IVec<3>{1, 1, 1}, 5);
     AmrGeometry<3> geo;
-    geo.h0 = 1.0;
+    geo.setIsotropic(1.0);
     refineToSdf(t, geo, sdf, /*target*/ 0, band, /*balance*/ true);
     return t;
   };
@@ -394,7 +394,7 @@ void test_seam_sampled() {
   {  // (a) uniform band: device sampled == device classic
     BO t(IVec<3>{1, 1, 1}, 5);
     AmrGeometry<3> geo;
-    geo.h0 = 1.0;
+    geo.setIsotropic(1.0);
     refineToSdf(t, geo, sdf, /*target*/ 0, /*band*/ 3.0, /*balance*/ true);
     const auto uc = runDev(t, false);
     const auto us = runDev(t, true);
@@ -488,7 +488,7 @@ void test_graded_cf_quadratic() {
   };
   BO t(IVec<3>{1, 1, 1}, 5);
   AmrGeometry<3> geo;
-  geo.h0 = 1.0;
+  geo.setIsotropic(1.0);
   refineToSdf(t, geo, sdf, /*target*/ 0, /*band*/ 3.0, /*balance*/ true);
   PECLET_CORE_CHECK(t.numLeaves() < N * N * N);
 
@@ -646,7 +646,7 @@ void test_adapt_midrun() {
     return std::sqrt(dx * dx + dy * dy + dz * dz) - R;
   };
   AmrGeometry<3> geo;
-  geo.h0 = 1.0;
+  geo.setIsotropic(1.0);
   auto usup = [&](const BO& t, const AmrFlow<21>& fl) {
     const auto u = fl.velocity(0);
     double s = 0;

@@ -675,10 +675,13 @@ MomResult runMomDepth(unsigned depth) {
     }
     if (!anyGhost)
       continue;  // virtually clean: regular-row target, out of this instrument's scope
-    const double beta = mu / (h * h);
+    // Phase 3: `beta` per axis (this study runs on a CUBIC octree, so all three are equal).
+    const double b1 = mu / (h * h);
+    const double beta[3] = {b1, b1, b1};
     double ACv, offv[6], rsv = 1.0, inh = 0.0;
-    AmrCutCell<21>::buildCutStencil(sdfSphere(c), sdfNv, beta, idiag + 6.0 * beta, ACv, offv, rsv,
-                                    inh);
+    AmrCutCell<21>::buildCutStencil(sdfSphere(c), sdfNv, beta,
+                                    idiag + ((2.0 * beta[0] + 2.0 * beta[1]) + 2.0 * beta[2]), ACv,
+                                    offv, rsv, inh);
     double virt = ACv * fv[static_cast<std::size_t>(i)], virtLs = virt;
     for (int k = 0; k < 6; ++k) {
       virt += offv[k] * fVirt[k];

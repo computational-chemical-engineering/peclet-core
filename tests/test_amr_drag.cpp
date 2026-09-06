@@ -66,6 +66,49 @@ double dragK(unsigned L, double phi) {
   return f * N * N * N / (6.0 * M_PI * mu * R * umean);
 }
 
+// PHASE 3 GATE A4 (core/docs/amr_anisotropic.md §9): the SAME physical problem — a simple-cubic
+// sphere array in a CUBIC periodic box — resolved on a BOX mesh. The brick carries different cell
+// counts per axis so the physical box stays cubic while the cells do not:
+//
+//     h0 = (1, 1/2, 1) and brick*2^L = (N, 2N, N)  ->  extent = (N, N, N)
+//
+// Everything downstream (the FV Laplacian, the momentum fold's beta, the aperture probes, the
+// ghost/openness classification, the MG hierarchy) has to carry its own axis's spacing or the drag
+// moves. `phi` and `R` are physical, so the reference is the SAME Zick & Homsy number.
+double dragKAniso(unsigned L, double phi, const Vec<3>& h0, const IVec<3>& brick) {
+  BO t(brick, L);
+  for (unsigned k = 0; k < L; ++k)
+    t.refineIf([](Code, unsigned) { return true; });
+  double ext[3];
+  for (int d = 0; d < 3; ++d)
+    ext[d] = static_cast<double>(brick[d]) * static_cast<double>(1L << L) * h0[d];
+  const double S = ext[0];  // the physical box side (cubic by construction of the caller)
+  const double R = std::pow(phi * 3.0 / (4.0 * M_PI), 1.0 / 3.0) * S;
+  const double mu = 0.1, f = 1e-3, dt = 60.0;
+  const double c[3] = {0.5 * ext[0], 0.5 * ext[1], 0.5 * ext[2]};
+  oracle::AmrFlow<21> fl;
+  fl.init(t, h0, Vec<3>{0, 0, 0});
+  fl.setDensity(1.0);
+  fl.setViscosity(mu);
+  fl.setDt(dt);
+  fl.setBodyForce(f, 0, 0);
+  fl.setAdvection(false);         // Stokes
+  fl.setGhostProjection(false);   // as the cubic gate: aperture-calibrated tolerances
+  fl.setSolid([&](const Vec<3>& p) {
+    const double dx = p[0] - c[0], dy = p[1] - c[1], dz = p[2] - c[2];
+    return std::sqrt(dx * dx + dy * dy + dz * dz) - R;  // <0 inside the sphere (solid)
+  });
+  const Index n = t.numLeaves();
+  for (int it = 0; it < 100; ++it)
+    fl.step(/*momSweeps=*/120, /*presIters=*/6, 2);
+  double s = 0;
+  const auto& u = fl.velocity(0);
+  for (Index i = 0; i < n; ++i)
+    s += u[static_cast<std::size_t>(i)];
+  const double umean = s / n;  // every leaf has the same volume on a uniform octree
+  return f * ext[0] * ext[1] * ext[2] / (6.0 * M_PI * mu * R * umean);
+}
+
 void run() {
   const double phi = 0.125;
   const double kZH = 4.292;  // Zick & Homsy (1982), SC, phi=0.125
@@ -86,7 +129,7 @@ void run() {
   const double mu = 0.1, f = 1e-3, c = Nf / 2.0;
   BO t(IVec<3>{brick, brick, brick}, lmax);
   AmrGeometry<3> geo;
-  geo.h0 = 1.0;
+  geo.setIsotropic(1.0);
   peclet::core::geom::Sphere sph{{c, c, c}, R};
   refineToSdf(
       t, geo, [&](const Vec<3>& p) { return -sph.eval(p); }, /*target*/ 0, /*band*/ 2.5, true);
@@ -117,6 +160,20 @@ void run() {
   PECLET_CORE_CHECK(std::isfinite(usup) && std::fabs(usup) < 1.0);  // STABLE (no blow-up)
   double kg = f * nuni / (6.0 * M_PI * mu * R * usup);
   PECLET_CORE_CHECK(std::fabs(kg - kZH) / kZH < 0.10);  // graded drag within ~10% of Z&H
+
+  // ---- PHASE 3 GATE A4: the same drag on a BOX mesh -----------------------------------------
+  // h0 = (1, 1/2, 1) with brick (1,2,1): the physical box is the SAME cube, the cells are not.
+  {
+    const double kA = dragKAniso(3, phi, Vec<3>{1.0, 0.5, 1.0}, IVec<3>{1, 2, 1});
+    const double errA = std::fabs(kA - kZH) / kZH;
+    std::printf("A4 anisotropic Z&H: h0 = (1, 0.5, 1), cells = (8, 16, 8), K = %.4f vs %.4f "
+                "(%.2f %%); the CUBIC rung of the same box reads %.4f (%.2f %%)\n",
+                kA, kZH, 100.0 * (kA / kZH - 1.0), k, 100.0 * (k / kZH - 1.0));
+    PECLET_CORE_CHECK(kA > 0);
+    PECLET_CORE_CHECK(errA < 0.03);
+    // Refining ONE axis must not make the answer worse than the cubic rung it refines.
+    PECLET_CORE_CHECK(errA < 1.5 * err + 1e-3);
+  }
 }
 
 }  // namespace

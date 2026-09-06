@@ -468,7 +468,11 @@ class AmrFlow {
  public:
   using Octree = BlockOctree<3, Bits>;
 
+  /// Cubic-cell overload — the pre-Phase-3 spelling (`docs/amr_anisotropic.md` §2).
   void init(const Octree& t, Real h0, Vec<3> origin = Vec<3>{}) {
+    init(t, detail::filledVec<3>(h0), origin);
+  }
+  void init(const Octree& t, const Vec<3>& h0, Vec<3> origin = Vec<3>{}) {
     t_ = &t;
     h0_ = h0;
     origin_ = origin;
@@ -486,6 +490,15 @@ class AmrFlow {
   void initMpi(DistributedOctree<3, Bits>& d) {
     init(d.local(), d.h0(), d.globalGeometry().origin);
     dist_ = &d;
+  }
+  /// The viscous coefficient of each derivative axis, `mu/h0_a^2` — the octree twin of the
+  /// structured solver's `beta_b = mu' w_b` (Phase 3, `docs/amr_anisotropic.md` §4). Every entry
+  /// is the same double on a cubic octree.
+  Vec<3> betaPerAxis() const {
+    Vec<3> b{};
+    for (int d = 0; d < 3; ++d)
+      b[d] = mu_ / (h0_[d] * h0_[d]);
+    return b;
   }
   void setDensity(double rho) { rho_ = rho; }
   void setViscosity(double mu) { mu_ = mu; }
@@ -687,7 +700,7 @@ class AmrFlow {
       allred_ = {};
       momSolver_.setDistributed({}, {}, 0);
       pcg_.setDistributed({}, {}, 0);
-      mom_.build(sdfFn, /*idiag=*/rho_ / dt_, /*beta=*/mu_ / (h0_ * h0_));
+      mom_.build(sdfFn, /*idiag=*/rho_ / dt_, /*beta=*/betaPerAxis());
     }
     profPhase("mom.build (SDF+cut stencils)");
     GhostOverlay hov;
@@ -1695,7 +1708,7 @@ class AmrFlow {
     pres_.setFrameShift(shiftD_);
     pres_.setResolver(resv);
     const Index n = t_->numLeaves();
-    const double beta = mu_ / (h0_ * h0_);
+    const Vec<3> beta = betaPerAxis();
     int rounds = 0;
     const bool profSetup = amrEnvFlag("PECLET_CORE_PROFILE_SETUP");
     for (;;) {
@@ -2017,14 +2030,15 @@ class AmrFlow {
       if (sdfFn(fc) <= 0.0)
         return 0.0;  // center gate (kept from order 1; see flow ccFaceOpenMS)
       const int t1 = (axis + 1) % 3, t2 = (axis + 2) % 3;
-      const double e = 0.5 * h0_;
+      // Phase 3: the four corner probes sit half a cell out on EACH tangential axis.
+      const double e1 = 0.5 * h0_[t1], e2 = 0.5 * h0_[t2];
       auto at = [&](double d1, double d2) {
         Vec<3> p = fc;
         p[t1] += d1;
         p[t2] += d2;
         return sdfFn(p);
       };
-      const double c00 = at(-e, -e), c10 = at(e, -e), c11 = at(e, e), c01 = at(-e, e);
+      const double c00 = at(-e1, -e2), c10 = at(e1, -e2), c11 = at(e1, e2), c01 = at(-e1, e2);
       const double cc = sdfFn(fc);
       const double frac = 0.25 * (triFrac(c00, c10, cc) + triFrac(c10, c11, cc) +
                                   triFrac(c11, c01, cc) + triFrac(c01, c00, cc));
@@ -2036,15 +2050,16 @@ class AmrFlow {
     Vec<3> g{};
     for (int d = 0; d < 3; ++d) {
       Vec<3> pp = fc, pm = fc;
-      pp[d] += h0_;
-      pm[d] -= h0_;
-      g[d] = (sdfFn(pp) - sdfFn(pm)) / (2.0 * h0_);
+      pp[d] += h0_[d];
+      pm[d] -= h0_[d];
+      g[d] = (sdfFn(pp) - sdfFn(pm)) / (2.0 * h0_[d]);
     }
     double gmag = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
     if (gmag < 1e-6)
       gmag = 1e-6;
     int t1 = (axis + 1) % 3, t2 = (axis + 2) % 3;
-    double denom = (std::fabs(g[t1]) + std::fabs(g[t2])) / gmag * h0_;
+    // Phase 3: the projected in-plane extent of the face, per tangential axis.
+    double denom = (std::fabs(g[t1]) * h0_[t1] + std::fabs(g[t2]) * h0_[t2]) / gmag;
     if (denom < 1e-9)
       denom = 1e-9;
     double frac = 0.5 + sd / denom;
@@ -2052,7 +2067,7 @@ class AmrFlow {
   }
 
   const Octree* t_ = nullptr;
-  Real h0_ = 1.0;
+  Vec<3> h0_ = detail::filledVec<3>(1.0);
   Vec<3> origin_{};
   double rho_ = 1.0, mu_ = 1.0, dt_ = 1e6;
   Vec<3> f_{};

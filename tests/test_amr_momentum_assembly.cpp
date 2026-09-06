@@ -82,8 +82,9 @@ void run() {
 
   // ---- (1) device ξ-stencil rebuild == host build() Pass 2 ----
   {
-    const double beta = cc.beta();
-    const double AC0 = cc.idiag() + 6.0 * beta;
+    const Vec<3> betaV = cc.beta();  // Phase 3: per axis (all equal on this cubic octree)
+    const double beta[3] = {betaV[0], betaV[1], betaV[2]};
+    const double AC0 = cc.idiag() + ((2.0 * beta[0] + 2.0 * beta[1]) + 2.0 * beta[2]);
     View<double> sdfC = toDevice(cc.sdfCRaw(), "sdfC");
     View<Index> nb = toDevice(cc.nbRaw(), "nb");
     View<char> fluid = toDevice(cc.fluidRaw(), "fl");

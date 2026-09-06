@@ -150,6 +150,9 @@ template <int Dim, unsigned Bits = (Dim == 2 ? 32u : (Dim == 3 ? 21u : 16u))>
 class DistributedPoissonView {
  public:
   void init(DistributedOctree<Dim, Bits>& d, double h0) {
+    init(d, detail::filledVec<Dim>(h0));
+  }
+  void init(DistributedOctree<Dim, Bits>& d, const Vec<Dim>& h0) {
     d_ = &d;
     h0_ = h0;
     auto plan = d.buildFaceGatherPlan();
@@ -168,21 +171,28 @@ class DistributedPoissonView {
   void apply(View<const double> x, View<double> y) const {
     halo_.gather(x, g_);
     const int F = 2 * Dim;
-    const double inv = 1.0 / (h0_ * h0_);
+    // Phase 3 (`docs/amr_anisotropic.md` §3): one weight per AXIS; the gather layout is
+    // `2*axis + (dir>0 ? 0 : 1)`. Cubic grid => every `inv[d]` is the same double.
+    Kokkos::Array<double, Dim> inv;
+    for (int d = 0; d < Dim; ++d)
+      inv[d] = 1.0 / (h0_[d] * h0_[d]);
     View<double> gv = g_;
     Kokkos::parallel_for(
         "dpd::apply", Kokkos::RangePolicy<ExecSpace>(0, n_), KOKKOS_LAMBDA(const Index i) {
           double s = 0.0;
           for (int f = 0; f < F; ++f)
-            s += gv(i * F + f) - x(i);
-          y(i) = inv * s;
+            s += inv[f / 2] * (gv(i * F + f) - x(i));
+          y(i) = s;
         });
   }
 
   /// `sweeps` damped-Jacobi relaxations of L u = b (in place). Reads only the previous iterate.
   void jacobi(View<double> x, View<const double> b, int sweeps, double omega = 0.8) const {
     const int F = 2 * Dim;
-    const double inv = 1.0 / (h0_ * h0_), diag = F * inv;
+    // Phase 3: the Jacobi diagonal is the sum of the per-axis weights (2 faces each).
+    double diag = 0.0;
+    for (int d = 0; d < Dim; ++d)
+      diag += 2.0 / (h0_[d] * h0_[d]);
     View<double> lx = scratch_;
     for (int s = 0; s < sweeps; ++s) {
       apply(View<const double>(x), lx);
@@ -228,7 +238,7 @@ class DistributedPoissonView {
 
  private:
   DistributedOctree<Dim, Bits>* d_ = nullptr;
-  double h0_ = 1.0;
+  Vec<Dim> h0_ = detail::filledVec<Dim>(1.0);
   Index n_ = 0;
   DistributedGatherHalo<Dim, Bits> halo_;
   mutable View<double> g_, scratch_;
@@ -249,7 +259,8 @@ class DistributedMultigridView {
     int size = 1;
     MPI_Comm_size(comm, &size);
     IVec<Dim> g = g0;
-    double h = geo.h0;
+    // Phase 3 (AM1): all axes coarsen by 2 together, so the aspect ratio rides down unchanged.
+    Vec<Dim> h = geo.h0;
     for (;;) {
       auto lvl = std::make_unique<Level>();
       AmrGeometry<Dim> lg = geo;
@@ -273,7 +284,8 @@ class DistributedMultigridView {
       if (!ok || prod < size)
         break;
       g = ng;
-      h *= 2.0;
+      for (int d = 0; d < Dim; ++d)
+        h[d] *= 2.0;
     }
     // Nested fine→coarse maps + the coarse→children CSR (fine-index order ⇒ the restrict gather
     // sums in the same order as the host serial accumulation, hence bit-exact). All local (ORB

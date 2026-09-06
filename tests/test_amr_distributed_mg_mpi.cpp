@@ -46,7 +46,7 @@ void run() {
   const long N = 16;  // 16^3 periodic [0,1)^3 ⇒ hierarchy 16→8→4→2 (4 levels)
   const double h0 = 1.0 / N;
   AmrGeometry<3> geo;
-  geo.h0 = h0;
+  geo.setIsotropic(h0);
   const std::array<bool, 3> per{true, true, true};
   const int cycles = 8;
 

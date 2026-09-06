@@ -36,7 +36,6 @@ template <int Dim, unsigned Bits, class SdfFn>
 Index refineToSdf(BlockOctree<Dim, Bits>& t, const AmrGeometry<Dim>& geo, SdfFn&& sdf,
                   unsigned targetLevel, Real band = 1.0, bool balance = true) {
   using Code = typename BlockOctree<Dim, Bits>::Code;
-  const Real halfDiagFactor = 0.5 * std::sqrt(static_cast<Real>(Dim));
   Index total = 0;
   for (;;) {
     std::vector<Code> toRefine;
@@ -46,8 +45,16 @@ Index refineToSdf(BlockOctree<Dim, Bits>& t, const AmrGeometry<Dim>& geo, SdfFn&
         continue;
       auto b = t.bounds(i);
       Vec<Dim> c = geo.center(b);
-      const Real width = geo.leafSize(L);
-      if (std::fabs(static_cast<Real>(sdf(c))) <= halfDiagFactor * width + band * geo.h0)
+      // Phase 3 (`docs/amr_anisotropic.md` §6): a BOX leaf's half-diagonal is
+      // 0.5*sqrt(sum_d w_d^2) and the band margin is a length, so it takes the COARSEST axis —
+      // the conservative reading, which refines no less than the cubic rule did. Both reduce to
+      // `0.5*sqrt(Dim)*w` and `band*h0` exactly when the three spacings are equal.
+      const Vec<Dim> w = geo.leafSize(L);
+      Real halfDiag2 = 0.0;
+      for (int d = 0; d < Dim; ++d)
+        halfDiag2 += w[d] * w[d];
+      const Real halfDiag = 0.5 * std::sqrt(halfDiag2);
+      if (std::fabs(static_cast<Real>(sdf(c))) <= halfDiag + band * geo.hMax())
         toRefine.push_back(t.code(i));
     }
     if (toRefine.empty())
@@ -90,10 +97,19 @@ Index refineToSdfGraded(BlockOctree<Dim, Bits>& t, const AmrGeometry<Dim>& geo, 
         continue;
       auto b = t.bounds(i);
       Vec<Dim> c = geo.center(b);
-      const Real width = geo.leafSize(L);
+      // Phase 3: the half-diagonal of a BOX leaf, and a band measured in cells of the level being
+      // created — the coarsest axis's width, the conservative reading (§6 of the design note).
+      const Vec<Dim> w = geo.leafSize(L);
+      Real halfDiag2 = 0.0;
+      Real wMax = w[0];
+      for (int d = 0; d < Dim; ++d) {
+        halfDiag2 += w[d] * w[d];
+        wMax = w[d] > wMax ? w[d] : wMax;
+      }
+      const Real halfDiag = 0.5 * std::sqrt(halfDiag2);
       // Band predicate first: targetFn is the expensive one (a gap/medial-axis field, often a
       // Python callable) and only band cells can ever be refined.
-      if (std::fabs(static_cast<Real>(sdf(c))) > halfDiagFactor * width + band * 0.5 * width)
+      if (std::fabs(static_cast<Real>(sdf(c))) > halfDiag + band * 0.5 * wMax)
         continue;
       if (L > targetFn(c))
         toRefine.push_back(t.code(i));
@@ -121,6 +137,8 @@ Index refineToSdfGraded(BlockOctree<Dim, Bits>& t, const AmrGeometry<Dim>& geo, 
 /// width along the line joining them; a medial-axis or `peclet.pnm` throat-radius field can be
 /// substituted verbatim.
 template <int Dim, class GapFn>
+/// Phase 3: pass `geo.hMax()` as `h0` on an anisotropic octree — the gap must clear `n` cells on
+/// EVERY axis, so the coarsest one decides (`docs/amr_anisotropic.md` §6).
 auto gapFloorTarget(GapFn&& gapFn, Real h0, unsigned coarsestLevel, Real n = 4.0) {
   return [gapFn = std::forward<GapFn>(gapFn), h0, coarsestLevel, n](const Vec<Dim>& p) -> unsigned {
     const Real g = static_cast<Real>(gapFn(p));

@@ -40,6 +40,9 @@ template <int Dim, unsigned Bits = (Dim == 2 ? 32u : (Dim == 3 ? 21u : 16u))>
 class DistributedPoisson {
  public:
   void init(DistributedOctree<Dim, Bits>& d, double h0) {
+    init(d, detail::filledVec<Dim>(h0));
+  }
+  void init(DistributedOctree<Dim, Bits>& d, const Vec<Dim>& h0) {
     d_ = &d;
     h0_ = h0;
     // Precompute the face-neighbour gather topology once (C1): apply()/jacobi()/residual() run many
@@ -57,13 +60,18 @@ class DistributedPoisson {
     auto g = d_->faceNeighborGather(plan_, x);
     const Index n = numLeaves();
     const int F = 2 * Dim;
-    const double inv = 1.0 / (h0_ * h0_);
+    // Phase 3 (`docs/amr_anisotropic.md` §3): one weight per AXIS. The gather layout is
+    // `2*axis + (dir>0 ? 0 : 1)`, so the axis of face `f` is `f/2`. On a cubic grid every
+    // `inv[d]` is the same double and the sum is the old `inv * s` term for term.
+    double inv[Dim];
+    for (int d = 0; d < Dim; ++d)
+      inv[d] = 1.0 / (h0_[d] * h0_[d]);
     y.assign(static_cast<std::size_t>(n), 0.0);
     for (Index i = 0; i < n; ++i) {
       double s = 0.0;
       for (int f = 0; f < F; ++f)
-        s += g[static_cast<std::size_t>(i) * F + f] - x[static_cast<std::size_t>(i)];
-      y[static_cast<std::size_t>(i)] = inv * s;  // L = ∇²
+        s += inv[f / 2] * (g[static_cast<std::size_t>(i) * F + f] - x[static_cast<std::size_t>(i)]);
+      y[static_cast<std::size_t>(i)] = s;  // L = ∇², axis-weighted
     }
   }
 
@@ -75,7 +83,11 @@ class DistributedPoisson {
               double omega = 0.8) const {
     const Index n = numLeaves();
     const int F = 2 * Dim;
-    const double inv = 1.0 / (h0_ * h0_), diag = F * inv;
+    // Phase 3: the Jacobi diagonal is the SUM of the per-axis weights (2 faces each), formed as
+    // one parenthesised sum so a cubic grid reproduces the single `F * inv` rounding.
+    double diag = 0.0;
+    for (int d = 0; d < Dim; ++d)
+      diag += 2.0 / (h0_[d] * h0_[d]);
     std::vector<double> lx;
     for (int s = 0; s < sweeps; ++s) {
       apply(x, lx);  // lx = L x; gathers ghosts
@@ -119,7 +131,7 @@ class DistributedPoisson {
 
  private:
   DistributedOctree<Dim, Bits>* d_ = nullptr;
-  double h0_ = 1.0;
+  Vec<Dim> h0_ = detail::filledVec<Dim>(1.0);
   typename DistributedOctree<Dim, Bits>::FaceGatherPlan plan_;  // cached gather topology (C1)
 };
 
@@ -150,7 +162,9 @@ class DistributedMultigrid {
     int size = 1;
     MPI_Comm_size(comm, &size);
     IVec<Dim> g = g0;
-    double h = geo.h0;
+    // Phase 3: every axis is coarsened by 2 together, so the aspect ratio is carried down the
+    // hierarchy unchanged (`docs/amr_anisotropic.md` §4, decision AM1).
+    Vec<Dim> h = geo.h0;
     for (;;) {
       auto lvl = std::make_unique<Level>();
       AmrGeometry<Dim> lg = geo;
@@ -171,7 +185,8 @@ class DistributedMultigrid {
       if (!ok || prod < size)
         break;
       g = ng;
-      h *= 2.0;
+      for (int d = 0; d < Dim; ++d)  // every axis coarsens by 2 (AM1): the ratio is carried down
+        h[d] *= 2.0;
     }
     // Nested fine→coarse maps (local; asserts nesting holds).
     for (std::size_t L = 0; L + 1 < levels_.size(); ++L) {

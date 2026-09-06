@@ -270,7 +270,7 @@ void test_graded_advection() {
   const double k = 2.0 * M_PI, c = N / 2.0;
   BO t(IVec<3>{brick, brick, brick}, lmax);
   AmrGeometry<3> geo;
-  geo.h0 = 1.0;
+  geo.setIsotropic(1.0);
   peclet::core::geom::Sphere sph{{c, c, c}, 0.30 * N};
   refineToSdf(t, geo, [&](const Vec<3>& p) { return -sph.eval(p); }, 0, 1.5, true);
   PECLET_CORE_CHECK(t.numLeaves() < N * N * N);  // genuinely graded

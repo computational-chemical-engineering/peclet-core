@@ -67,8 +67,8 @@ struct FaceGeomEmit {
         const unsigned Lj = g.ov.levels(j);
         if (Lj >= Li) {
           const Coord sj = Coord(Coord(1) << Lj);
-          cb(j, axis, dir, g.areaOf(si),
-             0.5 * (static_cast<Real>(si) + static_cast<Real>(sj)) * g.h0,
+          cb(j, axis, dir, g.areaOf(si, axis),
+             0.5 * (static_cast<Real>(si) + static_cast<Real>(sj)) * g.h0[axis],
              g.openness(i, axis, dir));
         } else {
           const Coord sj = Coord(si >> 1);
@@ -85,8 +85,8 @@ struct FaceGeomEmit {
               ++bit;
             }
             const Index jj = g.ov.locate(M::encode(q).code());
-            cb(jj, axis, dir, g.areaOf(sj),
-               0.5 * (static_cast<Real>(si) + static_cast<Real>(sj)) * g.h0,
+            cb(jj, axis, dir, g.areaOf(sj, axis),
+               0.5 * (static_cast<Real>(si) + static_cast<Real>(sj)) * g.h0[axis],
                g.openness(jj, axis, -dir));
           }
         }
@@ -110,7 +110,8 @@ FaceGeom assembleFaceGeom(const AmrPoisson<3, Bits>& ap, const std::vector<char>
                           const BlockOctreeView<3, Bits>& ov) {
   FaceGeomEmit<Bits> emit;
   emit.g.ov = ov;
-  emit.g.h0 = ap.h0();
+  for (int d = 0; d < 3; ++d)
+    emit.g.h0[d] = ap.h0()[d];
   emit.g.periodic = ap.periodic();
   emit.g.hasOpen = ap.hasOpenness();
   for (int d = 0; d < 3; ++d)

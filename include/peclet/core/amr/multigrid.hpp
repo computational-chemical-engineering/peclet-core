@@ -125,7 +125,8 @@ class Multigrid {
   /// Build + upload the hierarchy from a finest octree (uniform coarsening), openness-
   /// free. `h0` is the finest spacing (every level shares it; a coarse leaf's higher
   /// `level` encodes its width).
-  void build(const Octree& finest, double h0) {
+  void build(const Octree& finest, double h0) { build(finest, detail::filledVec<Dim>(h0)); }
+  void build(const Octree& finest, const Vec<Dim>& h0) {
     hmg_ = std::make_unique<AmrMultigrid<Dim, Bits>>();
     hmg_->build(finest, h0);
     buildFromHostMg();
@@ -137,6 +138,12 @@ class Multigrid {
   /// coarsened aperture, so the coarse operators stay consistent cut-cell operators.
   template <class OpenFn>
   void build(const Octree& finest, double h0, OpenFn&& openFn, bool periodic = true,
+             bool immersedWall = false) {
+    build(finest, detail::filledVec<Dim>(h0), std::forward<OpenFn>(openFn), periodic,
+          immersedWall);
+  }
+  template <class OpenFn>
+  void build(const Octree& finest, const Vec<Dim>& h0, OpenFn&& openFn, bool periodic = true,
              bool immersedWall = false) {
     hmg_ = std::make_unique<AmrMultigrid<Dim, Bits>>();
     hmg_->build(finest, h0);
@@ -363,7 +370,7 @@ class Multigrid {
   void buildQuadCsr(const Poisson& ap, const Octree& t) {
     const Index n = t.numLeaves();
     std::vector<std::vector<std::pair<Index, double>>> per(static_cast<std::size_t>(n));
-    const double h0 = ap.h0();
+    const Vec<Dim>& h0 = ap.h0();  // Phase 3: per-axis
     hostParFor(n, [&](Index i) {  // per[i]-disjoint (rung 2)
       const unsigned Li = t.level(i);
       const double invV = 1.0 / ap.cellVolume(i);
@@ -403,18 +410,20 @@ class Multigrid {
   // AmrPoisson::coarseStar exactly (same gating, same coefficients).
   static void addCoarseStarStencil(const Poisson& ap, const Octree& t,
                                    std::vector<std::pair<Index, double>>& out, Index coarse,
-                                   Index fine, int axis, double scale, double h0) {
+                                   Index fine, int axis, double scale, const Vec<Dim>& h0) {
     auto bc = t.bounds(coarse);
     auto bf = t.bounds(fine);
-    const double H = ap.cellWidth(coarse);
     const double sc = static_cast<double>(Index(1) << t.level(coarse));
     const double sf = static_cast<double>(Index(1) << t.level(fine));
     for (int tt = 0; tt < Dim; ++tt) {
       if (tt == axis)
         continue;
+      // Phase 3: the tangential offset AND the differencing width belong to axis `tt` — they
+      // were one `H` when the cells were cubes. Mirrors AmrPoisson::coarseStar exactly.
+      const double H = ap.cellWidth(coarse, tt);
       const double dt = ((static_cast<double>(bf[0][tt]) + 0.5 * sf) -
                          (static_cast<double>(bc[0][tt]) + 0.5 * sc)) *
-                        h0;
+                        h0[tt];
       Index cp = ap.periodicNeighbor(coarse, tt, +1);
       Index cm = ap.periodicNeighbor(coarse, tt, -1);
       if (cp < 0 || cm < 0)

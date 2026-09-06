@@ -41,7 +41,7 @@ void run() {
   const long N = 8;  // uniform N^3 periodic domain [0,1)^3 (root cells = finest)
   const double h0 = 1.0 / N;
   AmrGeometry<3> geo;
-  geo.h0 = h0;
+  geo.setIsotropic(h0);
   const std::array<bool, 3> per{true, true, true};
   const int sweeps = 40;
 

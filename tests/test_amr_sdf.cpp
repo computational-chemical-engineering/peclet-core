@@ -30,7 +30,7 @@ void run() {
 
   AmrGeometry<3> geo;
   geo.origin = {0.0, 0.0, 0.0};
-  geo.h0 = 1.0;  // fine cell = 1 world unit; domain is [0,32]^3
+  geo.setIsotropic(1.0);  // fine cell = 1 world unit; domain is [0,32]^3
 
   peclet::core::geom::Sphere sph;
   sph.center = {16.0, 16.0, 16.0};
@@ -50,7 +50,7 @@ void run() {
   for (Index i = 0; i < t.numLeaves(); ++i) {
     auto b = t.bounds(i);
     Vec<3> c = geo.center(b);
-    Real width = geo.leafSize(t.level(i));
+    Real width = geo.leafSize(t.level(i), 0);  // cubic case: any axis
     if (std::fabs(sph.eval(c)) <= halfDiagFactor * width) {  // surface within the cell
       ++crossing;
       if (t.level(i) != target)
@@ -80,7 +80,7 @@ void runGraded() {
   using BO = BlockOctree<3, 21>;
   AmrGeometry<3> geo;
   geo.origin = {0.0, 0.0, 0.0};
-  geo.h0 = 1.0;  // domain [0,64]^3 at lmax=6
+  geo.setIsotropic(1.0);  // domain [0,64]^3 at lmax=6
 
   peclet::core::geom::Sphere sph;
   sph.center = {32.0, 32.0, 32.0};
@@ -105,7 +105,7 @@ void runGraded() {
     int lo = 99, hi = -1;
     for (Index i = 0; i < t.numLeaves(); ++i) {
       Vec<3> c = geo.center(t.bounds(i));
-      if (std::fabs(sph.eval(c)) <= hdf * geo.leafSize(t.level(i))) {
+      if (std::fabs(sph.eval(c)) <= hdf * geo.leafSize(t.level(i), 0)) {
         lo = std::min(lo, static_cast<int>(t.level(i)));
         hi = std::max(hi, static_cast<int>(t.level(i)));
       }

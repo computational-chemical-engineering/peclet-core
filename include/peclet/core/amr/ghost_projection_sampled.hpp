@@ -261,16 +261,16 @@ inline void gpsMonomials(const double d[3], int deg, double* m, int& nm) {
 /// answers as well as a local leaf.
 template <unsigned Bits, class SdfFn>
 inline auto makeBinaryOpenFnMixed(const BlockOctree<3, Bits>& t, const AmrPoisson<3, Bits>& pres,
-                                  SdfFn sdfFn, double h0, Vec<3> origin,
+                                  SdfFn sdfFn, const Vec<3>& h0, Vec<3> origin,
                                   std::array<long, 3> frameShift = {}) {
   return [&t, &pres, sdfFn, h0, origin, frameShift](const Vec<3>& fc, int axis) -> double {
     (void)t;
     auto centerSample = [&](int side) -> std::pair<bool, float> {
       Vec<3> probe = fc;
-      probe[axis] += side * 0.25 * h0;  // strictly inside the adjacent leaf
+      probe[axis] += side * 0.25 * h0[axis];  // strictly inside the adjacent leaf (per axis)
       std::array<long, 3> q{};
       for (int d = 0; d < 3; ++d)
-        q[d] = static_cast<long>(std::floor((probe[d] - origin[d]) / h0)) - frameShift[d];
+        q[d] = static_cast<long>(std::floor((probe[d] - origin[d]) / h0[d])) - frameShift[d];
       const Index j = pres.probeSlot(q).first;
       if (j < 0)
         return {false, -1.0f};
@@ -279,7 +279,7 @@ inline auto makeBinaryOpenFnMixed(const BlockOctree<3, Bits>& t, const AmrPoisso
       Vec<3> c{};
       for (int d = 0; d < 3; ++d)
         c[d] = origin[d] +
-               (static_cast<double>(lo[d] + frameShift[d]) + 0.5 * s) * h0;
+               (static_cast<double>(lo[d] + frameShift[d]) + 0.5 * s) * h0[d];
       const double sd = sdfFn(c);
       return {sd > 0.0, static_cast<float>(sd)};
     };
@@ -318,7 +318,10 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
                                                     bool discovery = false) {
   GhostOverlaySampled ov;
   const Index n = t.numLeaves();
-  const double h0 = pres.cellWidth(0) / static_cast<double>(Index(1) << t.level(0));
+  // Phase 3 (`docs/amr_anisotropic.md` §5): the ROOT spacing per axis. `pres.h0()` already is
+  // it; recovering it from `cellWidth(0)` (as this line did) only ever worked because the cells
+  // were cubes.
+  const Vec<3> h0 = pres.h0();
   const auto fe = pres.fineExt();
   const std::array<long, 3> shiftG = frameShift;
   const std::array<long, 3> gfine =
@@ -328,7 +331,7 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
   // World position -> block-local fine coord (the probe frame). Single-rank the shift is 0.
   auto probeCoord = [&](const Vec<3>& p, long q[3]) {
     for (int d = 0; d < 3; ++d)
-      q[d] = static_cast<long>(std::floor((p[d] - origin[d]) / h0)) - shiftG[d];
+      q[d] = static_cast<long>(std::floor((p[d] - origin[d]) / h0[d])) - shiftG[d];
   };
 
   // Leaf centers + fluid flags. Host-parallel (rung 4): per-leaf disjoint writes.
@@ -339,7 +342,8 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
     const double s = static_cast<double>(Index(1) << t.level(i));
     Vec<3> c{};
     for (int d = 0; d < 3; ++d)
-      c[d] = origin[d] + (static_cast<double>(b[0][d]) + static_cast<double>(shiftG[d]) + 0.5 * s) * h0;
+      c[d] = origin[d] +
+             (static_cast<double>(b[0][d]) + static_cast<double>(shiftG[d]) + 0.5 * s) * h0[d];
     cen[static_cast<std::size_t>(i)] = c;
     fluid[static_cast<std::size_t>(i)] = sdf(c) > 0.0 ? 1 : 0;
   });
@@ -356,7 +360,7 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
     const double s = static_cast<double>(Index(1) << pres.levelOf(n + g));
     Vec<3> c{};
     for (int d = 0; d < 3; ++d)
-      c[d] = origin[d] + (static_cast<double>(lo[d] + shiftG[d]) + 0.5 * s) * h0;
+      c[d] = origin[d] + (static_cast<double>(lo[d] + shiftG[d]) + 0.5 * s) * h0[d];
     cenG[static_cast<std::size_t>(g)] = c;
     fluidG[static_cast<std::size_t>(g)] = sdf(c) > 0.0 ? 1 : 0;
   }
@@ -391,10 +395,21 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
   // extent, the period probeSlot and every other wrap already use. Single-rank the block IS the
   // domain; distributed (D1) it is `gfine`, the GLOBAL fine extent — a per-rank period would be
   // F2 all over again, in a decomposition-dependent coat.
-  const double hb = 4.0 * h0;
-  const long nbx = std::max<long>(
-      1, std::max(std::max(gfine[0], gfine[1]), gfine[2]) / 4);  // ext fine cells / 4
-  const double domain = static_cast<double>(nbx) * hb;  // world extent (cubic domains)
+  // AM4 (`docs/amr_anisotropic.md` §5): the ORDER-KEY bins and the minimum-image PERIOD both
+  // become per-axis. `hb[d] = 4*h0[d]` keeps a bin four fine cells wide on every axis (so the
+  // traversal order is the old one on a cubic grid, bit for bit), and the period is the true
+  // world extent of each axis. NOTE the old single `domain` was the LONGEST axis's period, which
+  // is wrong for the shorter axes of a NON-CUBIC brick whenever a cloud straddles the periodic
+  // boundary there — pre-announced in the design note as the one place a bit can legitimately
+  // move, and it moves toward the correct value.
+  double hb[3], domain[3];
+  long nb[3];
+  for (int d = 0; d < 3; ++d) {
+    hb[d] = 4.0 * h0[d];
+    nb[d] = std::max<long>(1, gfine[d] / 4);
+    domain[d] = static_cast<double>(gfine[d]) * h0[d];
+  }
+  const long nbx = std::max(std::max(nb[0], nb[1]), nb[2]);  // bin-index stride (order key only)
   auto wrapLocal = [gfine, shiftG](const std::array<long, 3>& p) {
     std::array<long, 3> q{};
     for (int d = 0; d < 3; ++d) {
@@ -446,18 +461,22 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
 
   // LS functional at world position p, degree deg, radius rho, scale H: returns the (idx, w)
   // list. Weight vector w_j = mono(d_j) . M^{-1} e0 with M the normal matrix.
-  auto lsFunctional = [&](const Vec<3>& p, double rho, double H, int deg,
+  // AM3 (`docs/amr_anisotropic.md` §5): the cloud metric is the INDEX-SPACE one — the ball
+  // `sum_d (del_d/rho_d)^2 <= 1` with `rho_d` the radius factor times the coarser of the two
+  // widths ON AXIS d, and the monomials built on `del_d/H_d`. The degree-2 polynomial space is
+  // closed under a per-axis scaling, so this is the SAME least-squares functional as the cubic
+  // one up to round-off, and bitwise identical when the three spacings agree.
+  auto lsFunctional = [&](const Vec<3>& p, const double rho[3], const double H[3], int deg,
                           std::vector<Index>& idx, std::vector<double>& w) -> bool {
     idx.clear();
     w.clear();
     // (1) every leaf overlapping the fine-cell box that contains the ball (a leaf whose center is
     //     in the ball contains that center, so it overlaps the box).
-    const long qlo[3] = {static_cast<long>(std::floor((p[0] - origin[0] - rho) / h0)) - shiftG[0],
-                         static_cast<long>(std::floor((p[1] - origin[1] - rho) / h0)) - shiftG[1],
-                         static_cast<long>(std::floor((p[2] - origin[2] - rho) / h0)) - shiftG[2]};
-    const long qhi[3] = {static_cast<long>(std::floor((p[0] - origin[0] + rho) / h0)) - shiftG[0],
-                         static_cast<long>(std::floor((p[1] - origin[1] + rho) / h0)) - shiftG[1],
-                         static_cast<long>(std::floor((p[2] - origin[2] + rho) / h0)) - shiftG[2]};
+    long qlo[3], qhi[3];
+    for (int d = 0; d < 3; ++d) {
+      qlo[d] = static_cast<long>(std::floor((p[d] - origin[d] - rho[d]) / h0[d])) - shiftG[d];
+      qhi[d] = static_cast<long>(std::floor((p[d] - origin[d] + rho[d]) / h0[d])) - shiftG[d];
+    }
     std::vector<Index> slots;
     detail::forEachCoveringSlot(
         pres, qlo, qhi, wrapLocal, [&](Index s) { if (!discovery) slots.push_back(s); },
@@ -474,21 +493,23 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
         continue;  // kPending: a discovery round; this pass's result is discarded anyway
       if (!fluidOf(j))
         continue;
-      double r2 = 0;
+      double r2 = 0, q2 = 0;
       for (int d = 0; d < 3; ++d) {
         double del = centerOf(j)[d] - p[d];
-        if (del > 0.5 * domain)
-          del -= domain;
-        if (del < -0.5 * domain)
-          del += domain;
-        r2 += del * del;
+        if (del > 0.5 * domain[d])
+          del -= domain[d];
+        if (del < -0.5 * domain[d])
+          del += domain[d];
+        r2 += del * del;              // the (distance^2) tie-break key of the nearest-N cap
+        const double u = del / rho[d];
+        q2 += u * u;                  // the axis-scaled ball predicate
       }
-      if (r2 > rho * rho)
+      if (q2 > 1.0)
         continue;
       const Vec<3>& cj = centerOf(j);
-      const long bx = static_cast<long>((cj[0] - origin[0]) / hb) % nbx;
-      const long by = static_cast<long>((cj[1] - origin[1]) / hb) % nbx;
-      const long bz = static_cast<long>((cj[2] - origin[2]) / hb) % nbx;
+      const long bx = static_cast<long>((cj[0] - origin[0]) / hb[0]) % nbx;
+      const long by = static_cast<long>((cj[1] - origin[1]) / hb[1]) % nbx;
+      const long bz = static_cast<long>((cj[2] - origin[2]) / hb[2]) % nbx;
       cand.push_back(Cand{(bz * nbx + by) * nbx + bx, keyOf(j), j, r2});
     }
     if (gpsMaxN > 0 && static_cast<long>(cand.size()) > gpsMaxN) {
@@ -505,12 +526,11 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
     // (3) emit in the canonical bin traversal order.
     std::vector<Index> pts;
     pts.reserve(cand.size());
-    const long lo[3] = {static_cast<long>(std::floor((p[0] - origin[0] - rho) / hb)),
-                        static_cast<long>(std::floor((p[1] - origin[1] - rho) / hb)),
-                        static_cast<long>(std::floor((p[2] - origin[2] - rho) / hb))};
-    const long hi[3] = {static_cast<long>(std::floor((p[0] - origin[0] + rho) / hb)),
-                        static_cast<long>(std::floor((p[1] - origin[1] + rho) / hb)),
-                        static_cast<long>(std::floor((p[2] - origin[2] + rho) / hb))};
+    long lo[3], hi[3];
+    for (int d = 0; d < 3; ++d) {
+      lo[d] = static_cast<long>(std::floor((p[d] - origin[d] - rho[d]) / hb[d]));
+      hi[d] = static_cast<long>(std::floor((p[d] - origin[d] + rho[d]) / hb[d]));
+    }
     for (long bx = lo[0]; bx <= hi[0]; ++bx)
       for (long by = lo[1]; by <= hi[1]; ++by)
         for (long bz = lo[2]; bz <= hi[2]; ++bz) {
@@ -532,11 +552,11 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
       double d[3];
       for (int dd = 0; dd < 3; ++dd) {
         double del = centerOf(j)[dd] - p[dd];
-        if (del > 0.5 * domain)
-          del -= domain;
-        if (del < -0.5 * domain)
-          del += domain;
-        d[dd] = del / H;
+        if (del > 0.5 * domain[dd])
+          del -= domain[dd];
+        if (del < -0.5 * domain[dd])
+          del += domain[dd];
+        d[dd] = del / H[dd];
       }
       detail::gpsMonomials(d, deg, mono, nm);
       for (int r = 0; r < nm; ++r)
@@ -550,11 +570,11 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
       double d[3];
       for (int dd = 0; dd < 3; ++dd) {
         double del = centerOf(j)[dd] - p[dd];
-        if (del > 0.5 * domain)
-          del -= domain;
-        if (del < -0.5 * domain)
-          del += domain;
-        d[dd] = del / H;
+        if (del > 0.5 * domain[dd])
+          del -= domain[dd];
+        if (del < -0.5 * domain[dd])
+          del += domain[dd];
+        d[dd] = del / H[dd];
       }
       detail::gpsMonomials(d, deg, mono, nm);
       double wj = 0;
@@ -593,7 +613,7 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
     int8_t coupled = 0;
     int8_t state[6] = {};
     float th[6] = {}, w_bc[6] = {}, w_n1[6] = {}, w_n2[6] = {}, wm_n1[6] = {}, wm_n2[6] = {};
-    double invh = 0.0;
+    double invh[3] = {0.0, 0.0, 0.0};  ///< Phase 3: 1/cellWidth per axis
     int8_t sampFluid[15] = {};
     Index sampCnt[15] = {};
     std::vector<Index> sIdx;
@@ -613,11 +633,14 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
     const Vec<3>& c = cen[static_cast<std::size_t>(i)];
 
     // Virtual uniform-position float samples (theta / closure magnitudes — the D2 route).
+    // AM2 (`docs/amr_anisotropic.md` §5): a virtual sample sits `q` cells out along axis `a`, so
+    // it steps by THAT axis's cell width. Identical to the single `h` on a cubic octree.
     float Cq[3][5], F[3][4];
     for (int a = 0; a < 3; ++a) {
+      const double ha = pres.cellWidth(i, a);
       for (int q = -2; q <= 2; ++q) {
         Vec<3> p = c;
-        p[a] += static_cast<double>(q) * h;
+        p[a] += static_cast<double>(q) * ha;
         Cq[a][q + 2] = static_cast<float>(sdf(p));
       }
       for (int m = 0; m < 4; ++m)
@@ -689,7 +712,8 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
       st->wm_n1[k] = one.wm_n1[static_cast<std::size_t>(k)];
       st->wm_n2[k] = one.wm_n2[static_cast<std::size_t>(k)];
     }
-    st->invh = 1.0 / h;
+    for (int a = 0; a < 3; ++a)  // Phase 3: per axis
+      st->invh[a] = 1.0 / pres.cellWidth(i, a);
 
     // Sample functionals for the 15 chain slots.
     for (int a = 0; a < 3; ++a)
@@ -697,7 +721,7 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
         const int sl = a * 5 + (q + 2);
         const Index nBefore = static_cast<Index>(st->sIdx.size());
         Vec<3> p = c;
-        p[a] += static_cast<double>(q) * h;
+        p[a] += static_cast<double>(q) * pres.cellWidth(i, a);  // AM2: per-axis step
         // Recover the covering leaf: floor the world position to fine units (a level-L cell
         // center is lo + 0.5*2^L in fine units, so the floor lands inside the cell), then into
         // the block-local probe frame.
@@ -730,8 +754,15 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
           st->sampCnt[sl] = 0;
           continue;
         }
-        const double H = (j >= 0) ? pres.cellWidth(j) : h;
-        const double rho = gpsRhoFactor * std::max(h, H);
+        // AM3: the scale and the cloud radius are PER AXIS — the coarser of the two widths on
+        // each axis. On a cubic octree all three are the same double, so the cloud, its
+        // accumulation order and its weights are the pre-Phase-3 ones bit for bit.
+        double H[3], rho[3];
+        for (int d = 0; d < 3; ++d) {
+          const double hd = pres.cellWidth(i, d);
+          H[d] = (j >= 0) ? pres.cellWidth(j, d) : hd;
+          rho[d] = gpsRhoFactor * std::max(hd, H[d]);
+        }
         std::vector<Index> idx;
         std::vector<double> w;
         if (discovery) {
@@ -800,7 +831,8 @@ inline GhostOverlaySampled buildGhostOverlaySampled(const BlockOctree<3, Bits>& 
     ov.nLS1 += st->nLS1;
     ov.nDegraded += st->nDegraded;
     ov.nSolidSlot += st->nSolidSlot;
-    ov.base.invh.push_back(st->invh);
+    for (int a = 0; a < 3; ++a)
+      ov.base.invh.push_back(st->invh[a]);
     ov.rowOf[static_cast<std::size_t>(i)] = ov.base.n;
     ++ov.base.n;
   }
@@ -840,6 +872,10 @@ inline void ghostApplyDeltaSampledHost(const GhostOverlaySampled& ov, const std:
       continue;
     }
     auto X = [&](int a, int q) { return gpsSample(ov, r, a, q, x); };
+    // Phase 3: the ratio form (see ghostApplyDeltaHost) — exactly 1.0 on a cubic octree.
+    const double ih = g.invh[rr * 3];
+    const double rx = g.invh[rr * 3 + 1] / ih, ry = g.invh[rr * 3 + 2] / ih;
+    const double r2[3] = {1.0, rx * rx, ry * ry};
     double delta = 0.0;
     for (int k = 0; k < 6; ++k) {
       const int8_t st = g.state[rr * 6 + static_cast<std::size_t>(k)];
@@ -851,12 +887,12 @@ inline void ghostApplyDeltaSampledHost(const GhostOverlaySampled& ov, const std:
       const int mf = (k & 1) ? 2 : -1;
       const double w1 = g.wm_n1[rr * 6 + static_cast<std::size_t>(k)];
       const double w2 = g.wm_n2[rr * 6 + static_cast<std::size_t>(k)];
-      delta += sgn * w1 * (X(a, mn) - X(a, mn - 1));
+      delta += r2[a] * (sgn * w1 * (X(a, mn) - X(a, mn - 1)));
       if (st == scheme::GP_QUAD && w2 != 0.0)
-        delta += sgn * w2 * (X(a, mf) - X(a, mf - 1));
+        delta += r2[a] * (sgn * w2 * (X(a, mf) - X(a, mf - 1)));
     }
-    const double ih = g.invh[rr];
-    y[static_cast<std::size_t>(c)] = g.rescale[rr] * (y[static_cast<std::size_t>(c)] + ih * ih * delta);
+    y[static_cast<std::size_t>(c)] =
+        g.rescale[rr] * (y[static_cast<std::size_t>(c)] + ih * ih * delta);
   }
 }
 
@@ -876,6 +912,9 @@ inline void ghostDivergDeltaSampledHost(const GhostOverlaySampled& ov,
       return 0.5 * (gpsSample(ov, r, a, m - 1, u[static_cast<std::size_t>(a)]) +
                     gpsSample(ov, r, a, m, u[static_cast<std::size_t>(a)]));
     };
+    // Phase 3: the ratio form (see ghostDivergDeltaHost).
+    const double ihd = g.invh[rr * 3];
+    const double r1[3] = {1.0, g.invh[rr * 3 + 1] / ihd, g.invh[rr * 3 + 2] / ihd};
     double dd = 0.0;
     for (int k = 0; k < 6; ++k) {
       const int8_t st = g.state[rr * 6 + static_cast<std::size_t>(k)];
@@ -887,7 +926,7 @@ inline void ghostDivergDeltaSampledHost(const GhostOverlaySampled& ov,
       const int mn = (k & 1) ? 1 : 0;
       const int mf = (k & 1) ? 2 : -1;
       if (st == scheme::GP_EXPLICIT) {
-        dd += sgn * U(a, mg);
+        dd += r1[a] * (sgn * U(a, mg));
         continue;
       }
       if (st == scheme::GP_BC_ONLY)
@@ -895,10 +934,10 @@ inline void ghostDivergDeltaSampledHost(const GhostOverlaySampled& ov,
       double val = g.w_n1[rr * 6 + static_cast<std::size_t>(k)] * U(a, mn);
       if (st == scheme::GP_QUAD)
         val += g.w_n2[rr * 6 + static_cast<std::size_t>(k)] * U(a, mf);
-      dd += sgn * val;
+      dd += r1[a] * (sgn * val);
     }
     d[static_cast<std::size_t>(c)] =
-        g.rescale[rr] * (d[static_cast<std::size_t>(c)] + g.invh[rr] * dd);
+        g.rescale[rr] * (d[static_cast<std::size_t>(c)] + ihd * dd);
   }
 }
 
@@ -982,9 +1021,16 @@ inline CfCsr buildMomSeamDelta(const GhostOverlaySampled& ov, const BlockOctree<
     }
     // − virtual row / rscale_v.
     if (anyGhost) {
-      const double beta = mu / (h * h);
+      // Phase 3: the ROW-LOCAL beta per axis (`docs/amr_anisotropic.md` §3). `h` is the row's
+      // cellWidth on axis 0; the other two come from the same leaf.
+      double beta[3];
+      for (int d = 0; d < 3; ++d) {
+        const double hd = pres.cellWidth(i, d);
+        beta[d] = mu / (hd * hd);
+      }
+      const double AC0v = idiag + ((2.0 * beta[0] + 2.0 * beta[1]) + 2.0 * beta[2]);
       double ACv, offv[6], rsv = 1.0, inhomv = 0.0;
-      Mom::buildCutStencil(sdfC, sdfNv, beta, idiag + 6.0 * beta, ACv, offv, rsv, inhomv);
+      Mom::buildCutStencil(sdfC, sdfNv, beta, AC0v, ACv, offv, rsv, inhomv);
       push(i, -ACv / rsv);
       for (int k = 0; k < 6; ++k) {
         if (offv[k] == 0.0)
@@ -1221,6 +1267,10 @@ inline void ghostApplyDeltaSampled(const GhostOverlaySampledDev& ov, View<const 
           }
           return Sv[idx];
         };
+        // Phase 3: the ratio form (per-axis weights, exactly 1.0 on a cubic octree).
+        const double ih = invh(r * 3);
+        const double rx = invh(r * 3 + 1) / ih, ry = invh(r * 3 + 2) / ih;
+        const double r2[3] = {1.0, rx * rx, ry * ry};
         double delta = 0.0;
         for (int k = 0; k < 6; ++k) {
           const int8_t s = st(r * 6 + k);
@@ -1231,11 +1281,10 @@ inline void ghostApplyDeltaSampled(const GhostOverlaySampledDev& ov, View<const 
           const int mn = (k & 1) ? 1 : 0;
           const int mf = (k & 1) ? 2 : -1;
           const double w1 = wm1(r * 6 + k), w2 = wm2(r * 6 + k);
-          delta += sgn * w1 * (X(a, mn) - X(a, mn - 1));
+          delta += r2[a] * (sgn * w1 * (X(a, mn) - X(a, mn - 1)));
           if (s == scheme::GP_QUAD && w2 != 0.0)
-            delta += sgn * w2 * (X(a, mf) - X(a, mf - 1));
+            delta += r2[a] * (sgn * w2 * (X(a, mf) - X(a, mf - 1)));
         }
-        const double ih = invh(r);
         y(c) = resc(r) * (y(c) + ih * ih * delta);
       });
 }
@@ -1289,6 +1338,9 @@ inline void ghostDivergDeltaSampled(const GhostOverlaySampledDev& ov, View<const
           return Sv[idx];
         };
         auto U = [&](int a, int m) { return 0.5 * (S(a, m - 1) + S(a, m)); };
+        // Phase 3: the ratio form (see ghostDivergDeltaSampledHost).
+        const double ih = invh(r * 3);
+        const double r1[3] = {1.0, invh(r * 3 + 1) / ih, invh(r * 3 + 2) / ih};
         double dd = 0.0;
         for (int k = 0; k < 6; ++k) {
           const int8_t s = st(r * 6 + k);
@@ -1300,7 +1352,7 @@ inline void ghostDivergDeltaSampled(const GhostOverlaySampledDev& ov, View<const
           const int mn = (k & 1) ? 1 : 0;
           const int mf = (k & 1) ? 2 : -1;
           if (s == scheme::GP_EXPLICIT) {
-            dd += sgn * U(a, mg);
+            dd += r1[a] * (sgn * U(a, mg));
             continue;
           }
           if (s == scheme::GP_BC_ONLY)
@@ -1308,9 +1360,9 @@ inline void ghostDivergDeltaSampled(const GhostOverlaySampledDev& ov, View<const
           double val = w1v(r * 6 + k) * U(a, mn);
           if (s == scheme::GP_QUAD)
             val += w2v(r * 6 + k) * U(a, mf);
-          dd += sgn * val;
+          dd += r1[a] * (sgn * val);
         }
-        d(c) = resc(r) * (d(c) + invh(r) * dd);
+        d(c) = resc(r) * (d(c) + ih * dd);
       });
 }
 

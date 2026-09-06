@@ -49,7 +49,7 @@ struct UniformVel {
 
 void test_conservation(const BO& t, double h0) {
   AmrGeometry<3> geo;
-  geo.h0 = h0;
+  geo.setIsotropic(h0);
   ScalarTransport<3, kBits> st(t, geo);
   std::vector<double> c(static_cast<std::size_t>(t.numLeaves())), tmp;
   std::uint64_t s = 13;
@@ -72,7 +72,7 @@ void test_diffusion_rate() {
   const double h0 = 1.0 / static_cast<double>(1u << L);
   BO t = uniformFine(L);
   AmrGeometry<3> geo;
-  geo.h0 = h0;
+  geo.setIsotropic(h0);
   ScalarTransport<3, kBits> st(t, geo);
   const double k = 2.0 * M_PI;
   std::vector<double> c(static_cast<std::size_t>(t.numLeaves())), tmp;
@@ -110,7 +110,7 @@ void test_advection_monotone() {
   const double h0 = 1.0 / static_cast<double>(1u << L);
   BO t = uniformFine(L);
   AmrGeometry<3> geo;
-  geo.h0 = h0;
+  geo.setIsotropic(h0);
   ScalarTransport<3, kBits> st(t, geo);
   auto xc = [&](Index i) { return (static_cast<double>(t.bounds(i)[0][0]) + 0.5) * h0; };
 
@@ -155,7 +155,7 @@ void run() {
   // graded mesh around a sphere.
   BO g(IVec<3>{2, 2, 2}, 4);
   AmrGeometry<3> ggeo;
-  ggeo.h0 = 1.0;
+  ggeo.setIsotropic(1.0);
   peclet::core::geom::Sphere sph{{16.0, 16.0, 16.0}, 8.0};
   refineToSdf(g, ggeo, [&](const Vec<3>& p) { return sph.eval(p); }, 1, 1.0, true);
   test_conservation(g, 1.0);

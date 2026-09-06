@@ -151,12 +151,40 @@ if rank == 0:
     t2 = tpx_amr.Octree(brick=[Nc, Nc, Nc], lmax=2, origin=[0, 0, 0], extent=[1.0, 1.0, 1.0])
     check(t2.h0 == h0 / 4.0, f"extent-derived h0 at lmax=2: {t2.h0!r} != {h0 / 4.0!r}")
     check(list(t2.cells) == [4 * Nc, 4 * Nc, 4 * Nc], "cells at lmax=2")
-    # Cells are cubes: an extent that does not give one spacing is refused, with the numbers.
+    # ---- PHASE 3 GATE A6 (core/docs/amr_anisotropic.md §9): the cells are BOXES ---------------
+    # The constructor accepts ANY positive extent; the octree refines by 2 on every axis, so a
+    # level-l leaf is h0[d]*2**l wide on axis d and every level inherits the root aspect ratio.
+    tan = tpx_amr.Octree(brick=[Nc, Nc, Nc], lmax=0, origin=[0, 0, 0], extent=[1.0, 0.5, 2.0])
+    check(np.allclose(tan.spacing, [1.0 / Nc, 0.5 / Nc, 2.0 / Nc]),
+          f"anisotropic Octree.spacing {list(tan.spacing)!r}")
+    check(np.allclose(tan.extent, [1.0, 0.5, 2.0]), "anisotropic Octree.extent round trip")
+    # `.h0` is the ONE-number accessor: it must raise rather than silently return the x spacing.
     try:
-        tpx_amr.Octree(brick=[Nc, Nc, Nc], lmax=0, extent=[1.0, 0.3, 1.0])
-        check(False, "an anisotropic extent did not raise")
+        _ = tan.h0
+        check(False, "Octree.h0 on an anisotropic octree did not raise")
     except RuntimeError as e:
-        check("CUBES" in str(e) and "dy=" in str(e), f"anisotropic extent message: {e!r}")
+        check("ANISOTROPIC" in str(e) and "spacing" in str(e), f"Octree.h0 message: {e!r}")
+    # lmax divides each spacing by 2**lmax, per axis.
+    tan2 = tpx_amr.Octree(brick=[Nc, Nc, Nc], lmax=2, origin=[0, 0, 0], extent=[1.0, 0.5, 2.0])
+    check(np.allclose(tan2.spacing, [0.25 / Nc, 0.125 / Nc, 0.5 / Nc]),
+          "anisotropic spacing at lmax=2")
+    # A leaf's world size is h0[d]*2**level on every axis, and `sizes()` reports the CUBIC one, so
+    # it stays available only where the octree is cubic. `centers` is per axis and always works.
+    cen = tan.centers()
+    check(np.allclose(cen.min(axis=0), [0.5 / Nc, 0.25 / Nc, 1.0 / Nc]),
+          "anisotropic leaf centres")
+    check(np.allclose(cen.max(axis=0), [1.0 - 0.5 / Nc, 0.5 - 0.25 / Nc, 2.0 - 1.0 / Nc]),
+          "anisotropic leaf centres (upper)")
+    # The SCALAR helper keeps its cubic contract (it returns one number).
+    try:
+        tpx_amr.spacing_from_extent([1.0, 0.3, 1.0], [Nc, Nc, Nc], 0)
+        check(False, "spacing_from_extent on an anisotropic extent did not raise")
+    except RuntimeError as e:
+        check("CUBES" in str(e) and "dy=" in str(e), f"spacing_from_extent message: {e!r}")
+    # ... and the per-axis one returns the triple.
+    check(np.allclose(tpx_amr.spacings_from_extent([1.0, 0.5, 2.0], [Nc, Nc, Nc], 0),
+                      [1.0 / Nc, 0.5 / Nc, 2.0 / Nc]),
+          "spacings_from_extent disagrees with the constructor")
 
     tc = tpx_amr.Octree(brick=[Nc, Nc, Nc], lmax=0, origin=[0, 0, 0], h0=h0)
     flow = tpx_amr.Flow(tc, density=1.0, viscosity=1.0, dt=1e6)
@@ -188,6 +216,41 @@ if rank == 0:
     # Cross-flow components zero in the solid too (no-slip): u_y vanishes inside the wall.
     solid = ~fluid
     check(np.abs(uy[solid]).max() < 1e-9, "velocity nonzero inside the solid wall")
+
+    # ---- PHASE 3 GATE A2 (core/docs/amr_anisotropic.md §9): anisotropic Poiseuille, EXACT ----
+    # The same cut-cell channel on a BOX mesh, with the walls (and the force) on each of the three
+    # axes in turn. Steady Stokes gives the quadratic exactly on every axis, because the per-axis
+    # FV Laplacian is exact on a quadratic whatever the aspect ratio — so this gate fails loudly
+    # if any operator kept a single `h`.
+    for wallAxis in (0, 1, 2):
+        ext = [1.0, 0.5, 2.0]
+        tA = tpx_amr.Octree(brick=[Nc, Nc, Nc], lmax=0, origin=[0, 0, 0], extent=ext)
+        L = ext[wallAxis]
+        aA, bA = 0.25 * L, 0.75 * L      # wall planes, cell-aligned at 4 and 12 cells
+        fAxis = (wallAxis + 1) % 3       # drive along the next axis
+        fA = tpx_amr.Flow(tA, density=1.0, viscosity=1.0, dt=1e6)
+        fA.set_solid(lambda x, y, z, w=wallAxis, lo=aA, hi=bA: min((x, y, z)[w] - lo,
+                                                                   hi - (x, y, z)[w]))
+        fv = [0.0, 0.0, 0.0]
+        fv[fAxis] = 1.0
+        fA.set_body_force(*fv)
+        for _ in range(5):
+            fA.step(mom_iters=300, pres_iters=80)
+        cA = tA.centers()[:, wallAxis]
+        uA = fA.velocity(fAxis)
+        fluidA = fA.is_fluid()
+        ins = fluidA & (cA > aA) & (cA < bA)
+        uPar = 0.5 * (cA[ins] - aA) * (bA - cA[ins])   # f/(2 mu), f = mu = 1
+        relA = np.abs(uA[ins] - uPar).max() / uPar.max()
+        print(f"    A2 anisotropic Poiseuille: walls on axis {wallAxis}, force on {fAxis}, "
+              f"h = {list(np.round(tA.spacing, 6))} -> rel err {relA:.3e}")
+        check(relA < 1e-6, f"A2 anisotropic Poiseuille axis {wallAxis}: rel err {relA:.2e}")
+        for c2 in range(3):
+            if c2 != fAxis:
+                check(np.allclose(fA.velocity(c2), 0.0, atol=1e-9),
+                      f"A2 cross-flow component {c2} not ~0 (walls on {wallAxis})")
+        check(fA.divergence_norm() < 1e-6, f"A2 divergence (walls on {wallAxis})")
+        check(np.abs(uA[~fluidA]).max() < 1e-9, f"A2 velocity inside the wall (axis {wallAxis})")
 
     # Navier-Stokes (advection on): fully-developed Poiseuille is advection-free, so still the
     # exact parabola.

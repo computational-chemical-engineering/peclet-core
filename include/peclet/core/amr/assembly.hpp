@@ -44,7 +44,7 @@ struct FvFaceEmit {
   View_t ov;                 ///< device octree (codes/levels/locate)
   View<const double> alpha;  ///< per-leaf·(2·Dim) openness, or empty when !hasOpen
   Coord fineExt[Dim] = {};   ///< periodic-wrap modulus per axis
-  Real h0 = 1.0;             ///< finest cell width
+  Real h0[Dim] = {};         ///< finest cell width PER AXIS (Phase 3); set by the emitters
   bool hasOpen = false;
   bool periodic = true;
   bool immersedWall = false;
@@ -58,27 +58,31 @@ struct FvFaceEmit {
       return 1.0;
     return alpha(static_cast<std::size_t>(leaf) * kFaces + faceIndex(axis, dir));
   }
-  KOKKOS_INLINE_FUNCTION Real areaOf(Coord s) const {
+  /// Area of a face NORMAL TO `axis` (Phase 3: the product over the OTHER axes).
+  KOKKOS_INLINE_FUNCTION Real areaOf(Coord s, int axis) const {
     Real a = 1;
-    for (int d = 0; d < Dim - 1; ++d)
-      a *= static_cast<Real>(s) * h0;
+    for (int d = 0; d < Dim; ++d)
+      if (d != axis)
+        a *= static_cast<Real>(s) * h0[d];
     return a;
   }
-  KOKKOS_INLINE_FUNCTION Real coeff(Coord si, Coord sj) const {
-    const Real dist = 0.5 * (static_cast<Real>(si) + static_cast<Real>(sj)) * h0;
-    return areaOf(si < sj ? si : sj) / dist;
+  KOKKOS_INLINE_FUNCTION Real coeff(Coord si, Coord sj, int axis) const {
+    const Real dist = 0.5 * (static_cast<Real>(si) + static_cast<Real>(sj)) * h0[axis];
+    return areaOf(si < sj ? si : sj, axis) / dist;
   }
   KOKKOS_INLINE_FUNCTION Coord wrap(long c, int axis) const {
     const long e = static_cast<long>(fineExt[axis]);
     return static_cast<Coord>(((c % e) + e) % e);
   }
-  KOKKOS_INLINE_FUNCTION Real cellWidth(Index i) const {
-    return h0 * static_cast<Real>(Index(1) << ov.levels(i));
+  KOKKOS_INLINE_FUNCTION Real cellWidth(Index i, int axis) const {
+    return h0[axis] * static_cast<Real>(Index(1) << ov.levels(i));
   }
+  KOKKOS_INLINE_FUNCTION Real cellWidth(Index i) const { return cellWidth(i, 0); }
   KOKKOS_INLINE_FUNCTION Real cellVolume(Index i) const {
-    Real w = cellWidth(i), v = 1;
+    const Real f = static_cast<Real>(Index(1) << ov.levels(i));
+    Real v = 1;
     for (int d = 0; d < Dim; ++d)
-      v *= w;
+      v *= h0[d] * f;
     return v;
   }
 
@@ -88,9 +92,9 @@ struct FvFaceEmit {
       return 0.0;
     std::array<Coord, Dim> lo = M::from_code(ov.codes(i)).decode();
     const Coord si = Coord(Coord(1) << ov.levels(i));
-    const double wall = areaOf(si) / (0.5 * static_cast<Real>(si) * h0);
     double s = 0.0;
-    for (int axis = 0; axis < Dim; ++axis)
+    for (int axis = 0; axis < Dim; ++axis) {
+      const double wall = areaOf(si, axis) / (0.5 * static_cast<Real>(si) * h0[axis]);
       for (int dir = -1; dir <= 1; dir += 2) {
         const long pc = (dir > 0) ? static_cast<long>(lo[axis]) + static_cast<long>(si)
                                   : static_cast<long>(lo[axis]) - 1;
@@ -100,6 +104,7 @@ struct FvFaceEmit {
         else if (immersedWall)
           s += (1.0 - openness(i, axis, dir)) * wall;
       }
+    }
     return s;
   }
 
@@ -121,7 +126,7 @@ struct FvFaceEmit {
         const Index j = ov.locate(M::encode(p).code());
         const unsigned Lj = ov.levels(j);
         if (Lj >= Li) {
-          sink(j, openness(i, axis, dir) * coeff(si, Coord(Coord(1) << Lj)));
+          sink(j, openness(i, axis, dir) * coeff(si, Coord(Coord(1) << Lj), axis));
         } else {
           const Coord sj = Coord(si >> 1);
           const int nsub = 1 << (Dim - 1);
@@ -137,7 +142,7 @@ struct FvFaceEmit {
               ++bit;
             }
             const Index jj = ov.locate(M::encode(q).code());
-            sink(jj, openness(jj, axis, -dir) * coeff(si, sj));
+            sink(jj, openness(jj, axis, -dir) * coeff(si, sj, axis));
           }
         }
       }
@@ -152,7 +157,8 @@ template <int Dim, unsigned Bits>
 FvOp assembleFv(const AmrPoisson<Dim, Bits>& ap, const BlockOctreeView<Dim, Bits>& ov) {
   FvFaceEmit<Dim, Bits> emit;
   emit.ov = ov;
-  emit.h0 = ap.h0();
+  for (int d = 0; d < Dim; ++d)
+    emit.h0[d] = ap.h0()[d];
   emit.periodic = ap.periodic();
   emit.immersedWall = ap.immersedWall();
   emit.hasOpen = ap.hasOpenness();

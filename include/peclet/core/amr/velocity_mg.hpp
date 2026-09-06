@@ -58,6 +58,13 @@ class VelocityMG {
   void build(const Octree& finest, double h0, double idiag, double mu, const MomentumOp& fineOp,
              const std::vector<double>& kappa, const std::vector<char>& fluid,
              const std::vector<char>& cut, Index minCoarse = 256) {
+    build(finest, detail::filledVec<3>(h0), idiag, mu, fineOp, kappa, fluid, cut, minCoarse);
+  }
+  /// Phase 3: the finest spacing per axis; every coarse level inherits the aspect ratio (AM1).
+  void build(const Octree& finest, const Vec<3>& h0, double idiag, double mu,
+             const MomentumOp& fineOp, const std::vector<double>& kappa,
+             const std::vector<char>& fluid, const std::vector<char>& cut,
+             Index minCoarse = 256) {
     hmg_ = std::make_unique<AmrMultigrid<3, Bits>>();
     hmg_->build(finest, h0);  // octree hierarchy + per-level AmrPoisson (periodicNeighbor etc.)
     std::size_t nl = hmg_->numLevels();
@@ -196,7 +203,10 @@ class VelocityMG {
     // Laplacian whose bottom solve diverges. Flooring idiag to μ/L² (the slowest diffusion mode)
     // keeps every coarse level non-singular (Galerkin avoids this by inheriting the sharp
     // operator).
-    const double Ldom = ap.h0() * static_cast<double>(oct.brick()[0] * (Index(1) << oct.lmax()));
+    // Phase 3: a NON-SINGULARITY FLOOR on the coarse reaction, not a discretisation — it keeps
+    // the axis-0 form it has always had (`docs/amr_anisotropic.md` §3, recorded in §10).
+    const double Ldom =
+        ap.h0()[0] * static_cast<double>(oct.brick()[0] * (Index(1) << oct.lmax()));
     const double id = std::max(idiag, mu / (Ldom * Ldom));
     std::vector<double> diag(static_cast<std::size_t>(n), 1.0);
     std::vector<char> solid(static_cast<std::size_t>(n), 1);
@@ -206,16 +216,22 @@ class VelocityMG {
       if (kap[static_cast<std::size_t>(i)] < 0.5)
         continue;  // classified solid: identity row
       solid[static_cast<std::size_t>(i)] = 0;
-      const double H = ap.cellWidth(i);  // h0·2^L (uniform per level)
-      const double coef = mu / (H * H);  // μ·area/dist/V = μ/H² (isotropic coarse cell)
+      // Phase 3: μ/H_a² per axis — the coarse-level twin of the momentum fold's `beta_b`.
+      // Every `coef[a]` is the same double on a cubic octree, so the diagonal sum below is the
+      // old `6*coef` term for term.
+      double mcoef[3];  // (`coef` is the CSR value array further down)
+      for (int a = 0; a < 3; ++a) {
+        const double Ha = ap.cellWidth(i, a);  // h0[a]·2^L (uniform per level)
+        mcoef[a] = mu / (Ha * Ha);
+      }
       double dsum = id;
       for (int axis = 0; axis < 3; ++axis)
         for (int dir = -1; dir <= 1; dir += 2) {
           Index j = ap.periodicNeighbor(i, axis, dir);  // periodic wrap; same-level neighbour
           if (j < 0)
             continue;  // domain boundary (non-periodic): wall
-          rows[static_cast<std::size_t>(i)].emplace_back(j, -coef);
-          dsum += coef;  // every face counts toward the diagonal (a wall to a solid nbr too)
+          rows[static_cast<std::size_t>(i)].emplace_back(j, -mcoef[axis]);
+          dsum += mcoef[axis];  // every face counts toward the diagonal (a wall to a solid nbr too)
         }
       diag[static_cast<std::size_t>(i)] = dsum;
     }

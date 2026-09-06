@@ -85,7 +85,7 @@ double imbalance(const DO& d) {
 
 void run() {
   AmrGeometry<3> geo;
-  geo.h0 = 1.0 / kN;
+  geo.setIsotropic(1.0 / kN);
   const std::array<bool, 3> per{true, true, true};
 
   DO world;

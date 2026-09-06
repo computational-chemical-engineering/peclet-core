@@ -75,7 +75,7 @@ struct GhostOverlay {
   std::vector<float> w_bc, w_n1, w_n2;  ///< [n*6] RHS/diagnostic closure weights (rhsOrder)
   std::vector<float> wm_n1, wm_n2;      ///< [n*6] matrix (implicit phi) weights (matrixOrder)
   std::vector<Index> nbr;               ///< [n*15] ±2 neighbour chain per axis
-  std::vector<double> invh;             ///< [n] 1/cellWidth of the row (finest band)
+  std::vector<double> invh;             ///< [n*3] 1/cellWidth PER AXIS of the row (Phase 3)
 };
 
 namespace detail {
@@ -189,7 +189,8 @@ inline GhostOverlay buildGhostOverlay(const BlockOctree<3, Bits>& t,
     for (int a = 0; a < 3; ++a)
       for (int q = 0; q < 5; ++q)
         ov.nbr.push_back(chain[a][q]);
-    ov.invh.push_back(1.0 / pres.cellWidth(i));
+    for (int a = 0; a < 3; ++a)  // Phase 3: per axis
+      ov.invh.push_back(1.0 / pres.cellWidth(i, a));
     ++ov.n;
   }
   return ov;
@@ -201,16 +202,24 @@ inline GhostOverlay buildGhostOverlay(const BlockOctree<3, Bits>& t,
 /// face sample (mean of the float center samples — the overlay's classification arithmetic) is
 /// fluid. Feed to Multigrid::build / AmrPoisson::buildOpenness / AmrMultigrid::setOpenness in
 /// ghost mode; the openness-MG hierarchy runs on it unchanged (area-averaged coarse alpha).
+/// Phase 3: the probe steps half a cell along the FACE'S OWN axis, so it takes `h0[axis]`
+/// (`docs/amr_anisotropic.md` §5, AM2). Identical to the scalar form on a cubic octree.
 template <class SdfFn>
-inline auto makeBinaryOpenFn(SdfFn sdfFn, double h0) {
+inline auto makeBinaryOpenFn(SdfFn sdfFn, const Vec<3>& h0) {
   return [sdfFn, h0](const Vec<3>& fc, int axis) -> double {
     Vec<3> pm = fc, pp = fc;
-    pm[axis] -= 0.5 * h0;
-    pp[axis] += 0.5 * h0;
+    pm[axis] -= 0.5 * h0[axis];
+    pp[axis] += 0.5 * h0[axis];
     const double sm = sdfFn(pm), sp = sdfFn(pp);
     const float fm = static_cast<float>(sm), fp = static_cast<float>(sp);
     return (sm > 0.0 && sp > 0.0 && 0.5f * (fm + fp) >= 0.0f) ? 1.0 : 0.0;
   };
+}
+
+/// Cubic-cell overload — the pre-Phase-3 spelling.
+template <class SdfFn>
+inline auto makeBinaryOpenFn(SdfFn sdfFn, double h0) {
+  return makeBinaryOpenFn(std::forward<SdfFn>(sdfFn), detail::filledVec<3>(h0));
 }
 
 /// Fragmentation guard (the AMR port of flow's host-BFS pocket guard): the BINARY coupled-face
@@ -287,6 +296,15 @@ inline void ghostApplyDeltaHost(const GhostOverlay& ov, const std::vector<double
       return x[static_cast<std::size_t>(ov.nbr[rr * 15 + static_cast<std::size_t>(a) * 5 +
                                                static_cast<std::size_t>(q + 2)])];
     };
+  // Phase 3 (`docs/amr_anisotropic.md` §5, work order A1): the row carries `1/cellWidth` PER
+  // AXIS. The delta is a sum over the six FACES, each belonging to axis `k/2`, so the axis weight
+  // multiplies each face's term. It is spelled as `ih^2 * sum_k (term_k * r_a^2)` with
+  // `ih = invh[3r]` and `r_a = invh[3r+a]/ih` — every `r_a` is a double divided by itself on a
+  // cubic octree, hence EXACTLY 1.0, `term*1.0 == term`, and the whole expression collapses to
+  // the pre-Phase-3 `ih*ih*delta` bit for bit (Rule B).
+    const double ih = ov.invh[rr * 3];
+    const double r2[3] = {1.0, (ov.invh[rr * 3 + 1] / ih) * (ov.invh[rr * 3 + 1] / ih),
+                          (ov.invh[rr * 3 + 2] / ih) * (ov.invh[rr * 3 + 2] / ih)};
     double delta = 0.0;
     for (int k = 0; k < 6; ++k) {
       const int8_t st = ov.state[rr * 6 + static_cast<std::size_t>(k)];
@@ -298,11 +316,10 @@ inline void ghostApplyDeltaHost(const GhostOverlay& ov, const std::vector<double
       const int mf = (k & 1) ? 2 : -1;   // far-face relative index
       const double w1 = ov.wm_n1[rr * 6 + static_cast<std::size_t>(k)];
       const double w2 = ov.wm_n2[rr * 6 + static_cast<std::size_t>(k)];
-      delta += sgn * w1 * (X(a, mn) - X(a, mn - 1));  // +axis face gradient — AMR L sign
+      delta += r2[a] * (sgn * w1 * (X(a, mn) - X(a, mn - 1)));  // +axis gradient — AMR L sign
       if (st == scheme::GP_QUAD && w2 != 0.0)
-        delta += sgn * w2 * (X(a, mf) - X(a, mf - 1));
+        delta += r2[a] * (sgn * w2 * (X(a, mf) - X(a, mf - 1)));
     }
-    const double ih = ov.invh[rr];
     y[static_cast<std::size_t>(c)] =
         ov.rescale[rr] * (y[static_cast<std::size_t>(c)] + ih * ih * delta);
   }
@@ -328,6 +345,9 @@ inline void ghostDivergDeltaHost(const GhostOverlay& ov,
       return 0.5 * (u[static_cast<std::size_t>(a)][static_cast<std::size_t>(cm)] +
                     u[static_cast<std::size_t>(a)][static_cast<std::size_t>(cp)]);
     };
+    // Phase 3: `ih * sum_a r_a * dd_a`, the divergence twin of the ratio form above.
+    const double ihd = ov.invh[rr * 3];
+    const double r1[3] = {1.0, ov.invh[rr * 3 + 1] / ihd, ov.invh[rr * 3 + 2] / ihd};
     double dd = 0.0;
     for (int k = 0; k < 6; ++k) {
       const int8_t st = ov.state[rr * 6 + static_cast<std::size_t>(k)];
@@ -339,7 +359,7 @@ inline void ghostDivergDeltaHost(const GhostOverlay& ov,
       const int mn = (k & 1) ? 1 : 0;
       const int mf = (k & 1) ? 2 : -1;
       if (st == scheme::GP_EXPLICIT) {
-        dd += sgn * U(a, mg);  // sliver without crossing: explicit u* flux
+        dd += r1[a] * (sgn * U(a, mg));  // sliver without crossing: explicit u* flux
         continue;
       }
       if (st == scheme::GP_BC_ONLY)
@@ -347,10 +367,10 @@ inline void ghostDivergDeltaHost(const GhostOverlay& ov,
       double val = ov.w_n1[rr * 6 + static_cast<std::size_t>(k)] * U(a, mn);
       if (st == scheme::GP_QUAD)
         val += ov.w_n2[rr * 6 + static_cast<std::size_t>(k)] * U(a, mf);
-      dd += sgn * val;
+      dd += r1[a] * (sgn * val);
     }
     d[static_cast<std::size_t>(c)] =
-        ov.rescale[rr] * (d[static_cast<std::size_t>(c)] + ov.invh[rr] * dd);
+        ov.rescale[rr] * (d[static_cast<std::size_t>(c)] + ihd * dd);
   }
 }
 
@@ -404,6 +424,10 @@ inline void ghostApplyDelta(const GhostOverlayDev& ov, View<const double> x, Vie
           y(c) = 0.0;
           return;
         }
+        // Phase 3: the ratio form of ghostApplyDeltaHost (per-axis weights, exactly 1.0 cubic).
+        const double ih = invh(r * 3);
+        const double rx = invh(r * 3 + 1) / ih, ry = invh(r * 3 + 2) / ih;
+        const double r2[3] = {1.0, rx * rx, ry * ry};
         double delta = 0.0;
         for (int k = 0; k < 6; ++k) {
           const int8_t s = st(r * 6 + k);
@@ -414,12 +438,12 @@ inline void ghostApplyDelta(const GhostOverlayDev& ov, View<const double> x, Vie
           const int mn = (k & 1) ? 1 : 0;
           const int mf = (k & 1) ? 2 : -1;
           const double w1 = wm1(r * 6 + k), w2 = wm2(r * 6 + k);
-          delta += sgn * w1 * (x(nbr(r * 15 + a * 5 + mn + 2)) - x(nbr(r * 15 + a * 5 + mn + 1)));
+          delta += r2[a] * (sgn * w1 *
+                            (x(nbr(r * 15 + a * 5 + mn + 2)) - x(nbr(r * 15 + a * 5 + mn + 1))));
           if (s == scheme::GP_QUAD && w2 != 0.0)
-            delta +=
-                sgn * w2 * (x(nbr(r * 15 + a * 5 + mf + 2)) - x(nbr(r * 15 + a * 5 + mf + 1)));
+            delta += r2[a] * (sgn * w2 *
+                              (x(nbr(r * 15 + a * 5 + mf + 2)) - x(nbr(r * 15 + a * 5 + mf + 1))));
         }
-        const double ih = invh(r);
         y(c) = resc(r) * (y(c) + ih * ih * delta);
       });
 }
@@ -451,6 +475,9 @@ inline void ghostDivergDelta(const GhostOverlayDev& ov, View<const double> u0,
           const double vp = (a == 0) ? u0(cp) : (a == 1) ? u1(cp) : u2(cp);
           return 0.5 * (vm + vp);
         };
+        // Phase 3: the ratio form of ghostDivergDeltaHost.
+        const double ih = invh(r * 3);
+        const double r1[3] = {1.0, invh(r * 3 + 1) / ih, invh(r * 3 + 2) / ih};
         double dd = 0.0;
         for (int k = 0; k < 6; ++k) {
           const int8_t s = st(r * 6 + k);
@@ -462,7 +489,7 @@ inline void ghostDivergDelta(const GhostOverlayDev& ov, View<const double> u0,
           const int mn = (k & 1) ? 1 : 0;
           const int mf = (k & 1) ? 2 : -1;
           if (s == scheme::GP_EXPLICIT) {
-            dd += sgn * U(a, mg);
+            dd += r1[a] * (sgn * U(a, mg));
             continue;
           }
           if (s == scheme::GP_BC_ONLY)
@@ -470,9 +497,9 @@ inline void ghostDivergDelta(const GhostOverlayDev& ov, View<const double> u0,
           double val = w1v(r * 6 + k) * U(a, mn);
           if (s == scheme::GP_QUAD)
             val += w2v(r * 6 + k) * U(a, mf);
-          dd += sgn * val;
+          dd += r1[a] * (sgn * val);
         }
-        d(c) = resc(r) * (d(c) + invh(r) * dd);
+        d(c) = resc(r) * (d(c) + ih * dd);
       });
 }
 

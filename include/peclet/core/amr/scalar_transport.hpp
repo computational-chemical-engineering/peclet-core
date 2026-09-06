@@ -50,11 +50,16 @@ class ScalarTransport {
   }
 
   Index numLeaves() const { return t_->numLeaves(); }
-  Real cellWidth(Index i) const { return geo_.h0 * static_cast<Real>(Index(1) << t_->level(i)); }
+  /// Phase 3: per-axis cell width; the scalar form is the cubic one (`docs/amr_anisotropic.md`).
+  Real cellWidth(Index i, int axis) const {
+    return geo_.h0[axis] * static_cast<Real>(Index(1) << t_->level(i));
+  }
+  Real cellWidth(Index i) const { return cellWidth(i, 0); }
   Real cellVolume(Index i) const {
-    Real w = cellWidth(i), v = 1;
+    const Real f = static_cast<Real>(Index(1) << t_->level(i));
+    Real v = 1;
     for (int d = 0; d < Dim; ++d)
-      v *= w;
+      v *= geo_.h0[d] * f;
     return v;
   }
 
@@ -106,9 +111,10 @@ class ScalarTransport {
         Index j0 = t_->find(M::encode(p).code());
         const unsigned Lj = t_->level(j0);
         if (Lj >= Li) {
-          fn(j0, axis, dir, faceArea(si),
+          fn(j0, axis, dir, faceArea(si, axis),
              faceCentre(lo, axis, facePlane, std::array<Coord, Dim>{}, si),
-             0.5 * (static_cast<Real>(si) + static_cast<Real>(Coord(Coord(1) << Lj))) * geo_.h0);
+             0.5 * (static_cast<Real>(si) + static_cast<Real>(Coord(Coord(1) << Lj))) *
+                 geo_.h0[axis]);
         } else {
           const Coord sj = Coord(si >> 1);
           const int nsub = 1 << (Dim - 1);
@@ -125,8 +131,8 @@ class ScalarTransport {
               ++bit;
             }
             Index jj = t_->find(M::encode(q).code());
-            fn(jj, axis, dir, faceArea(sj), faceCentre(lo, axis, facePlane, off, sj),
-               0.5 * (static_cast<Real>(si) + static_cast<Real>(sj)) * geo_.h0);
+            fn(jj, axis, dir, faceArea(sj, axis), faceCentre(lo, axis, facePlane, off, sj),
+               0.5 * (static_cast<Real>(si) + static_cast<Real>(sj)) * geo_.h0[axis]);
           }
         }
       }
@@ -137,10 +143,12 @@ class ScalarTransport {
     long e = static_cast<long>(fineExt_[axis]);
     return static_cast<Coord>(((c % e) + e) % e);
   }
-  Real faceArea(Coord s) const {
+  /// Area of a face NORMAL TO `axis` (Phase 3: the product over the OTHER axes).
+  Real faceArea(Coord s, int axis) const {
     Real a = 1;
-    for (int d = 0; d < Dim - 1; ++d)
-      a *= static_cast<Real>(s) * geo_.h0;
+    for (int d = 0; d < Dim; ++d)
+      if (d != axis)
+        a *= static_cast<Real>(s) * geo_.h0[d];
     return a;
   }
   // World centre of a (sub)face: `facePlane` is the shared-plane coord (fine) on
@@ -150,10 +158,10 @@ class ScalarTransport {
     Vec<Dim> fc{};
     for (int d = 0; d < Dim; ++d) {
       if (d == axis)
-        fc[d] = geo_.origin[d] + static_cast<Real>(facePlane) * geo_.h0;
+        fc[d] = geo_.origin[d] + static_cast<Real>(facePlane) * geo_.h0[d];
       else
         fc[d] = geo_.origin[d] +
-                (static_cast<Real>(lo[d] + off[d]) + 0.5 * static_cast<Real>(tw)) * geo_.h0;
+                (static_cast<Real>(lo[d] + off[d]) + 0.5 * static_cast<Real>(tw)) * geo_.h0[d];
     }
     return fc;
   }
