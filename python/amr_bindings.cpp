@@ -142,6 +142,33 @@ using peclet::core::python::Releasable;
 
 // ---- serial single-block octree ----------------------------------------------------------------
 
+// Derive the finest cell width h0 from a PHYSICAL extent and the finest cell counts
+// (suite/docs/PHYSICAL_UNITS_PLAN.md, work order U6): the caller states the box, the octree
+// derives its own spacing, and nobody writes h. Phase 1 is isotropic — the octree's leaves are
+// cubes by construction (a level-l leaf is h0*2**l wide on every axis), so an extent that does not
+// give one spacing is refused with the numbers rather than silently taking the x one.
+inline double h0FromExtent(const std::array<double, 3>& extent, const std::array<long, 3>& cells) {
+  double h[3];
+  for (int d = 0; d < 3; ++d) {
+    if (!(extent[d] > 0.0))
+      throw std::runtime_error("extent: every component must be > 0");
+    if (cells[d] <= 0)
+      throw std::runtime_error("extent: every finest-cell count must be > 0");
+    h[d] = extent[d] / (double)cells[d];
+  }
+  for (int d = 1; d < 3; ++d)
+    if (std::fabs(h[d] - h[0]) > 1e-12 * std::fabs(h[0])) {
+      char msg[288];
+      std::snprintf(msg, sizeof msg,
+                    "extent: the octree's cells are CUBES, but extent/cells gives "
+                    "dx=%.17g dy=%.17g dz=%.17g. Choose an extent proportional to "
+                    "brick*2**lmax on every axis.",
+                    h[0], h[1], h[2]);
+      throw std::runtime_error(msg);
+    }
+  return h[0];
+}
+
 // A per-block adaptive octree with its world placement (origin + uniform finest spacing h0).
 // Wraps peclet::core::amr::BlockOctree<3> + AmrGeometry<3>: build a uniform brick, refine toward a surface,
 // query leaves, and read leaf geometry / fields as numpy. The serial / single-rank form; for the
@@ -160,6 +187,18 @@ class Octree : public Releasable {
   unsigned lmax() const { return t_.lmax(); }
   double h0() const { return geo_.h0; }
   std::array<double, 3> origin() const { return {geo_.origin[0], geo_.origin[1], geo_.origin[2]}; }
+  /// The FINEST-level cell counts the block resolves: brick * 2**lmax per axis.
+  std::array<long, 3> cells() const {
+    const auto b = t_.brick();
+    const long f = (long)1 << t_.lmax();
+    return {(long)b[0] * f, (long)b[1] * f, (long)b[2] * f};
+  }
+  /// The block's physical side lengths, cells * h0.
+  std::array<double, 3> extent() const {
+    const auto c = cells();
+    return {(double)c[0] * geo_.h0, (double)c[1] * geo_.h0, (double)c[2] * geo_.h0};
+  }
+  std::array<double, 3> spacing() const { return {geo_.h0, geo_.h0, geo_.h0}; }
   bool is_balanced() const { return t_.isBalanced(); }
 
   nb::ndarray<nb::numpy, double> centers() const { return leafCenters(t_, geo_); }
@@ -658,15 +697,46 @@ NB_MODULE(amr, m) {
       "Build a graded octree, refine to an SDF surface, read leaf geometry + per-leaf fields as numpy, "
       "load-rebalance, gather face neighbours, export VTU, and run the flow step on device.";
 
+  m.def(
+      "spacing_from_extent",
+      [](std::array<double, 3> extent, std::array<long, 3> root_cells, unsigned lmax) {
+        const long f = (long)1 << lmax;
+        return h0FromExtent(extent, {root_cells[0] * f, root_cells[1] * f, root_cells[2] * f});
+      },
+      nb::arg("extent"), nb::arg("root_cells"), nb::arg("lmax"),
+      "The finest cell width h0 = extent / (root_cells * 2**lmax) of a PHYSICAL domain — the "
+      "one place an AMR spacing is computed, so no caller writes one (see "
+      "suite/docs/PHYSICAL_UNITS_PLAN.md). Raises when the extent does not give cubic cells.");
+
   nb::class_<Octree>(m, "Octree",
                      "Serial single-block adaptive octree with a world placement (origin + finest "
                      "spacing h0). Leaves are addressed in Z-order slot order; every per-leaf array "
                      "is indexed by that slot.")
-      .def(nb::init<std::array<long, 3>, unsigned, std::array<double, 3>, double>(),
-           nb::arg("brick"), nb::arg("lmax"), nb::arg("origin") = std::array<double, 3>{0, 0, 0},
-           nb::arg("h0") = 1.0,
-           "Build a uniform octree of `brick` root cells per axis, each refinable `lmax` levels "
-           "deep. `origin` is the block's lower corner and `h0` the finest (level-0) cell width.")
+      .def(
+          "__init__",
+          [](Octree* self, std::array<long, 3> brick, unsigned lmax,
+             std::array<double, 3> origin, double h0,
+             std::optional<std::array<double, 3>> extent) {
+            if (extent) {
+              const long f = (long)1 << lmax;
+              h0 = h0FromExtent(*extent, {brick[0] * f, brick[1] * f, brick[2] * f});
+            }
+            new (self) Octree(brick, lmax, origin, h0);
+          },
+          nb::arg("brick"), nb::arg("lmax"), nb::arg("origin") = std::array<double, 3>{0, 0, 0},
+          nb::arg("h0") = 1.0, nb::arg("extent") = nb::none(),
+          "Build a uniform octree of `brick` root cells per axis, each refinable `lmax` levels "
+          "deep. `origin` is the block's lower corner.\n\n"
+          "State the domain PHYSICALLY with `extent` = the box side lengths: the finest cell "
+          "width is then extent/(brick*2**lmax) and the caller never writes a spacing. `h0` "
+          "(the finest cell width, default 1) is the older equivalent spelling and is ignored "
+          "when `extent` is given. Cells are cubes, so `extent` must be proportional to "
+          "brick*2**lmax on every axis.")
+      .def_prop_ro("cells", &Octree::cells,
+                   "Finest-level cell counts, brick*2**lmax per axis.")
+      .def_prop_ro("extent", &Octree::extent, "Block side lengths in world units (cells*h0).")
+      .def_prop_ro("spacing", &Octree::spacing,
+                   "Finest cell size (dx, dy, dz) — cubes, so all three are h0.")
       .def_prop_ro("num_leaves", &Octree::num_leaves, "Number of leaves (Z-order slots).")
       .def_prop_ro("lmax", &Octree::lmax, "Root-cell level (max refinement depth).")
       .def_prop_ro("h0", &Octree::h0, "Finest (level-0) cell width in world units.")
@@ -904,7 +974,8 @@ NB_MODULE(amr, m) {
            nb::arg("origin") = std::array<double, 3>{0, 0, 0}, nb::arg("h0") = 1.0,
            nb::arg("periodic") = std::array<bool, 3>{true, true, true},
            "Decompose `global_root_size` root cells (each `lmax` levels deep) across the ranks of "
-           "MPI_COMM_WORLD via ORB. `origin`/`h0` place the global grid; `periodic` per axis.")
+           "MPI_COMM_WORLD via ORB. `origin`/`h0` place the global grid; `periodic` per axis. "
+           "For a PHYSICAL domain pass h0 = spacing_from_extent(extent, global_root_size, lmax).")
       .def_prop_ro("rank", &DistributedOctree::rank, "This process's MPI rank.")
       .def_prop_ro("size", &DistributedOctree::size, "Number of ranks (blocks).")
       .def_prop_ro("num_leaves", &DistributedOctree::num_leaves, "Leaves owned by this rank.")

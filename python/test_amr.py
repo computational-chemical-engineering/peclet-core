@@ -137,6 +137,27 @@ if rank == 0:
     Nc = 16
     h0 = 1.0 / Nc
     a, b = 0.25, 0.75  # wall planes (cell-aligned at 4*h0, 12*h0)
+    # PHYSICAL UNITS (suite/docs/PHYSICAL_UNITS_PLAN.md U6). The same octree stated by its BOX
+    # rather than by a spacing: extent = 1 over Nc*2**lmax finest cells derives the identical h0,
+    # so nobody writes a cell size. `spacing_from_extent` is the one place that division lives.
+    tphys = tpx_amr.Octree(brick=[Nc, Nc, Nc], lmax=0, origin=[0, 0, 0], extent=[1.0, 1.0, 1.0])
+    check(tphys.h0 == h0, f"extent-derived h0 {tphys.h0!r} != {h0!r}")
+    check(list(tphys.cells) == [Nc, Nc, Nc], "Octree.cells != brick*2**lmax")
+    check(np.allclose(tphys.extent, [1.0, 1.0, 1.0]), "Octree.extent != the box it was given")
+    check(np.allclose(tphys.spacing, [h0, h0, h0]), "Octree.spacing != h0 on all three axes")
+    check(tpx_amr.spacing_from_extent([1.0, 1.0, 1.0], [Nc, Nc, Nc], 0) == h0,
+          "spacing_from_extent disagrees with the constructor")
+    # Two levels of refinement: the finest grid is brick*2**lmax, so the SAME box gives h0/4.
+    t2 = tpx_amr.Octree(brick=[Nc, Nc, Nc], lmax=2, origin=[0, 0, 0], extent=[1.0, 1.0, 1.0])
+    check(t2.h0 == h0 / 4.0, f"extent-derived h0 at lmax=2: {t2.h0!r} != {h0 / 4.0!r}")
+    check(list(t2.cells) == [4 * Nc, 4 * Nc, 4 * Nc], "cells at lmax=2")
+    # Cells are cubes: an extent that does not give one spacing is refused, with the numbers.
+    try:
+        tpx_amr.Octree(brick=[Nc, Nc, Nc], lmax=0, extent=[1.0, 0.3, 1.0])
+        check(False, "an anisotropic extent did not raise")
+    except RuntimeError as e:
+        check("CUBES" in str(e) and "dy=" in str(e), f"anisotropic extent message: {e!r}")
+
     tc = tpx_amr.Octree(brick=[Nc, Nc, Nc], lmax=0, origin=[0, 0, 0], h0=h0)
     flow = tpx_amr.Flow(tc, density=1.0, viscosity=1.0, dt=1e6)
     # No operator yet: step()/project() must raise, not dereference the unallocated state.
