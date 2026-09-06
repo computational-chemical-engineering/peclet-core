@@ -279,6 +279,39 @@ KOKKOS_INLINE_FUNCTION double hfPatchKappa(const double h[9]) {
   return -num / (q * Kokkos::sqrt(q));
 }
 
+/// The same on an ANISOTROPIC cell (Phase 3; `flow/doc/anisotropic_vof.md` §4, decision V2.3).
+///
+/// `hfColumnHeight` returns the height in CELLS along the column direction `d`, so the graph of the
+/// interface over the transverse plane is the PHYSICAL function `f = h_d * h_idx` of the physical
+/// transverse coordinates `(h_d1 x_idx, h_d2 y_idx)`. Han et al. eqs. (4)-(5) on those spacings are
+/// the isotropic expressions times five per-axis ratios:
+///
+///     f_x  = hx * (h_d/h_d1)          f_xx = hxx * (h_d/h_d1^2)
+///     f_y  = hy * (h_d/h_d2)          f_yy = hyy * (h_d/h_d2^2)
+///                                     f_xy = hxy * (h_d/(h_d1 h_d2))
+///
+/// and the returned curvature is in 1/hRef — the unit `sigma' kappa' = p'` already assumes.
+///
+/// Each ratio is a quotient of two entries of `g.h`, so at equal spacings every one of them is
+/// exactly 1.0 and `hx * 1.0 == hx` bitwise: the isotropic call reproduces `hfPatchKappa(h)` to the
+/// last bit (the one-argument overload above is what the unit-metric path still calls).
+///
+/// @param d  the column direction (0/1/2); the transverse axes are `d1 = (d+1)%3`, `d2 = (d+2)%3`,
+///           in the order `curvHeightCell` fills the patch.
+KOKKOS_INLINE_FUNCTION double hfPatchKappa(const double h[9], const VofMetric& g, int d) {
+  const int d1 = (d + 1) % 3, d2 = (d + 2) % 3;
+  const double r1 = g.h[d] / g.h[d1], r2 = g.h[d] / g.h[d2];
+  const double hx = 0.5 * (h[2 + 3 * 1] - h[0 + 3 * 1]) * r1;
+  const double hy = 0.5 * (h[1 + 3 * 2] - h[1 + 3 * 0]) * r2;
+  const double hxx = (h[2 + 3 * 1] - 2.0 * h[1 + 3 * 1] + h[0 + 3 * 1]) * r1 / g.h[d1];
+  const double hyy = (h[1 + 3 * 2] - 2.0 * h[1 + 3 * 1] + h[1 + 3 * 0]) * r2 / g.h[d2];
+  const double hxy =
+      0.25 * (h[2 + 3 * 2] - h[0 + 3 * 2] - h[2 + 3 * 0] + h[0 + 3 * 0]) * r1 / g.h[d2];
+  const double q = 1.0 + hx * hx + hy * hy;
+  const double num = hxx + hyy + hxx * hy * hy + hyy * hx * hx - 2.0 * hxy * hx * hy;
+  return -num / (q * Kokkos::sqrt(q));
+}
+
 // ---------------------------------------------------------------------------------------------
 // small linear algebra + geometry shared by the fit
 // ---------------------------------------------------------------------------------------------
@@ -596,8 +629,12 @@ KOKKOS_INLINE_FUNCTION void ptFitInit(PtFit& f) {
 /// @param dW   Wendland support width in cell units.
 KOKKOS_INLINE_FUNCTION void ptFitAdd(PtFit& f, const double X[3], const double org[3],
                                      const double t1[3], const double t2[3], const double nn[3],
-                                     double dW) {
-  const double d[3] = {X[0] - org[0], X[1] - org[1], X[2] - org[2]};
+                                     double dW, const VofMetric& g) {
+  const double di[3] = {X[0] - org[0], X[1] - org[1], X[2] - org[2]};
+  // Phase 3 (V2.4): the frame is orthonormal in PHYSICAL space, so the offsets are physical.
+  // `g.h = {1,1,1}` makes this `di * 1.0`, i.e. today's numbers bit for bit.
+  double d[3];
+  g.toPhys(di, d);
   const double x = d[0] * t1[0] + d[1] * t1[1] + d[2] * t1[2];
   const double y = d[0] * t2[0] + d[1] * t2[1] + d[2] * t2[2];
   const double z = d[0] * nn[0] + d[1] * nn[1] + d[2] * nn[2];
@@ -611,6 +648,13 @@ KOKKOS_INLINE_FUNCTION void ptFitAdd(PtFit& f, const double X[3], const double o
       f.A[i][j] += w * phi[i] * phi[j];
   }
   ++f.npt;
+}
+
+/// Unit-metric overload (isotropic cells) — the pre-Phase-3 signature, unchanged arithmetic.
+KOKKOS_INLINE_FUNCTION void ptFitAdd(PtFit& f, const double X[3], const double org[3],
+                                     const double t1[3], const double t2[3], const double nn[3],
+                                     double dW) {
+  ptFitAdd(f, X, org, t1, t2, nn, dW, VofMetric{});
 }
 
 /// Solve the point fit, with the same rank cascade as `pvFitSolve`.
@@ -678,14 +722,18 @@ KOKKOS_INLINE_FUNCTION void pvFitInit(PvFit& f) {
 KOKKOS_INLINE_FUNCTION bool pvFitAdd(PvFit& f, double mx, double my, double mz, double alpha,
                                      const double off[3], const double org[3], const double t1[3],
                                      const double t2[3], const double nn[3], double dW,
-                                     double cosMin) {
+                                     double cosMin, const VofMetric& g) {
   const double n2 = mx * mx + my * my + mz * mz;
   if (!(n2 > 0.0))
     return false;
-  const double invn = 1.0 / Kokkos::sqrt(n2);
-  const double np[3] = {(mx * t1[0] + my * t1[1] + mz * t1[2]) * invn,
-                        (mx * t2[0] + my * t2[1] + mz * t2[2]) * invn,
-                        (mx * nn[0] + my * nn[1] + mz * nn[2]) * invn};
+  // Phase 3 (V2.4): the polygon's own normal enters the fit as a PHYSICAL direction (the frame is
+  // physical), so it is pulled back through H^-1 and renormalized. At g.h = {1,1,1} the pullback
+  // is `m/1.0` and `invn` is the same reciprocal square root as before — bitwise.
+  const double mi[3] = {mx / g.h[0], my / g.h[1], mz / g.h[2]};
+  const double invn = 1.0 / Kokkos::sqrt(mi[0] * mi[0] + mi[1] * mi[1] + mi[2] * mi[2]);
+  const double np[3] = {(mi[0] * t1[0] + mi[1] * t1[1] + mi[2] * t1[2]) * invn,
+                        (mi[0] * t2[0] + mi[1] * t2[1] + mi[2] * t2[2]) * invn,
+                        (mi[0] * nn[0] + mi[1] * nn[1] + mi[2] * nn[2]) * invn};
   if (!(np[2] > cosMin))
     return false;
 
@@ -699,8 +747,10 @@ KOKKOS_INLINE_FUNCTION bool pvFitAdd(PvFit& f, double mx, double my, double mz, 
   double zc = 0.0;
   double px = 0.0, py = 0.0;
   for (int k = 0; k < nv; ++k) {
-    const double X[3] = {off[0] + v[k][0] - 0.5 - org[0], off[1] + v[k][1] - 0.5 - org[1],
-                         off[2] + v[k][2] - 0.5 - org[2]};
+    const double Xi[3] = {off[0] + v[k][0] - 0.5 - org[0], off[1] + v[k][1] - 0.5 - org[1],
+                          off[2] + v[k][2] - 0.5 - org[2]};
+    double X[3];
+    g.toPhys(Xi, X);  // index displacement -> physical (identity at g.h = {1,1,1})
     xy[k][0] = X[0] * t1[0] + X[1] * t1[1] + X[2] * t1[2];
     xy[k][1] = X[0] * t2[0] + X[1] * t2[1] + X[2] * t2[2];
     const double z = X[0] * nn[0] + X[1] * nn[1] + X[2] * nn[2];
@@ -735,6 +785,14 @@ KOKKOS_INLINE_FUNCTION bool pvFitAdd(PvFit& f, double mx, double my, double mz, 
   }
   ++f.npoly;
   return true;
+}
+
+/// Unit-metric overload (isotropic cells) — the pre-Phase-3 signature, unchanged arithmetic.
+KOKKOS_INLINE_FUNCTION bool pvFitAdd(PvFit& f, double mx, double my, double mz, double alpha,
+                                     const double off[3], const double org[3], const double t1[3],
+                                     const double t2[3], const double nn[3], double dW,
+                                     double cosMin) {
+  return pvFitAdd(f, mx, my, mz, alpha, off, org, t1, t2, nn, dW, cosMin, VofMetric{});
 }
 
 /// Solve the accumulated PV system.

@@ -226,17 +226,30 @@ KOKKOS_INLINE_FUNCTION void vofPlicCentroid(const double m[3], double alpha, dou
 KOKKOS_INLINE_FUNCTION int vofWettingPlane(const double mfIn[3], double cf, const double nwIn[3],
                                            double cosT, double sinT, double sdfF, int pivot,
                                            double tEps, double mth[3], double& alphaTh,
-                                           double& cosApp) {
-  // (a) L2-unit frames
-  double mf[3] = {mfIn[0], mfIn[1], mfIn[2]};
-  double mn = Kokkos::sqrt(mf[0] * mf[0] + mf[1] * mf[1] + mf[2] * mf[2]);
-  if (!(mn > 0.0))
-    mn = 1.0;
-  const double mh[3] = {mf[0] / mn, mf[1] / mn, mf[2] / mn};
-  double wn = Kokkos::sqrt(nwIn[0] * nwIn[0] + nwIn[1] * nwIn[1] + nwIn[2] * nwIn[2]);
-  if (!(wn > 0.0))
-    wn = 1.0;
-  const double nw[3] = {nwIn[0] / wn, nwIn[1] / wn, nwIn[2] / wn};
+                                           double& cosApp, const VofMetric& g) {
+  // (a) L2-unit frames — PHYSICAL (Phase 3, `flow/doc/anisotropic_vof.md` §6 decision V4.1).
+  //
+  // theta is an angle between two directions, so the rotation below has to happen in physical
+  // space: both inputs arrive as INDEX-space gradients (a colour Youngs gradient and a central
+  // difference of the SDF on the index lattice), and an index normal `m` is the physical direction
+  // `H^-1 m` renormalized. `vofPhysNormal` is that pullback, and at `g.h = {1,1,1}` it divides by
+  // 1.0 and returns `m/|m|` — the same two expressions this function had, bit for bit.
+  //
+  // The plane is handed back to `plicAlpha`/`plicVolume` in INDEX space (`m_idx = H m_theta`),
+  // because those routines live on the unit cube; they renormalize internally, so no L1 pass is
+  // needed and the isotropic path multiplies by 1.0.
+  double mh[3] = {mfIn[0], mfIn[1], mfIn[2]};
+  if (!(vofPhysNormal(mfIn, g, mh) > 0.0)) {
+    mh[0] = mfIn[0];
+    mh[1] = mfIn[1];
+    mh[2] = mfIn[2];
+  }
+  double nw[3] = {nwIn[0], nwIn[1], nwIn[2]};
+  if (!(vofPhysNormal(nwIn, g, nw) > 0.0)) {
+    nw[0] = nwIn[0];
+    nw[1] = nwIn[1];
+    nw[2] = nwIn[2];
+  }
 
   // (b) rotate to the prescribed angle about the contact line's direction: keep the AZIMUTH of the
   //     interface (its in-wall component, which a fluid-only stencil measures well) and replace the
@@ -255,15 +268,17 @@ KOKKOS_INLINE_FUNCTION int vofWettingPlane(const double mfIn[3], double cf, cons
       mth[d] = cosT * nw[d] + sinT * t[d] / tn;
   }
 
-  // (c) anchor it
+  // (c) back to INDEX space (m_idx = H m_theta), then anchor it on the unit cube.
+  vofIndexNormal(mth, g, mth);
   if (pivot == kVofPivotVolume) {
     // The plane of normal m_theta whose liquid volume in the anchor cell is exactly C_f. No pivot
     // point is needed and the poorly-measured wall-normal part of m_f is never read.
     alphaTh = plicAlpha(mth[0], mth[1], mth[2], cf);
     return branch;
   }
-  // The three ablations all reconstruct the FLUID cell with m_f's own normal first.
-  double mfl[3] = {mf[0], mf[1], mf[2]};
+  // The three ablations all reconstruct the FLUID cell with m_f's own normal first. `mfIn` is
+  // already the index normal the unit-cube reconstruction wants.
+  double mfl[3] = {mfIn[0], mfIn[1], mfIn[2]};
   plicNormalizeL1(mfl);
   double pf[3];
   vofPlicCentroid(mfl, plicAlpha(mfl[0], mfl[1], mfl[2], cf), pf);
@@ -271,21 +286,37 @@ KOKKOS_INLINE_FUNCTION int vofWettingPlane(const double mfIn[3], double cf, cons
   if (pivot == kVofPivotWallNormal || pivot == kVofPivotContactLine) {
     // |grad sdf| = 1, so the signed distance at p_f is the cell-centre value plus the normal
     // displacement. (Cell centre = (0.5,0.5,0.5) in the local frame; lengths are cells.)
-    const double sp = sdfF + nw[0] * (pf[0] - 0.5) + nw[1] * (pf[1] - 0.5) + nw[2] * (pf[2] - 0.5);
+    // `pf` is an index position on the unit cube; the wall normal is physical, so the
+    // displacement is mapped before the dot product (identity at g.h = {1,1,1}).
+    const double dpi[3] = {pf[0] - 0.5, pf[1] - 0.5, pf[2] - 0.5};
+    double dpp[3];
+    g.toPhys(dpi, dpp);
+    const double sp = sdfF + nw[0] * dpp[0] + nw[1] * dpp[1] + nw[2] * dpp[2];
+    // A physical displacement `s * n` is the index displacement `H^-1 (s n)` (identity at
+    // g.h = {1,1,1}: `x / 1.0 == x`).
     if (pivot == kVofPivotWallNormal) {
       for (int d = 0; d < 3; ++d)
-        c0[d] = pf[d] - sp * nw[d];
+        c0[d] = pf[d] - sp * nw[d] / g.h[d];
     } else if (tn >= tEps) {
       // Move within the FLUID plane along the in-plane part of n_w until the wall is reached.
       double q[3] = {nw[0] - cosApp * mh[0], nw[1] - cosApp * mh[1], nw[2] - cosApp * mh[2]};
       const double qn = Kokkos::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]);
       if (qn > tEps)
         for (int d = 0; d < 3; ++d)
-          c0[d] = pf[d] - (sp / qn) * (q[d] / qn);
+          c0[d] = pf[d] - (sp / qn) * (q[d] / qn) / g.h[d];
     }
   }
   alphaTh = mth[0] * c0[0] + mth[1] * c0[1] + mth[2] * c0[2];
   return branch;
+}
+
+/// Unit-metric overload (isotropic cells) — the pre-Phase-3 signature, unchanged arithmetic.
+KOKKOS_INLINE_FUNCTION int vofWettingPlane(const double mfIn[3], double cf, const double nwIn[3],
+                                           double cosT, double sinT, double sdfF, int pivot,
+                                           double tEps, double mth[3], double& alphaTh,
+                                           double& cosApp) {
+  return vofWettingPlane(mfIn, cf, nwIn, cosT, sinT, sdfF, pivot, tEps, mth, alphaTh, cosApp,
+                         VofMetric{});
 }
 
 /// The liquid fraction of the solid cell at integer offset `ds` from the fluid cell, under the

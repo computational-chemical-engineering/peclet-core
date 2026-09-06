@@ -79,6 +79,109 @@ KOKKOS_INLINE_FUNCTION double plicNormalizeL1(double m[3]) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// the anisotropic cell metric (Phase 3 of suite/docs/PHYSICAL_UNITS_PLAN.md;
+// flow/doc/anisotropic_vof.md §2)
+// ---------------------------------------------------------------------------------------------
+
+/// The per-axis cell size, in the solver's reference length (`hRef`), of the cell these kernels
+/// map to the unit cube.
+///
+/// **Every VOLUME-FRACTION operation in this file is metric-free and stays so.** With
+/// `x'_a = h[a] * xi_a` the cell is the unit cube in `xi`, volumes scale by the constant
+/// `det H = h0 h1 h2`, and every *fraction* — the colour, `plicVolume`, a slab or box volume, a
+/// face flux, an axis ratio — is the same number in both frames. A plane `n . x' = d` with a unit
+/// PHYSICAL normal `n` is `m . xi = alpha` with `m = H n` and `alpha = d`, and the MYC/Youngs
+/// estimators difference the colour on the index lattice, so what they return IS `m`: a stretched
+/// cell needs no new normal estimator and no new plane<->volume routine.
+///
+/// What the map does NOT preserve is angles, lengths and areas, so three quantities acquire the
+/// per-cell, per-orientation factor `s(m) = |H^-1 m| / |m|` (`vofPhysNormal` returns it):
+///
+///     physical unit normal   n = H^-1 m / (|m| s)
+///     normal distance        phi_phys = phi_xi / s
+///     interfacial area       A_phys   = A_xi * det(H) * s
+///
+/// **Isotropy is bitwise by construction.** Every factor below is either a ratio that is exactly
+/// 1.0 at equal spacings (`x/x`, and `x*1.0 == x`, `x/1.0 == x` in IEEE-754) or the same value
+/// applied on every axis in the same loop order. The default `{1,1,1}` therefore reproduces the
+/// pre-Phase-3 arithmetic bit for bit, which is what the `extent=None` battery gates.
+struct VofMetric {
+  double h[3] = {1.0, 1.0, 1.0};
+
+  KOKKOS_INLINE_FUNCTION bool isotropic() const { return h[0] == h[1] && h[1] == h[2]; }
+  KOKKOS_INLINE_FUNCTION double det() const { return h[0] * h[1] * h[2]; }
+  KOKKOS_INLINE_FUNCTION double maxH() const {
+    const double m = h[0] > h[1] ? h[0] : h[1];
+    return m > h[2] ? m : h[2];
+  }
+  KOKKOS_INLINE_FUNCTION double minH() const {
+    const double m = h[0] < h[1] ? h[0] : h[1];
+    return m < h[2] ? m : h[2];
+  }
+  /// Index displacement -> physical displacement (in hRef): `X'_a = h[a] X_a`.
+  KOKKOS_INLINE_FUNCTION void toPhys(const double X[3], double out[3]) const {
+    out[0] = X[0] * h[0];
+    out[1] = X[1] * h[1];
+    out[2] = X[2] * h[2];
+  }
+};
+
+/// The PHYSICAL unit normal of an index-space normal `m` (any scale), i.e. `H^-1 m` L2-normalized,
+/// and the shape factor `s(m) = |H^-1 m| / |m|` as the return value.
+///
+/// `s` is the ratio of two L2 norms of the SAME vector when `H = I`, so it is exactly 1.0 there and
+/// `n` is `m/|m|` — today's expression, bit for bit. Returns 0 (leaving `n` untouched) for a
+/// degenerate normal, exactly as `pcUnitNormal` does.
+///
+/// **Why there are TWO of these, and it is not redundancy.** `x / q` and `x * (1/q)` are DIFFERENT
+/// doubles in IEEE-754 (one rounding versus two), and the call sites this replaces are split
+/// between the two idioms: `pcUnitNormal` and the wetting frames divide, while the curvature and
+/// interface-area frames precompute `invn = 1/|m|` and multiply. Rule B (bit-identity on the
+/// isotropic path, `flow/doc/anisotropic_vof.md` §1) therefore requires each site to keep the form
+/// it had — so this one divides and `vofPhysNormalInv` multiplies by the reciprocal. Picking one
+/// for both would move the last bit of every curvature in the suite.
+KOKKOS_INLINE_FUNCTION double vofPhysNormal(const double m[3], const VofMetric& g, double n[3]) {
+  const double q = Kokkos::sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
+  if (!(q > 0.0))
+    return 0.0;
+  const double p[3] = {m[0] / g.h[0], m[1] / g.h[1], m[2] / g.h[2]};
+  const double pn = Kokkos::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+  if (!(pn > 0.0))
+    return 0.0;
+  n[0] = p[0] / pn;
+  n[1] = p[1] / pn;
+  n[2] = p[2] / pn;
+  return pn / q;
+}
+
+/// `vofPhysNormal` in the RECIPROCAL-MULTIPLY form — `n = (H^-1 m) * (1/|H^-1 m|)`, which is what
+/// the curvature cascade's and the interface area's frame construction has always computed. See
+/// the note above for why the two forms both exist.
+KOKKOS_INLINE_FUNCTION double vofPhysNormalInv(const double m[3], const VofMetric& g,
+                                               double n[3]) {
+  const double q = Kokkos::sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
+  if (!(q > 0.0))
+    return 0.0;
+  const double p[3] = {m[0] / g.h[0], m[1] / g.h[1], m[2] / g.h[2]};
+  const double n2 = p[0] * p[0] + p[1] * p[1] + p[2] * p[2];
+  if (!(n2 > 0.0))
+    return 0.0;
+  const double invn = 1.0 / Kokkos::sqrt(n2);
+  n[0] = p[0] * invn;
+  n[1] = p[1] * invn;
+  n[2] = p[2] * invn;
+  return Kokkos::sqrt(n2) / q;
+}
+
+/// The INDEX-space normal of a physical normal `n` (any scale): `m = H n`, returned unnormalized
+/// (`plicAlpha` / `plicVolume` renormalize internally, so no L1 pass is needed).
+KOKKOS_INLINE_FUNCTION void vofIndexNormal(const double n[3], const VofMetric& g, double m[3]) {
+  m[0] = n[0] * g.h[0];
+  m[1] = n[1] * g.h[1];
+  m[2] = n[2] * g.h[2];
+}
+
+// ---------------------------------------------------------------------------------------------
 // (1) forward: plane -> volume
 // ---------------------------------------------------------------------------------------------
 
@@ -441,6 +544,17 @@ KOKKOS_INLINE_FUNCTION double planeCellFraction(double mx, double my, double mz,
                                                 double x0, double y0, double z0, double h) {
   const double aLoc = alphaGlobal - (mx * x0 + my * y0 + mz * z0);
   return plicVolume(mx * h, my * h, mz * h, aLoc);
+}
+
+/// The same for an anisotropic cell `[x0, x0+g.h[0]] x [y0, y0+g.h[1]] x [z0, z0+g.h[2]]`: the
+/// index normal of the global plane is `H n` (`vofIndexNormal`), so the exact fraction is one
+/// `plicVolume` call. Reproduces `planeCellFraction(..., h)` bitwise for `g.h = {h,h,h}` (the same
+/// three products in the same order) and is the oracle of the K1 gate.
+KOKKOS_INLINE_FUNCTION double planeCellFractionAniso(double mx, double my, double mz,
+                                                     double alphaGlobal, double x0, double y0,
+                                                     double z0, const VofMetric& g) {
+  const double aLoc = alphaGlobal - (mx * x0 + my * y0 + mz * z0);
+  return plicVolume(mx * g.h[0], my * g.h[1], mz * g.h[2], aLoc);
 }
 
 /// Fluid fraction of a cell for a sphere (fluid = INSIDE the sphere), by recursive octree
