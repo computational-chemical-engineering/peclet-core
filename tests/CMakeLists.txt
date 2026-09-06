@@ -1,3 +1,10 @@
+# The physical domain (peclet/core/domain.hpp): Box + UniformGrid, cell units exact, anisotropic
+# spacing, MAC face/node positions, index<->physical round trips, periodic wrap + minimum image.
+add_executable(test_domain test_domain.cpp)
+target_link_libraries(test_domain PRIVATE tpx_core)
+target_include_directories(test_domain PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME domain COMMAND test_domain)
+
 # Serial tests (no MPI).
 add_executable(test_decomposition test_decomposition.cpp)
 target_link_libraries(test_decomposition PRIVATE tpx_core)
