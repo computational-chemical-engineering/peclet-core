@@ -1,7 +1,7 @@
 // peclet.core.geom — Python authoring for the shared analytic-SDF scene layer.
 //
-// The missing ergonomic half of suite/docs/ANALYTIC_SDF_GEOMETRY.md: SceneBuilder has been C++
-// only, so every Python consumer (flow's set_scene, dem's add_analytic_wall / add_scene_shape,
+// The missing ergonomic half of suite/docs/archive/ANALYTIC_SDF_GEOMETRY.md: SceneBuilder has been
+// C++ only, so every Python consumer (flow's set_scene, dem's add_analytic_wall / add_scene_shape,
 // the campaign gates) hand-assembled the flat (node_ints, node_reals, inst_ints, inst_reals)
 // arrays. This module binds the builder itself, batch evaluation, lattice baking (the dem
 // grid-particle path), and geom::bodyProperties — mass, COM, full inertia tensor, and the

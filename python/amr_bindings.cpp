@@ -538,11 +538,11 @@ class Flow : public Releasable {
       cz[i] = cp[3 * i + 2];
       rr[i] = oneR ? rp[0] : rp[i];
     }
-    // Layer 2-for-core (docs/AMR_GEOMETRY_SETUP_REQUIREMENTS.md): the per-query brute-force scan
-    // over all M spheres — measured 1.18 us/eval at M=180, 94% of the whole setSolid — is retired
-    // for the candidate-grid + equal-radius query. BIT-IDENTICAL to the old callback (value, not
-    // just sign) by construction and by the geom_scene_query ctest; the templated setSolid inlines
-    // the query, so there is no std::function indirection left either.
+    // Layer 2-for-core (suite/docs/archive/AMR_GEOMETRY_SETUP_REQUIREMENTS.md): the per-query
+    // brute-force scan over all M spheres — measured 1.18 us/eval at M=180, 94% of the whole
+    // setSolid — is retired for the candidate-grid + equal-radius query. BIT-IDENTICAL to the old
+    // callback (value, not just sign) by construction and by the geom_scene_query ctest; the
+    // templated setSolid inlines the query, so there is no std::function indirection left either.
     geom::SphereBedQuery q(std::move(cx), std::move(cy), std::move(cz), std::move(rr),
                            Vec<3>{origin_[0], origin_[1], origin_[2]},
                            Vec<3>{extent_[0], extent_[1], extent_[2]}, periodic);
