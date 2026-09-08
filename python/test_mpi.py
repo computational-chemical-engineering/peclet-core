@@ -1,6 +1,6 @@
-"""MPI test of the tpx_mpi Python shim (transport-core particle migration + ghosts via mpi4py).
+"""MPI test of the peclet.core.mpi Python shim (core particle migration + ghosts via mpi4py).
 
-Run: PYTHONPATH=python/build mpirun -np 4 python3 python/test_tpx_mpi.py
+Run: PYTHONPATH=<python build tree> mpirun -np 4 python3 python/test_mpi.py
 Validates, from Python: migration conserves particles and places each on its owning rank, ghost
 gathering returns a nonzero set for np>1, and a weighted-ORB rebalance redistributes particles while
 conserving them — mirroring the C++ tests, through the binding.
@@ -8,15 +8,15 @@ conserving them — mirroring the C++ tests, through the binding.
 import sys
 import numpy as np
 from mpi4py import MPI
-from peclet.core import mpi as tpx_mpi
+from peclet.core import mpi as core_mpi
 
 comm = MPI.COMM_WORLD
 rank, size = comm.rank, comm.size
 
 origin = [0.0, 0.0, 0.0]
 boxsize = [10.0, 8.0, 6.0]
-gsize = [40, 32, 24]
-mig = tpx_mpi.Migrator(origin=origin, size=boxsize, gsize=gsize, periodic=[True, True, True])
+cells = [40, 32, 24]
+mig = core_mpi.ParticleMigrator(origin=origin, extent=boxsize, cells=cells, periodic=[True, True, True])
 assert mig.rank == rank
 
 
@@ -78,12 +78,25 @@ for k in range(pos3.shape[0]):
 if rcount != N or rsum != expect_sum or imb_after > imb_before + 1e-9:
     fail += 1
 
+# --- ParticleHalo (persistent owner<->ghost halo): forward positions land within rcut of this
+# block, and reverse() of a ones-field counts each ghost once onto its owner (global sum == ghosts).
+halo = core_mpi.ParticleHalo(origin=origin, extent=boxsize, cells=cells, periodic=[True, True, True])
+ng = halo.build(pos3, 0.5, include_periodic_self=(size == 1))
+if halo.num_ghost != ng or halo.num_owned != pos3.shape[0]:
+    fail += 1
+gpos3 = halo.forward_positions(pos3)
+if gpos3.shape != (ng, 3):
+    fail += 1
+acc = halo.reverse(np.ones((ng, 3)), np.zeros((pos3.shape[0], 3)))
+if comm.allreduce(float(acc[:, 0].sum()), MPI.SUM) != comm.allreduce(ng, MPI.SUM):
+    fail += 1
+
 total = comm.allreduce(fail, MPI.SUM)
 if rank == 0:
-    print(f"# tpx_mpi: count={gcount} idsum_ok={gsum == expect_sum} ghosts={gghost} "
+    print(f"# peclet.core.mpi: count={gcount} idsum_ok={gsum == expect_sum} ghosts={gghost} "
           f"imbalance {imb_before:.3f}->{imb_after:.3f}")
     if total == 0:
-        print(f"OK (np={size}): tpx_mpi migrate + gather_ghosts work from Python/mpi4py")
+        print(f"OK (np={size}): peclet.core.mpi migrate + gather_ghosts work from Python/mpi4py")
     else:
         sys.stderr.write(f"FAILED (np={size}): {total}\n")
 sys.exit(0 if total == 0 else 1)

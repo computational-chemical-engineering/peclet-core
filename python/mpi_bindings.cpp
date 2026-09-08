@@ -1,6 +1,6 @@
 // core — minimal Python surface for the Lagrangian halo (migration + ghosts).
 //
-// A nanobind module exposing peclet::core::halo::ParticleMigrator so an mpi4py driver can decompose a periodic
+// A nanobind module exposing peclet::core::halo::ParticleMigrator / ParticleHaloTopology so an mpi4py driver can decompose a periodic
 // domain and migrate/ghost particles between ranks. Particles are passed as numpy arrays: positions
 // (N,3) float64 and an arbitrary per-particle payload (N,K) float64 (pack velocity, orientation, id,
 // etc. into the K columns). MPI is assumed already initialized by the host (import mpi4py.MPI first);
@@ -42,18 +42,18 @@ using DArray = nb::ndarray<double, nb::c_contig>;
 
 }  // namespace
 
-class Migrator {
+class ParticleMigrator {
  public:
-  Migrator(std::array<double, 3> origin, std::array<double, 3> size, std::array<long, 3> gsize,
-           std::array<bool, 3> periodic) {
+  ParticleMigrator(std::array<double, 3> origin, std::array<double, 3> extent,
+                   std::array<long, 3> cells, std::array<bool, 3> periodic) {
     int sz = 1;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank_);
     MPI_Comm_size(MPI_COMM_WORLD, &sz);
-    dec_.init(static_cast<std::size_t>(sz), IVec<3>{gsize[0], gsize[1], gsize[2]});
+    dec_.init(static_cast<std::size_t>(sz), IVec<3>{cells[0], cells[1], cells[2]});
     peclet::core::halo::DomainMap<3> map;
     for (int i = 0; i < 3; ++i) {
       map.origin[i] = origin[i];
-      map.cellSize[i] = size[i] / static_cast<double>(gsize[i]);
+      map.cellSize[i] = extent[i] / static_cast<double>(cells[i]);
       map.periodic[i] = periodic[i];
     }
     mig_.init(dec_, rank_, map, MPI_COMM_WORLD);
@@ -152,18 +152,18 @@ struct V3 {
   }
 };
 
-class Halo {
+class ParticleHalo {
  public:
-  Halo(std::array<double, 3> origin, std::array<double, 3> size, std::array<long, 3> gsize,
-       std::array<bool, 3> periodic) {
+  ParticleHalo(std::array<double, 3> origin, std::array<double, 3> extent, std::array<long, 3> cells,
+               std::array<bool, 3> periodic) {
     int sz = 1;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank_);
     MPI_Comm_size(MPI_COMM_WORLD, &sz);
-    dec_.init(static_cast<std::size_t>(sz), IVec<3>{gsize[0], gsize[1], gsize[2]});
+    dec_.init(static_cast<std::size_t>(sz), IVec<3>{cells[0], cells[1], cells[2]});
     peclet::core::halo::DomainMap<3> map;
     for (int i = 0; i < 3; ++i) {
       map.origin[i] = origin[i];
-      map.cellSize[i] = size[i] / static_cast<double>(gsize[i]);
+      map.cellSize[i] = extent[i] / static_cast<double>(cells[i]);
       map.periodic[i] = periodic[i];
     }
     mig_.init(dec_, rank_, map, MPI_COMM_WORLD);
@@ -233,47 +233,61 @@ class Halo {
 
 NB_MODULE(mpi, m) {
   m.attr("__doc__") = "core Lagrangian halo (block decomposition + particle migration/ghosts)";
-  nb::class_<Migrator>(m, "Migrator")
+  nb::class_<ParticleMigrator>(
+      m, "ParticleMigrator",
+      "Lagrangian particle migration over an ORB block decomposition of the box "
+      "[origin, origin+extent) binned on `cells` cells per axis (MPI_COMM_WORLD). Positions are "
+      "(N,3) float64, the per-particle payload (N,K) float64.")
       .def(nb::init<std::array<double, 3>, std::array<double, 3>, std::array<long, 3>,
                     std::array<bool, 3>>(),
-           nb::arg("origin"), nb::arg("size"), nb::arg("gsize"), nb::arg("periodic"))
-      .def("migrate", &Migrator::migrate, nb::arg("positions"), nb::arg("payload"),
+           nb::arg("origin"), nb::arg("extent"), nb::arg("cells"), nb::arg("periodic"),
+           "origin: lower corner of the box; extent: its side lengths; cells: decomposition cells "
+           "per axis (the ORB bins particles on this grid); periodic: per axis.")
+      .def("migrate", &ParticleMigrator::migrate, nb::arg("positions"), nb::arg("payload"),
            "Reassign every particle to the rank owning its (wrapped) position; returns this rank's "
            "(positions (M,3), payload (M,K)) after the exchange.")
-      .def("rebalance", &Migrator::rebalance, nb::arg("positions"), nb::arg("payload"),
+      .def("rebalance", &ParticleMigrator::rebalance, nb::arg("positions"), nb::arg("payload"),
            "Re-decompose by particle count (weighted ORB) so each rank holds a near-equal share, then "
            "migrate. Pure redistribution (count/payload preserved); the partition is updated in place. "
            "Returns this rank's (positions (M,3), payload (M,K)).")
-      .def("gather_ghosts", &Migrator::gather_ghosts, nb::arg("positions"), nb::arg("payload"),
+      .def("gather_ghosts", &ParticleMigrator::gather_ghosts, nb::arg("positions"), nb::arg("payload"),
            nb::arg("rcut"),
            "Copies of particles within rcut of this rank's block (periodic images handled); returns the "
            "(ghost positions (G,3), ghost payload (G,K)).")
-      .def("wrap_position", &Migrator::wrap_position, nb::arg("x"),
+      .def("wrap_position", &ParticleMigrator::wrap_position, nb::arg("x"),
            "Periodic-wrapped / boundary-clamped position for x (the canonical image).")
-      .def("cell_of", &Migrator::cell_of, nb::arg("x"),
+      .def("cell_of", &ParticleMigrator::cell_of, nb::arg("x"),
            "Global decomposition cell index (i,j,k) containing x (after wrap).")
-      .def("last_sent", &Migrator::last_sent, "Particles shipped by this rank in the last migrate().")
-      .def("last_received", &Migrator::last_received,
+      .def("last_sent", &ParticleMigrator::last_sent, "Particles shipped by this rank in the last migrate().")
+      .def("last_received", &ParticleMigrator::last_received,
            "Particles absorbed by this rank in the last migrate().")
-      .def("owner_of", &Migrator::owner_of, nb::arg("x"),
+      .def("owner_of", &ParticleMigrator::owner_of, nb::arg("x"),
            "Rank that owns the block containing position x (after periodic wrap / boundary clamp).")
-      .def_prop_ro("rank", &Migrator::rank, "This process's MPI rank.");
+      .def_prop_ro("rank", &ParticleMigrator::rank, "This process's MPI rank.");
 
-  nb::class_<Halo>(m, "Halo")
+  nb::class_<ParticleHalo>(
+      m, "ParticleHalo",
+      "Persistent owner<->ghost particle halo over the same decomposition as ParticleMigrator: "
+      "build() the correspondence once, then forward/reverse Vec3 fields each step.")
       .def(nb::init<std::array<double, 3>, std::array<double, 3>, std::array<long, 3>,
                     std::array<bool, 3>>(),
-           nb::arg("origin"), nb::arg("size"), nb::arg("gsize"), nb::arg("periodic"))
-      .def("build", &Halo::build, nb::arg("positions"), nb::arg("rcut"),
+           nb::arg("origin"), nb::arg("extent"), nb::arg("cells"), nb::arg("periodic"),
+           "origin: lower corner of the box; extent: its side lengths; cells: decomposition cells "
+           "per axis (the ORB bins particles on this grid); periodic: per axis.")
+      .def("build", &ParticleHalo::build, nb::arg("positions"), nb::arg("rcut"),
            nb::arg("include_periodic_self") = false,
            "Establish the owner<->ghost correspondence over this rank's owned positions")
-      .def("forward_positions", &Halo::forward_positions, nb::arg("owned"),
+      .def("forward_positions", &ParticleHalo::forward_positions, nb::arg("owned"),
            "owned (N,3) -> ghost (G,3) with the periodic image shift (positions)")
-      .def("forward", &Halo::forward, nb::arg("owned"),
+      .def("forward", &ParticleHalo::forward, nb::arg("owned"),
            "owned (N,3) -> ghost (G,3) verbatim (velocities, ...)")
-      .def("reverse", &Halo::reverse, nb::arg("ghost"), nb::arg("owned"),
+      .def("reverse", &ParticleHalo::reverse, nb::arg("ghost"), nb::arg("owned"),
            "ghost (G,3) summed onto owned (N,3); returns owned + reversed contributions")
-      .def("owner_of", &Halo::owner_of, nb::arg("x"))
-      .def("num_ghost", &Halo::num_ghost)
-      .def("num_owned", &Halo::num_owned)
-      .def_prop_ro("rank", &Halo::rank);
+      .def("owner_of", &ParticleHalo::owner_of, nb::arg("x"),
+           "Rank that owns the block containing position x (after periodic wrap / boundary clamp).")
+      .def_prop_ro("num_ghost", &ParticleHalo::num_ghost,
+                   "Ghost particles this rank receives (G), as established by the last build().")
+      .def_prop_ro("num_owned", &ParticleHalo::num_owned,
+                   "Owned particles (N) this rank passed to the last build().")
+      .def_prop_ro("rank", &ParticleHalo::rank, "This process's MPI rank.");
 }

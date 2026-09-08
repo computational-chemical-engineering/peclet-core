@@ -1,7 +1,7 @@
-"""Test of the tpx_amr Python module (transport-core AMR octree via numpy / mpi4py).
+"""Test of the peclet.core.amr Python module (the core AMR octree via numpy / mpi4py).
 
-Run: PYTHONPATH=python/build mpirun -np 4 python3 python/test_tpx_amr.py
-(also valid serially: PYTHONPATH=python/build python3 python/test_tpx_amr.py)
+Run: PYTHONPATH=<python build tree> mpirun -np 4 python3 python/test_amr.py
+(also valid serially: PYTHONPATH=<python build tree> python3 python/test_amr.py)
 
 Mirrors the C++ AMR tests through the binding. Validates, from Python:
   * serial Octree: a uniform brick has the expected leaf count; refining toward a sphere localizes
@@ -17,7 +17,7 @@ import os
 import sys
 import numpy as np
 from mpi4py import MPI
-from peclet.core import amr as tpx_amr
+from peclet.core import amr as core_amr
 
 comm = MPI.COMM_WORLD
 rank, size = comm.rank, comm.size
@@ -38,12 +38,15 @@ serial_leaves = None
 if rank == 0:
     brick = [2, 2, 2]
     lmax = 3
-    t = tpx_amr.Octree(brick=brick, lmax=lmax, origin=[1.0, -2.0, 0.5], h0=0.25)
+    # `cells` is the FINEST grid (root cells * 2**lmax); the root brick is derived from it.
+    t = core_amr.Octree(cells=[b << lmax for b in brick], lmax=lmax, origin=[1.0, -2.0, 0.5],
+                        spacing=0.25)
 
     # Uniform brick: 2*2*2 root cells, each refinable but unrefined -> 8 leaves.
     check(t.num_leaves == 8, f"uniform brick leaf count {t.num_leaves} != 8")
     check(t.is_balanced(), "uniform brick not balanced")
-    check(t.lmax == lmax and t.h0 == 0.25, "lmax/h0 round-trip")
+    check(t.lmax == lmax and np.allclose(t.spacing, 0.25), "lmax/spacing round-trip")
+    check(list(t.cells) == [b << lmax for b in brick], "Octree.cells round-trip")
 
     # Refine toward a sphere through the block centre.
     cx = [1.0 + 0.5 * brick[0] * 0.25 * (1 << lmax),
@@ -63,8 +66,8 @@ if rank == 0:
     check(centers.shape == (N, 3), f"centers shape {centers.shape}")
     check(sizes.shape == (N,) and levels.shape == (N,) and codes.shape == (N,), "per-leaf shapes")
     check(levels.dtype == np.int32 and codes.dtype == np.uint64, "level/code dtypes")
-    # size == h0 * 2**level for every leaf.
-    check(np.allclose(sizes, t.h0 * (2.0 ** levels)), "size != h0*2**level")
+    # size == spacing * 2**level for every leaf.
+    check(np.allclose(sizes, t.spacing[0] * (2.0 ** levels)), "size != spacing*2**level")
     # The finest leaves cluster near the sphere surface (|dist|<~ a cell), not in the far field.
     fine = levels == 0
     check(fine.sum() > 0, "no finest leaves after refinement")
@@ -80,7 +83,7 @@ if rank == 0:
 
     # VTU export: one cell per leaf, field reads back exactly.
     field = levels.astype(np.float64)
-    path = "tpx_amr_serial_test.vtu"
+    path = "core_amr_serial_test.vtu"
     t.write_vtu(path, "level", field)
     txt = open(path).read()
     ncells = int(txt.split('NumberOfCells="')[1].split('"')[0])
@@ -98,9 +101,9 @@ if rank == 0:
     # (a) Uniform multilevel grid: refine a 2x2x2/lmax=3 brick uniformly to a 16^3 finest grid,
     #     which the multigrid coarsens to several levels. With a periodic manufactured RHS
     #     b = L u_exact, the solver recovers u_exact exactly and the residual hits round-off.
-    tu = tpx_amr.Octree(brick=[2, 2, 2], lmax=3, origin=[0, 0, 0], h0=1.0)
+    tu = core_amr.Octree(cells=[16, 16, 16], lmax=3, origin=[0, 0, 0])
     tu.refine_to_sdf(lambda x, y, z: 0.0, target_level=0, band=1e9, balance=False)
-    pois = tpx_amr.Poisson(tu, periodic=True)
+    pois = core_amr.Poisson(tu, periodic=True)
     check(pois.num_levels >= 3, f"multigrid only built {pois.num_levels} levels")
     check(pois.num_leaves == tu.num_leaves, "Poisson num_leaves mismatch")
     cc = tu.centers()
@@ -118,9 +121,9 @@ if rank == 0:
           f"did not recover u_exact (rel err {np.linalg.norm(err)/np.linalg.norm(u_exact):.2e})")
 
     # (b) Graded (sphere-refined) octree: same manufactured-RHS recipe still converges to round-off.
-    tg = tpx_amr.Octree(brick=[2, 2, 2], lmax=3, origin=[0, 0, 0], h0=1.0)
+    tg = core_amr.Octree(cells=[16, 16, 16], lmax=3, origin=[0, 0, 0])
     tg.refine_to_sphere(center=[8, 8, 8], radius=4.0, target_level=0, band=1.0, balance=True)
-    pg = tpx_amr.Poisson(tg, periodic=True)
+    pg = core_amr.Poisson(tg, periodic=True)
     cg = tg.centers()
     ug = np.cos(kk * cg[:, 0])
     ug -= ug.mean()
@@ -140,32 +143,39 @@ if rank == 0:
     # PHYSICAL UNITS (suite/docs/PHYSICAL_UNITS_PLAN.md U6). The same octree stated by its BOX
     # rather than by a spacing: extent = 1 over Nc*2**lmax finest cells derives the identical h0,
     # so nobody writes a cell size. `spacing_from_extent` is the one place that division lives.
-    tphys = tpx_amr.Octree(brick=[Nc, Nc, Nc], lmax=0, origin=[0, 0, 0], extent=[1.0, 1.0, 1.0])
-    check(tphys.h0 == h0, f"extent-derived h0 {tphys.h0!r} != {h0!r}")
-    check(list(tphys.cells) == [Nc, Nc, Nc], "Octree.cells != brick*2**lmax")
+    tphys = core_amr.Octree(cells=[Nc, Nc, Nc], origin=[0, 0, 0], extent=[1.0, 1.0, 1.0])
+    check(tphys.spacing[0] == h0, f"extent-derived spacing {tphys.spacing!r} != {h0!r}")
+    check(list(tphys.cells) == [Nc, Nc, Nc], "Octree.cells != cells")
     check(np.allclose(tphys.extent, [1.0, 1.0, 1.0]), "Octree.extent != the box it was given")
     check(np.allclose(tphys.spacing, [h0, h0, h0]), "Octree.spacing != h0 on all three axes")
-    check(tpx_amr.spacing_from_extent([1.0, 1.0, 1.0], [Nc, Nc, Nc], 0) == h0,
+    check(core_amr.spacing_from_extent([1.0, 1.0, 1.0], [Nc, Nc, Nc], 0) == h0,
           "spacing_from_extent disagrees with the constructor")
-    # Two levels of refinement: the finest grid is brick*2**lmax, so the SAME box gives h0/4.
-    t2 = tpx_amr.Octree(brick=[Nc, Nc, Nc], lmax=2, origin=[0, 0, 0], extent=[1.0, 1.0, 1.0])
-    check(t2.h0 == h0 / 4.0, f"extent-derived h0 at lmax=2: {t2.h0!r} != {h0 / 4.0!r}")
+    # Two levels of refinement: `cells` is the finest grid, so 4*Nc cells on the SAME box gives h0/4.
+    t2 = core_amr.Octree(cells=[4 * Nc] * 3, lmax=2, origin=[0, 0, 0], extent=[1.0, 1.0, 1.0])
+    check(t2.spacing[0] == h0 / 4.0, f"extent-derived spacing at lmax=2: {t2.spacing!r} != {h0 / 4.0!r}")
+    # `cells` must be a multiple of 2**lmax (the root brick is cells / 2**lmax).
+    try:
+        core_amr.Octree(cells=[Nc, Nc, Nc + 1], lmax=2)
+        check(False, "Octree(cells not divisible by 2**lmax) did not raise")
+    except RuntimeError as e:
+        check("2**lmax" in str(e), f"Octree divisibility message: {e!r}")
+    # spacing= and extent= are alternatives, not a pair.
+    try:
+        core_amr.Octree(cells=[Nc, Nc, Nc], spacing=h0, extent=[1.0, 1.0, 1.0])
+        check(False, "Octree(spacing=, extent=) did not raise")
+    except RuntimeError as e:
+        check("EITHER" in str(e), f"Octree spacing/extent message: {e!r}")
     check(list(t2.cells) == [4 * Nc, 4 * Nc, 4 * Nc], "cells at lmax=2")
     # ---- PHASE 3 GATE A6 (core/docs/amr_anisotropic.md §9): the cells are BOXES ---------------
     # The constructor accepts ANY positive extent; the octree refines by 2 on every axis, so a
     # level-l leaf is h0[d]*2**l wide on axis d and every level inherits the root aspect ratio.
-    tan = tpx_amr.Octree(brick=[Nc, Nc, Nc], lmax=0, origin=[0, 0, 0], extent=[1.0, 0.5, 2.0])
+    tan = core_amr.Octree(cells=[Nc, Nc, Nc], origin=[0, 0, 0], extent=[1.0, 0.5, 2.0])
     check(np.allclose(tan.spacing, [1.0 / Nc, 0.5 / Nc, 2.0 / Nc]),
           f"anisotropic Octree.spacing {list(tan.spacing)!r}")
     check(np.allclose(tan.extent, [1.0, 0.5, 2.0]), "anisotropic Octree.extent round trip")
-    # `.h0` is the ONE-number accessor: it must raise rather than silently return the x spacing.
-    try:
-        _ = tan.h0
-        check(False, "Octree.h0 on an anisotropic octree did not raise")
-    except RuntimeError as e:
-        check("ANISOTROPIC" in str(e) and "spacing" in str(e), f"Octree.h0 message: {e!r}")
-    # lmax divides each spacing by 2**lmax, per axis.
-    tan2 = tpx_amr.Octree(brick=[Nc, Nc, Nc], lmax=2, origin=[0, 0, 0], extent=[1.0, 0.5, 2.0])
+    # `.h0` was REMOVED at 1.0.0 (QUALITY_PLAN D1): `.spacing` is the one accessor, per axis.
+    check(not hasattr(tan, "h0"), "Octree.h0 still exists (removed at 1.0.0; use .spacing)")
+    tan2 = core_amr.Octree(cells=[4 * Nc] * 3, lmax=2, origin=[0, 0, 0], extent=[1.0, 0.5, 2.0])
     check(np.allclose(tan2.spacing, [0.25 / Nc, 0.125 / Nc, 0.5 / Nc]),
           "anisotropic spacing at lmax=2")
     # A leaf's world size is h0[d]*2**level on every axis, and `sizes()` reports the CUBIC one, so
@@ -177,17 +187,17 @@ if rank == 0:
           "anisotropic leaf centres (upper)")
     # The SCALAR helper keeps its cubic contract (it returns one number).
     try:
-        tpx_amr.spacing_from_extent([1.0, 0.3, 1.0], [Nc, Nc, Nc], 0)
+        core_amr.spacing_from_extent([1.0, 0.3, 1.0], [Nc, Nc, Nc], 0)
         check(False, "spacing_from_extent on an anisotropic extent did not raise")
     except RuntimeError as e:
         check("CUBES" in str(e) and "dy=" in str(e), f"spacing_from_extent message: {e!r}")
     # ... and the per-axis one returns the triple.
-    check(np.allclose(tpx_amr.spacings_from_extent([1.0, 0.5, 2.0], [Nc, Nc, Nc], 0),
+    check(np.allclose(core_amr.spacings_from_extent([1.0, 0.5, 2.0], [Nc, Nc, Nc], 0),
                       [1.0 / Nc, 0.5 / Nc, 2.0 / Nc]),
           "spacings_from_extent disagrees with the constructor")
 
-    tc = tpx_amr.Octree(brick=[Nc, Nc, Nc], lmax=0, origin=[0, 0, 0], h0=h0)
-    flow = tpx_amr.Flow(tc, density=1.0, viscosity=1.0, dt=1e6)
+    tc = core_amr.Octree(cells=[Nc, Nc, Nc], origin=[0, 0, 0], spacing=h0)
+    flow = core_amr.Flow(tc, density=1.0, viscosity=1.0, dt=1e6)
     # No operator yet: step()/project() must raise, not dereference the unallocated state.
     for name, call in (("step", lambda: flow.step(mom_iters=1, pres_iters=1)),
                        ("project", lambda: flow.project(pres_iters=1))):
@@ -224,11 +234,11 @@ if rank == 0:
     # if any operator kept a single `h`.
     for wallAxis in (0, 1, 2):
         ext = [1.0, 0.5, 2.0]
-        tA = tpx_amr.Octree(brick=[Nc, Nc, Nc], lmax=0, origin=[0, 0, 0], extent=ext)
+        tA = core_amr.Octree(cells=[Nc, Nc, Nc], origin=[0, 0, 0], extent=ext)
         L = ext[wallAxis]
         aA, bA = 0.25 * L, 0.75 * L      # wall planes, cell-aligned at 4 and 12 cells
         fAxis = (wallAxis + 1) % 3       # drive along the next axis
-        fA = tpx_amr.Flow(tA, density=1.0, viscosity=1.0, dt=1e6)
+        fA = core_amr.Flow(tA, density=1.0, viscosity=1.0, dt=1e6)
         fA.set_solid(lambda x, y, z, w=wallAxis, lo=aA, hi=bA: min((x, y, z)[w] - lo,
                                                                    hi - (x, y, z)[w]))
         fv = [0.0, 0.0, 0.0]
@@ -271,7 +281,7 @@ if rank == 0:
         return 2.0 + np.tanh((c[:, 0] - x0) / wd)
 
     # (a) Pure-remap conservation: refine a slab, set the field, ONE adapt -> sum(V*f) preserved.
-    tr = tpx_amr.Octree(brick=[8, 8, 8], lmax=2, origin=[0, 0, 0], h0=1.0)
+    tr = core_amr.Octree(cells=[32, 32, 32], lmax=2, origin=[0, 0, 0])
     tr.refine_to_sdf(lambda x, y, z: abs(x - x0) - 3.0, target_level=0, band=1.0)
     fr = front(tr.centers())
     mass0 = float(np.sum(tr.sizes() ** 3 * fr))
@@ -282,7 +292,7 @@ if rank == 0:
 
     # (b) Tracking loop: re-sample the analytic front each step; the mesh converges to a thin refined
     #     slab around it — every finest leaf near the front, and far fewer leaves than uniform-fine.
-    ta = tpx_amr.Octree(brick=[8, 8, 8], lmax=2, origin=[0, 0, 0], h0=1.0)
+    ta = core_amr.Octree(cells=[32, 32, 32], lmax=2, origin=[0, 0, 0])
     for _ in range(5):
         ea = ta.lohner_indicator(front(ta.centers()), eps=0.01)
         check(ea.min() >= 0.0 and ea.max() <= 1.0 + 1e-12, "Löhner indicator out of [0,1]")
@@ -299,8 +309,12 @@ if rank == 0:
 # ----------------------------------------------------------------------------------------------
 groot = [4, 4, 4]
 lmax = 3
-d = tpx_amr.DistributedOctree(global_root_size=groot, lmax=lmax, origin=[0.0, 0.0, 0.0], h0=1.0,
-                              periodic=[True, True, True])
+d = core_amr.DistributedOctree(cells=[g << lmax for g in groot], lmax=lmax, origin=[0.0, 0.0, 0.0],
+                               periodic=[True, True, True])
+check(list(d.cells) == [g << lmax for g in groot] and list(d.global_root_size) == groot,
+      "DistributedOctree.cells / global_root_size round-trip")
+check(np.allclose(d.spacing, 1.0) and np.allclose(d.extent, [g << lmax for g in groot]),
+      "DistributedOctree.spacing / extent")
 check(d.size == size and 0 <= d.rank < size, "rank/size")
 
 # Uniform: local leaf counts sum to the global root-cell count (4*4*4 = 64 leaves).
@@ -356,8 +370,8 @@ check(d.centers().shape == (M, 3), "post-rebalance centers shape")
 # A planar tanh front across the global domain; distributedAdapt refines it, restores cross-block
 # 2:1 balance, and conservatively remaps the field. Check global conservation + localization.
 dgroot = [4, 4, 4]
-da = tpx_amr.DistributedOctree(global_root_size=dgroot, lmax=2, origin=[0, 0, 0], h0=1.0,
-                               periodic=[False, False, False])
+da = core_amr.DistributedOctree(cells=[g << 2 for g in dgroot], lmax=2, origin=[0, 0, 0],
+                                periodic=[False, False, False])
 gx0, gw = 8.0, 1.5  # domain is 4*2^2 = 16 units per axis
 
 
@@ -388,10 +402,10 @@ check(global_far <= 3.0 * gw, f"distributed finest leaves not localized (max |x-
 # ----------------------------------------------------------------------------------------------
 total = comm.allreduce(fail, MPI.SUM)
 if rank == 0:
-    print(f"# tpx_amr: serial_leaves={serial_leaves} dist_leaves {gleaves}->{gleaves2} "
+    print(f"# peclet.core.amr: serial_leaves={serial_leaves} dist_leaves {gleaves}->{gleaves2} "
           f"imbalance {imb_before:.3f}->{imb_after:.3f}")
     if total == 0:
-        print(f"OK (np={size}): tpx_amr Octree + DistributedOctree work from Python/mpi4py")
+        print(f"OK (np={size}): peclet.core.amr Octree + DistributedOctree work from Python/mpi4py")
     else:
         sys.stderr.write(f"FAILED (np={size}): {total}\n")
 sys.exit(0 if total == 0 else 1)

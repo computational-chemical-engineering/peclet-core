@@ -193,6 +193,13 @@ unchanged by anisotropy and stay in the risk register.
 
 ## 7. Python bindings (`core/python/amr_bindings.cpp`, `packaging/core_amr.pyi`)
 
+> **Superseded 2026-09-08 (suite/docs/QUALITY_PLAN.md D1, the 1.0.0 clean break).** The shipped
+> constructors are `Octree(cells, *, lmax=0, origin, spacing=None, extent=None)` and
+> `DistributedOctree(cells, *, lmax=0, origin, spacing=None, periodic, extent=None)`, where `cells`
+> is the FINEST grid (the root brick is `cells / 2**lmax`, which must divide exactly) and `spacing`
+> takes a float or a triple; `brick=`, `global_root_size=`, `h0=` and the `.h0` accessor are gone
+> (`.spacing` is the one accessor). The section below is the Phase 3 design record as written.
+
 - `Octree(brick, lmax, origin=(0,0,0), h0=1.0, extent=None)`: `h0` accepts a float **or a 3-tuple**;
   `extent` derives `h0_a = extent_a/(brick_a·2^lmax)` **per axis, no cubic assert** (the plan's
   "relax `h0FromExtent`" — done by routing the constructor through a new `spacingsFromExtent`

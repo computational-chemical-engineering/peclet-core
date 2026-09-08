@@ -1,7 +1,7 @@
-"""Worked example of the transport-core AMR Python bindings (tpx_amr).
+"""Worked example of the core AMR Python bindings (peclet.core.amr).
 
 Run (after building the module — see python/CMakeLists.txt):
-    PYTHONPATH=python/build python3 python/example_amr.py
+    PYTHONPATH=<python build tree> python3 python/example_amr.py
 
 Three short, self-contained workflows that together exercise the whole host AMR surface:
 
@@ -12,17 +12,18 @@ Three short, self-contained workflows that together exercise the whole host AMR 
      parabola.
 
 For the distributed (MPI) octree — DistributedOctree, rebalance, face_neighbor_gather, distributed
-adapt — see python/test_tpx_amr.py, which drives it under mpi4py.
+adapt — see python/test_amr.py, which drives it under mpi4py.
 """
 import numpy as np
 
-from peclet.core import amr as tpx_amr
+from peclet.core import amr as core_amr
 
 
 def example_refine_and_export() -> None:
     """Build -> refine to an SDF surface -> export a ParaView .vtu."""
-    # 2x2x2 root cells, each refinable 4 levels deep, placed at the origin with finest cell h0=0.25.
-    oct = tpx_amr.Octree(brick=[2, 2, 2], lmax=4, origin=[0.0, 0.0, 0.0], h0=0.25)
+    # 32^3 finest cells = 2x2x2 root cells each refinable 4 levels deep, placed at the origin with a
+    # finest cell of 0.25 (`cells` is always the FINEST grid; the root brick is cells / 2**lmax).
+    oct = core_amr.Octree(cells=[32, 32, 32], lmax=4, origin=[0.0, 0.0, 0.0], spacing=0.25)
     center, radius = [4.0, 4.0, 4.0], 2.0
     nref = oct.refine_to_sphere(center=center, radius=radius, target_level=0, band=1.0)
     print(f"[1] refined a sphere: {nref} splits -> {oct.num_leaves} leaves, "
@@ -36,9 +37,9 @@ def example_refine_and_export() -> None:
 
 def example_poisson() -> None:
     """Geometric-multigrid Poisson solve on a graded octree (manufactured RHS)."""
-    oct = tpx_amr.Octree(brick=[2, 2, 2], lmax=3, origin=[0, 0, 0], h0=1.0)
+    oct = core_amr.Octree(cells=[16, 16, 16], lmax=3, origin=[0, 0, 0])
     oct.refine_to_sphere(center=[8, 8, 8], radius=4.0, target_level=0, band=1.0)
-    pois = tpx_amr.Poisson(oct, periodic=True)
+    pois = core_amr.Poisson(oct, periodic=True)
 
     c = oct.centers()
     k = 2 * np.pi / 16.0
@@ -56,10 +57,10 @@ def example_poisson() -> None:
 
 def example_poiseuille() -> None:
     """Collocated Stokes flow between two immersed cut-cell walls vs the analytic parabola."""
-    n, h0 = 16, 1.0 / 16
+    n = 16
     a, b = 0.25, 0.75  # wall planes; fluid in the slab a < x < b
-    oct = tpx_amr.Octree(brick=[n, n, n], lmax=0, origin=[0, 0, 0], h0=h0)
-    flow = tpx_amr.Flow(oct, density=1.0, viscosity=1.0, dt=1e6)
+    oct = core_amr.Octree(cells=[n, n, n], origin=[0, 0, 0], extent=[1.0, 1.0, 1.0])
+    flow = core_amr.Flow(oct, density=1.0, viscosity=1.0, dt=1e6)
     flow.set_solid(lambda x, y, z: min(x - a, b - x))  # >0 inside the channel
     flow.set_body_force(0.0, 1.0, 0.0)  # drive the flow along y
     for _ in range(5):
