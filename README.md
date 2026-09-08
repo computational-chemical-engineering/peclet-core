@@ -6,7 +6,7 @@
 [![CI](https://github.com/computational-chemical-engineering/peclet-core/actions/workflows/ci.yml/badge.svg)](https://github.com/computational-chemical-engineering/peclet-core/actions/workflows/ci.yml)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21132435.svg)](https://doi.org/10.5281/zenodo.21132435)
 
-Shared infrastructure for the transport-phenomena simulation suite (see `../docs/` for the suite-wide
+Shared infrastructure for the **peclet** suite (see `../docs/` for the suite-wide
 [architecture](../docs/ARCHITECTURE.md), [conventions](../docs/CONVENTIONS.md),
 [style](../docs/STYLE.md), [interfaces](../docs/INTERFACES.md) and [roadmap](../docs/ROADMAP.md)).
 
@@ -49,10 +49,14 @@ module: it currently lives inside the AMR flow solver (`peclet::core::amr`) and 
   is `peclet::core::amr::DistributedOctree::rebalance`.
 - `peclet::core::geom` (`sdf.hpp`, `grid_sdf.hpp`, `vti_io.hpp`) — shared SDF solids: analytic primitives +
   trilinear `GridSdf` behind one `Sdf` concept, with VTI (.vti) read/write.
+- `peclet::core::vof` (`include/peclet/core/vof/`) — layer L1 of the VoF stack: container-free
+  `KOKKOS_INLINE_FUNCTION` kernels (PLIC plane↔volume and normals, the height-function curvature
+  cascade, the cut-cell colour-transport rules, wetting). No `Kokkos::View` and no grid indexing in
+  any signature, so one copy serves every VoF container; the drivers live in `flow`.
 - `peclet::core::amr` (`include/peclet/core/amr/`) — block-local-Morton **AMR octree** flow subsystem: `peclet::core::amr::AmrFlow`
   (collocated projection Navier–Stokes), device + distributed multigrid (`pcg.hpp`, `multigrid.hpp`,
   `velocity_mg.hpp`, `distributed_*.hpp`), cut-cell IBM (`cut_cell.hpp`) and solution-adaptive refinement
-  (`adapt.hpp`, `indicators.hpp`). See `docs/amr_collocated_projection.md`.
+  (`adapt.hpp`, `indicators.hpp`). See [docs/amr_collocated_projection.md](docs/amr_collocated_projection.md).
 - **Python bindings** (`python/mpi_bindings.cpp`, `python/geom_bindings.cpp`, `python/amr_bindings.cpp`) —
   **nanobind** modules over the shared zero-copy `View`↔ndarray bridge
   (`include/peclet/core/python/ndarray_interop.hpp`). `peclet.core.mpi` exposes the host Lagrangian halo
@@ -71,7 +75,7 @@ Python ctests in the `python/` build.
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
-ctest --test-dir build --output-on-failure -LE bench  # 109 ctests: serial + MPI (np=1,2,4,8); 164 with -DPECLET_CORE_ENABLE_KOKKOS=ON
+ctest --test-dir build --output-on-failure -LE bench  # 104 ctests: serial + MPI (np=1,2,4,8); 158 with -DPECLET_CORE_ENABLE_KOKKOS=ON
 ctest --test-dir build -L bench                       # benchmarks + measurement studies (label `bench`, ~3.5 min)
 
 # halo microbenchmark: weak scaling, NBX vs persistent
@@ -92,6 +96,17 @@ three configurations (host+MPI gcc/clang Debug/Release, Kokkos-OpenMP + Python, 
 pinned `morton` tag. The CMake project is
 `peclet_core` (its version is read from `pyproject.toml`); it exports the header-only targets
 `peclet::core` and `peclet::halo` (`cmake --install` + `find_package(peclet-core CONFIG)`).
+
+## Documentation
+
+`docs/` holds the four AMR reference notes that describe the design as it ships —
+[amr_collocated_projection.md](docs/amr_collocated_projection.md) (collocated projection, `maskSolid`,
+the div-free face field), [amr_mixed_level_cut_band_plan.md](docs/amr_mixed_level_cut_band_plan.md)
+(mixed-level cut band + graded refinement), [amr_setup_parallel_plan.md](docs/amr_setup_parallel_plan.md)
+(the parallel `setSolid` builders) and [amr_anisotropic.md](docs/amr_anisotropic.md) (per-axis root
+spacing). Dated campaign records and superseded plans live in
+[docs/archive/](docs/archive/README.md). Doxygen API pages (`docs/Doxyfile`, README + `include/`) are
+published to GitHub Pages by `.github/workflows/docs.yml`.
 
 ## Status
 

@@ -1,7 +1,7 @@
 # Next phase: march-time economics + the distributed mixed-level band
 
-*Plan, 2026-08-30 (Fable). Follows `amr_setup_parallel_plan.md` (complete, F1 resolved) and
-`amr_mixed_level_cut_band_plan.md` (P3c). Ownership per rung is marked **[OPUS]** (execution
+*Plan, 2026-08-30 (Fable). Follows `../amr_setup_parallel_plan.md` (complete, F1 resolved) and
+`../amr_mixed_level_cut_band_plan.md` (P3c). Ownership per rung is marked **[OPUS]** (execution
 against settled decisions) or **[FABLE]** (a decision gate — Opus stops there and hands back,
 same escalation contract as the setup-parallel plan §5, which applies verbatim here).*
 

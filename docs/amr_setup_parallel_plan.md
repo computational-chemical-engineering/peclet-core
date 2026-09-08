@@ -3,7 +3,7 @@
 *Plan, 2026-08-30 (Fable analysis; rungs 0/0.5 EXECUTED BY FABLE — the shared-dependency and
 abstraction-design rungs; rungs 1–5 are Opus execution). Companion to
 `amr_mixed_level_cut_band_plan.md` (the campaign this serves) and
-`../../docs/AMR_GEOMETRY_SETUP_REQUIREMENTS.md` §5–6 (the scene-layer handoff this builds on).*
+`../../docs/archive/AMR_GEOMETRY_SETUP_REQUIREMENTS.md` §5–6 (the scene-layer handoff this builds on).*
 
 **Status: DONE 2026-08-29 (rungs 0, 0.5, 1, 2, 3, 4, 5 all landed and pushed).
 `setSolid` on the depth-7 RCP bed: 10.5 → 2.4 µs/leaf at 8 threads, 1.7 at 16 — the ≤2.5
@@ -56,7 +56,7 @@ Mechanically, three pieces:
 `-mfma` on the amr_bindings host flags rides along (the §5 note; independent of the above).
 *Why not device assembly now:* these builders are host-by-design for oracle parity (weights
 host-built, shared verbatim — the parity-by-construction contract); device-resident overlay
-assembly is a later campaign (`amr_device_assembly_plan.md`), which D1′ feeds but does not
+assembly is a later campaign (`archive/amr_device_assembly_plan.md`), which D1′ feeds but does not
 start.
 
 **D2 — Determinism by construction, verified by thread-count invariance.** Every parallelized
@@ -95,7 +95,7 @@ loops are rank-local and safe, but DO NOT restructure any distributed logic).
 *Execution log — all landed on `main` (core / umbrella): rung 0 `f990828` / `747b383`,
 0.5 `c74cbee` / `9923dcc`, 1 `f586a9f` / `44d9d3c`, 2 `71a1e7a` / `d3983ec`,
 3 `7704bae` / `c8b09df` (carries finding F1), 4 `409ff48` / `d21419a`, 5 = this document +
-`../../docs/AMR_GEOMETRY_SETUP_REQUIREMENTS.md` §1a + `amr_mixed_level_cut_band_plan.md` P3c
+`../../docs/archive/AMR_GEOMETRY_SETUP_REQUIREMENTS.md` §1a + `amr_mixed_level_cut_band_plan.md` P3c
 observation 4. The ctest count is now 149 (148 + `host_parallel`), so read gate (a) as 149/149.*
 
 Gates for every rung: (a) 148/148 core ctests on `build_komp3` (OpenMP battery:
@@ -177,7 +177,7 @@ bitwise at 1 vs 16 threads, and the sampled overlay's build census unchanged to 
 
 **Where the next µs are.** Loop parallelism is spent: the two largest remaining items are the
 serial velocity-MG build (0.3) and `findPocketCells` (0.2), and everything else is ≤0.5. The
-next lever is device-resident assembly (`amr_device_assembly_plan.md`, which D3 defers to) and,
+next lever is device-resident assembly (`archive/amr_device_assembly_plan.md`, which D3 defers to) and,
 for cluster runs, F1's distributed resolver.
 
 ## 4. What Opus must know (traps, verbatim from the handoff + this campaign)

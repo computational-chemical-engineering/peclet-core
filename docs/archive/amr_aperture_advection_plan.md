@@ -1,7 +1,7 @@
 # The AMR aperture pressure solve under advection — the blocker on retiring the ghost projection
 
 *Written 2026-08-18, as the handoff from the collocated-scheme decision. Read
-`amr_collocated_projection.md` §"Measured (tests/study/amr_ns_ghost.py …)" and the 2026-07-25
+`../amr_collocated_projection.md` §"Measured (tests/study/amr_ns_ghost.py …)" and the 2026-07-25
 update first — this note only states the problem, the evidence, and what would settle it.*
 
 ## RESOLVED 2026-08-19 — characterisation results and the fix
@@ -44,7 +44,7 @@ solver health traced per step. The bounded V-cycle remains the `setPressurePCG(f
 (unchanged, still stalls benignly at the incompatible floor).
 
 Acceptance measurements + the ghost-projection retirement that followed: see
-`amr_collocated_projection.md` (2026-08-19 update).
+`../amr_collocated_projection.md` (2026-08-19 update).
 
 **Follow-up experiment (2026-08-19, branch `dev/aperture-compat-rhs`, core 94a069d — NOT
 merged):** restoring RHS compatibility at the discretization level (divergence on ALL operator
@@ -70,7 +70,7 @@ therefore **quarantined in flow**.
 
 ## The defect
 
-From `amr_collocated_projection.md` (measured, `tests/study/amr_ns_ghost.py`, Z&H at Re≈9.7):
+From `../amr_collocated_projection.md` (measured, `tests/study/amr_ns_ghost.py`, Z&H at Re≈9.7):
 
 > the aperture path must run the bounded V-cycle (**60 cycles/step — MG-PCG excluded by the
 > transient near-nullspace issue**) while the ghost BiCGStab stays at 6–7 iterations: 18 s vs 341 s
@@ -102,7 +102,7 @@ measured. Something specific to the advecting configuration is breaking the Kryl
      really a stagnation cap.
 2. **Does the agglomerated coarse solve fix it?** In flow this exact symptom — a V-cycle that is
    not domain-independent because the coarsest level is not effectively solved — was resolved by
-   agglomerating the bottom (`docs/DECOMPOSITION_AND_MULTIGRID.md` §1.1/1.2, §2.7). If AMR's
+   agglomerating the bottom (`../../../docs/DECOMPOSITION_AND_MULTIGRID.md` §1.1/1.2, §2.7). If AMR's
    coarsest level has the same problem, this is the cheapest possible fix.
 3. **Is MG-PCG actually invalid, or just untuned?** If the operator is SPD, PCG should work and
    the exclusion is a bug worth re-testing rather than a constraint.

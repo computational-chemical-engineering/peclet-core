@@ -112,12 +112,9 @@ Findings:
 Build the CUDA `peclet.core.amr` Python module:
 ```bash
 export PATH=/usr/local/cuda-13.2/bin:$PATH
-cd core/python
-PYBIND=$(cd ../../flow && .venv/bin/python -m pybind11 --cmakedir)
-PYEXE=$(cd ../../flow && .venv/bin/python -c "import sys;print(sys.executable)")
-cmake -S . -B build_cuda -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH="$PWD/../../extern/install/nvidia-cuda;$PYBIND" \
-  -DPython_EXECUTABLE="$PYEXE" \
+cd core && source ../.venv/bin/activate           # THE suite venv; nanobind via SuiteNanobind
+cmake -S python -B build_cuda -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH="$PWD/../extern/install/nvidia-cuda" \
   -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF        # ← REQUIRED: LTO+nvcc fatbin clash
 cmake --build build_cuda --target amr_bindings -j
 ```
@@ -153,7 +150,7 @@ flow collocated reference run lived at `/tmp/sdflow_coloc_gpu.py` (single SC sph
 3. **Device NS via MG-PCG** — ~~advection currently forces the bounded V-cycle~~ **DONE 2026-08-19**:
    the `!advect_` exclusion was stale (it predated `maskSolid`) and is removed — MG-PCG covers
    advection, flat 15–17 iters/step. The "near-nullspace issue" was characterised as an
-   incompatible RHS fluid-mean (see `amr_aperture_advection_plan.md` §RESOLVED), which the PCG's
+   incompatible RHS fluid-mean (see `archive/amr_aperture_advection_plan.md` §RESOLVED), which the PCG's
    projection deflates.
 4. **The ~1% projection-structure difference** is still not isolated to one line. The clean way: expose
    each engine's projection as a standalone `project(u)->u_divfree` callable, feed both the SAME
@@ -312,7 +309,7 @@ normal sample offset that is conservative, telescoping, and vanishes at steady s
   "near-nullspace issue" was an un-deflated incompatible RHS mean. With MG-PCG re-enabled under
   advection the aperture path runs 15–16 iters/step and is CHEAPER per step than the ghost
   BiCGStab (32.7 vs 39 ms/step at N=32, 46.6 vs 60 at N=64, same study). See
-  `amr_aperture_advection_plan.md` §RESOLVED and the 2026-08-19 update below.]**
+  `archive/amr_aperture_advection_plan.md` §RESOLVED and the 2026-08-19 update below.]**
 - unsteady impulsive start (600 steps, N=64): the two trajectories track within 0.24% —
   exactly the steady scheme gap, no transient drift or instability; the ghost residual
   divergence trace (max 1.1e-4, final 5.6e-6) sits an order of magnitude BELOW the aperture's
@@ -402,7 +399,7 @@ case) the transferred p is benign and kept.
 
 The aperture-under-advection solver defect (the last thing keeping the ghost projection alive
 anywhere in the suite) was characterised and fixed — full diagnosis in
-`amr_aperture_advection_plan.md` §RESOLVED. In one line: the "transient near-nullspace issue" was
+`archive/amr_aperture_advection_plan.md` §RESOLVED. In one line: the "transient near-nullspace issue" was
 an un-deflated **incompatible RHS fluid-mean** (the divergence RHS is zeroed at solid-centered
 open-faced DOF, breaking telescoping; the defect grows with the developed flow), which stalled the
 un-deflated bounded V-cycle at exactly `|mean|·sqrt(V_fluid)`; the operator itself is

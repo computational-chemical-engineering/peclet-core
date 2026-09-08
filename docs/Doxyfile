@@ -13,7 +13,7 @@ CREATE_SUBDIRS         = NO
 FULL_PATH_NAMES        = NO
 
 #---- inputs --------------------------------------------------------------------------------------
-INPUT                  = README.md include docs/cuda-aware-mpi.md
+INPUT                  = README.md include
 USE_MDFILE_AS_MAINPAGE = README.md
 FILE_PATTERNS          = *.hpp *.md
 RECURSIVE              = YES

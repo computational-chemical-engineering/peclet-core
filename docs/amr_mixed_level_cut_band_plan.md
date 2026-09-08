@@ -29,7 +29,7 @@ pocket exclusion in LS clouds and **sub-face closures** (now bounded — an accu
 stability blocker).
 
 **UPDATE 2026-08-30 — the distributed sample halo is DONE**, so that risk-register row is retired.
-The follow-on campaign `amr_march_perf_and_distributed_plan.md` carries it (rungs D0–D2: the LS
+The follow-on campaign `archive/amr_march_perf_and_distributed_plan.md` carries it (rungs D0–D2: the LS
 clouds became a deterministic `probeSlot` set, the sampled builders joined the discovery fixpoint,
 and the clouds read ghost slots; np=1 bitwise, np=2/4 in the ~3e-7 march class). That campaign also
 DIAGNOSED P3c's "1.62× fewer cells, ~0% step time" (its M1 matrix: the cell saving is SPENT on the

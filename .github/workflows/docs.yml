@@ -1,6 +1,6 @@
 name: Documentation
 
-# Build the Doxygen API docs (header-only C++20 in include/, plus the Markdown design notes) and
+# Build the Doxygen API docs (README.md + the header-only C++20 API in include/) and
 # publish them to GitHub Pages. Requires Pages to be enabled for the repository with
 # "Source: GitHub Actions" (Settings -> Pages). Runs on every push to main; can also be run manually.
 

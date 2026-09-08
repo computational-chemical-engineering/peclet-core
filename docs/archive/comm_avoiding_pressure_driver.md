@@ -4,7 +4,7 @@
 **PROPOSAL — not implemented.** This note exists so the option is on the table the next time
 multi-GPU pressure-solve scaling is the work item. Read
 `amr_aperture_advection_plan.md` §RESOLVED first (the diagnosis this builds on) and
-`../../docs/DECOMPOSITION_AND_MULTIGRID.md` for the coarse-level context.*
+`../../../docs/DECOMPOSITION_AND_MULTIGRID.md` for the coarse-level context.*
 
 ## The opportunity, in one paragraph
 

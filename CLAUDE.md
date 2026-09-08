@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`core` is the shared infrastructure library for the transport-phenomena simulation suite
+`core` is the shared infrastructure library of the **peclet** suite
 (sibling repos under `../`: `flow`, `dem`, `voro`, `morton`). The suite-wide design contract lives in `../docs/` — read
 `../docs/ARCHITECTURE.md`, `CONVENTIONS.md`, `STYLE.md`, `INTERFACES.md`, `ROADMAP.md` before
 cross-cutting changes. Header-only C++20; the device side is compiled through Kokkos (CUDA / HIP /
@@ -16,13 +16,13 @@ retired; Kokkos is the canonical device path.
 ```bash
 # CPU library + tests (no device dependency):
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
-ctest --test-dir build --output-on-failure -LE bench   # 109 ctests: serial + MPI halo + particle migration + diffusion + AMR
+ctest --test-dir build --output-on-failure -LE bench   # 104 ctests (109 with `bench`): MPI halo + particle migration + diffusion + AMR
 
 # Portable Kokkos device halo (CUDA / HIP / OpenMP) -- opt-in, find_package(Kokkos):
 export PATH=/usr/local/cuda-13.2/bin:$PATH    # if the Kokkos install targets the CUDA backend
 cmake -S . -B build_kokkos -DPECLET_CORE_ENABLE_KOKKOS=ON \
   -DCMAKE_PREFIX_PATH=../extern/install/nvidia-cuda
-cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure -LE bench  # 164 ctests: + device halo / AMR np=1,2,4,8
+cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure -LE bench  # 158 ctests (164 with `bench`): + device halo / AMR np=1,2,4,8
 mpirun -np 4 ./build/benchmarks/bench_halo 48 1 300
 
 # Python modules + their ctests (test_mpi.py np=1,2,4,8; test_amr.py serial + np=2; ndarray interop):
@@ -49,8 +49,7 @@ suite's local install prefix (`../tools/bootstrap_deps.sh`). The legacy native-C
 CMake identifiers: `project(peclet_core VERSION …)` with the version read from `pyproject.toml` (the
 one version source); targets `peclet_core` / `peclet::core` (header-only) and `peclet_halo` /
 `peclet::halo` (+ MPI, or the single-rank stub); `cmake --install` exports them for
-`find_package(peclet-core CONFIG)`. The pre-2026-09 names (`transport_core`, `tpx_core`, `tpx::halo`)
-are gone. Python modules: `cmake -S python -B build_rel_py -DCMAKE_PREFIX_PATH=../extern/install/host-openmp`
+`find_package(peclet-core CONFIG)`. Python modules: `cmake -S python -B build_rel_py -DCMAKE_PREFIX_PATH=../extern/install/host-openmp`
 (→ `peclet.core.{mpi,geom,amr}` under `build_rel_py/peclet/core/`, `PYTHONPATH=build_rel_py`); their
 stubs are `python/packaging/core_<mod>.pyi` — regenerate with `python -m nanobind.stubgen` after
 changing a binding.
@@ -63,8 +62,7 @@ Header-only under `include/peclet/core/`:
   compile-time `forEachInBox`. **Convention: x-fastest linear index** `I = x + y*nx + z*nx*ny`
   (matches flow and `../docs/CONVENTIONS.md`). Keep this header C++17-clean (shared with `morton`,
   which pins C++17).
-- `decomp/block_decomposer.hpp` — ORB decomposition (ported & modernized from
-  `../block_decomposer/src/BlockDecomposer.hpp`). `ownerOf()` walks the implicit binary tree
+- `decomp/block_decomposer.hpp` — ORB decomposition. `ownerOf()` walks the implicit binary tree
   (children at `2i+1`/`2i+2`, leaves carry the block index) and is the key primitive for halo
   topology. `linearGlobal`/`multiGlobal` are x-fastest and mutually inverse. `init(numBlocks,
   globalSize, weights)` is the **weighted ORB** for dynamic load balancing: it bisects at the cell
@@ -88,8 +86,8 @@ Header-only under `include/peclet/core/`:
   Z-order code, `neighborCode` steps one cell along an axis directly in Morton space. Methods carry
   morton's `MORTON_HD`, so they are device-callable under a Kokkos build (the Kokkos build defines
   `MORTON_ENABLE_KOKKOS` ⇒ `MORTON_HD` is `KOKKOS_FUNCTION`).
-- `halo/nbx.hpp` — `NbxEngine`: canonical NBX (Issend + Ibarrier consensus). Reimplements the engine
-  from `../block_decomposer/src/MPISync.hpp`. Use for dynamic/sparse exchange.
+- `halo/nbx.hpp` — `NbxEngine`: canonical NBX (Issend + Ibarrier consensus, Hoefler et al.). Use for
+  dynamic/sparse exchange.
 - `halo/grid_halo_topology.hpp` — `GridHaloTopology<Dim>`: the ghost-layer exchange. **Topology** (who
   owns each ghost cell, established via one NBX round so owners learn what to send) is built once in
   `buildTopology()`; **exchange** runs every step. Field-agnostic: any type with
@@ -110,9 +108,8 @@ Header-only under `include/peclet/core/`:
   compact halo buffers are host-staged for MPI by default (the field stays on the device), with an
   opt-in GPU-aware path (env `PECLET_CORE_GPU_AWARE_MPI`, legacy `PECLET_CORE_CUDA_AWARE_MPI` still honoured). Built
   from a host `GridHaloTopology<Dim>::flatten()` via `init()`. Bit-for-bit matches the CPU exchange.
-  (The legacy native-CUDA `grid_halo_cuda.cuh` / `DeviceGridExchange<T>` was retired when Kokkos became
-  the canonical device path; see `docs/cuda-aware-mpi.md` for the historical
-  host-staging-vs-GPU-aware analysis.)
+  (`docs/archive/cuda-aware-mpi.md` holds the historical host-staging-vs-GPU-aware analysis and the
+  user-space UCX + OpenMPI recipe that gives this box a GPU-aware MPI.)
 - `halo/particle_halo_topology.hpp` — `ParticleHaloTopology<Dim>`: persistent Lagrangian ghost halo
   (host topology + field-agnostic exchange). `build()` establishes the owner↔ghost correspondence from
   particle proximity; `forward` (owner→ghost), `reverse` (ghost→owner, accumulate) and
@@ -124,7 +121,7 @@ Header-only under `include/peclet/core/`:
 - `geom/` — shared SDF solids. `geom/sdf.hpp` is the `Sdf` concept + analytic primitives;
   `geom/grid_sdf.hpp` is the trilinearly-sampled `GridSdf`; `geom/vti_io.hpp` reads/writes scalar &
   vector VTI (`.vti`). The shared geometry representation behind flow's and dem's cut-cell IBM.
-- `vof/` — **layer L1 of the VoF stack** (`peclet::core::vof`, `../docs/VOF_PLAN.md` §11), promoted
+- `vof/` — **layer L1 of the VoF stack** (`peclet::core::vof`, `../docs/archive/VOF_PLAN.md` §11), promoted
   out of `flow/src/vof/` by WO-W0 (2026-09-02) as a plain file move. Container-free
   `KOKKOS_INLINE_FUNCTION`s of scalars and small local arrays — **no `Kokkos::View`, no grid
   indexing, no halo types in any signature**, which is exactly what lets ONE copy serve all three
@@ -170,10 +167,13 @@ Header-only under `include/peclet/core/`:
   six decisions each with the alternative to revisit (§5), the measured phase results, and the risk
   register — of whose three unfinished rungs the distributed sample halo is now DONE, leaving
   sub-face closures and pocket exclusion in LS clouds.
-  Design notes: `docs/amr_collocated_projection.md`, `docs/amr_mixed_level_cut_band_plan.md`,
-  `docs/amr_march_perf_and_distributed_plan.md` (march economics + the distributed band; its status
-  table names the two items still open), `docs/amr_device_assembly_plan.md`.
-- `python/` + `python/include/peclet/core/python/ndarray_interop.hpp` — **nanobind** Python bindings over a
+  Design notes (`docs/`): `amr_collocated_projection.md` (the collocated projection + `uf`
+  advection), `amr_mixed_level_cut_band_plan.md`, `amr_setup_parallel_plan.md` (the parallel
+  builders, D1′), `amr_anisotropic.md` (per-axis root spacing). The dated campaign records are in
+  `docs/archive/` behind its README index — `amr_march_perf_and_distributed_plan.md` (march
+  economics + the distributed band; its status table names the two items still open),
+  `amr_distributed_flow.md`, `amr_device_assembly_plan.md`, `amr_aperture_advection_plan.md`.
+- `python/` — **nanobind** Python bindings over a
   shared **zero-copy `peclet::core::View`↔ndarray bridge** (`include/peclet/core/python/ndarray_interop.hpp`).
   `python/mpi_bindings.cpp` (→ `peclet.core.mpi`) is host-only (no Kokkos): exposes `ParticleMigrator`
   (migrate / gather_ghosts / rebalance) and `ParticleHalo` (the persistent `ParticleHaloTopology`) for an
