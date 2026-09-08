@@ -1,6 +1,6 @@
 """Round-trip tests for the Kokkos-View <-> nanobind-ndarray zero-copy bridge.
 
-Exercises tpx::python::{ndarray_to_view, view_to_ndarray, vector_to_ndarray} through the
+Exercises peclet::core::python::{ndarray_to_view, view_to_ndarray, vector_to_ndarray} through the
 interop_test_module built next to this file. Validates the suite's array contract: x-fastest
 (LayoutLeft) Kokkos fields export as Fortran-order (nx,ny,nz) NumPy arrays, values survive a
 device round-trip, and exports reference (not copy) the View's memory.

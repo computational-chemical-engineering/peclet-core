@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.24)
-project(tpx_python_interop_test LANGUAGES CXX)
+project(peclet_core_python_interop_test LANGUAGES CXX)
 
 # Self-contained test for the Kokkos-View <-> nanobind-ndarray zero-copy bridge
-# (include/tpx/python/ndarray_interop.hpp). Its own find_package project, like sdflow/tests/kokkos:
+# (include/peclet/core/python/ndarray_interop.hpp). Its own find_package project, like flow/tests/kokkos:
 # build against a bootstrapped Kokkos prefix on CMAKE_PREFIX_PATH, then run the pytest:
 #
 #   cmake -S tests/python -B build_pyinterop \

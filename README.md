@@ -53,27 +53,33 @@ module: it currently lives inside the AMR flow solver (`peclet::core::amr`) and 
   (collocated projection Navier–Stokes), device + distributed multigrid (`pcg.hpp`, `multigrid.hpp`,
   `velocity_mg.hpp`, `distributed_*.hpp`), cut-cell IBM (`cut_cell.hpp`) and solution-adaptive refinement
   (`adapt.hpp`, `indicators.hpp`). See `docs/amr_collocated_projection.md`.
-- **Python bindings** (`python/tpx_mpi.cpp`, `python/tpx_amr.cpp`) — **nanobind** modules over the
-  shared zero-copy `View`↔ndarray bridge (`include/peclet/core/python/ndarray_interop.hpp`). `peclet.core.mpi` exposes
-  the host Lagrangian halo / migration / rebalance; `peclet.core.amr` exposes the device AMR flow.
+- **Python bindings** (`python/mpi_bindings.cpp`, `python/geom_bindings.cpp`, `python/amr_bindings.cpp`) —
+  **nanobind** modules over the shared zero-copy `View`↔ndarray bridge
+  (`include/peclet/core/python/ndarray_interop.hpp`). `peclet.core.mpi` exposes the host Lagrangian halo
+  (`ParticleMigrator`, `ParticleHalo`: migration / ghosts / rebalance); `peclet.core.geom` the analytic-SDF
+  scene authoring + rigid-body mass properties; `peclet.core.amr` the octree (`Octree`, `DistributedOctree`)
+  and the device AMR flow. Type stubs ship beside the modules (`python/packaging/core_*.pyi`, generated with
+  `python -m nanobind.stubgen`).
 
 Validated end-to-end by distributed explicit heat-diffusion solvers (plain, and **around an SDF solid
 obstacle**) matching a serial reference cell-for-cell across ranks, and consumed by the validated
-`flow` and `dem` distributed solvers. 26 ctests pass (`np` 1–8 CPU, 1–4 GPU).
+`flow` and `dem` distributed solvers. 104 ctests in the plain host+MPI build, 158 with Kokkos (`np` 1–8).
 
 ## Build / test / benchmark
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
-ctest --test-dir build --output-on-failure          # 26 ctests: serial + MPI (np=1,2,4,8)
+ctest --test-dir build --output-on-failure          # 104 ctests: serial + MPI (np=1,2,4,8); 158 with -DPECLET_CORE_ENABLE_KOKKOS=ON
 
 # halo microbenchmark: weak scaling, NBX vs persistent
 mpirun -np 4 ./build/benchmarks/bench_halo 48 1 300  # cells/rank/axis, ghost, iters
 ```
 
 Requires MPI (OpenMPI/MPICH) and a C++20 compiler. `morton` is picked up automatically if
-checked out as a sibling directory (enables `PECLET_CORE_HAVE_MORTON`).
+checked out as a sibling directory (enables `PECLET_CORE_HAVE_MORTON`). The CMake project is
+`peclet_core` (its version is read from `pyproject.toml`); it exports the header-only targets
+`peclet::core` and `peclet::halo` (`cmake --install` + `find_package(peclet-core CONFIG)`).
 
 ## Status
 
@@ -81,6 +87,6 @@ Complete and in production. The block decomposition, the async ghost-layer excha
 Kokkos GPU, host-staged and opt-in GPU-aware), particle migration, dynamic load balancing (weighted
 ORB + AMR/Lagrangian rebalancing), SDF geometry, the AMR octree flow subsystem (device + distributed
 multigrid, collocated projection), and the nanobind Python bindings are all shipped and tested
-(26 ctests, `np` 1–8 CPU / 1–4 GPU). `flow` (distributed cut-cell IBM Navier–Stokes) and `dem`
+(104 ctests plain, 158 with Kokkos; `np` 1–8). `flow` (distributed cut-cell IBM Navier–Stokes) and `dem`
 (distributed XPBD with load rebalancing) are validated consumers. CUDA is retired; Kokkos
 (CUDA / HIP / OpenMP) is the canonical device path. Remaining work is at-scale multi-GPU tuning.

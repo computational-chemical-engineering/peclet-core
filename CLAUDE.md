@@ -16,18 +16,27 @@ retired; Kokkos is the canonical device path.
 ```bash
 # CPU library + tests (no device dependency):
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
-ctest --test-dir build --output-on-failure   # serial + MPI halo + particle migration + diffusion
+ctest --test-dir build --output-on-failure   # 104 ctests: serial + MPI halo + particle migration + diffusion + AMR
 
 # Portable Kokkos device halo (CUDA / HIP / OpenMP) -- opt-in, find_package(Kokkos):
 export PATH=/usr/local/cuda-13.2/bin:$PATH    # if the Kokkos install targets the CUDA backend
 cmake -S . -B build_kokkos -DPECLET_CORE_ENABLE_KOKKOS=ON \
   -DCMAKE_PREFIX_PATH=../extern/install/nvidia-cuda
-cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure  # + GPU halo np=1,2,4
+cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure  # 158 ctests: + device halo / AMR np=1,2,4
 mpirun -np 4 ./build/benchmarks/bench_halo 48 1 300
 ```
 
 The Kokkos halo path is provisioned via `find_package(Kokkos CONFIG)` against a cluster module or the
 suite's local install prefix (`../tools/bootstrap_deps.sh`). The legacy native-CUDA halo was retired.
+
+CMake identifiers: `project(peclet_core VERSION …)` with the version read from `pyproject.toml` (the
+one version source); targets `peclet_core` / `peclet::core` (header-only) and `peclet_halo` /
+`peclet::halo` (+ MPI, or the single-rank stub); `cmake --install` exports them for
+`find_package(peclet-core CONFIG)`. The pre-2026-09 names (`transport_core`, `tpx_core`, `tpx::halo`)
+are gone. Python modules: `cmake -S python -B build_rel_py -DCMAKE_PREFIX_PATH=../extern/install/host-openmp`
+(→ `peclet.core.{mpi,geom,amr}` under `build_rel_py/peclet/core/`, `PYTHONPATH=build_rel_py`); their
+stubs are `python/packaging/core_<mod>.pyi` — regenerate with `python -m nanobind.stubgen` after
+changing a binding.
 
 ## Architecture
 
@@ -77,7 +86,8 @@ Header-only under `include/peclet/core/`:
 - `halo/particle_rebalance.hpp` — `rebalanceByParticleCount(dec, mig, pos, payload, …)`: Lagrangian load
   balancing. Bins particles onto the grid, re-inits `dec` in place with the **weighted ORB** (so a
   migrator/halo holding a pointer to it sees the new partition), and migrates. Pure redistribution
-  (count/payload preserved). The dem distributed step is the consumer; also bound in `python/tpx_mpi.cpp`.
+  (count/payload preserved). The dem distributed step is the consumer; also bound in `python/mpi_bindings.cpp`
+  (`peclet.core.mpi.ParticleMigrator.rebalance`).
 - `halo/grid_halo.hpp` — `GridHalo<T>`: portable GPU-resident halo (Kokkos; CUDA / HIP / OpenMP
   backends). pack/unpack/self-copy run as `parallel_for` over the device `peclet::core::View<T>` field; only the
   compact halo buffers are host-staged for MPI by default (the field stays on the device), with an
@@ -148,9 +158,13 @@ Header-only under `include/peclet/core/`:
   table names the two items still open), `docs/amr_device_assembly_plan.md`.
 - `python/` + `python/include/peclet/core/python/ndarray_interop.hpp` — **nanobind** Python bindings over a
   shared **zero-copy `peclet::core::View`↔ndarray bridge** (`include/peclet/core/python/ndarray_interop.hpp`).
-  `python/tpx_mpi.cpp` is host-only (no Kokkos): exposes `ParticleMigrator` / `ParticleHaloTopology` /
-  `rebalanceByParticleCount` for an mpi4py driver. `python/tpx_amr.cpp` exposes the device `AmrFlow`
-  (needs the `morton` sibling + a Kokkos backend). Both are built via `include(SuiteNanobind)` +
+  `python/mpi_bindings.cpp` (→ `peclet.core.mpi`) is host-only (no Kokkos): exposes `ParticleMigrator`
+  (migrate / gather_ghosts / rebalance) and `ParticleHalo` (the persistent `ParticleHaloTopology`) for an
+  mpi4py driver, both constructed as `(origin, extent, cells, periodic)`. `python/geom_bindings.cpp`
+  (→ `peclet.core.geom`) is the analytic-SDF scene authoring. `python/amr_bindings.cpp` (→ `peclet.core.amr`)
+  exposes `Octree` / `DistributedOctree` (`Octree(cells, *, lmax, origin, spacing | extent)` — `cells` is
+  the FINEST grid, as in flow; the root brick is `cells / 2**lmax`) and the device `AmrFlow` (needs the
+  `morton` sibling + a Kokkos backend). All are built via `include(SuiteNanobind)` +
   `suite_require_nanobind()` from `../cmake/SuiteNanobind.cmake` (suite-root).
 
 ## Gotchas

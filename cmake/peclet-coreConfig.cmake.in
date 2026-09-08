@@ -1,0 +1,12 @@
+# peclet-core package config: `find_package(peclet-core CONFIG)` -> peclet::core (header-only) and
+# peclet::halo (adds MPI, or the single-rank stub). Generated from cmake/peclet-coreConfig.cmake.in.
+@PACKAGE_INIT@
+include(CMakeFindDependencyMacro)
+if(@PECLET_CORE_CONFIG_NEED_MPI@)
+  find_dependency(MPI COMPONENTS CXX)
+endif()
+if(@PECLET_CORE_HAVE_KOKKOS@)
+  find_dependency(Kokkos CONFIG)
+endif()
+include("${CMAKE_CURRENT_LIST_DIR}/peclet-coreTargets.cmake")
+check_required_components(peclet-core)

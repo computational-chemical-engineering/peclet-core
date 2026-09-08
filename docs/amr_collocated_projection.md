@@ -119,7 +119,7 @@ cmake -S . -B build_cuda -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH="$PWD/../../extern/install/nvidia-cuda;$PYBIND" \
   -DPython_EXECUTABLE="$PYEXE" \
   -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF        # ← REQUIRED: LTO+nvcc fatbin clash
-cmake --build build_cuda --target tpx_amr -j
+cmake --build build_cuda --target amr_bindings -j
 ```
 - **LTO must be OFF for the CUDA build** or the link dies with `symbol 'fatbinData' is already defined`
   / `lto-wrapper failed`. (The OpenMP/Serial builds are fine with LTO on.)

@@ -28,7 +28,7 @@
 //     differently in TUs that reach it before vs after Kokkos_Core.hpp: an ODR violation. The
 //     header pulls Kokkos in itself so every TU in a Kokkos build agrees.
 //   * `Kokkos::is_initialized()` is checked at the call. Several host-oracle ctests
-//     (test_amr_drag, test_amr_flow, test_amr_cf_vector, ...) link a Kokkos-enabled tpx_core but
+//     (test_amr_drag, test_amr_flow, test_amr_cf_vector, ...) link a Kokkos-enabled peclet_core but
 //     never call Kokkos::initialize — they exercise the oracle, not the device. Those must keep
 //     working, so an uninitialized Kokkos falls back to the serial loop instead of aborting.
 //

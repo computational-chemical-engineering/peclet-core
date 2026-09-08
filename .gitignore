@@ -12,3 +12,6 @@ docs/html/
 # Python build/test artifacts
 __pycache__/
 *.pyc
+
+# Build / configure logs (build_td_*.log and friends)
+*.log
