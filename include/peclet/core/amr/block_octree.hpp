@@ -10,7 +10,7 @@
 // ghost halo) is layered on top later (DistributedOctree / AmrHalo); a uniform,
 // unrefined BlockOctree is bit-identical to the existing structured block grid.
 //
-// Conventions (see also morton/octree and ../../../docs)
+// Conventions (morton's level convention; see also ../../../docs)
 // -----------------------------------------------------------------------------
 //  * Coordinates are in *fine units*: 1 fine unit = a leaf at level 0. A leaf at
 //    `level` L covers a 2^L block per axis; its origin Morton code has the low

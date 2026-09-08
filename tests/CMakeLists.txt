@@ -34,15 +34,11 @@ target_include_directories(test_morton_indexer PRIVATE ${CMAKE_CURRENT_SOURCE_DI
 add_test(NAME morton_indexer COMMAND test_morton_indexer)
 
 # Per-block adaptive octree (peclet::core::amr::BlockOctree). Inert unless PECLET_CORE_HAVE_MORTON;
-# cross-checks against the morton_octree::Octree reference oracle when the sibling
-# octree project is present (its header is not on peclet_core's include path).
+# cross-checks against the test-local morton_octree::Octree reference oracle
+# (tests/oracle/morton_octree.hpp, a std::map linear octree on the morton library).
 add_executable(test_block_octree test_block_octree.cpp)
 target_link_libraries(test_block_octree PRIVATE peclet_core)
 target_include_directories(test_block_octree PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-set(_morton_octree_inc "${CMAKE_CURRENT_SOURCE_DIR}/../../morton/octree/include")
-if(EXISTS "${_morton_octree_inc}/morton_octree/octree.hpp")
-  target_include_directories(test_block_octree PRIVATE ${_morton_octree_inc})
-endif()
 add_test(NAME block_octree COMMAND test_block_octree)
 
 # AMR leaf fields + VTU (UnstructuredGrid) visualization output.

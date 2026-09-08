@@ -1,7 +1,8 @@
 // Serial correctness of the per-block adaptive octree (peclet::core::amr::BlockOctree):
 //  - uniform construction tiles the block; bounds / point-location are correct,
 //  - refineIf keeps leaves sorted (Z-order) and conserves total fine volume,
-//  - the leaf set matches morton_octree::Octree (the std::map reference oracle)
+//  - the leaf set matches morton_octree::Octree (the test-local std::map reference
+//    oracle in tests/oracle/morton_octree.hpp, formerly morton/octree)
 //    after the same sequence of refinements,
 //  - balance2to1 produces a 2:1-graded mesh and is idempotent,
 //  - faceNeighbor agrees with point-location across faces.
@@ -16,7 +17,7 @@
 #include <cstdint>
 
 #include "morton/morton.hpp"
-#include "morton_octree/octree.hpp"
+#include "oracle/morton_octree.hpp"
 #include "peclet/core/amr/block_octree.hpp"
 
 using namespace peclet::core;
