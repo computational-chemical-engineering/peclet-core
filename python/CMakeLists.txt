@@ -3,16 +3,22 @@
 # active interpreter (cmake/SuiteNanobind.cmake at the suite root).
 #   cmake -S python -B python/build -DCMAKE_PREFIX_PATH=../extern/install/host-openmp
 #   cmake --build python/build -j
+#   ctest --test-dir python/build --output-on-failure      # test_mpi.py np=1,2,4(,8), test_amr.py, ndarray interop
 #   PYTHONPATH=python/build mpirun -np 4 python3 python/test_mpi.py
-# Run with a Python that has mpi4py built against the same MPI.
+# Run with a Python that has mpi4py built against the same MPI (+ numpy, pytest).
 cmake_minimum_required(VERSION 3.24)
 project(peclet_core_python LANGUAGES CXX)
+
+# Test registration helpers (SKIP_RETURN_CODE 77 + the mpi / np8 labels) shared with the C++ battery.
+include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/PecletCoreTest.cmake)
+option(PECLET_CORE_PYTHON_TESTS "Register the Python tests (python/test_*.py, tests/python) with ctest" ON)
 
 # C++20 throughout (suite/docs/STYLE.md; the core headers are C++20).
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(MPI REQUIRED COMPONENTS CXX)
+include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/PecletCorePinMpiexec.cmake)  # launcher = the MPI we link
 
 # SuiteNanobind: the umbrella's copy (../../cmake) in a suite checkout, the vendored copy in ../cmake
 # otherwise -- an sdist built from this repo alone has no ../../cmake (pip install peclet-core /
@@ -80,7 +86,9 @@ endif()
 # install (point CMAKE_PREFIX_PATH at a backend prefix from ../tools/bootstrap_deps.sh, e.g.
 # host-serial / host-openmp / nvidia-cuda). morton is built in Kokkos mode (MORTON_ENABLE_KOKKOS)
 # so MORTON_HD resolves to KOKKOS_FUNCTION (device-callable). Skipped if either is missing.
-set(_morton_inc "${CMAKE_CURRENT_SOURCE_DIR}/../../morton/include")
+set(PECLET_CORE_MORTON_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../morton" CACHE PATH
+    "morton checkout (headers under <dir>/include/morton); same knob as the root CMakeLists.txt")
+set(_morton_inc "${PECLET_CORE_MORTON_DIR}/include")
 find_package(Kokkos CONFIG QUIET)
 if(EXISTS "${_morton_inc}/morton/morton.hpp" AND Kokkos_FOUND)
   # NOMINSIZE: nanobind's default -Os is rejected by nvcc ("'s': expected a number") since the Kokkos
@@ -112,4 +120,43 @@ elseif(NOT Kokkos_FOUND)
   message(STATUS "amr_bindings: Kokkos not found (set CMAKE_PREFIX_PATH to a backend prefix) — skipping AMR bindings")
 else()
   message(STATUS "amr_bindings: morton sibling not found — skipping AMR Python bindings")
+endif()
+
+# ---- The Python tests as ctests (suite/docs/QUALITY_PLAN.md §3.D: nothing runs only by hand). ----
+# PECLET_CORE_TEST_NP tells the script how many ranks ctest launched; the script exits non-zero if
+# comm.size differs, so a launcher/mpi4py MPI mismatch (N singletons) is a FAILURE, not a pass.
+# test_mpi.py drives peclet.core.mpi through mpi4py at np=1,2,4,8 (np8 labelled like the C++ tests);
+# test_amr.py needs peclet.core.amr (morton + Kokkos) and runs serially and at np=2; the ndarray
+# interop pytest (tests/python) builds its own probe module against Kokkos.
+if(PECLET_CORE_PYTHON_TESTS)
+  enable_testing()
+  set(_py_env "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}")
+  foreach(np IN ITEMS 1 2 4 8)
+    add_test(NAME python_mpi_np${np}
+             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np} ${MPIEXEC_PREFLAGS}
+                     "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_mpi.py" ${MPIEXEC_POSTFLAGS})
+    set(_labels "mpi;python")
+    if(np GREATER 4)
+      list(APPEND _labels np8)
+    endif()
+    set_tests_properties(python_mpi_np${np} PROPERTIES LABELS "${_labels}"
+      ENVIRONMENT "${_py_env};PECLET_CORE_TEST_NP=${np}")
+  endforeach()
+  if(TARGET amr_bindings)
+    add_test(NAME python_amr COMMAND "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_amr.py")
+    set_tests_properties(python_amr PROPERTIES LABELS "python"
+      ENVIRONMENT "${_py_env};PECLET_CORE_TEST_NP=1")
+    add_test(NAME python_amr_np2
+             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+                     "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_amr.py" ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(python_amr_np2 PROPERTIES LABELS "mpi;python"
+      ENVIRONMENT "${_py_env};PECLET_CORE_TEST_NP=2")
+  else()
+    message(STATUS "python tests: peclet.core.amr not built — python_amr{,_np2} not registered")
+  endif()
+  if(Kokkos_FOUND)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../tests/python tests_python)
+  else()
+    message(STATUS "python tests: Kokkos not found — ndarray_interop not registered")
+  endif()
 endif()

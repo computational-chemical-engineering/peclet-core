@@ -16,15 +16,32 @@ retired; Kokkos is the canonical device path.
 ```bash
 # CPU library + tests (no device dependency):
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
-ctest --test-dir build --output-on-failure   # 104 ctests: serial + MPI halo + particle migration + diffusion + AMR
+ctest --test-dir build --output-on-failure -LE bench   # 109 ctests: serial + MPI halo + particle migration + diffusion + AMR
 
 # Portable Kokkos device halo (CUDA / HIP / OpenMP) -- opt-in, find_package(Kokkos):
 export PATH=/usr/local/cuda-13.2/bin:$PATH    # if the Kokkos install targets the CUDA backend
 cmake -S . -B build_kokkos -DPECLET_CORE_ENABLE_KOKKOS=ON \
   -DCMAKE_PREFIX_PATH=../extern/install/nvidia-cuda
-cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure  # 158 ctests: + device halo / AMR np=1,2,4
+cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure -LE bench  # 164 ctests: + device halo / AMR np=1,2,4,8
 mpirun -np 4 ./build/benchmarks/bench_halo 48 1 300
+
+# Python modules + their ctests (test_mpi.py np=1,2,4,8; test_amr.py serial + np=2; ndarray interop):
+cmake -S python -B build_rel_py -DCMAKE_PREFIX_PATH=../extern/install/host-openmp
+cmake --build build_rel_py -j && ctest --test-dir build_rel_py --output-on-failure   # 7 ctests
 ```
+
+**ctest protocol** (suite/docs/QUALITY_PLAN.md §3.D; helpers in `cmake/PecletCoreTest.cmake`, the ONE
+place every test is registered through): a test that cannot run in a configuration — no `morton`
+sibling (`PECLET_CORE_MORTON_DIR`), so `PECLET_CORE_HAVE_MORTON` is unset — exits 77
+(`tests/test_util.hpp kSkipExitCode`; MPI tests via `tests/test_skip_mpi.hpp`, which
+Init/Finalizes first so the launcher forwards the 77 instead of aborting with 1) and ctest reports it
+"Not Run (skipped)", never Passed. Labels: `mpi` (every mpirun test), `np8` (8-rank instances —
+a LOCAL gate; CI's 4-core runners run `-LE np8`), `bench` (benchmarks + `study_amr_*`, excluded by
+default; `study_amr_seam_march` alone is ~3 min), `python`. Thread bounds for batteries on this
+host: `OMP_NUM_THREADS=2 OMP_PROC_BIND=false`, np=8 subset last. CI (`.github/workflows/ci.yml`)
+runs host+MPI (gcc/clang × Debug/Release), Kokkos-OpenMP + Python, and no-MPI, each with the
+`morton` tag checked out as a sibling; the clang-format check (`quality.yml`, clang-format 18.1.8)
+is blocking over `include/ tests/ python/ benchmarks/` minus `include/peclet/core/amr/`.
 
 The Kokkos halo path is provisioned via `find_package(Kokkos CONFIG)` against a cluster module or the
 suite's local install prefix (`../tools/bootstrap_deps.sh`). The legacy native-CUDA halo was retired.
@@ -195,7 +212,12 @@ Header-only under `include/peclet/core/`:
   global cell, so it is correct for ORB's irregular block neighbours and any ghost width — no
   Cartesian-grid assumption.
 - Tests are dependency-free (`tests/test_util.hpp`, non-zero exit on failure). MPI tests run under
-  `mpirun` at several rank counts via ctest.
+  `mpirun` at several rank counts via ctest. **The launcher is pinned to the MPI we link**
+  (`cmake/PecletCorePinMpiexec.cmake`, included by the root AND the python CMake): a foreign
+  `mpiexec` on PATH (ParaView's) makes every rank a singleton, and N non-communicating copies
+  "pass" — `build_rel_py` carried exactly that until 2026-09-08 (`python_amr_np2` = two singletons
+  racing on one VTU). The Python tests now also exit non-zero when `comm.size` differs from the
+  `PECLET_CORE_TEST_NP` ctest launched them with.
 - `../cmake/SuiteNanobind.cmake` MUST be a CMake **macro**, not a `function()`: it sets/propagates
   variables (the located nanobind, the interpreter) into the including scope, which a function's nested
   scope would swallow. Keep `suite_require_nanobind` defined as a macro.

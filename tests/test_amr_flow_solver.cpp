@@ -1240,6 +1240,6 @@ int main(int argc, char** argv) {
 #else
 int main() {
   std::printf("PECLET_CORE_HAVE_MORTON not set — skipping device flow test\n");
-  return 0;
+  return ::peclet::core::test::kSkipExitCode;
 }
 #endif  // PECLET_CORE_HAVE_MORTON

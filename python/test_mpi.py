@@ -5,6 +5,7 @@ Validates, from Python: migration conserves particles and places each on its own
 gathering returns a nonzero set for np>1, and a weighted-ORB rebalance redistributes particles while
 conserving them — mirroring the C++ tests, through the binding.
 """
+import os
 import sys
 import numpy as np
 from mpi4py import MPI
@@ -12,6 +13,13 @@ from peclet.core import mpi as core_mpi
 
 comm = MPI.COMM_WORLD
 rank, size = comm.rank, comm.size
+
+# ctest passes the rank count it launched; a mismatch means mpi4py and the launcher are different
+# MPIs (N singletons that never communicate) — fail loudly instead of "passing" (core/CLAUDE.md).
+_np = os.environ.get("PECLET_CORE_TEST_NP")
+if _np is not None and int(_np) != size:
+    sys.exit(f"[rank {rank}] launched with PECLET_CORE_TEST_NP={_np} but MPI.COMM_WORLD.size={size}: "
+             "the launcher and mpi4py are different MPIs")
 
 origin = [0.0, 0.0, 0.0]
 boxsize = [10.0, 8.0, 6.0]

@@ -102,6 +102,6 @@ int main() {
 #else
 int main() {
   std::printf("PECLET_CORE_HAVE_MORTON not set — skipping face-field test\n");
-  return 0;
+  return ::peclet::core::test::kSkipExitCode;
 }
 #endif

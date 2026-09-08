@@ -63,21 +63,33 @@ module: it currently lives inside the AMR flow solver (`peclet::core::amr`) and 
 
 Validated end-to-end by distributed explicit heat-diffusion solvers (plain, and **around an SDF solid
 obstacle**) matching a serial reference cell-for-cell across ranks, and consumed by the validated
-`flow` and `dem` distributed solvers. 104 ctests in the plain host+MPI build, 158 with Kokkos (`np` 1–8).
+`flow` and `dem` distributed solvers. 109 ctests in the plain host+MPI build, 164 with Kokkos (`np` 1–8), plus 7
+Python ctests in the `python/` build.
 
 ## Build / test / benchmark
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
-ctest --test-dir build --output-on-failure          # 104 ctests: serial + MPI (np=1,2,4,8); 158 with -DPECLET_CORE_ENABLE_KOKKOS=ON
+ctest --test-dir build --output-on-failure -LE bench  # 109 ctests: serial + MPI (np=1,2,4,8); 164 with -DPECLET_CORE_ENABLE_KOKKOS=ON
+ctest --test-dir build -L bench                       # benchmarks + measurement studies (label `bench`, ~3.5 min)
 
 # halo microbenchmark: weak scaling, NBX vs persistent
 mpirun -np 4 ./build/benchmarks/bench_halo 48 1 300  # cells/rank/axis, ghost, iters
 ```
 
-Requires MPI (OpenMPI/MPICH) and a C++20 compiler. `morton` is picked up automatically if
-checked out as a sibling directory (enables `PECLET_CORE_HAVE_MORTON`). The CMake project is
+ctest labels: `mpi` (every mpirun test), `np8` (the 8-rank instances — a local gate, excluded in CI whose
+runners have 4 cores), `bench` (benchmarks/studies, excluded by default). A test that cannot run in a
+configuration (no `morton` sibling: the AMR/octree tests) exits 77 and ctest reports it **skipped**, never
+passed. The Python modules and their tests (`test_mpi.py` np=1,2,4,8, `test_amr.py` serial + np=2, the
+ndarray-interop pytest) are a second CMake project: `cmake -S python -B build_py
+-DCMAKE_PREFIX_PATH=<kokkos prefix> && cmake --build build_py -j && ctest --test-dir build_py`.
+
+Requires MPI (OpenMPI/MPICH) and a C++20 compiler (`-DPECLET_CORE_ENABLE_MPI=OFF` builds the
+single-rank no-MPI stub). `morton` is picked up automatically if checked out as a sibling directory
+(enables `PECLET_CORE_HAVE_MORTON`; `-DPECLET_CORE_MORTON_DIR=<dir>` points elsewhere). CI builds all
+three configurations (host+MPI gcc/clang Debug/Release, Kokkos-OpenMP + Python, no-MPI) against the
+pinned `morton` tag. The CMake project is
 `peclet_core` (its version is read from `pyproject.toml`); it exports the header-only targets
 `peclet::core` and `peclet::halo` (`cmake --install` + `find_package(peclet-core CONFIG)`).
 
@@ -87,6 +99,6 @@ Complete and in production. The block decomposition, the async ghost-layer excha
 Kokkos GPU, host-staged and opt-in GPU-aware), particle migration, dynamic load balancing (weighted
 ORB + AMR/Lagrangian rebalancing), SDF geometry, the AMR octree flow subsystem (device + distributed
 multigrid, collocated projection), and the nanobind Python bindings are all shipped and tested
-(104 ctests plain, 158 with Kokkos; `np` 1–8). `flow` (distributed cut-cell IBM Navier–Stokes) and `dem`
+(109 ctests plain, 164 with Kokkos; `np` 1–8). `flow` (distributed cut-cell IBM Navier–Stokes) and `dem`
 (distributed XPBD with load rebalancing) are validated consumers. CUDA is retired; Kokkos
 (CUDA / HIP / OpenMP) is the canonical device path. Remaining work is at-scale multi-GPU tuning.

@@ -214,8 +214,8 @@ int main(int argc, char** argv) {
   return 0;
 }
 #else
-int main() {
-  std::printf("PECLET_CORE_HAVE_MORTON not set — skipping distributed flow-MG test\n");
-  return 0;
+#include "test_skip_mpi.hpp"
+int main(int argc, char** argv) {
+  return ::peclet::core::test::skipMpiTest(argc, argv, "distributed flow-MG test");
 }
 #endif  // PECLET_CORE_HAVE_MORTON

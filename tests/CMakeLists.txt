@@ -1,22 +1,25 @@
+# Every test is registered through peclet_core_add_test / peclet_core_add_mpi_test
+# (cmake/PecletCoreTest.cmake): SKIP_RETURN_CODE 77 and the mpi / np8 / bench labels live there.
+
 # The physical domain (peclet/core/domain.hpp): Box + UniformGrid, cell units exact, anisotropic
 # spacing, MAC face/node positions, index<->physical round trips, periodic wrap + minimum image.
 add_executable(test_domain test_domain.cpp)
 target_link_libraries(test_domain PRIVATE peclet_core)
 target_include_directories(test_domain PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME domain COMMAND test_domain)
+peclet_core_add_test(domain test_domain)
 
 # Serial tests (no MPI).
 add_executable(test_decomposition test_decomposition.cpp)
 target_link_libraries(test_decomposition PRIVATE peclet_core)
 target_include_directories(test_decomposition PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME decomposition COMMAND test_decomposition)
+peclet_core_add_test(decomposition test_decomposition)
 
 # Smoothed-aggregation graph-AMG (peclet::core::solver) — host oracle, no Kokkos. Proves the
 # mesh-independent (O(N)) CG iteration count on a model vector-Laplacian.
 add_executable(test_graph_amg test_graph_amg.cpp)
 target_link_libraries(test_graph_amg PRIVATE peclet_core)
 target_include_directories(test_graph_amg PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME graph_amg COMMAND test_graph_amg)
+peclet_core_add_test(graph_amg test_graph_amg)
 
 # Host-parallel shim (common/host_parallel.hpp): serial ≡ parallel BITWISE on a disjoint-write
 # fill, an integer exclusive scan, and a two-pass CSR fill at the scanned offsets. Runs the Kokkos
@@ -24,14 +27,14 @@ add_test(NAME graph_amg COMMAND test_graph_amg)
 add_executable(test_host_parallel test_host_parallel.cpp)
 target_link_libraries(test_host_parallel PRIVATE peclet_core)
 target_include_directories(test_host_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME host_parallel COMMAND test_host_parallel)
+peclet_core_add_test(host_parallel test_host_parallel)
 
 # Morton/Z-order cell indexer (inert unless PECLET_CORE_HAVE_MORTON — set on peclet_core when
 # the morton sibling checkout is present).
 add_executable(test_morton_indexer test_morton_indexer.cpp)
 target_link_libraries(test_morton_indexer PRIVATE peclet_core)
 target_include_directories(test_morton_indexer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME morton_indexer COMMAND test_morton_indexer)
+peclet_core_add_test(morton_indexer test_morton_indexer)
 
 # Per-block adaptive octree (peclet::core::amr::BlockOctree). Inert unless PECLET_CORE_HAVE_MORTON;
 # cross-checks against the test-local morton_octree::Octree reference oracle
@@ -39,88 +42,88 @@ add_test(NAME morton_indexer COMMAND test_morton_indexer)
 add_executable(test_block_octree test_block_octree.cpp)
 target_link_libraries(test_block_octree PRIVATE peclet_core)
 target_include_directories(test_block_octree PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME block_octree COMMAND test_block_octree)
+peclet_core_add_test(block_octree test_block_octree)
 
 # AMR leaf fields + VTU (UnstructuredGrid) visualization output.
 add_executable(test_amr_vtu test_amr_vtu.cpp)
 target_link_libraries(test_amr_vtu PRIVATE peclet_core)
 target_include_directories(test_amr_vtu PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME amr_vtu COMMAND test_amr_vtu)
+peclet_core_add_test(amr_vtu test_amr_vtu)
 
 # SDF-driven refinement (refineToSdf) over the shared peclet::core::geom SDF.
 add_executable(test_amr_sdf test_amr_sdf.cpp)
 target_link_libraries(test_amr_sdf PRIVATE peclet_core)
 target_include_directories(test_amr_sdf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME amr_sdf COMMAND test_amr_sdf)
+peclet_core_add_test(amr_sdf test_amr_sdf)
 
 # Cell-centered FV Poisson on the octree + geometric multigrid.
 add_executable(test_amr_poisson test_amr_poisson.cpp)
 target_link_libraries(test_amr_poisson PRIVATE peclet_core)
 target_include_directories(test_amr_poisson PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME amr_poisson COMMAND test_amr_poisson)
+peclet_core_add_test(amr_poisson test_amr_poisson)
 
 add_executable(test_amr_transfer test_amr_transfer.cpp)
 target_link_libraries(test_amr_transfer PRIVATE peclet_core)
 target_include_directories(test_amr_transfer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME amr_transfer COMMAND test_amr_transfer)
+peclet_core_add_test(amr_transfer test_amr_transfer)
 
 add_executable(test_amr_adapt test_amr_adapt.cpp)
 target_link_libraries(test_amr_adapt PRIVATE peclet_core)
 target_include_directories(test_amr_adapt PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME amr_adapt COMMAND test_amr_adapt)
+peclet_core_add_test(amr_adapt test_amr_adapt)
 
 add_executable(test_amr_adapt_transport test_amr_adapt_transport.cpp)
 target_link_libraries(test_amr_adapt_transport PRIVATE peclet_core)
 target_include_directories(test_amr_adapt_transport PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME amr_adapt_transport COMMAND test_amr_adapt_transport)
+peclet_core_add_test(amr_adapt_transport test_amr_adapt_transport)
 
 # Quadratic coarse-fine flux + refluxing (2nd-order C/F interface).
 add_executable(test_amr_cf_quadratic test_amr_cf_quadratic.cpp)
 target_link_libraries(test_amr_cf_quadratic PRIVATE peclet_core)
 target_include_directories(test_amr_cf_quadratic PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME amr_cf_quadratic COMMAND test_amr_cf_quadratic)
+peclet_core_add_test(amr_cf_quadratic test_amr_cf_quadratic)
 
 # Cut-cell openness folded into operator + MG coarsening (with quadratic C/F flux).
 add_executable(test_amr_openness test_amr_openness.cpp)
 target_link_libraries(test_amr_openness PRIVATE peclet_core)
 target_include_directories(test_amr_openness PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME amr_openness COMMAND test_amr_openness)
+peclet_core_add_test(amr_openness test_amr_openness)
 
 # Cut-cell Dirichlet sub-cell BC (port of sdflow's xi-polynomial scheme) + kappa.
 add_executable(test_amr_cut_cell test_amr_cut_cell.cpp)
 target_link_libraries(test_amr_cut_cell PRIVATE peclet_core)
 target_include_directories(test_amr_cut_cell PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME amr_cut_cell COMMAND test_amr_cut_cell)
+peclet_core_add_test(amr_cut_cell test_amr_cut_cell)
 
 # Collocated Stokes momentum+pressure step (cut-cell IBM momentum + openness projection).
 add_executable(test_amr_flow test_amr_flow.cpp)
 target_link_libraries(test_amr_flow PRIVATE peclet_core)
 target_include_directories(test_amr_flow PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME amr_flow COMMAND test_amr_flow)
+peclet_core_add_test(amr_flow test_amr_flow)
 
 # Stokes sphere-array drag vs Zick & Homsy (sdflow's ground truth): convergence trend.
 add_executable(test_amr_drag test_amr_drag.cpp)
 target_link_libraries(test_amr_drag PRIVATE peclet_core)
 target_include_directories(test_amr_drag PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME amr_drag COMMAND test_amr_drag)
+peclet_core_add_test(amr_drag test_amr_drag)
 
 # ABC/Basilisk divergence-free face field (uniform + graded 2:1).
 add_executable(test_amr_face_field test_amr_face_field.cpp)
 target_link_libraries(test_amr_face_field PRIVATE peclet_core)
 target_include_directories(test_amr_face_field PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME amr_face_field COMMAND test_amr_face_field)
+peclet_core_add_test(amr_face_field test_amr_face_field)
 
 # Barnes-Hut particle-tree mode over the octree.
 add_executable(test_amr_barnes_hut test_amr_barnes_hut.cpp)
 target_link_libraries(test_amr_barnes_hut PRIVATE peclet_core)
 target_include_directories(test_amr_barnes_hut PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME amr_barnes_hut COMMAND test_amr_barnes_hut)
+peclet_core_add_test(amr_barnes_hut test_amr_barnes_hut)
 
 # Explicit FV scalar transport (advection-diffusion) on the octree.
 add_executable(test_amr_transport test_amr_transport.cpp)
 target_link_libraries(test_amr_transport PRIVATE peclet_core)
 target_include_directories(test_amr_transport PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME amr_transport COMMAND test_amr_transport)
+peclet_core_add_test(amr_transport test_amr_transport)
 
 # Block-octree queries : device locate / face-neighbour
 # must match the host BlockOctree. No MPI needed; linking peclet_core pulls in Kokkos
@@ -130,77 +133,77 @@ if(PECLET_CORE_HAVE_KOKKOS)
   add_executable(test_field_set test_field_set.cpp)
   target_link_libraries(test_field_set PRIVATE peclet_core)
   target_include_directories(test_field_set PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME field_set COMMAND test_field_set)
+  peclet_core_add_test(field_set test_field_set)
 
   # Trilinear particle<->grid interpolation (CFD-DEM P2G/G2P primitive).
   add_executable(test_particle_grid test_particle_grid.cpp)
   target_link_libraries(test_particle_grid PRIVATE peclet_core)
   target_include_directories(test_particle_grid PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME particle_grid COMMAND test_particle_grid)
+  peclet_core_add_test(particle_grid test_particle_grid)
 
   add_executable(test_block_octree_view test_block_octree_view.cpp)
   target_link_libraries(test_block_octree_view PRIVATE peclet_core)
   target_include_directories(test_block_octree_view PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME block_octree_view COMMAND test_block_octree_view)
+  peclet_core_add_test(block_octree_view test_block_octree_view)
 
   add_executable(test_amr_fv_op test_amr_fv_op.cpp)
   target_link_libraries(test_amr_fv_op PRIVATE peclet_core)
   target_include_directories(test_amr_fv_op PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME amr_fv_op COMMAND test_amr_fv_op)
+  peclet_core_add_test(amr_fv_op test_amr_fv_op)
 
   add_executable(test_amr_assembly test_amr_assembly.cpp)
   target_link_libraries(test_amr_assembly PRIVATE peclet_core)
   target_include_directories(test_amr_assembly PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME amr_assembly COMMAND test_amr_assembly)
+  peclet_core_add_test(amr_assembly test_amr_assembly)
 
   add_executable(test_amr_momentum_assembly test_amr_momentum_assembly.cpp)
   target_link_libraries(test_amr_momentum_assembly PRIVATE peclet_core)
   target_include_directories(test_amr_momentum_assembly PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME amr_momentum_assembly COMMAND test_amr_momentum_assembly)
+  peclet_core_add_test(amr_momentum_assembly test_amr_momentum_assembly)
 
   add_executable(test_amr_facegeom test_amr_facegeom.cpp)
   target_link_libraries(test_amr_facegeom PRIVATE peclet_core MPI::MPI_CXX)
   target_include_directories(test_amr_facegeom PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME amr_facegeom COMMAND test_amr_facegeom)
+  peclet_core_add_test(amr_facegeom test_amr_facegeom)
 
   add_executable(test_amr_multigrid test_amr_multigrid.cpp)
   target_link_libraries(test_amr_multigrid PRIVATE peclet_core)
   target_include_directories(test_amr_multigrid PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME amr_multigrid COMMAND test_amr_multigrid)
+  peclet_core_add_test(amr_multigrid test_amr_multigrid)
 
   add_executable(test_amr_fv_openness test_amr_fv_openness.cpp)
   target_link_libraries(test_amr_fv_openness PRIVATE peclet_core)
   target_include_directories(test_amr_fv_openness PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME amr_fv_openness COMMAND test_amr_fv_openness)
+  peclet_core_add_test(amr_fv_openness test_amr_fv_openness)
 
   add_executable(test_amr_kappa_restrict test_amr_kappa_restrict.cpp)
   target_link_libraries(test_amr_kappa_restrict PRIVATE peclet_core)
   target_include_directories(test_amr_kappa_restrict PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME amr_kappa_restrict COMMAND test_amr_kappa_restrict)
+  peclet_core_add_test(amr_kappa_restrict test_amr_kappa_restrict)
 
   add_executable(test_amr_kappa_dirichlet test_amr_kappa_dirichlet.cpp)
   target_link_libraries(test_amr_kappa_dirichlet PRIVATE peclet_core)
   target_include_directories(test_amr_kappa_dirichlet PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME amr_kappa_dirichlet COMMAND test_amr_kappa_dirichlet)
+  peclet_core_add_test(amr_kappa_dirichlet test_amr_kappa_dirichlet)
 
   # MG-preconditioned CG (PCG): Krylov acceleration over the device V-cycle.
   add_executable(test_amr_pcg test_amr_pcg.cpp)
   target_link_libraries(test_amr_pcg PRIVATE peclet_core)
   target_include_directories(test_amr_pcg PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME amr_pcg COMMAND test_amr_pcg)
+  peclet_core_add_test(amr_pcg test_amr_pcg)
 
   # Device momentum operator + solver (MomentumOp / MomentumSolver).
   add_executable(test_amr_momentum test_amr_momentum.cpp)
   target_link_libraries(test_amr_momentum PRIVATE peclet_core)
   target_include_directories(test_amr_momentum PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME amr_momentum COMMAND test_amr_momentum)
+  peclet_core_add_test(amr_momentum test_amr_momentum)
 
   # Collocated Stokes flow step (AmrFlow) — device vs host AmrFlow + analytic.
   add_executable(test_amr_flow_solver test_amr_flow_solver.cpp)
   # flow.hpp carries the distributed context (LeafHalo/DistributedOctree) => MPI headers.
   target_link_libraries(test_amr_flow_solver PRIVATE peclet_core MPI::MPI_CXX)
   target_include_directories(test_amr_flow_solver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  add_test(NAME amr_flow_solver COMMAND test_amr_flow_solver)
+  peclet_core_add_test(amr_flow_solver test_amr_flow_solver)
 endif()
 
 # Layer 0 rung 0: device-callable SDF leaf primitives (peclet/core/geom/primitives.hpp) are
@@ -209,14 +212,14 @@ endif()
 add_executable(test_geom_primitives test_geom_primitives.cpp)
 target_link_libraries(test_geom_primitives PRIVATE peclet_core)
 target_include_directories(test_geom_primitives PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME geom_primitives COMMAND test_geom_primitives)
+peclet_core_add_test(geom_primitives test_geom_primitives)
 
 # Layer 0 rung 1: runtime node layer -- transforms, iterative CSG, grid leaf in both off-grid
 # extension policies -- over the rung-0 leaves. Host-only TU.
 add_executable(test_geom_scene test_geom_scene.cpp)
 target_link_libraries(test_geom_scene PRIVATE peclet_core)
 target_include_directories(test_geom_scene PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME geom_scene COMMAND test_geom_scene)
+peclet_core_add_test(geom_scene test_geom_scene)
 
 # Layer 0 rung 2: a-priori property tests over the leaf vocabulary -- sign vs an independent
 # oracle, eikonal |grad|=1, closed-form grad vs FD, 1-Lipschitz, and a brute-force metric check
@@ -224,14 +227,14 @@ add_test(NAME geom_scene COMMAND test_geom_scene)
 add_executable(test_geom_properties test_geom_properties.cpp)
 target_link_libraries(test_geom_properties PRIVATE peclet_core)
 target_include_directories(test_geom_properties PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME geom_properties COMMAND test_geom_properties)
+peclet_core_add_test(geom_properties test_geom_properties)
 
 # Layer 0 rung 5: host scene assembly + the flat encoding the Python bindings speak. The gate is
 # a round trip -- compose, encode to flat int/Real arrays, decode, re-evaluate bit-identically.
 add_executable(test_geom_scene_builder test_geom_scene_builder.cpp)
 target_link_libraries(test_geom_scene_builder PRIVATE peclet_core)
 target_include_directories(test_geom_scene_builder PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME geom_scene_builder COMMAND test_geom_scene_builder)
+peclet_core_add_test(geom_scene_builder test_geom_scene_builder)
 
 # Layer 2-for-core: accelerated sphere-union scene queries (candidate grids, equal-R fast path,
 # min-image periodicity) must be BIT-IDENTICAL to the brute-force scan -- gated against an
@@ -240,8 +243,7 @@ add_test(NAME geom_scene_builder COMMAND test_geom_scene_builder)
 add_executable(test_geom_scene_query test_geom_scene_query.cpp)
 target_link_libraries(test_geom_scene_query PRIVATE peclet_core)
 target_include_directories(test_geom_scene_query PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME geom_scene_query COMMAND test_geom_scene_query
-         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+peclet_core_add_test(geom_scene_query test_geom_scene_query WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Layer 3 rung 1: cut OWNERSHIP (SceneQueryView::owner) -- the argmin behind eval's min, with a
 # scan-order-independent lowest-index tie-break, so moving geometry reads its wall velocity (and
@@ -249,15 +251,14 @@ add_test(NAME geom_scene_query COMMAND test_geom_scene_query
 add_executable(test_geom_owner test_geom_owner.cpp)
 target_link_libraries(test_geom_owner PRIVATE peclet_core)
 target_include_directories(test_geom_owner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME geom_owner COMMAND test_geom_owner
-         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+peclet_core_add_test(geom_owner test_geom_owner WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Layer 2: implicit-quadrature face apertures / cell volume fractions (geom/quadrature.hpp),
 # gated against the closed-form disk-rectangle overlap and for the order they actually deliver.
 add_executable(test_geom_quadrature test_geom_quadrature.cpp)
 target_link_libraries(test_geom_quadrature PRIVATE peclet_core)
 target_include_directories(test_geom_quadrature PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME geom_quadrature COMMAND test_geom_quadrature)
+peclet_core_add_test(geom_quadrature test_geom_quadrature)
 
 # Rigid-body mass properties by implicit quadrature (geom/body_properties.hpp): closed-form gates
 # incl. the bound-leaf ellipsoid (sign-exact bracketing beats the voxel integrator's bias) and the
@@ -265,7 +266,7 @@ add_test(NAME geom_quadrature COMMAND test_geom_quadrature)
 add_executable(test_geom_body test_geom_body.cpp)
 target_link_libraries(test_geom_body PRIVATE peclet_core)
 target_include_directories(test_geom_body PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME geom_body COMMAND test_geom_body)
+peclet_core_add_test(geom_body test_geom_body)
 
 # Analytic tree gradients (evalTreeGrad): value bit-parity with evalTree, chain-rule exactness,
 # O(h^2) FD agreement on smooth regions, and the RIDGE demonstration (exact face normal where a
@@ -273,17 +274,17 @@ add_test(NAME geom_body COMMAND test_geom_body)
 add_executable(test_geom_tree_grad test_geom_tree_grad.cpp)
 target_link_libraries(test_geom_tree_grad PRIVATE peclet_core)
 target_include_directories(test_geom_tree_grad PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME geom_tree_grad COMMAND test_geom_tree_grad)
+peclet_core_add_test(geom_tree_grad test_geom_tree_grad)
 
 add_executable(test_sdf test_sdf.cpp)
 target_link_libraries(test_sdf PRIVATE peclet_core)
 target_include_directories(test_sdf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME sdf COMMAND test_sdf)
+peclet_core_add_test(sdf test_sdf)
 
 add_executable(test_vti test_vti.cpp)
 target_link_libraries(test_vti PRIVATE peclet_core)
 target_include_directories(test_vti PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME vti COMMAND test_vti)
+peclet_core_add_test(vti test_vti)
 
 # MPI tests: run across several rank counts.
 if(MPI_FOUND)
@@ -398,99 +399,47 @@ if(MPI_FOUND)
 
   foreach(np IN ITEMS 1 2 4 8)
     if(TARGET test_amr_distributed_view_mpi)
-      add_test(NAME amr_distributed_view_np${np}
-               COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_view_mpi> ${MPIEXEC_POSTFLAGS})
+      peclet_core_add_mpi_test(amr_distributed_view_np${np} test_amr_distributed_view_mpi ${np})
     endif()
     if(TARGET test_particle_migrator_view_mpi)
-      add_test(NAME particle_migrator_view_np${np}
-               COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_particle_migrator_view_mpi> ${MPIEXEC_POSTFLAGS})
+      peclet_core_add_mpi_test(particle_migrator_view_np${np} test_particle_migrator_view_mpi ${np})
     endif()
-    add_test(NAME amr_leaf_halo_np${np}
-             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_leaf_halo_mpi> ${MPIEXEC_POSTFLAGS})
+    peclet_core_add_mpi_test(amr_leaf_halo_np${np} test_amr_leaf_halo_mpi ${np})
     if(TARGET test_amr_leaf_halo_view_mpi)
-      add_test(NAME amr_leaf_halo_view_np${np}
-               COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_leaf_halo_view_mpi> ${MPIEXEC_POSTFLAGS})
+      peclet_core_add_mpi_test(amr_leaf_halo_view_np${np} test_amr_leaf_halo_view_mpi ${np})
     endif()
     if(TARGET test_amr_distributed_momentum_mpi)
-      add_test(NAME amr_distributed_momentum_np${np}
-               COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_momentum_mpi> ${MPIEXEC_POSTFLAGS})
+      peclet_core_add_mpi_test(amr_distributed_momentum_np${np} test_amr_distributed_momentum_mpi ${np})
     endif()
     if(TARGET test_amr_distributed_flow_mg_mpi)
-      add_test(NAME amr_distributed_flow_mg_np${np}
-               COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_flow_mg_mpi> ${MPIEXEC_POSTFLAGS})
+      peclet_core_add_mpi_test(amr_distributed_flow_mg_np${np} test_amr_distributed_flow_mg_mpi ${np})
     endif()
     if(TARGET test_amr_distributed_flow_mpi)
-      add_test(NAME amr_distributed_flow_np${np}
-               COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_flow_mpi> ${MPIEXEC_POSTFLAGS})
+      peclet_core_add_mpi_test(amr_distributed_flow_np${np} test_amr_distributed_flow_mpi ${np})
     endif()
     if(TARGET test_amr_distributed_adaptflow_mpi)
-      add_test(NAME amr_distributed_adaptflow_np${np}
-               COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_adaptflow_mpi> ${MPIEXEC_POSTFLAGS})
+      peclet_core_add_mpi_test(amr_distributed_adaptflow_np${np} test_amr_distributed_adaptflow_mpi ${np})
     endif()
     if(TARGET test_amr_distributed_seam_mpi)
-      add_test(NAME amr_distributed_seam_np${np}
-               COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_seam_mpi> ${MPIEXEC_POSTFLAGS})
+      peclet_core_add_mpi_test(amr_distributed_seam_np${np} test_amr_distributed_seam_mpi ${np})
     endif()
-    add_test(NAME grid_redistribute_np${np}
-             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_grid_redistribute_mpi> ${MPIEXEC_POSTFLAGS})
-    add_test(NAME grid_halo_np${np}
-             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_grid_halo> ${MPIEXEC_POSTFLAGS})
-    add_test(NAME nbx_rounds_np${np}
-             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_nbx_rounds> ${MPIEXEC_POSTFLAGS})
-    add_test(NAME particle_migration_np${np}
-             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_particle_migration> ${MPIEXEC_POSTFLAGS})
-    add_test(NAME particle_rebalance_np${np}
-             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_particle_rebalance> ${MPIEXEC_POSTFLAGS})
-    add_test(NAME diffusion_np${np}
-             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_diffusion> ${MPIEXEC_POSTFLAGS})
-    add_test(NAME diffusion_sdf_np${np}
-             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_diffusion_sdf> ${MPIEXEC_POSTFLAGS})
-    add_test(NAME ghost_particles_np${np}
-             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_ghost_particles_mpi> ${MPIEXEC_POSTFLAGS})
-    add_test(NAME particle_halo_np${np}
-             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_particle_halo_mpi> ${MPIEXEC_POSTFLAGS})
-    add_test(NAME amr_distributed_np${np}
-             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_mpi> ${MPIEXEC_POSTFLAGS})
-    add_test(NAME amr_distributed_poisson_np${np}
-             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_poisson_mpi> ${MPIEXEC_POSTFLAGS})
-    add_test(NAME amr_distributed_mg_np${np}
-             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_mg_mpi> ${MPIEXEC_POSTFLAGS})
-    add_test(NAME amr_distributed_fv_np${np}
-             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_fv_mpi> ${MPIEXEC_POSTFLAGS})
-    add_test(NAME amr_distributed_graded_mg_np${np}
-             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_graded_mg_mpi> ${MPIEXEC_POSTFLAGS})
-    add_test(NAME amr_distributed_openness_np${np}
-             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_openness_mpi> ${MPIEXEC_POSTFLAGS})
-    add_test(NAME amr_distributed_adapt_np${np}
-             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_adapt_mpi> ${MPIEXEC_POSTFLAGS})
-    add_test(NAME amr_distributed_rebalance_np${np}
-             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                     ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_amr_distributed_rebalance_mpi> ${MPIEXEC_POSTFLAGS})
+    peclet_core_add_mpi_test(grid_redistribute_np${np} test_grid_redistribute_mpi ${np})
+    peclet_core_add_mpi_test(grid_halo_np${np} test_grid_halo ${np})
+    peclet_core_add_mpi_test(nbx_rounds_np${np} test_nbx_rounds ${np})
+    peclet_core_add_mpi_test(particle_migration_np${np} test_particle_migration ${np})
+    peclet_core_add_mpi_test(particle_rebalance_np${np} test_particle_rebalance ${np})
+    peclet_core_add_mpi_test(diffusion_np${np} test_diffusion ${np})
+    peclet_core_add_mpi_test(diffusion_sdf_np${np} test_diffusion_sdf ${np})
+    peclet_core_add_mpi_test(ghost_particles_np${np} test_ghost_particles_mpi ${np})
+    peclet_core_add_mpi_test(particle_halo_np${np} test_particle_halo_mpi ${np})
+    peclet_core_add_mpi_test(amr_distributed_np${np} test_amr_distributed_mpi ${np})
+    peclet_core_add_mpi_test(amr_distributed_poisson_np${np} test_amr_distributed_poisson_mpi ${np})
+    peclet_core_add_mpi_test(amr_distributed_mg_np${np} test_amr_distributed_mg_mpi ${np})
+    peclet_core_add_mpi_test(amr_distributed_fv_np${np} test_amr_distributed_fv_mpi ${np})
+    peclet_core_add_mpi_test(amr_distributed_graded_mg_np${np} test_amr_distributed_graded_mg_mpi ${np})
+    peclet_core_add_mpi_test(amr_distributed_openness_np${np} test_amr_distributed_openness_mpi ${np})
+    peclet_core_add_mpi_test(amr_distributed_adapt_np${np} test_amr_distributed_adapt_mpi ${np})
+    peclet_core_add_mpi_test(amr_distributed_rebalance_np${np} test_amr_distributed_rebalance_mpi ${np})
   endforeach()
 
   # Portable GPU-resident halo : device result must match the CPU path, on whatever backend
@@ -503,15 +452,14 @@ if(MPI_FOUND)
     target_include_directories(test_geom_batch_device PRIVATE
       ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(test_geom_batch_device PRIVATE Kokkos::kokkos)
-    add_test(NAME geom_batch_device COMMAND test_geom_batch_device
-             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    peclet_core_add_test(geom_batch_device test_geom_batch_device WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
     # Device GraphAMG apply vs the host oracle (no MPI; serial + device).
     add_executable(test_graph_amg_device test_graph_amg_device.cpp)
     target_include_directories(test_graph_amg_device PRIVATE
       ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(test_graph_amg_device PRIVATE Kokkos::kokkos)
-    add_test(NAME graph_amg_device COMMAND test_graph_amg_device)
+    peclet_core_add_test(graph_amg_device test_graph_amg_device)
 
     add_executable(test_grid_halo_exchange test_grid_halo_exchange.cpp)
     target_include_directories(test_grid_halo_exchange PRIVATE
@@ -524,21 +472,18 @@ if(MPI_FOUND)
     target_link_libraries(test_particle_halo_exchange PRIVATE Kokkos::kokkos MPI::MPI_CXX)
 
     foreach(np IN ITEMS 1 2 4)
-      add_test(NAME grid_halo_exchange_np${np}
-               COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_grid_halo_exchange> ${MPIEXEC_POSTFLAGS})
-      add_test(NAME particle_halo_exchange_np${np}
-               COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
-                       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_particle_halo_exchange> ${MPIEXEC_POSTFLAGS})
+      peclet_core_add_mpi_test(grid_halo_exchange_np${np} test_grid_halo_exchange ${np})
+      peclet_core_add_mpi_test(particle_halo_exchange_np${np} test_particle_halo_exchange ${np})
     endforeach()
   endif()
 endif()
 
 # A-priori defect study for the AMR collocated projection (ghost-projection port, step 0).
-# A measurement study (printed tables + gates documenting the mode-0 defects), not a ctest.
+# A measurement study (printed tables + gates documenting the mode-0 defects); ctest label `bench`.
 add_executable(study_amr_ghost_apriori study_amr_ghost_apriori.cpp)
 target_link_libraries(study_amr_ghost_apriori PRIVATE peclet_core)
 target_include_directories(study_amr_ghost_apriori PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+peclet_core_add_test(study_amr_ghost_apriori study_amr_ghost_apriori LABELS bench)
 
 # C/F interface schemes (cf_scheme.hpp): Martin–Cartwright quadratic deltas for the collocated
 # flow operators (divergence / cell gradient / momentum Laplacian) — a-priori truncation on a
@@ -546,21 +491,24 @@ target_include_directories(study_amr_ghost_apriori PRIVATE ${CMAKE_CURRENT_SOURC
 add_executable(test_amr_cf_vector test_amr_cf_vector.cpp)
 target_link_libraries(test_amr_cf_vector PRIVATE peclet_core)
 target_include_directories(test_amr_cf_vector PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-add_test(NAME amr_cf_vector COMMAND test_amr_cf_vector)
+peclet_core_add_test(amr_cf_vector test_amr_cf_vector)
 
 # M1 seam census for the mixed-level cut-band plan (docs/amr_mixed_level_cut_band_plan.md §8).
-# A measurement study (printed tables, no gates), not a ctest.
+# A measurement study (printed tables, no gates); ctest label `bench`.
 add_executable(study_amr_seam_census study_amr_seam_census.cpp)
 target_link_libraries(study_amr_seam_census PRIVATE peclet_core)
 target_include_directories(study_amr_seam_census PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+peclet_core_add_test(study_amr_seam_census study_amr_seam_census LABELS bench)
 
 # M2 virtual-sample order study for the mixed-level cut-band plan (§8 M2). A measurement study.
 add_executable(study_amr_seam_sample_order study_amr_seam_sample_order.cpp)
 target_link_libraries(study_amr_seam_sample_order PRIVATE peclet_core)
 target_include_directories(study_amr_seam_sample_order PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+peclet_core_add_test(study_amr_seam_sample_order study_amr_seam_sample_order LABELS bench)
 
 # M3 seam stability probe for the mixed-level cut-band plan (§8 M3): sampled ghost projection
 # march on a two-level cut band (host oracle). A measurement study.
 add_executable(study_amr_seam_march study_amr_seam_march.cpp)
 target_link_libraries(study_amr_seam_march PRIVATE peclet_core)
 target_include_directories(study_amr_seam_march PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+peclet_core_add_test(study_amr_seam_march study_amr_seam_march LABELS bench)

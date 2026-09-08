@@ -215,6 +215,6 @@ int main(int argc, char** argv) {
 #include <cstdio>
 int main() {
   std::printf("PECLET_CORE_HAVE_MORTON not set — skipping\n");
-  return 0;
+  return 77;  // ctest SKIP_RETURN_CODE (tests/test_util.hpp kSkipExitCode)
 }
 #endif

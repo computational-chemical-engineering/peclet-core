@@ -28,12 +28,20 @@ target_include_directories(peclet_core INTERFACE
   $<INSTALL_INTERFACE:include>)
 target_compile_features(peclet_core INTERFACE cxx_std_20)
 
-# Optional: the morton spatial-index primitive if present as a sibling checkout.
-set(_morton_inc "${CMAKE_CURRENT_SOURCE_DIR}/../morton/include")
+# Optional: the morton spatial-index primitive (github.com/computational-chemical-engineering/
+# peclet-morton, header-only). Auto-detected as the sibling checkout ../morton; point
+# PECLET_CORE_MORTON_DIR elsewhere to override (or at a non-existent path to build WITHOUT it — the
+# guarded tests then report "Not Run (skipped)", never Passed).
+set(PECLET_CORE_MORTON_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../morton" CACHE PATH
+    "morton checkout (headers under <dir>/include/morton); unset/absent = build without morton")
+set(_morton_inc "${PECLET_CORE_MORTON_DIR}/include")
 if(EXISTS "${_morton_inc}/morton/morton.hpp")
   target_include_directories(peclet_core INTERFACE $<BUILD_INTERFACE:${_morton_inc}>)
   target_compile_definitions(peclet_core INTERFACE PECLET_CORE_HAVE_MORTON=1)
   message(STATUS "peclet-core: morton found at ${_morton_inc}")
+else()
+  message(STATUS "peclet-core: morton NOT found at ${_morton_inc} — the AMR/octree tests will be "
+                 "reported as skipped (set PECLET_CORE_MORTON_DIR)")
 endif()
 
 # --- Halo layer: against MPI (default), or a single-rank no-MPI stub (PECLET_CORE_ENABLE_MPI=OFF). One code
@@ -43,27 +51,9 @@ set(PECLET_CORE_HALO_OK OFF)
 if(PECLET_CORE_ENABLE_MPI)
   find_package(MPI COMPONENTS CXX)
   if(MPI_FOUND)
-    # Pin the launcher to the MPI compiler's own prefix. FindMPI locates the compiler
-    # wrapper (mpicxx) deterministically, but searches MPIEXEC_EXECUTABLE on PATH — so a
-    # foreign launcher earlier on PATH (e.g. ParaView's bundled mpiexec) gets picked up
-    # while the binary is built against the system MPI. That mismatch is silent and nasty:
-    # every rank inits as a singleton (MPI_Comm_size==1), so `mpirun -n N` runs N
-    # independent serial processes and multi-rank tests "pass" without ever communicating.
-    # The launcher next to mpicxx always belongs to the same MPI, on any system.
-    # Scheduler-launcher clusters (srun/aprun) pass -DPECLET_CORE_PIN_MPIEXEC=OFF and set
-    # MPIEXEC_EXECUTABLE themselves.
-    option(PECLET_CORE_PIN_MPIEXEC "Pin MPIEXEC_EXECUTABLE to the MPI compiler's prefix" ON)
-    if(PECLET_CORE_PIN_MPIEXEC AND MPI_CXX_COMPILER)
-      get_filename_component(_mpi_bin "${MPI_CXX_COMPILER}" DIRECTORY)
-      unset(_mpi_launcher CACHE)
-      find_program(_mpi_launcher NAMES mpirun mpiexec HINTS "${_mpi_bin}" NO_DEFAULT_PATH)
-      if(_mpi_launcher AND NOT _mpi_launcher STREQUAL "${MPIEXEC_EXECUTABLE}")
-        message(STATUS "peclet-core: MPIEXEC_EXECUTABLE was '${MPIEXEC_EXECUTABLE}' — "
-                       "pinning to '${_mpi_launcher}' (matches ${MPI_CXX_COMPILER})")
-        set(MPIEXEC_EXECUTABLE "${_mpi_launcher}" CACHE FILEPATH "MPI launcher" FORCE)
-      endif()
-      unset(_mpi_launcher CACHE)
-    endif()
+    # Pin MPIEXEC_EXECUTABLE to the launcher next to mpicxx (cmake/PecletCorePinMpiexec.cmake):
+    # a foreign launcher on PATH silently runs every rank as a singleton.
+    include(cmake/PecletCorePinMpiexec.cmake)
     add_library(peclet_halo INTERFACE)
     add_library(peclet::halo ALIAS peclet_halo)
     target_link_libraries(peclet_halo INTERFACE peclet_core MPI::MPI_CXX)
@@ -130,11 +120,16 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/peclet-coreConfig.cmake"
               "${CMAKE_CURRENT_BINARY_DIR}/peclet-coreConfigVersion.cmake"
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/peclet-core)
 
+# Test registration helpers (SKIP_RETURN_CODE 77 + the mpi / np8 / bench labels) — one place for
+# tests/ and benchmarks/. See the module header and suite/docs/QUALITY_PLAN.md §3.D.
+include(cmake/PecletCoreTest.cmake)
+
 if(PECLET_CORE_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
 endif()
 
 if(PECLET_CORE_BUILD_BENCHMARKS AND MPI_FOUND)
+  enable_testing()  # the benchmarks are registered as ctests labelled `bench` (ctest -L bench to run)
   add_subdirectory(benchmarks)
 endif()

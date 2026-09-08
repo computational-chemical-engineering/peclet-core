@@ -23,6 +23,13 @@ comm = MPI.COMM_WORLD
 rank, size = comm.rank, comm.size
 fail = 0
 
+# ctest passes the rank count it launched; a mismatch means mpi4py and the launcher are different
+# MPIs (N singletons that never communicate) — fail loudly instead of "passing" (core/CLAUDE.md).
+_np = os.environ.get("PECLET_CORE_TEST_NP")
+if _np is not None and int(_np) != size:
+    sys.exit(f"[rank {rank}] launched with PECLET_CORE_TEST_NP={_np} but MPI.COMM_WORLD.size={size}: "
+             "the launcher and mpi4py are different MPIs")
+
 
 def check(cond, msg):
     global fail

@@ -1,9 +1,26 @@
 name: CI
 
-# Build the header-only library and run the full ctest suite (serial + MPI, np = 1,2,4).
-# core is CPU-testable end-to-end: header-only C++20 + MPI, no GPU required. The optional
-# Kokkos GPU-resident halo path is NOT exercised here (no GPU on the runners) — it is covered by the
-# consumer codes' own CI.
+# Honest CI (suite/docs/QUALITY_PLAN.md §3.D): every test the repository registers is either RUN or
+# reported by ctest as "Not Run (skipped)" — never green by early-return. Three configurations:
+#
+#   cpp           header-only core + MPI, gcc/clang x Debug/Release, WITH the morton sibling (so the
+#                 host AMR/octree tests run; before 2026-09 CI never provided morton and all of them
+#                 were no-op passes). Serial + MPI np=1,2,4.
+#   kokkos-openmp the portable Kokkos path (OpenMP + Serial host backend, Kokkos 5.1.1 cached) —
+#                 device halo, device AMR, distributed AMR — plus the Python modules
+#                 (peclet.core.{mpi,geom,amr}) with their three test scripts as ctests.
+#   no-mpi        PECLET_CORE_ENABLE_MPI=OFF: the single-rank mpi_stub halo layer.
+#
+# What is NOT run here, and why (nothing is hidden — `ctest -N` lists it all):
+#   * label np8   the 8-rank instances: hosted runners have 4 cores and the oversubscribed np=8
+#                 halo tests hung there (CLAUDE.md, NBX tag race history). np=8 is a LOCAL gate.
+#   * label bench benchmarks + measurement studies (bench_halo, bench_amr_flow, study_amr_*):
+#                 timings and tables, no correctness gate.
+#   * GPU backends (CUDA/HIP): no GPU on free runners; covered by the consumer codes' local batteries.
+#
+# Thread bounds: the hosted runner has 4 cores / 16 GB. Single-rank suites run with
+# OMP_NUM_THREADS=2, the MPI suites with OMP_NUM_THREADS=1 (np=4 x 1 thread), ctest -j1 throughout —
+# an unbounded OpenMP pool under mpirun starved a runner into "lost communication" in flow's CI.
 
 on:
   push:
@@ -11,9 +28,21 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  KOKKOS_TAG: "5.1.1"    # keep in lockstep with ../tools/bootstrap_deps.sh
+  MORTON_TAG: "v0.2.1"   # keep in lockstep with flow/cmake/PecletDeps.cmake (PECLET_MORTON_TAG)
+  NANOBIND_VERSION: "2.13.0"
+  OMPI_ALLOW_RUN_AS_ROOT: 1
+  OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
+  # Allow OpenMPI to oversubscribe should the runner ever have fewer cores than np=4.
+  OMPI_MCA_rmaps_base_oversubscribe: 1
+  PRTE_MCA_rmaps_default_mapping_policy: ":oversubscribe"
+  OMP_PROC_BIND: "false"
+  CTEST_OUTPUT_ON_FAILURE: 1
+
 jobs:
   cpp:
-    name: ubuntu / ${{ matrix.cc }} / MPI / ${{ matrix.build_type }}
+    name: ubuntu / ${{ matrix.cc }} / MPI + morton / ${{ matrix.build_type }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -27,27 +56,127 @@ jobs:
     env:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}
-      OMPI_ALLOW_RUN_AS_ROOT: 1
-      OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
-      # GitHub runners have only 2 physical cores; allow OpenMPI to oversubscribe so the
-      # np=4 and np=8 correctness tests run (slower, but the logic is what we check).
-      OMPI_MCA_rmaps_base_oversubscribe: 1
-      PRTE_MCA_rmaps_default_mapping_policy: ":oversubscribe"
     steps:
+      # Sibling layout, exactly as in the suite checkout: core/CMakeLists.txt auto-detects ../morton.
       - uses: actions/checkout@v4
+        with:
+          path: core
+      - name: Checkout morton (pinned tag)
+        uses: actions/checkout@v4
+        with:
+          repository: computational-chemical-engineering/peclet-morton
+          ref: ${{ env.MORTON_TAG }}
+          path: morton
 
       - name: Install MPI
         run: |
           sudo apt-get update
           sudo apt-get install -y libopenmpi-dev openmpi-bin
-          # morton is an optional sibling (enables PECLET_CORE_HAVE_MORTON); it is a private repo, so CI
-          # builds without it — the halo/decomp tests do not depend on it.
 
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+        run: cmake -S core -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
 
       - name: Build
         run: cmake --build build -j
 
-      - name: Test (serial + MPI np=1,2,4)
-        run: ctest --test-dir build --output-on-failure
+      - name: Test (serial + MPI np=1,2,4; np8 + bench excluded, see header)
+        run: |
+          ctest --test-dir build -N
+          OMP_NUM_THREADS=1 ctest --test-dir build -LE "np8|bench" --timeout 1200 --output-on-failure -j1
+
+  kokkos-openmp:
+    name: ubuntu / gcc / Kokkos OpenMP + MPI + morton + Python / Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: core
+      - name: Checkout morton (pinned tag)
+        uses: actions/checkout@v4
+        with:
+          repository: computational-chemical-engineering/peclet-morton
+          ref: ${{ env.MORTON_TAG }}
+          path: morton
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libomp-dev libopenmpi-dev openmpi-bin \
+                                  python3-dev python3-pip
+          # nanobind is located through the interpreter (cmake/SuiteNanobind.cmake); mpi4py builds
+          # against the apt OpenMPI just installed (same MPI the modules link).
+          python3 -m pip install "nanobind==${NANOBIND_VERSION}" numpy pytest mpi4py
+
+      - name: Cache Kokkos install
+        id: kokkos-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/kokkos-install
+          key: kokkos-${{ env.KOKKOS_TAG }}-openmp-cxx20-${{ runner.os }}
+
+      - name: Build Kokkos (OpenMP + Serial)
+        if: steps.kokkos-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "$KOKKOS_TAG" https://github.com/kokkos/kokkos.git /tmp/kokkos
+          cmake -S /tmp/kokkos -B /tmp/kokkos/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=20 \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DKokkos_ENABLE_OPENMP=ON -DKokkos_ENABLE_SERIAL=ON \
+            -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/kokkos-install"
+          cmake --build /tmp/kokkos/build -j
+          cmake --install /tmp/kokkos/build
+
+      - name: Configure (PECLET_CORE_ENABLE_KOKKOS=ON)
+        run: |
+          cmake -S core -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DPECLET_CORE_ENABLE_KOKKOS=ON \
+            -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/kokkos-install"
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test single-rank (OMP_NUM_THREADS=2)
+        run: |
+          ctest --test-dir build -N
+          OMP_NUM_THREADS=2 ctest --test-dir build -LE "mpi|bench" --timeout 1200 --output-on-failure -j1
+
+      - name: Test MPI np=1,2,4 (OMP_NUM_THREADS=1; np8 excluded, see header)
+        run: OMP_NUM_THREADS=1 ctest --test-dir build -L mpi -LE "np8|bench" --timeout 1200 --output-on-failure -j1
+
+      - name: Build the Python modules (peclet.core.mpi / geom / amr)
+        run: |
+          cmake -S core/python -B build_py -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/kokkos-install" \
+            -DPython_EXECUTABLE="$(which python3)"
+          cmake --build build_py -j
+          PYTHONPATH=$PWD/build_py python3 -c "import peclet.core.mpi, peclet.core.geom, peclet.core.amr; print('peclet.core import OK')"
+
+      - name: Test Python (test_mpi.py np=1,2,4; test_amr.py serial + np=2; ndarray interop)
+        run: |
+          ctest --test-dir build_py -N
+          OMP_NUM_THREADS=1 ctest --test-dir build_py -LE np8 --timeout 1200 --output-on-failure -j1
+
+  no-mpi:
+    name: ubuntu / gcc / no MPI (mpi_stub) + morton / Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: core
+      - name: Checkout morton (pinned tag)
+        uses: actions/checkout@v4
+        with:
+          repository: computational-chemical-engineering/peclet-morton
+          ref: ${{ env.MORTON_TAG }}
+          path: morton
+
+      - name: Configure (PECLET_CORE_ENABLE_MPI=OFF)
+        run: cmake -S core -B build -DCMAKE_BUILD_TYPE=Release -DPECLET_CORE_ENABLE_MPI=OFF
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test (single-rank stub)
+        run: |
+          ctest --test-dir build -N
+          OMP_NUM_THREADS=2 ctest --test-dir build -LE bench --timeout 1200 --output-on-failure -j1

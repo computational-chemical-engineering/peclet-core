@@ -8,7 +8,11 @@
 
 namespace peclet::core::test {
 inline int g_failures = 0;
-}
+// Exit code for "this test cannot run in this configuration" (no morton sibling, no MPI, ...).
+// Every ctest registered through tests/CMakeLists.txt carries SKIP_RETURN_CODE 77, so ctest reports
+// such a binary as "Not Run (skipped)" -- never as Passed (suite/docs/QUALITY_PLAN.md §3.D).
+inline constexpr int kSkipExitCode = 77;
+}  // namespace peclet::core::test
 
 #define PECLET_CORE_CHECK(cond)                                                          \
   do {                                                                                   \
