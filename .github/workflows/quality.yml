@@ -1,9 +1,11 @@
 name: Quality
 
-# Lightweight code-quality gates. Python hard-fails on critical errors only. The C++ clang-format
-# check is informational for now (continue-on-error) so version skew between the runner's
-# clang-format and the local one can't red the build; promote it to required once a clang-format
-# version is pinned and the tree is reformatted against it.
+# Code-quality gates. Python hard-fails on critical errors only. The C++ clang-format check is
+# BLOCKING (since 2026-09-08, suite/docs/QUALITY_PLAN.md §3.D.7): clang-format is pinned to 18.1.8
+# (the suite venv's version, installed from PyPI as morton does — the apt package drifts) and the tree
+# is formatted against the suite-wide 62-line .clang-format. include/peclet/core/amr/ is EXCLUDED
+# until the AMR branch under active development lands (a reformat there would conflict with it);
+# drop the grep -v below at that point.
 
 on:
   push:
@@ -27,14 +29,19 @@ jobs:
             --exclude ".venv,venv,build,build_*,__pycache__,_deps,extern,legacy,notebooks"
 
   cpp-format:
-    name: clang-format (informational)
+    name: clang-format 18.1.8 (blocking; amr/ excluded until the AMR branch lands)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y clang-format
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install "clang-format==18.1.8"
       - name: clang-format dry-run (uses the repo .clang-format)
         run: |
-          files=$(git ls-files 'include/*.hpp' 'tests/*.hpp' 'tests/*.cpp' 'benchmarks/*.cpp')
+          files=$(git ls-files 'include/*.hpp' 'tests/*.hpp' 'tests/*.cpp' 'benchmarks/*.cpp' 'python/*.cpp' \
+                  | grep -v '^include/peclet/core/amr/')
           [ -z "$files" ] && { echo "no C++ sources"; exit 0; }
+          clang-format --version
+          echo "$files" | wc -l
           clang-format --dry-run --Werror $files

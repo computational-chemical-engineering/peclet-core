@@ -42,16 +42,22 @@ env:
 
 jobs:
   cpp:
-    name: ubuntu / ${{ matrix.cc }} / MPI + morton / ${{ matrix.build_type }}
+    name: ubuntu / ${{ matrix.compiler }} / MPI + morton / ${{ matrix.build_type }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
+        # `compiler` is a matrix axis so the include entries only ADD cc/cxx to each combination.
+        # (An include with keys outside the matrix overwrites: the previous form silently produced
+        # two clang jobs and no gcc job.)
+        compiler: [gcc, clang]
         build_type: [Debug, Release]
         include:
-          - cc: gcc
+          - compiler: gcc
+            cc: gcc
             cxx: g++
-          - cc: clang
+          - compiler: clang
+            cc: clang
             cxx: clang++
     env:
       CC: ${{ matrix.cc }}
