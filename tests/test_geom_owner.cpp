@@ -125,8 +125,9 @@ static void bedCampaign(const char* name, const std::vector<double>& cx,
   PECLET_CORE_CHECK(mismatched == 0);
   PECLET_CORE_CHECK(valueMismatch == 0);
   PECLET_CORE_CHECK(fallbackMismatch == 0);
-  std::printf("  %-22s %6d probes: owner==brute %d bad, eval==owner-value %d bad, grid==scan %d bad\n",
-              name, nProbe, mismatched, valueMismatch, fallbackMismatch);
+  std::printf(
+      "  %-22s %6d probes: owner==brute %d bad, eval==owner-value %d bad, grid==scan %d bad\n",
+      name, nProbe, mismatched, valueMismatch, fallbackMismatch);
 }
 
 int main() {
@@ -219,8 +220,9 @@ int main() {
         ++badMid;
     }
     PECLET_CORE_CHECK(badMid == 0);
-    std::printf("  tie determinism        coincident %d bad, exact mid-plane %d bad (lowest index)\n",
-                bad, badMid);
+    std::printf(
+        "  tie determinism        coincident %d bad, exact mid-plane %d bad (lowest index)\n", bad,
+        badMid);
   }
 
   // --- general scenes: always-list composition + fallback ---------------------------------------

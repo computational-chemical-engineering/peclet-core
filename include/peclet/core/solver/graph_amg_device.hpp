@@ -54,14 +54,14 @@ class GraphAMGDevice {
   // DLevel is public for the same nvcc extended-lambda stub-generation reason as the methods.
   struct DLevel {
     Index n = 0, nc = 0;
-    IView start, nbr;          // off-diagonal CSR
+    IView start, nbr;  // off-diagonal CSR
     DView coef, diag, invDiag;
-    IView Pstart, Pcol;        // prolongation (fine rows)
+    IView Pstart, Pcol;  // prolongation (fine rows)
     DView Pval;
-    IView Rstart, Rcol;        // restriction = Pᵀ (coarse rows, entries in fine-index order)
+    IView Rstart, Rcol;  // restriction = Pᵀ (coarse rows, entries in fine-index order)
     DView Rval;
     double lmax = 1.0;
-    DView x, b, res, t0, t1;   // scratch
+    DView x, b, res, t0, t1;  // scratch
   };
 
   template <class T>

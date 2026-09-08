@@ -211,10 +211,11 @@ int main() {
     g.addInstance(sph);
     const SceneView<double> gv = g.view();
 
-    const Case cases[] = {{"sphere r=0.5", sph, -0.7, 0.7, 4 * M_PI * 0.25},
-                          {"torus R=.5 r=.15", tor, -0.75, 0.75, 4 * M_PI * M_PI * 0.5 * 0.15},
-                          {"box .4x.3x.2", bx, -0.55, 0.55, 2 * (0.8 * 0.6 + 0.8 * 0.4 + 0.6 * 0.4)},
-                          {"box MINUS sphere", csg, -0.6, 0.7, 0.0}};
+    const Case cases[] = {
+        {"sphere r=0.5", sph, -0.7, 0.7, 4 * M_PI * 0.25},
+        {"torus R=.5 r=.15", tor, -0.75, 0.75, 4 * M_PI * M_PI * 0.5 * 0.15},
+        {"box .4x.3x.2", bx, -0.55, 0.55, 2 * (0.8 * 0.6 + 0.8 * 0.4 + 0.6 * 0.4)},
+        {"box MINUS sphere", csg, -0.6, 0.7, 0.0}};
     for (const Case& c : cases) {
       const double sp = 0.05;
       const std::vector<V> pts =
@@ -222,10 +223,10 @@ int main() {
       // every returned point must actually lie on the zero level set
       double worst = 0;
       for (const V& p : pts)
-        worst = std::fmax(worst, std::fabs(evalTree<double>(TablePtr<ShapeNode<double>>{gv.nodes},
-                                                            gv.nodeCount, c.root, p,
-                                                            TablePtr<GridDesc<double>>{gv.grids},
-                                                            PoolPtr<float>{gv.samples})));
+        worst = std::fmax(
+            worst, std::fabs(evalTree<double>(TablePtr<ShapeNode<double>>{gv.nodes}, gv.nodeCount,
+                                              c.root, p, TablePtr<GridDesc<double>>{gv.grids},
+                                              PoolPtr<float>{gv.samples})));
       std::printf("  surfacePoints %-18s %5zu pts, worst |sdf| = %.2e\n", c.name, pts.size(),
                   worst);
       PECLET_CORE_CHECK(pts.size() > 100);

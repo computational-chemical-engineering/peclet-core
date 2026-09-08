@@ -47,7 +47,7 @@ double dragK(unsigned L, double phi) {
   fl.setViscosity(mu);
   fl.setDt(dt);
   fl.setBodyForce(f, 0, 0);
-  fl.setAdvection(false);  // Stokes
+  fl.setAdvection(false);        // Stokes
   fl.setGhostProjection(false);  // explicit aperture: this gate's tolerances are
                                  // aperture-calibrated at N=8 (R~3), below the ghost
                                  // scheme's certified resolution range
@@ -92,8 +92,8 @@ double dragKAniso(unsigned L, double phi, const Vec<3>& h0, const IVec<3>& brick
   fl.setViscosity(mu);
   fl.setDt(dt);
   fl.setBodyForce(f, 0, 0);
-  fl.setAdvection(false);         // Stokes
-  fl.setGhostProjection(false);   // as the cubic gate: aperture-calibrated tolerances
+  fl.setAdvection(false);        // Stokes
+  fl.setGhostProjection(false);  // as the cubic gate: aperture-calibrated tolerances
   fl.setSolid([&](const Vec<3>& p) {
     const double dx = p[0] - c[0], dy = p[1] - c[1], dz = p[2] - c[2];
     return std::sqrt(dx * dx + dy * dy + dz * dz) - R;  // <0 inside the sphere (solid)
@@ -166,9 +166,10 @@ void run() {
   {
     const double kA = dragKAniso(3, phi, Vec<3>{1.0, 0.5, 1.0}, IVec<3>{1, 2, 1});
     const double errA = std::fabs(kA - kZH) / kZH;
-    std::printf("A4 anisotropic Z&H: h0 = (1, 0.5, 1), cells = (8, 16, 8), K = %.4f vs %.4f "
-                "(%.2f %%); the CUBIC rung of the same box reads %.4f (%.2f %%)\n",
-                kA, kZH, 100.0 * (kA / kZH - 1.0), k, 100.0 * (k / kZH - 1.0));
+    std::printf(
+        "A4 anisotropic Z&H: h0 = (1, 0.5, 1), cells = (8, 16, 8), K = %.4f vs %.4f "
+        "(%.2f %%); the CUBIC rung of the same box reads %.4f (%.2f %%)\n",
+        kA, kZH, 100.0 * (kA / kZH - 1.0), k, 100.0 * (k / kZH - 1.0));
     PECLET_CORE_CHECK(kA > 0);
     PECLET_CORE_CHECK(errA < 0.03);
     // Refining ONE axis must not make the answer worse than the cubic rung it refines.

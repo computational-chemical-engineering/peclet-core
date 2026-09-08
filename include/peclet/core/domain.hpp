@@ -32,9 +32,9 @@ namespace peclet::core {
 /// A physical, axis-aligned box with per-axis periodicity. Continuous — no cells.
 template <int Dim = 3>
 struct Box {
-  Vec<Dim> origin{};                    ///< lower corner
-  Vec<Dim> length{};                    ///< extent per axis (> 0)
-  std::array<bool, Dim> periodic{};     ///< per-axis periodicity
+  Vec<Dim> origin{};                 ///< lower corner
+  Vec<Dim> length{};                 ///< extent per axis (> 0)
+  std::array<bool, Dim> periodic{};  ///< per-axis periodicity
 
   static constexpr int dim() { return Dim; }
 
@@ -129,7 +129,8 @@ struct UniformGrid {
   bool periodic(int axis) const { return box.periodic[axis]; }
   const IVec<Dim>& resolution() const { return cells; }
 
-  /// Cell size per axis: length / cells. Zero cells on an axis yields 0 (degenerate; callers check).
+  /// Cell size per axis: length / cells. Zero cells on an axis yields 0 (degenerate; callers
+  /// check).
   Vec<Dim> spacing() const {
     Vec<Dim> h{};
     for (int a = 0; a < Dim; ++a)

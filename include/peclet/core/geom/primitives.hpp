@@ -327,9 +327,7 @@ struct Cone {
 
   /// Finite differences over this leaf's own eval (the piecewise capped-cone form has no
   /// gradient worth hand-deriving at this rung). h is dem's 1e-4 probe convention.
-  PECLET_HD Vec3<Real> grad(Vec3<Real> p) const {
-    return gradient(*this, p, Real(1e-4));
-  }
+  PECLET_HD Vec3<Real> grad(Vec3<Real> p) const { return gradient(*this, p, Real(1e-4)); }
 };
 
 /// Solid ellipsoid with semi-axes (rx, ry, rz), centred on the origin.
@@ -357,9 +355,7 @@ struct Ellipsoid {
 
   /// Finite differences over this leaf's own eval (the normalised implicit has no gradient worth
   /// hand-deriving at this rung). h is dem's 1e-4 probe convention.
-  PECLET_HD Vec3<Real> grad(Vec3<Real> p) const {
-    return gradient(*this, p, Real(1e-4));
-  }
+  PECLET_HD Vec3<Real> grad(Vec3<Real> p) const { return gradient(*this, p, Real(1e-4)); }
 };
 
 /// Solid superquadric with semi-axes (rx, ry, rz) and exponent `e`:
@@ -399,9 +395,7 @@ struct Superquadric {
 
   /// Finite differences over this leaf's own eval (the Taubin estimate has no gradient worth
   /// hand-deriving at this rung). h is dem's 1e-4 probe convention.
-  PECLET_HD Vec3<Real> grad(Vec3<Real> p) const {
-    return gradient(*this, p, Real(1e-4));
-  }
+  PECLET_HD Vec3<Real> grad(Vec3<Real> p) const { return gradient(*this, p, Real(1e-4)); }
 };
 
 /// Offset (rounded) shape: the inner solid grown outward by `radius`. Exactness is INHERITED --
@@ -442,7 +436,6 @@ struct Complement {
     return Vec3<Real>{-g.x, -g.y, -g.z};
   }
 };
-
 
 }  // namespace peclet::core::geom::prim
 

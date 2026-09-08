@@ -1,7 +1,8 @@
 // Test module for the Kokkos-View <-> nanobind-ndarray zero-copy bridge
-// (include/peclet/core/python/ndarray_interop.hpp). Built as a self-contained nanobind module exercised by
-// test_ndarray_interop.py. Mirrors how every real binding (flow, dem, voro, peclet.core.amr) uses the
-// bridge: import a Python array into a Kokkos View, run a device kernel, export the View back.
+// (include/peclet/core/python/ndarray_interop.hpp). Built as a self-contained nanobind module
+// exercised by test_ndarray_interop.py. Mirrors how every real binding (flow, dem, voro,
+// peclet.core.amr) uses the bridge: import a Python array into a Kokkos View, run a device kernel,
+// export the View back.
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 

@@ -143,7 +143,8 @@ class GridHaloTopology {
       if (tot[0] != tot[1])
         throw std::runtime_error("peclet.core GridHaloTopology: asymmetric halo topology (" +
                                  std::to_string(tot[0]) + " cells requested, " +
-                                 std::to_string(tot[1]) + " promised) -- the NBX round lost messages");
+                                 std::to_string(tot[1]) +
+                                 " promised) -- the NBX round lost messages");
     }
 
     buildRecvLookup();

@@ -33,15 +33,24 @@ using peclet::core::Vec3;
 namespace {
 
 int kindFromName(const std::string& k) {
-  if (k == "sphere") return g::kSphere;
-  if (k == "box") return g::kBox;
-  if (k == "hollow_cylinder") return g::kHollowCylinder;
-  if (k == "hollow_cylinder_shell") return g::kHollowCylinderShell;
-  if (k == "capsule") return g::kCapsule;
-  if (k == "torus") return g::kTorus;
-  if (k == "cone") return g::kCone;
-  if (k == "ellipsoid") return g::kEllipsoid;
-  if (k == "superquadric") return g::kSuperquadric;
+  if (k == "sphere")
+    return g::kSphere;
+  if (k == "box")
+    return g::kBox;
+  if (k == "hollow_cylinder")
+    return g::kHollowCylinder;
+  if (k == "hollow_cylinder_shell")
+    return g::kHollowCylinderShell;
+  if (k == "capsule")
+    return g::kCapsule;
+  if (k == "torus")
+    return g::kTorus;
+  if (k == "cone")
+    return g::kCone;
+  if (k == "ellipsoid")
+    return g::kEllipsoid;
+  if (k == "superquadric")
+    return g::kSuperquadric;
   throw std::invalid_argument(
       "unknown leaf kind '" + k +
       "' (sphere, box, hollow_cylinder, hollow_cylinder_shell, capsule, torus, cone, ellipsoid, "
@@ -147,14 +156,13 @@ NB_MODULE(geom, m) {
           "principal_frame",
           [](PyScene& s, int root, std::array<double, 3> lo, std::array<double, 3> hi, int n,
              int order, int nseg) {
-            const auto bp = g::bodyProperties<double>(s.rootEval(root),
-                                                      Vec3<double>{lo[0], lo[1], lo[2]},
-                                                      Vec3<double>{hi[0], hi[1], hi[2]}, n, order,
-                                                      nseg);
+            const auto bp =
+                g::bodyProperties<double>(s.rootEval(root), Vec3<double>{lo[0], lo[1], lo[2]},
+                                          Vec3<double>{hi[0], hi[1], hi[2]}, n, order, nseg);
             // W with toLocal(W, p_body) = com + R p_body: q_W = conj(q_R), t_W = invR(q_R, -com)
             const Quat<double> qc{-bp.quat.x, -bp.quat.y, -bp.quat.z, bp.quat.w};
-            const Vec3<double> tw = peclet::core::invRotate(
-                bp.quat, Vec3<double>{-bp.com.x, -bp.com.y, -bp.com.z});
+            const Vec3<double> tw =
+                peclet::core::invRotate(bp.quat, Vec3<double>{-bp.com.x, -bp.com.y, -bp.com.z});
             g::Transform<double> W;
             W.rotation = qc;
             W.translation = tw;
@@ -180,17 +188,17 @@ NB_MODULE(geom, m) {
           nb::arg("rotation") = std::array<double, 4>{0, 0, 0, 1}, nb::arg("scale") = 1.0,
           nb::arg("lin_vel") = std::array<double, 3>{0, 0, 0},
           nb::arg("ang_vel") = std::array<double, 3>{0, 0, 0},
-          nb::arg("center") =
-              std::array<double, 3>{std::numeric_limits<double>::quiet_NaN(),
-                                    std::numeric_limits<double>::quiet_NaN(),
-                                    std::numeric_limits<double>::quiet_NaN()},
+          nb::arg("center") = std::array<double, 3>{std::numeric_limits<double>::quiet_NaN(),
+                                                    std::numeric_limits<double>::quiet_NaN(),
+                                                    std::numeric_limits<double>::quiet_NaN()},
           nb::arg("material") = -1,
           "Place a tree in the world; returns the instance index. What flow's set_scene and the "
           "resolved coupling consume. `center` is the centre of rotation for ang_vel: leave it NaN "
           "(the default) and it FOLLOWS the body (the translation, re-anchored on every "
           "set_instance_transform); give any finite point and it is PINNED there in world "
           "coordinates -- (0, 0, 0) included. (Raw instance arrays keep the legacy reading of an "
-          "all-zero centre as 'follows the body'; pin a world-origin centre from a raw array through "
+          "all-zero centre as 'follows the body'; pin a world-origin centre from a raw array "
+          "through "
           "flow's set_instance_motion(center=...).)")
       .def(
           "encode",
@@ -198,10 +206,9 @@ NB_MODULE(geom, m) {
             std::vector<int> ni, ii;
             std::vector<double> nr, ir;
             s.b.encode(ni, nr, ii, ir);
-            return nb::make_tuple(toArray(std::move(ni), {ni.size()}),
-                                  toArray(std::move(nr), {nr.size()}),
-                                  toArray(std::move(ii), {ii.size()}),
-                                  toArray(std::move(ir), {ir.size()}));
+            return nb::make_tuple(
+                toArray(std::move(ni), {ni.size()}), toArray(std::move(nr), {nr.size()}),
+                toArray(std::move(ii), {ii.size()}), toArray(std::move(ir), {ir.size()}));
           },
           "The flat (node_ints, node_reals, inst_ints, inst_reals) arrays -- exactly what "
           "flow.set_scene, dem.add_analytic_wall and dem.add_scene_shape take.")
@@ -282,10 +289,9 @@ NB_MODULE(geom, m) {
           "body_properties",
           [](PyScene& s, int root, std::array<double, 3> lo, std::array<double, 3> hi, int n,
              int order, int nseg, double density) {
-            const auto bp = g::bodyProperties<double>(s.rootEval(root),
-                                                      Vec3<double>{lo[0], lo[1], lo[2]},
-                                                      Vec3<double>{hi[0], hi[1], hi[2]}, n, order,
-                                                      nseg, density);
+            const auto bp = g::bodyProperties<double>(
+                s.rootEval(root), Vec3<double>{lo[0], lo[1], lo[2]},
+                Vec3<double>{hi[0], hi[1], hi[2]}, n, order, nseg, density);
             nb::dict d;
             d["volume"] = bp.volume;
             d["mass"] = bp.mass;
@@ -311,8 +317,6 @@ NB_MODULE(geom, m) {
           "p_input = com + R p_body) and quat (x,y,z,w). Sign-exact bracketing means bound-only "
           "leaves (ellipsoid, superquadric, CSG) carry NO systematic bias; measured ~4e-6 relative "
           "at n=32 (ctest geom_body).")
-      .def("num_nodes",
-           [](PyScene& s) { return (int)s.b.nodes().size(); })
-      .def("num_instances",
-           [](PyScene& s) { return (int)s.b.instances().size(); });
+      .def("num_nodes", [](PyScene& s) { return (int)s.b.nodes().size(); })
+      .def("num_instances", [](PyScene& s) { return (int)s.b.instances().size(); });
 }

@@ -1,12 +1,11 @@
 // FieldSet — named registry of structured fields. Verifies allocation/zeroing (add), aliasing
 // (adopt), lookup, upsert, deterministic sorted enumeration, and the ownStorage flag.
-#include "test_util.hpp"
-
 #include <Kokkos_Core.hpp>
 #include <string>
 #include <vector>
 
 #include "peclet/core/field/field_set.hpp"
+#include "test_util.hpp"
 
 namespace {
 using peclet::core::Centering;

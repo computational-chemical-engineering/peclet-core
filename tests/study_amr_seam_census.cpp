@@ -214,12 +214,12 @@ struct ScratchRow {
 };
 
 struct Census {
-  long rows = 0;          // non-clean (overlay) rows
-  long strictPass = 0;    // current contract holds (all 15 entries same-level)
-  long axisPass = 0;      // Option 0' holds (only required entries same-level), strict fails
-  long needQuad = 0;      // virtual samples needed, full coarseStar support
-  long needLin = 0;       // virtual samples needed, degraded tangential support
-  long fallback = 0;      // some required sample unsupported -> fluid-only cascade
+  long rows = 0;        // non-clean (overlay) rows
+  long strictPass = 0;  // current contract holds (all 15 entries same-level)
+  long axisPass = 0;    // Option 0' holds (only required entries same-level), strict fails
+  long needQuad = 0;    // virtual samples needed, full coarseStar support
+  long needLin = 0;     // virtual samples needed, degraded tangential support
+  long fallback = 0;    // some required sample unsupported -> fluid-only cascade
   long rowsPerLevel[8] = {};
   long leaves = 0, leavesFinest = 0;
 };
@@ -349,17 +349,18 @@ void printCensus(const char* name, const Census& cs, const Census* baseline) {
     std::printf("; %.1f%% of uniform-band cells", 100.0 * cs.leaves / baseline->leaves);
   std::printf(")\n");
   auto pct = [&](long v) { return cs.rows ? 100.0 * v / cs.rows : 0.0; };
-  std::printf("  overlay rows %ld: strict-pass %ld (%.1f%%) | axis-pass %ld (%.1f%%) | "
-              "quad-sample %ld (%.1f%%) | lin-sample %ld (%.1f%%) | fallback %ld (%.1f%%)\n",
-              cs.rows, cs.strictPass, pct(cs.strictPass), cs.axisPass, pct(cs.axisPass),
-              cs.needQuad, pct(cs.needQuad), cs.needLin, pct(cs.needLin), cs.fallback,
-              pct(cs.fallback));
+  std::printf(
+      "  overlay rows %ld: strict-pass %ld (%.1f%%) | axis-pass %ld (%.1f%%) | "
+      "quad-sample %ld (%.1f%%) | lin-sample %ld (%.1f%%) | fallback %ld (%.1f%%)\n",
+      cs.rows, cs.strictPass, pct(cs.strictPass), cs.axisPass, pct(cs.axisPass), cs.needQuad,
+      pct(cs.needQuad), cs.needLin, pct(cs.needLin), cs.fallback, pct(cs.fallback));
   const long seam = cs.rows - cs.strictPass;
-  std::printf("  seam rows (not strict) %ld (%.1f%% of rows); of seam: axis-pass %.1f%%, "
-              "samples %.1f%%, fallback %.1f%%\n",
-              seam, pct(seam), seam ? 100.0 * cs.axisPass / seam : 0.0,
-              seam ? 100.0 * (cs.needQuad + cs.needLin) / seam : 0.0,
-              seam ? 100.0 * cs.fallback / seam : 0.0);
+  std::printf(
+      "  seam rows (not strict) %ld (%.1f%% of rows); of seam: axis-pass %.1f%%, "
+      "samples %.1f%%, fallback %.1f%%\n",
+      seam, pct(seam), seam ? 100.0 * cs.axisPass / seam : 0.0,
+      seam ? 100.0 * (cs.needQuad + cs.needLin) / seam : 0.0,
+      seam ? 100.0 * cs.fallback / seam : 0.0);
   std::printf("  rows per level:");
   for (int l = 0; l < 8; ++l)
     if (cs.rowsPerLevel[l])
@@ -377,9 +378,10 @@ int main(int argc, char** argv) {
   const double nGap = 4.0;         // gap floor: gap >= nGap * h(level)
   const double band = 2.0;         // band margin in target-level cells
 
-  std::printf("M1 seam census (plan docs/amr_mixed_level_cut_band_plan.md §8): depth %u "
-              "(h0=1/%ld), background L%u, gap floor n=%.0f, band %.0f\n",
-              depth, 1L << depth, coarseLevel, nGap, band);
+  std::printf(
+      "M1 seam census (plan docs/amr_mixed_level_cut_band_plan.md §8): depth %u "
+      "(h0=1/%ld), background L%u, gap floor n=%.0f, band %.0f\n",
+      depth, 1L << depth, coarseLevel, nGap, band);
 
   Packing pk;
   bool realBed = false;
@@ -434,9 +436,10 @@ int main(int argc, char** argv) {
   printCensus("map G: gap-graded (pointwise, un-quantized)", cG, &cU);
 
   if (realBed) {
-    std::printf("\ninterpretation: [axis-pass] rows need NO new numerics under Option 0'; "
-                "[quad/lin-sample] rows need the D1 virtual-sample machinery; [fallback] rows "
-                "degrade within the fluid-only cascade (plan §4.2).\n");
+    std::printf(
+        "\ninterpretation: [axis-pass] rows need NO new numerics under Option 0'; "
+        "[quad/lin-sample] rows need the D1 virtual-sample machinery; [fallback] rows "
+        "degrade within the fluid-only cascade (plan §4.2).\n");
     return 0;
   }
 
@@ -467,17 +470,18 @@ int main(int argc, char** argv) {
   Packing one;
   one.sp.push_back(Sphere{{0.513, 0.493, 0.504}, 0.30});
   auto sdf1 = [&](const Vec<3>& p) { return one.sdf(p); };
-  Geo gH = buildGeo(depth, coarseLevel, sdf1,
-                    [](const Vec<3>& p) { return p[0] < 0.513 ? 0u : 1u; }, band);
+  Geo gH = buildGeo(
+      depth, coarseLevel, sdf1, [](const Vec<3>& p) { return p[0] < 0.513 ? 0u : 1u; }, band);
   Census cH = runCensus(gH, one);
   Geo gH0 = buildGeo(depth, coarseLevel, sdf1, [](const Vec<3>&) { return 0u; }, band);
   Census cH0 = runCensus(gH0, one);
   printCensus("hemisphere sphere: uniform band (reference)", cH0, nullptr);
   printCensus("hemisphere sphere: two-level (one seam ring)", cH, &cH0);
 
-  std::printf("\ninterpretation: [axis-pass] rows need NO new numerics under Option 0'; "
-              "[quad/lin-sample] rows need the D1 virtual-sample machinery; [fallback] rows "
-              "degrade within the fluid-only cascade (plan §4.2).\n");
+  std::printf(
+      "\ninterpretation: [axis-pass] rows need NO new numerics under Option 0'; "
+      "[quad/lin-sample] rows need the D1 virtual-sample machinery; [fallback] rows "
+      "degrade within the fluid-only cascade (plan §4.2).\n");
   return 0;
 }
 #else

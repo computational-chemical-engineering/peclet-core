@@ -1,12 +1,11 @@
 // Trilinear particle<->grid interpolation (interp/particle_grid.hpp). Gather is exact for a linear
 // field; scatter is the transpose of gather (conserves the deposited total and satisfies the
 // adjoint identity <gather(f),q> == <f,scatter(q)>).
-#include "test_util.hpp"
-
-#include <Kokkos_Core.hpp>
 #include <cmath>
+#include <Kokkos_Core.hpp>
 
 #include "peclet/core/interp/particle_grid.hpp"
+#include "test_util.hpp"
 
 namespace {
 using peclet::core::interp::GridMap;
@@ -24,11 +23,12 @@ void run() {
   View field("f", (std::size_t)ex * ey * ez);
   {
     auto hf = Kokkos::create_mirror_view(field);  // fill the FULL padded block (incl. ghosts) with
-    for (int kk = 0; kk < ez; ++kk)               // the linear field, so boundary-overhang particles
-      for (int jj = 0; jj < ey; ++jj)             // interpolate exactly too (ghost fill is the
-        for (int ii = 0; ii < ex; ++ii) {         // caller's job in production — here it isolates
-          const double X = ox + (ii - g + 0.5) * h, Y = oy + (jj - g + 0.5) * h,  // the interpolation)
-                       Z = oz + (kk - g + 0.5) * h;
+    for (int kk = 0; kk < ez; ++kk)        // the linear field, so boundary-overhang particles
+      for (int jj = 0; jj < ey; ++jj)      // interpolate exactly too (ghost fill is the
+        for (int ii = 0; ii < ex; ++ii) {  // caller's job in production — here it isolates
+          const double X = ox + (ii - g + 0.5) * h,
+                       Y = oy + (jj - g + 0.5) * h,  // the interpolation)
+              Z = oz + (kk - g + 0.5) * h;
           hf[(std::size_t)ii + (std::size_t)jj * ex + (std::size_t)kk * ex * ey] =
               a + b * X + c * Y + d * Z;
         }
@@ -39,8 +39,11 @@ void run() {
   PosV pos("pos", NP);
   {
     auto hp = Kokkos::create_mirror_view(pos);
-    double pts[NP][3] = {{3.4, -0.6, 0.8}, {3.9, -0.2, 1.1}, {3.55, -0.85, 0.55},
-                         {4.2, -0.4, 1.3}, {3.1, -0.95, 0.6}};
+    double pts[NP][3] = {{3.4, -0.6, 0.8},
+                         {3.9, -0.2, 1.1},
+                         {3.55, -0.85, 0.55},
+                         {4.2, -0.4, 1.3},
+                         {3.1, -0.95, 0.6}};
     for (int p = 0; p < NP; ++p)
       for (int c2 = 0; c2 < 3; ++c2)
         hp(p, c2) = pts[p][c2];

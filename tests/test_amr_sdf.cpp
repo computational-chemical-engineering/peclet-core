@@ -50,7 +50,7 @@ void run() {
   for (Index i = 0; i < t.numLeaves(); ++i) {
     auto b = t.bounds(i);
     Vec<3> c = geo.center(b);
-    Real width = geo.leafSize(t.level(i), 0);  // cubic case: any axis
+    Real width = geo.leafSize(t.level(i), 0);                // cubic case: any axis
     if (std::fabs(sph.eval(c)) <= halfDiagFactor * width) {  // surface within the cell
       ++crossing;
       if (t.level(i) != target)
@@ -89,15 +89,13 @@ void runGraded() {
 
   // (1) Constant target reduces to a uniform finest band: no cut cell above level 0.
   BO tu(IVec<3>{1, 1, 1}, 6);
-  refineToSdfGraded(
-      tu, geo, sdf, [](const Vec<3>&) { return 0u; }, /*band=*/2.0, /*balance=*/true);
+  refineToSdfGraded(tu, geo, sdf, [](const Vec<3>&) { return 0u; }, /*band=*/2.0, /*balance=*/true);
   PECLET_CORE_CHECK(tu.isBalanced());
 
   // (2) Latitude two-level map: fine below z = 32, one level coarser above. Cut cells must then
   // exist at BOTH levels (the seam the sampled overlay exists for).
   BO tg(IVec<3>{1, 1, 1}, 6);
-  refineToSdfGraded(
-      tg, geo, sdf, [](const Vec<3>& p) { return p[2] < 32.0 ? 0u : 1u; }, 2.0, true);
+  refineToSdfGraded(tg, geo, sdf, [](const Vec<3>& p) { return p[2] < 32.0 ? 0u : 1u; }, 2.0, true);
   PECLET_CORE_CHECK(tg.isBalanced());
 
   const Real hdf = 0.5 * std::sqrt(3.0);
@@ -117,16 +115,16 @@ void runGraded() {
   PECLET_CORE_CHECK_EQ(uhi, 0);  // uniform band: every cut cell finest
   auto [glo, ghi] = cutLevels(tg);
   PECLET_CORE_CHECK_EQ(glo, 0);
-  PECLET_CORE_CHECK_EQ(ghi, 1);  // graded: cut cells at two levels
+  PECLET_CORE_CHECK_EQ(ghi, 1);                        // graded: cut cells at two levels
   PECLET_CORE_CHECK(tg.numLeaves() < tu.numLeaves());  // and it is cheaper
 
   // (3) gapFloorTarget: the coarsest level clearing gap >= n*h_L, clamped.
   auto tgt = gapFloorTarget<3>([](const Vec<3>& p) { return p[0]; }, /*h0=*/1.0,
                                /*coarsestLevel=*/3, /*n=*/4.0);
-  PECLET_CORE_CHECK_EQ((int)tgt(Vec<3>{3.0, 0, 0}), 0);    // gap 3 < 4*h_1=8 -> finest
-  PECLET_CORE_CHECK_EQ((int)tgt(Vec<3>{8.0, 0, 0}), 1);    // 8 >= 4*h_1, < 4*h_2=16
-  PECLET_CORE_CHECK_EQ((int)tgt(Vec<3>{20.0, 0, 0}), 2);   // 16 <= 20 < 32
-  PECLET_CORE_CHECK_EQ((int)tgt(Vec<3>{1e6, 0, 0}), 3);    // clamped at coarsestLevel
+  PECLET_CORE_CHECK_EQ((int)tgt(Vec<3>{3.0, 0, 0}), 0);   // gap 3 < 4*h_1=8 -> finest
+  PECLET_CORE_CHECK_EQ((int)tgt(Vec<3>{8.0, 0, 0}), 1);   // 8 >= 4*h_1, < 4*h_2=16
+  PECLET_CORE_CHECK_EQ((int)tgt(Vec<3>{20.0, 0, 0}), 2);  // 16 <= 20 < 32
+  PECLET_CORE_CHECK_EQ((int)tgt(Vec<3>{1e6, 0, 0}), 3);   // clamped at coarsestLevel
 }
 
 }  // namespace

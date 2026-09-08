@@ -123,11 +123,25 @@ int main() {
   // (b) exact-feature points: origin, on-surface, on box faces/edges/corners, tube walls and caps,
   //     and the degenerate axis point where the cylinder's r = 0.
   const float feat[][3] = {
-      {0, 0, 0},        {R, 0, 0},         {0, R, 0},          {0, 0, R},
-      {-R, 0, 0},       {BX, 0, 0},        {BX, BY, 0},        {BX, BY, BZ},
-      {-BX, -BY, -BZ},  {BX, BY, 2.0f},    {CO, 0, 0},         {CO - CT, 0, 0},
-      {CO - CT * 0.5f, 0, 0},              {0, CH * 0.5f, 0},  {CO, CH * 0.5f, 0},
-      {0, 0, 0.0f},     {0, CH, 0},        {0, -CH, 0},        {1e-8f, 0, 1e-8f},
+      {0, 0, 0},
+      {R, 0, 0},
+      {0, R, 0},
+      {0, 0, R},
+      {-R, 0, 0},
+      {BX, 0, 0},
+      {BX, BY, 0},
+      {BX, BY, BZ},
+      {-BX, -BY, -BZ},
+      {BX, BY, 2.0f},
+      {CO, 0, 0},
+      {CO - CT, 0, 0},
+      {CO - CT * 0.5f, 0, 0},
+      {0, CH * 0.5f, 0},
+      {CO, CH * 0.5f, 0},
+      {0, 0, 0.0f},
+      {0, CH, 0},
+      {0, -CH, 0},
+      {1e-8f, 0, 1e-8f},
   };
   for (const auto& f : feat)
     compareAt(f[0], f[1], f[2]);

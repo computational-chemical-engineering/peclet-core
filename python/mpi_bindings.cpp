@@ -1,10 +1,11 @@
 // core — minimal Python surface for the Lagrangian halo (migration + ghosts).
 //
-// A nanobind module exposing peclet::core::halo::ParticleMigrator / ParticleHaloTopology so an mpi4py driver can decompose a periodic
-// domain and migrate/ghost particles between ranks. Particles are passed as numpy arrays: positions
-// (N,3) float64 and an arbitrary per-particle payload (N,K) float64 (pack velocity, orientation, id,
-// etc. into the K columns). MPI is assumed already initialized by the host (import mpi4py.MPI first);
-// this module uses MPI_COMM_WORLD and never calls MPI_Init/Finalize.
+// A nanobind module exposing peclet::core::halo::ParticleMigrator / ParticleHaloTopology so an
+// mpi4py driver can decompose a periodic domain and migrate/ghost particles between ranks.
+// Particles are passed as numpy arrays: positions (N,3) float64 and an arbitrary per-particle
+// payload (N,K) float64 (pack velocity, orientation, id, etc. into the K columns). MPI is assumed
+// already initialized by the host (import mpi4py.MPI first); this module uses MPI_COMM_WORLD and
+// never calls MPI_Init/Finalize.
 //
 // Host-only (no Kokkos): arrays are returned via a capsule-backed nanobind ndarray (the same
 // owner-capsule idea as core's Kokkos bridge, minus the device path).
@@ -62,17 +63,20 @@ class ParticleMigrator {
   int rank() const { return rank_; }
   int owner_of(std::array<double, 3> x) const { return mig_.ownerOf(Vec<3>{x[0], x[1], x[2]}); }
 
-  // Periodic-wrapped / boundary-clamped position for x (the canonical image used by migrate/owner_of).
+  // Periodic-wrapped / boundary-clamped position for x (the canonical image used by
+  // migrate/owner_of).
   std::array<double, 3> wrap_position(std::array<double, 3> x) const {
     Vec<3> w = mig_.wrapPosition(Vec<3>{x[0], x[1], x[2]});
     return {w[0], w[1], w[2]};
   }
-  // Global decomposition cell index containing x (after wrap); owner_of == decomposer.ownerOf(cell_of).
+  // Global decomposition cell index containing x (after wrap); owner_of ==
+  // decomposer.ownerOf(cell_of).
   std::array<long, 3> cell_of(std::array<double, 3> x) const {
     IVec<3> c = mig_.cellOf(Vec<3>{x[0], x[1], x[2]});
     return {static_cast<long>(c[0]), static_cast<long>(c[1]), static_cast<long>(c[2])};
   }
-  // Particles shipped / absorbed by this rank in the last migrate() — communication-volume diagnostics.
+  // Particles shipped / absorbed by this rank in the last migrate() — communication-volume
+  // diagnostics.
   long last_sent() const { return static_cast<long>(mig_.lastSent()); }
   long last_received() const { return static_cast<long>(mig_.lastReceived()); }
 
@@ -86,14 +90,16 @@ class ParticleMigrator {
   }
 
   // Dynamic load re-balancing: re-decompose by per-block particle COUNT (weighted ORB) so each rank
-  // holds a near-equal share, then migrate. (pos (N,3), pay (N,K)) -> (pos2 (M,3), pay2 (M,K)). A pure
-  // redistribution — the global particle set is unchanged; only ownership moves. The decomposition is
-  // updated in place, so subsequent owner_of()/migrate() calls use the new (balanced) partition.
+  // holds a near-equal share, then migrate. (pos (N,3), pay (N,K)) -> (pos2 (M,3), pay2 (M,K)). A
+  // pure redistribution — the global particle set is unchanged; only ownership moves. The
+  // decomposition is updated in place, so subsequent owner_of()/migrate() calls use the new
+  // (balanced) partition.
   nb::tuple rebalance(DArray pos, DArray pay) {
     std::vector<Vec<3>> pv;
     std::vector<char> payload;
     std::size_t K = unpack(pos, pay, pv, payload);
-    peclet::core::halo::rebalanceByParticleCount(dec_, mig_, pv, payload, K * sizeof(double), MPI_COMM_WORLD);
+    peclet::core::halo::rebalanceByParticleCount(dec_, mig_, pv, payload, K * sizeof(double),
+                                                 MPI_COMM_WORLD);
     return pack(pv, payload, K);
   }
 
@@ -143,19 +149,21 @@ class ParticleMigrator {
 
 // Persistent owner<->ghost halo: build the correspondence once, then do cheap forward/reverse over
 // the fixed topology each step (scheme C / conservative-flux exchange) instead of re-gathering full
-// ghost state. Vec3 fields only (positions, velocities, forces). Wraps peclet::core::halo::ParticleHaloTopology.
+// ghost state. Vec3 fields only (positions, velocities, forces). Wraps
+// peclet::core::halo::ParticleHaloTopology.
 struct V3 {
   double v[3];
   V3& operator+=(const V3& o) {
-    for (int k = 0; k < 3; ++k) v[k] += o.v[k];
+    for (int k = 0; k < 3; ++k)
+      v[k] += o.v[k];
     return *this;
   }
 };
 
 class ParticleHalo {
  public:
-  ParticleHalo(std::array<double, 3> origin, std::array<double, 3> extent, std::array<long, 3> cells,
-               std::array<bool, 3> periodic) {
+  ParticleHalo(std::array<double, 3> origin, std::array<double, 3> extent,
+               std::array<long, 3> cells, std::array<bool, 3> periodic) {
     int sz = 1;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank_);
     MPI_Comm_size(MPI_COMM_WORLD, &sz);
@@ -174,13 +182,14 @@ class ParticleHalo {
   int owner_of(std::array<double, 3> x) const { return mig_.ownerOf(Vec<3>{x[0], x[1], x[2]}); }
 
   // (re)establish the correspondence from this rank's owned positions (N,3); returns ghost count.
-  // include_periodic_self emits local periodic self-ghosts — needed on an undecomposed periodic axis
-  // / at np=1, where a particle's periodic image is owned by the same rank.
+  // include_periodic_self emits local periodic self-ghosts — needed on an undecomposed periodic
+  // axis / at np=1, where a particle's periodic image is owned by the same rank.
   int build(DArray pos, double rcut, bool include_periodic_self) {
     n_owned_ = static_cast<std::size_t>(pos.shape(0));
     const double* P = pos.data();
     std::vector<Vec<3>> pv(n_owned_);
-    for (std::size_t i = 0; i < n_owned_; ++i) pv[i] = {P[i * 3 + 0], P[i * 3 + 1], P[i * 3 + 2]};
+    for (std::size_t i = 0; i < n_owned_; ++i)
+      pv[i] = {P[i * 3 + 0], P[i * 3 + 1], P[i * 3 + 2]};
     halo_.build(pv, rcut, include_periodic_self);
     n_ghost_ = halo_.numGhost();
     return static_cast<int>(n_ghost_);
@@ -192,7 +201,8 @@ class ParticleHalo {
   nb::ndarray<nb::numpy, double> forward_positions(DArray owned) {
     auto o = in(owned);
     std::vector<V3> g(n_ghost_);
-    halo_.forwardPositions(reinterpret_cast<Vec<3>*>(o.data()), reinterpret_cast<Vec<3>*>(g.data()));
+    halo_.forwardPositions(reinterpret_cast<Vec<3>*>(o.data()),
+                           reinterpret_cast<Vec<3>*>(g.data()));
     return out(g);
   }
   // owned (N,3) -> ghost (G,3): verbatim (velocities, ...).
@@ -215,13 +225,15 @@ class ParticleHalo {
     const std::size_t n = static_cast<std::size_t>(a.shape(0));
     const double* P = a.data();
     std::vector<V3> v(n);
-    for (std::size_t i = 0; i < n; ++i) v[i] = {{P[i * 3 + 0], P[i * 3 + 1], P[i * 3 + 2]}};
+    for (std::size_t i = 0; i < n; ++i)
+      v[i] = {{P[i * 3 + 0], P[i * 3 + 1], P[i * 3 + 2]}};
     return v;
   }
   static nb::ndarray<nb::numpy, double> out(const std::vector<V3>& v) {
     std::vector<double> d(v.size() * 3);
     for (std::size_t i = 0; i < v.size(); ++i)
-      for (int k = 0; k < 3; ++k) d[i * 3 + k] = v[i].v[k];
+      for (int k = 0; k < 3; ++k)
+        d[i * 3 + k] = v[i].v[k];
     return mat(std::move(d), v.size(), 3);
   }
   int rank_ = 0;
@@ -247,18 +259,22 @@ NB_MODULE(mpi, m) {
            "Reassign every particle to the rank owning its (wrapped) position; returns this rank's "
            "(positions (M,3), payload (M,K)) after the exchange.")
       .def("rebalance", &ParticleMigrator::rebalance, nb::arg("positions"), nb::arg("payload"),
-           "Re-decompose by particle count (weighted ORB) so each rank holds a near-equal share, then "
-           "migrate. Pure redistribution (count/payload preserved); the partition is updated in place. "
+           "Re-decompose by particle count (weighted ORB) so each rank holds a near-equal share, "
+           "then "
+           "migrate. Pure redistribution (count/payload preserved); the partition is updated in "
+           "place. "
            "Returns this rank's (positions (M,3), payload (M,K)).")
-      .def("gather_ghosts", &ParticleMigrator::gather_ghosts, nb::arg("positions"), nb::arg("payload"),
-           nb::arg("rcut"),
-           "Copies of particles within rcut of this rank's block (periodic images handled); returns the "
+      .def("gather_ghosts", &ParticleMigrator::gather_ghosts, nb::arg("positions"),
+           nb::arg("payload"), nb::arg("rcut"),
+           "Copies of particles within rcut of this rank's block (periodic images handled); "
+           "returns the "
            "(ghost positions (G,3), ghost payload (G,K)).")
       .def("wrap_position", &ParticleMigrator::wrap_position, nb::arg("x"),
            "Periodic-wrapped / boundary-clamped position for x (the canonical image).")
       .def("cell_of", &ParticleMigrator::cell_of, nb::arg("x"),
            "Global decomposition cell index (i,j,k) containing x (after wrap).")
-      .def("last_sent", &ParticleMigrator::last_sent, "Particles shipped by this rank in the last migrate().")
+      .def("last_sent", &ParticleMigrator::last_sent,
+           "Particles shipped by this rank in the last migrate().")
       .def("last_received", &ParticleMigrator::last_received,
            "Particles absorbed by this rank in the last migrate().")
       .def("owner_of", &ParticleMigrator::owner_of, nb::arg("x"),

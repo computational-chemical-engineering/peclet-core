@@ -37,15 +37,15 @@ static bool bitEq(double a, double b) {
 
 template <class F>
 static Vec3<double> fdGrad(const F& f, Vec3<double> p, double h) {
-  return Vec3<double>{(f(Vec3<double>{p.x + h, p.y, p.z}) - f(Vec3<double>{p.x - h, p.y, p.z})) /
-                          (2 * h),
-                      (f(Vec3<double>{p.x, p.y + h, p.z}) - f(Vec3<double>{p.x, p.y - h, p.z})) /
-                          (2 * h),
-                      (f(Vec3<double>{p.x, p.y, p.z + h}) - f(Vec3<double>{p.x, p.y, p.z - h})) /
-                          (2 * h)};
+  return Vec3<double>{
+      (f(Vec3<double>{p.x + h, p.y, p.z}) - f(Vec3<double>{p.x - h, p.y, p.z})) / (2 * h),
+      (f(Vec3<double>{p.x, p.y + h, p.z}) - f(Vec3<double>{p.x, p.y - h, p.z})) / (2 * h),
+      (f(Vec3<double>{p.x, p.y, p.z + h}) - f(Vec3<double>{p.x, p.y, p.z - h})) / (2 * h)};
 }
 
-static double norm3(Vec3<double> v) { return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); }
+static double norm3(Vec3<double> v) {
+  return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+}
 
 static double angleDeg(Vec3<double> a, Vec3<double> b) {
   const double d = (a.x * b.x + a.y * b.y + a.z * b.z) / (norm3(a) * norm3(b));
@@ -126,8 +126,8 @@ int main() {
                                  g);
       const Vec3<double> q = toCanonical(tr, p);
       const Vec3<double> ref = rotate(tr.rotation, prim::Cone<double>{0.25, 0.1, 0.3}.grad(q));
-      worst = std::fmax(worst, std::fabs(g.x - ref.x) + std::fabs(g.y - ref.y) +
-                                   std::fabs(g.z - ref.z));
+      worst = std::fmax(worst,
+                        std::fabs(g.x - ref.x) + std::fabs(g.y - ref.y) + std::fabs(g.z - ref.z));
     }
     PECLET_CORE_CHECK(worst == 0.0);  // same two operations, so exactly equal
     std::printf("  chain-rule exactness   rotated+scaled cone: worst |diff| = %.1e (exact)\n",
@@ -155,9 +155,10 @@ int main() {
     // the two step sizes (100x for h 1e-4 -> 1e-5), plus a loose absolute lid
     PECLET_CORE_CHECK(worst4 < 2e-5);
     PECLET_CORE_CHECK(worst5 < worst4 / 50.0);
-    std::printf("  FD agreement           %d smooth probes: |fd - exact| %.1e at h=1e-4, %.1e at "
-                "h=1e-5 (O(h^2))\n",
-                used, worst4, worst5);
+    std::printf(
+        "  FD agreement           %d smooth probes: |fd - exact| %.1e at h=1e-4, %.1e at "
+        "h=1e-5 (O(h^2))\n",
+        used, worst4, worst5);
   }
 
   // 4. THE RIDGE: a drilled box (box minus cylinder-ish capsule through the top face). Probe at
@@ -212,9 +213,10 @@ int main() {
     auto t2 = std::chrono::steady_clock::now();
     const double a = std::chrono::duration<double>(t1 - t0).count();
     const double f = std::chrono::duration<double>(t2 - t1).count();
-    std::printf("  cost                   analytic %.0f ns/probe vs eval+FD %.0f ns/probe "
-                "(%.1fx)\n",
-                a / N * 1e9, f / N * 1e9, f / a);
+    std::printf(
+        "  cost                   analytic %.0f ns/probe vs eval+FD %.0f ns/probe "
+        "(%.1fx)\n",
+        a / N * 1e9, f / N * 1e9, f / a);
   }
 
   PECLET_CORE_RETURN_TEST_RESULT();

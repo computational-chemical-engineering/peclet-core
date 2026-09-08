@@ -28,10 +28,10 @@ namespace detail {
 /// communicator (a handle-keyed map would confuse a freed handle with its reuse). Every rank of a
 /// communicator runs the same sequence of NBX rounds on it, so the counter agrees globally.
 ///
-/// The round tag lives in a RESERVED range: [kNbxTagBase, kNbxTagBase + kNbxFamilies * kNbxRoundTags)
-/// = [24576, 32768), the top of the MPI-guaranteed tag space (MPI_TAG_UB >= 32767). A caller's
-/// `baseTag` selects one of kNbxFamilies 64-tag blocks (by baseTag % kNbxFamilies), the round
-/// rotates inside the block. Two rules follow, and they are what keeps rounds from aliasing:
+/// The round tag lives in a RESERVED range: [kNbxTagBase, kNbxTagBase + kNbxFamilies *
+/// kNbxRoundTags) = [24576, 32768), the top of the MPI-guaranteed tag space (MPI_TAG_UB >= 32767).
+/// A caller's `baseTag` selects one of kNbxFamilies 64-tag blocks (by baseTag % kNbxFamilies), the
+/// round rotates inside the block. Two rules follow, and they are what keeps rounds from aliasing:
 ///   1. direct point-to-point tags (MPI_Isend/Irecv outside the engine) stay BELOW kNbxTagBase —
 ///      the suite's are 0..63 (AMR gathers 11/41/45, grid-halo field tags), 4096..20479 (flow's VoF
 ///      block exchange), 7502/7503/7603/7604 (particle halo forwards);

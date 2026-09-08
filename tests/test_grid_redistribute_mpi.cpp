@@ -1,7 +1,7 @@
 // redistributeGridFields — move structured grid fields between two ORB decompositions (Eulerian
-// load balancing). A field initialised from a KNOWN global function on the OLD partition must, after
-// redistribution to a NEW (differently-weighted) partition, hold exactly that function on every new
-// inner cell — and a round-trip (old->new->old) returns the original bit-for-bit.
+// load balancing). A field initialised from a KNOWN global function on the OLD partition must,
+// after redistribution to a NEW (differently-weighted) partition, hold exactly that function on
+// every new inner cell — and a round-trip (old->new->old) returns the original bit-for-bit.
 #include <mpi.h>
 
 #include <cmath>
@@ -30,11 +30,16 @@ int failures = 0;
 const int G = 2;
 
 // two distinct global fields
-double f0(Index x, Index y, Index z) { return 1.0 + x + 100.0 * y + 10000.0 * z; }
-double f1(Index x, Index y, Index z) { return std::sin(0.1 * x) * (y + 1) - 0.5 * z; }
+double f0(Index x, Index y, Index z) {
+  return 1.0 + x + 100.0 * y + 10000.0 * z;
+}
+double f1(Index x, Index y, Index z) {
+  return std::sin(0.1 * x) * (y + 1) - 0.5 * z;
+}
 
 // allocate a padded local buffer for a block and fill inner cells from a global function (or 0).
-std::vector<double> makeField(const peclet::core::decomp::Block<3>& b, double (*fn)(Index, Index, Index)) {
+std::vector<double> makeField(const peclet::core::decomp::Block<3>& b,
+                              double (*fn)(Index, Index, Index)) {
   const Index ex = b.size[0] + 2 * G, ey = b.size[1] + 2 * G, ez = b.size[2] + 2 * G;
   std::vector<double> v((std::size_t)ex * ey * ez, -1e30);  // ghosts = sentinel
   for (Index z = 0; z < b.size[2]; ++z)
@@ -75,7 +80,8 @@ int main(int argc, char** argv) {
     for (Index y = 0; y < gsize[1]; ++y)
       for (Index x = 0; x < gsize[0]; ++x)
         if (x < gsize[0] / 2)
-          w[(std::size_t)x + (std::size_t)y * gsize[0] + (std::size_t)z * gsize[0] * gsize[1]] = 5.0;
+          w[(std::size_t)x + (std::size_t)y * gsize[0] + (std::size_t)z * gsize[0] * gsize[1]] =
+              5.0;
   BlockDecomposer<3> newDec((std::size_t)np, gsize, w);
 
   auto ob = oldDec.block(rank), nb = newDec.block(rank);
@@ -99,8 +105,8 @@ int main(int argc, char** argv) {
   int global = 0;
   MPI_Allreduce(&failures, &global, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   if (rank == 0)
-    std::printf("redistribute np=%d: fwd err (%.1e,%.1e) round-trip (%.1e,%.1e) -> %s\n", np, e0, e1,
-                re0, re1, global == 0 ? "OK" : "FAIL");
+    std::printf("redistribute np=%d: fwd err (%.1e,%.1e) round-trip (%.1e,%.1e) -> %s\n", np, e0,
+                e1, re0, re1, global == 0 ? "OK" : "FAIL");
   MPI_Finalize();
   return global == 0 ? 0 : 1;
 }

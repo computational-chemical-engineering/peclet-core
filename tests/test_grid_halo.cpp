@@ -142,8 +142,8 @@ int main(int argc, char** argv) {
   }
 
   // reverseAdd conservation: global inner sum == global ghost count, for each periodicity.
-  for (auto per : {std::array<bool, kDim>{true, true, true},
-                   std::array<bool, kDim>{true, false, true}}) {
+  for (auto per :
+       {std::array<bool, kDim>{true, true, true}, std::array<bool, kDim>{true, false, true}}) {
     double li = 0, lg = 0, gi = 0, gg = 0;
     runReverseAdd(dec, rank, ghost, per, li, lg);
     MPI_Allreduce(&li, &gi, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
@@ -151,8 +151,9 @@ int main(int argc, char** argv) {
     if (gi != gg) {
       ++totalFail;
       if (rank == 0)
-        std::fprintf(stderr, "  reverseAdd conservation FAILED: inner sum %.0f != ghost count %.0f\n",
-                     gi, gg);
+        std::fprintf(stderr,
+                     "  reverseAdd conservation FAILED: inner sum %.0f != ghost count %.0f\n", gi,
+                     gg);
     }
   }
 

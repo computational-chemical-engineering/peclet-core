@@ -18,12 +18,12 @@
 // THE OUTER RULE IS SPLIT AT THE KINKS, and that is what makes the method worth having. The length
 // function has a kink wherever the interface crosses an EDGE of the face, and integrating straight
 // through those pins the error at ~1e-3 regardless of h: an aperture is a FRACTION, so a fixed kink
-// in a fixed normalized integrand costs a fixed amount and refining the grid does not help. Locating
-// the crossings on the two edge functions (two bracketed bisections each) and running the Gauss rule
-// piecewise removes the obstruction: measured on a sphere against the closed form, the mean face
-// error goes 8.5e-04 -> 3.9e-12 at N=16 and 5.4e-04 -> 3.9e-12 at N=64, against 3.8e-02 and 4.7e-02
-// for the sampled-SDF linear estimator the CFD otherwise uses. Pass breakpoints=false to reproduce
-// the unsplit behaviour.
+// in a fixed normalized integrand costs a fixed amount and refining the grid does not help.
+// Locating the crossings on the two edge functions (two bracketed bisections each) and running the
+// Gauss rule piecewise removes the obstruction: measured on a sphere against the closed form, the
+// mean face error goes 8.5e-04 -> 3.9e-12 at N=16 and 5.4e-04 -> 3.9e-12 at N=64, against 3.8e-02
+// and 4.7e-02 for the sampled-SDF linear estimator the CFD otherwise uses. Pass breakpoints=false
+// to reproduce the unsplit behaviour.
 //
 // cellVolumeFraction does NOT do this: its outer rule is two-dimensional and the kinks are CURVES,
 // not points. Its accuracy is correspondingly weaker (~1e-6 relative on a sphere at 24^3) and more
@@ -92,13 +92,35 @@ PECLET_HD void gaussLegendre01(int n, int i, Real& x, Real& w) {
   const double* T = T4;
   const double* W = W4;
   int m = 4;
-  if (n <= 1) { T = T1; W = W1; m = 1; }
-  else if (n == 2) { T = T2; W = W2; m = 2; }
-  else if (n == 3) { T = T3; W = W3; m = 3; }
-  else if (n == 4) { T = T4; W = W4; m = 4; }
-  else if (n == 5) { T = T5; W = W5; m = 5; }
-  else if (n == 6) { T = T6; W = W6; m = 6; }
-  else { T = T8; W = W8; m = 8; }
+  if (n <= 1) {
+    T = T1;
+    W = W1;
+    m = 1;
+  } else if (n == 2) {
+    T = T2;
+    W = W2;
+    m = 2;
+  } else if (n == 3) {
+    T = T3;
+    W = W3;
+    m = 3;
+  } else if (n == 4) {
+    T = T4;
+    W = W4;
+    m = 4;
+  } else if (n == 5) {
+    T = T5;
+    W = W5;
+    m = 5;
+  } else if (n == 6) {
+    T = T6;
+    W = W6;
+    m = 6;
+  } else {
+    T = T8;
+    W = W8;
+    m = 8;
+  }
   const int k = i < 0 ? 0 : (i >= m ? m - 1 : i);
   x = Real(0.5) * (Real(1) + Real(T[k]));
   w = Real(0.5) * Real(W[k]);
@@ -114,15 +136,17 @@ PECLET_HD int gaussCount(int n) {
 template <class Real, class Phi>
 PECLET_HD Real positiveLength(const Phi& phi, Vec3<Real> p0, Vec3<Real> d, int nseg) {
   const int NS = nseg < 2 ? 2 : (nseg > 64 ? 64 : nseg);
-  auto at = [&](Real s) {
-    return phi(Vec3<Real>{p0.x + s * d.x, p0.y + s * d.y, p0.z + s * d.z});
-  };
+  auto at = [&](Real s) { return phi(Vec3<Real>{p0.x + s * d.x, p0.y + s * d.y, p0.z + s * d.z}); };
   auto root = [&](Real a, Real b, Real fa) {
     for (int it = 0; it < 40; ++it) {  // ~1 ulp of the segment parameter
       const Real m = Real(0.5) * (a + b);
       const Real fm = at(m);
-      if ((fm > Real(0)) == (fa > Real(0))) { a = m; fa = fm; }
-      else { b = m; }
+      if ((fm > Real(0)) == (fa > Real(0))) {
+        a = m;
+        fa = fm;
+      } else {
+        b = m;
+      }
     }
     return Real(0.5) * (a + b);
   };
@@ -134,10 +158,10 @@ PECLET_HD Real positiveLength(const Phi& phi, Vec3<Real> p0, Vec3<Real> d, int n
     const Real f = at(s);
     if ((f > Real(0)) != (fPrev > Real(0))) {
       const Real r = root(sPrev, s, fPrev);
-      if (fPrev > Real(0)) {          // positive run ends here
+      if (fPrev > Real(0)) {  // positive run ends here
         acc += r - openAt;
         openAt = Real(-1);
-      } else {                        // positive run starts here
+      } else {  // positive run starts here
         openAt = r;
       }
     }
@@ -199,8 +223,12 @@ PECLET_HD Real faceAperture(const Phi& phi, Vec3<Real> origin, int axis, Real hu
         for (int it = 0; it < 40; ++it) {
           const Real m = Real(0.5) * (a + b);
           const Real fm = edge(m, w);
-          if ((fm > Real(0)) == (fa > Real(0))) { a = m; fa = fm; }
-          else { b = m; }
+          if ((fm > Real(0)) == (fa > Real(0))) {
+            a = m;
+            fa = fm;
+          } else {
+            b = m;
+          }
         }
         brk[nb++] = Real(0.5) * (a + b);
       }
@@ -212,7 +240,10 @@ PECLET_HD Real faceAperture(const Phi& phi, Vec3<Real> origin, int axis, Real hu
   for (int i = 1; i < nb; ++i) {
     const Real key = brk[i];
     int j = i - 1;
-    while (j >= 0 && brk[j] > key) { brk[j + 1] = brk[j]; --j; }
+    while (j >= 0 && brk[j] > key) {
+      brk[j + 1] = brk[j];
+      --j;
+    }
     brk[j + 1] = key;
   }
   brk[nb] = Real(1);
@@ -259,8 +290,10 @@ PECLET_HD Real cellVolumeFraction(const Phi& phi, Vec3<Real> origin, Vec3<Real> 
   const Real gz = at(Real(0.5), Real(0.5), Real(0.5) + q) - at(Real(0.5), Real(0.5), Real(0.5) - q);
   auto ab = [](Real v) { return v < Real(0) ? -v : v; };
   int hi = 0;
-  if (ab(gy) >= ab(gx) && ab(gy) >= ab(gz)) hi = 1;
-  else if (ab(gz) >= ab(gx) && ab(gz) >= ab(gy)) hi = 2;
+  if (ab(gy) >= ab(gx) && ab(gy) >= ab(gz))
+    hi = 1;
+  else if (ab(gz) >= ab(gx) && ab(gz) >= ab(gy))
+    hi = 2;
   const int t1 = (hi + 1) % 3, t2 = (hi + 2) % 3;
   const Real hh[3] = {h.x, h.y, h.z};
 

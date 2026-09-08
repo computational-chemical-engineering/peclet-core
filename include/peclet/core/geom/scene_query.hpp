@@ -716,7 +716,6 @@ CandidateGrid<Real> buildSceneCandidateGrid(const SceneView<Real>& sc, Vec3<Real
   return g;
 }
 
-
 // ---------------------------------------------------------------------------------------------
 // Cut ownership (Layer 3 rung 1 of suite/docs/ANALYTIC_SDF_GEOMETRY.md)
 //

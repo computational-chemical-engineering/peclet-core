@@ -1,15 +1,16 @@
 // core — uniform Kokkos teardown for every peclet Python extension module (nanobind).
 //
-// THE PROBLEM. Kokkos::finalize() has to run from a Python `atexit` hook: the alternative — Kokkos's
-// own static destructors, which run after the CUDA runtime has unloaded — aborts every CUDA process
-// at exit with cudaErrorCudartUnloading. But Python runs atexit hooks BEFORE it tears down module
-// globals, so any bound object (a Solver / Simulation / Tessellation at script or notebook scope)
-// or any zero-copy array (a capsule holding a View) that is still referenced when the hook runs
-// destroys its Kokkos View AFTER finalize, and Kokkos::Impl::SharedAllocationRecord::decrement calls
-// Kokkos::abort — `Kokkos allocation "x" is being deallocated after Kokkos::finalize was called` +
-// a backtrace, SIGABRT / exit 134 — on OpenMP exactly as on CUDA. That is the normal situation in a
-// plain script, in `python -c`, and in every Jupyter / Quarto kernel; `del obj; gc.collect()` before
-// exit was the only way out, and it does not exist for a notebook.
+// THE PROBLEM. Kokkos::finalize() has to run from a Python `atexit` hook: the alternative —
+// Kokkos's own static destructors, which run after the CUDA runtime has unloaded — aborts every
+// CUDA process at exit with cudaErrorCudartUnloading. But Python runs atexit hooks BEFORE it tears
+// down module globals, so any bound object (a Solver / Simulation / Tessellation at script or
+// notebook scope) or any zero-copy array (a capsule holding a View) that is still referenced when
+// the hook runs destroys its Kokkos View AFTER finalize, and
+// Kokkos::Impl::SharedAllocationRecord::decrement calls Kokkos::abort — `Kokkos allocation "x" is
+// being deallocated after Kokkos::finalize was called` + a backtrace, SIGABRT / exit 134 — on
+// OpenMP exactly as on CUDA. That is the normal situation in a plain script, in `python -c`, and in
+// every Jupyter / Quarto kernel; `del obj; gc.collect()` before exit was the only way out, and it
+// does not exist for a notebook.
 //
 // THE PATTERN (the same in flow, dem, voro, pnm, coupling and core.amr):
 //   * every binding-side owner of Kokkos Views derives from Releasable: its constructor registers
@@ -23,9 +24,9 @@
 //     from then on — after shutdown it is only ever touched by Python's own dealloc, never read.
 //   * a C++ class that keeps its own registry (dem's Simulation::releaseAll) plugs in via add_hook.
 //   * install(m) initializes Kokkos, registers ONE atexit hook per module that runs release_all()
-//     and THEN Kokkos::finalize(), exposes it as m.finalize() for deterministic teardown (idempotent;
-//     after it, every bound object and zero-copy array of the module is dead), and publishes
-//     m.execution_space.
+//     and THEN Kokkos::finalize(), exposes it as m.finalize() for deterministic teardown
+//     (idempotent; after it, every bound object and zero-copy array of the module is dead), and
+//     publishes m.execution_space.
 // Each extension module statically links its own Kokkos (libkokkoscore.a), so the registry, the
 // hook and the finalize are per module: modules tear down independently, in whatever order.
 //
@@ -70,7 +71,9 @@ inline std::vector<std::function<void()>>& release_hooks() {
   static auto* v = new std::vector<std::function<void()>>;
   return *v;
 }
-inline void add_release_hook(std::function<void()> f) { release_hooks().push_back(std::move(f)); }
+inline void add_release_hook(std::function<void()> f) {
+  release_hooks().push_back(std::move(f));
+}
 
 /// Drop every Kokkos View owned on Python's behalf in this module (registry + hooks). Idempotent.
 /// Iterates a snapshot: a release() may destroy its object and thereby unregister it.

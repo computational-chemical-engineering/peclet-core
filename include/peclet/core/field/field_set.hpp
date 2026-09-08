@@ -11,8 +11,8 @@
 // already owns (adopt). It carries NO halo objects — exchange stays per-call on the caller's
 // topology (docs/INTERFACES.md: the Field concept is duck-typed on the exchanger side).
 //
-// Header-only, Kokkos-required (pulls in common/view.hpp). Payload type is fixed to double: Eulerian
-// field state is double per docs/CONVENTIONS.md (§ precision policy).
+// Header-only, Kokkos-required (pulls in common/view.hpp). Payload type is fixed to double:
+// Eulerian field state is double per docs/CONVENTIONS.md (§ precision policy).
 #ifndef PECLET_CORE_FIELD_FIELD_SET_HPP
 #define PECLET_CORE_FIELD_FIELD_SET_HPP
 
@@ -27,13 +27,13 @@
 namespace peclet::core {
 
 /// Where a field's samples sit relative to a cell. Scalars/properties are cell-centred; the MAC
-/// face-normal velocity components are face-centred. (The staggered solver stores its face fields as
-/// cell-indexed arrays, so Centering is metadata for consumers — it does not change the buffer.)
+/// face-normal velocity components are face-centred. (The staggered solver stores its face fields
+/// as cell-indexed arrays, so Centering is metadata for consumers — it does not change the buffer.)
 enum class Centering { Cell, FaceX, FaceY, FaceZ };
 
 /// One registered field: its flat x-fastest device buffer plus the metadata a consumer needs to
-/// exchange or redistribute it. `ownStorage` distinguishes a FieldSet-allocated buffer (add) from an
-/// aliased solver member (adopt) — redistribution reallocates the former and rebinds the latter.
+/// exchange or redistribute it. `ownStorage` distinguishes a FieldSet-allocated buffer (add) from
+/// an aliased solver member (adopt) — redistribution reallocates the former and rebinds the latter.
 struct FieldRec {
   View<double> data;
   int ghost = 0;
@@ -41,15 +41,14 @@ struct FieldRec {
   bool ownStorage = false;
 };
 
-/// Name → FieldRec directory. Insertion is upsert (re-`add`/`adopt` of an existing name replaces the
-/// record) so a solver can re-adopt its members after a redistribution reallocates them. `names()`
-/// is sorted so every rank enumerates the set in the same order (required for collective
+/// Name → FieldRec directory. Insertion is upsert (re-`add`/`adopt` of an existing name replaces
+/// the record) so a solver can re-adopt its members after a redistribution reallocates them.
+/// `names()` is sorted so every rank enumerates the set in the same order (required for collective
 /// redistribution).
 class FieldSet {
  public:
   /// Allocate a fresh zero-initialised device buffer of `n` elements and register it.
-  FieldRec& add(const std::string& name, std::size_t n, int ghost,
-                Centering c = Centering::Cell) {
+  FieldRec& add(const std::string& name, std::size_t n, int ghost, Centering c = Centering::Cell) {
     recs_[name] = FieldRec{View<double>(name, n), ghost, c, true};
     return recs_.at(name);
   }

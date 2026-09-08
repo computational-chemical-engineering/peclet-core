@@ -157,8 +157,7 @@ KOKKOS_INLINE_FUNCTION double vofPhysNormal(const double m[3], const VofMetric& 
 /// `vofPhysNormal` in the RECIPROCAL-MULTIPLY form — `n = (H^-1 m) * (1/|H^-1 m|)`, which is what
 /// the curvature cascade's and the interface area's frame construction has always computed. See
 /// the note above for why the two forms both exist.
-KOKKOS_INLINE_FUNCTION double vofPhysNormalInv(const double m[3], const VofMetric& g,
-                                               double n[3]) {
+KOKKOS_INLINE_FUNCTION double vofPhysNormalInv(const double m[3], const VofMetric& g, double n[3]) {
   const double q = Kokkos::sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
   if (!(q > 0.0))
     return 0.0;

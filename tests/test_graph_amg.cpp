@@ -148,8 +148,8 @@ int main() {
 
     amgIters[idx] = R.iters;
     jacIters[idx] = jacobiPcgIters(A, b, tol);
-    std::printf("  m=%2d  N=%7lld  AMG-PCG=%3d iters (%d lvls, opC=%.2f)   Jacobi-PCG=%4d iters\n", m,
-                static_cast<long long>(A.n), R.iters, M.numLevels(), M.operatorComplexity(),
+    std::printf("  m=%2d  N=%7lld  AMG-PCG=%3d iters (%d lvls, opC=%.2f)   Jacobi-PCG=%4d iters\n",
+                m, static_cast<long long>(A.n), R.iters, M.numLevels(), M.operatorComplexity(),
                 jacIters[idx]);
     ++idx;
   }

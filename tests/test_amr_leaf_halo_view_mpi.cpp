@@ -16,11 +16,10 @@
 #include <Kokkos_Core.hpp>
 #include <vector>
 
-#include "peclet/core/common/view.hpp"
-
 #include "peclet/core/amr/distributed_octree.hpp"
 #include "peclet/core/amr/leaf_halo.hpp"
 #include "peclet/core/common/mpi.hpp"
+#include "peclet/core/common/view.hpp"
 
 using namespace peclet::core;
 using namespace peclet::core::amr;
@@ -131,8 +130,7 @@ void run() {
 
   // (2) batched 3-component exchange == three single exchanges bit-for-bit.
   {
-    View<double> x0 = toDevice(hx[0], "x0"), x1 = toDevice(hx[1], "x1"),
-                 x2 = toDevice(hx[2], "x2");
+    View<double> x0 = toDevice(hx[0], "x0"), x1 = toDevice(hx[1], "x1"), x2 = toDevice(hx[2], "x2");
     ex.exchange3(x0, x1, x2);
     std::vector<double> g0 = down(x0), g1 = down(x1), g2 = down(x2);
     for (Index i = 0; i < ext; ++i) {

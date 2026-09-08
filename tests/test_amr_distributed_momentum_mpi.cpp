@@ -24,13 +24,12 @@
 #include <utility>
 #include <vector>
 
-#include "peclet/core/common/view.hpp"
-
 #include "peclet/core/amr/cut_cell.hpp"
 #include "peclet/core/amr/distributed_octree.hpp"
 #include "peclet/core/amr/leaf_halo.hpp"
 #include "peclet/core/amr/momentum.hpp"
 #include "peclet/core/common/mpi.hpp"
+#include "peclet/core/common/view.hpp"
 
 using namespace peclet::core;
 using namespace peclet::core::amr;
@@ -97,10 +96,8 @@ void buildDistributed(DO& d, LeafHalo<3, kBits>& halo, AmrCutCell<kBits>& mom, d
     std::vector<unsigned> glv(static_cast<std::size_t>(halo.numGhosts()));
     for (Index g = 0; g < halo.numGhosts(); ++g) {
       for (int a = 0; a < 3; ++a)
-        glo[static_cast<std::size_t>(g)][a] =
-            static_cast<long>(halo.ghostCoord(g)[a]) - shift[a];
-      glv[static_cast<std::size_t>(g)] =
-          static_cast<unsigned>(halo.level(halo.numLocal() + g));
+        glo[static_cast<std::size_t>(g)][a] = static_cast<long>(halo.ghostCoord(g)[a]) - shift[a];
+      glv[static_cast<std::size_t>(g)] = static_cast<unsigned>(halo.level(halo.numLocal() + g));
     }
     mom.setGhosts(std::move(glo), std::move(glv));
     mom.build(sphereSdf, idiag, beta);

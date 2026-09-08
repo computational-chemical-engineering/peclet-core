@@ -21,13 +21,12 @@
 #include <Kokkos_Core.hpp>
 #include <vector>
 
-#include "peclet/core/common/view.hpp"
-
 #include "peclet/core/amr/distributed_flow_mg.hpp"
 #include "peclet/core/amr/distributed_octree.hpp"
 #include "peclet/core/amr/multigrid.hpp"
 #include "peclet/core/amr/pcg.hpp"
 #include "peclet/core/common/mpi.hpp"
+#include "peclet/core/common/view.hpp"
 
 using namespace peclet::core;
 using namespace peclet::core::amr;

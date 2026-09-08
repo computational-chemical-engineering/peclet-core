@@ -73,7 +73,8 @@ Vec<3> stokesU(const Vec<3>& p) {
           -(A - 3.0 * B) * dx * dy / r2, -(A - 3.0 * B) * dx * dz / r2};
 }
 
-// ---- octree (latitude two-level map; build pattern as in study_amr_seam_census) ----------------------------
+// ---- octree (latitude two-level map; build pattern as in study_amr_seam_census)
+// ----------------------------
 
 Vec<3> centerOf(const BO& t, double h0, Index i) {
   auto b = t.bounds(i);
@@ -247,10 +248,9 @@ bool lsFit(const LeafField& lf, const std::vector<std::vector<Index>>& bins, lon
       }
   if (capN > 0 && static_cast<long>(cds.size()) > capN) {
     std::vector<Cd> byDist = cds;
-    std::nth_element(byDist.begin(), byDist.begin() + capN, byDist.end(),
-                     [](const Cd& a, const Cd& c) {
-                       return a.r2 != c.r2 ? a.r2 < c.r2 : a.i < c.i;
-                     });
+    std::nth_element(
+        byDist.begin(), byDist.begin() + capN, byDist.end(),
+        [](const Cd& a, const Cd& c) { return a.r2 != c.r2 ? a.r2 < c.r2 : a.i < c.i; });
     std::vector<Index> keep;
     keep.reserve(static_cast<std::size_t>(capN));
     for (long q = 0; q < capN; ++q)
@@ -467,7 +467,7 @@ DepthResult runDepth(unsigned depth) {
 
     // Per-(axis, q) sample values, three ways. Non-required / same-level entries use the leaf
     // point value (identity slots — no error, as D1 would). phi and each velocity component.
-    double Xe[3][5], X1[3][5], X2[3][5];      // phi
+    double Xe[3][5], X1[3][5], X2[3][5];           // phi
     double Ue[3][3][5], U1[3][3][5], U2[3][3][5];  // [component][axis][q]
     for (int a = 0; a < 3; ++a)
       for (int q = 0; q < 5; ++q) {
@@ -717,10 +717,11 @@ int main() {
   std::vector<DepthResult> R;
   for (unsigned depth = 6; depth <= 9; ++depth) {
     DepthResult r = runDepth(depth);
-    std::printf("%6ld %6ld %9.2e %9.2e | %9.2e %9.2e %9.2e %9.2e %9.2e | %9.2e %9.2e %9.2e %9.2e "
-                "%9.2e | %5ld\n",
-                1L << depth, r.seamRows, r.e1, r.e2, r.bm1, r.rm1(), r.bm2, r.rm2(), r.refMat,
-                r.bd1, r.rd1(), r.bd2, r.rd2(), r.refDiv, r.degFall);
+    std::printf(
+        "%6ld %6ld %9.2e %9.2e | %9.2e %9.2e %9.2e %9.2e %9.2e | %9.2e %9.2e %9.2e %9.2e "
+        "%9.2e | %5ld\n",
+        1L << depth, r.seamRows, r.e1, r.e2, r.bm1, r.rm1(), r.bm2, r.rm2(), r.refMat, r.bd1,
+        r.rd1(), r.bd2, r.rd2(), r.refDiv, r.degFall);
     R.push_back(r);
   }
   const auto& f0 = R.front();
@@ -728,15 +729,17 @@ int main() {
   const double rungs = static_cast<double>(R.size() - 1);
   auto agg = [&](double a, double b) { return orderOf(a, b) / rungs; };
   const double lapScale = 3.0 * (2.0 * kPi) * (2.0 * kPi);  // max |lap phiMan|
-  std::printf("\naggregate orders (N=%ld -> %ld): Bmat1 %.2f (rms %.2f) | Bmat2 %.2f (rms %.2f) "
-              "| Bdiv1 %.2f (rms %.2f) | Bdiv2 %.2f (rms %.2f)\n",
-              1L << 6, 1L << 9, agg(f0.bm1, fN.bm1), agg(f0.rm1(), fN.rm1()), agg(f0.bm2, fN.bm2),
-              agg(f0.rm2(), fN.rm2()), agg(f0.bd1, fN.bd1), agg(f0.rd1(), fN.rd1()),
-              agg(f0.bd2, fN.bd2), agg(f0.rd2(), fN.rd2()));
-  std::printf("physical scales at finest: |lap phi| = %.3g (Bmat1/scale = %.1f%%, Bmat2/scale = "
-              "%.2f%%); refDiv = %.3g (Bdiv2/refDiv = %.3f%%)\n",
-              lapScale, 100.0 * fN.bm1 / lapScale, 100.0 * fN.bm2 / lapScale, fN.refDiv,
-              100.0 * fN.bd2 / fN.refDiv);
+  std::printf(
+      "\naggregate orders (N=%ld -> %ld): Bmat1 %.2f (rms %.2f) | Bmat2 %.2f (rms %.2f) "
+      "| Bdiv1 %.2f (rms %.2f) | Bdiv2 %.2f (rms %.2f)\n",
+      1L << 6, 1L << 9, agg(f0.bm1, fN.bm1), agg(f0.rm1(), fN.rm1()), agg(f0.bm2, fN.bm2),
+      agg(f0.rm2(), fN.rm2()), agg(f0.bd1, fN.bd1), agg(f0.rd1(), fN.rd1()), agg(f0.bd2, fN.bd2),
+      agg(f0.rd2(), fN.rd2()));
+  std::printf(
+      "physical scales at finest: |lap phi| = %.3g (Bmat1/scale = %.1f%%, Bmat2/scale = "
+      "%.2f%%); refDiv = %.3g (Bdiv2/refDiv = %.3f%%)\n",
+      lapScale, 100.0 * fN.bm1 / lapScale, 100.0 * fN.bm2 / lapScale, fN.refDiv,
+      100.0 * fN.bd2 / fN.refDiv);
   // [B] momentum ξ-row truncation at seam rows: raw (covering reads, global β) vs the
   // buildMomSeamDelta target (row-local virtual stencil), exact and LS2 samples.
   std::printf("\n[B] momentum xi-row truncation at seam rows (f = sdf·phi, wall-consistent):\n");
@@ -744,8 +747,8 @@ int main() {
               "ls2Max", "rawRms", "virtRms", "ls2Rms");
   for (unsigned depth = 6; depth <= 8; ++depth) {
     MomResult m = runMomDepth(depth);
-    std::printf("%6ld %6ld | %10.3e %10.3e %10.3e | %10.3e %10.3e %10.3e\n", 1L << depth,
-                m.rows, m.eRaw, m.eVirt, m.eVirtLs, m.rRaw(), m.rVirt(), m.rVirtLs());
+    std::printf("%6ld %6ld | %10.3e %10.3e %10.3e | %10.3e %10.3e %10.3e\n", 1L << depth, m.rows,
+                m.eRaw, m.eVirt, m.eVirtLs, m.rRaw(), m.rVirt(), m.rVirtLs());
   }
 
   std::printf("\n==== soft gates (documenting the D1 verdict) ====\n");

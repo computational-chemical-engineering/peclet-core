@@ -216,7 +216,7 @@ void test_implicit_advection() {
     fl.setViscosity(0.005);
     fl.setDt(0.1);  // CFL = A*dt/h ≈ 6.4 -> explicit advection blows up (NaN)
     fl.setAdvection(true);
-    fl.setGhostProjection(false);  // explicit aperture
+    fl.setGhostProjection(false);                    // explicit aperture
     fl.setSolid([](const Vec<3>&) { return 1.0; });  // all fluid, periodic
     auto ctr = [&](Index i, int d) {
       auto b = t.bounds(i);
@@ -280,7 +280,7 @@ void test_graded_advection() {
   fl.setDensity(1.0);
   fl.setViscosity(0.02);
   fl.setDt(0.1);
-  fl.setAdvection(true);                           // implicit-FOU (default on)
+  fl.setAdvection(true);         // implicit-FOU (default on)
   fl.setGhostProjection(false);  // explicit aperture (also the default; ghost is quarantined)
   fl.setSolid([](const Vec<3>&) { return 1.0; });  // all fluid, periodic
   auto& U = fl.velocityRef();

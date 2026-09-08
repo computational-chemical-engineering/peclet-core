@@ -51,10 +51,10 @@ using peclet::core::Index;
 /// share one arithmetic.
 struct HostCsrOp {
   Index n = 0;
-  std::vector<double> diag;   ///< size n
-  std::vector<Index> start;   ///< size n+1, off-diagonal row offsets
-  std::vector<Index> nbr;     ///< size nnz (off-diagonal column indices)
-  std::vector<double> coef;   ///< size nnz (off-diagonal values)
+  std::vector<double> diag;  ///< size n
+  std::vector<Index> start;  ///< size n+1, off-diagonal row offsets
+  std::vector<Index> nbr;    ///< size nnz (off-diagonal column indices)
+  std::vector<double> coef;  ///< size nnz (off-diagonal values)
 
   /// y = A x.
   void apply(const std::vector<double>& x, std::vector<double>& y) const {
@@ -70,18 +70,18 @@ struct HostCsrOp {
 };
 
 struct AmgParams {
-  int ndofPerNode = 1;      ///< block size for nodal aggregation (Voronoi positions ⇒ 3, +weight ⇒ 4)
-  double theta = 0.05;      ///< strength-of-connection threshold (fraction of √(A_ii·A_jj))
+  int ndofPerNode = 1;  ///< block size for nodal aggregation (Voronoi positions ⇒ 3, +weight ⇒ 4)
+  double theta = 0.05;  ///< strength-of-connection threshold (fraction of √(A_ii·A_jj))
   double smoothOmega = 4.0 / 3.0;  ///< prolongator-smoothing damping (× 1/λ_max)
-  int maxLevels = 25;       ///< hierarchy depth cap
-  Index coarsest = 40;      ///< stop coarsening once a level has ≤ this many DOFs
-  int pre = 1, post = 1;    ///< smoother sweeps per level (pre == post keeps the V-cycle symmetric)
-  int chebDegree = 2;       ///< Chebyshev smoother polynomial degree; 0 ⇒ damped-Jacobi smoother
-  double jacobiOmega = 0.6; ///< damped-Jacobi smoother relaxation (used when chebDegree == 0)
-  int coarseSweeps = 0;     ///< coarsest level: 0 ⇒ a near-exact CG solve; >0 ⇒ this many smoother
-                            ///< sweeps instead (with maxLevels=1 this turns GraphAMG into a plain
-                            ///< single-level polynomial/Jacobi preconditioner — no coarse grid)
-  int eigIters = 15;        ///< power-iteration steps for the per-level λ_max(D⁻¹A) estimate
+  int maxLevels = 25;              ///< hierarchy depth cap
+  Index coarsest = 40;             ///< stop coarsening once a level has ≤ this many DOFs
+  int pre = 1, post = 1;  ///< smoother sweeps per level (pre == post keeps the V-cycle symmetric)
+  int chebDegree = 2;     ///< Chebyshev smoother polynomial degree; 0 ⇒ damped-Jacobi smoother
+  double jacobiOmega = 0.6;  ///< damped-Jacobi smoother relaxation (used when chebDegree == 0)
+  int coarseSweeps = 0;  ///< coarsest level: 0 ⇒ a near-exact CG solve; >0 ⇒ this many smoother
+                         ///< sweeps instead (with maxLevels=1 this turns GraphAMG into a plain
+                         ///< single-level polynomial/Jacobi preconditioner — no coarse grid)
+  int eigIters = 15;     ///< power-iteration steps for the per-level λ_max(D⁻¹A) estimate
 };
 
 /// Smoothed-aggregation AMG hierarchy usable as `z = M⁻¹ r` (one symmetric V-cycle from a zero
@@ -170,9 +170,10 @@ class GraphAMG {
       lv.invDiag[i] = (std::fabs(d) > 1e-300) ? 1.0 / d : 0.0;
     }
     // v ← D⁻¹A v (Rayleigh quotient in the standard inner product approximates ρ(D⁻¹A)). Seed with
-    // a high-frequency ±1 hash pattern, NOT a smooth vector: the dominant eigenvector of D⁻¹A is the
-    // highest-frequency mode, so a smooth seed overlaps it weakly and power iteration underestimates
-    // λ_max — which would let a higher-degree Chebyshev amplify the modes above the (too-low) bound.
+    // a high-frequency ±1 hash pattern, NOT a smooth vector: the dominant eigenvector of D⁻¹A is
+    // the highest-frequency mode, so a smooth seed overlaps it weakly and power iteration
+    // underestimates λ_max — which would let a higher-degree Chebyshev amplify the modes above the
+    // (too-low) bound.
     std::vector<double> v(n, 0.0), w(n, 0.0);
     for (std::size_t i = 0; i < n; ++i) {
       // splitmix64 bit-mixing → a well-decorrelated ±1 vector (O(1) overlap with the top mode, so
@@ -220,8 +221,8 @@ class GraphAMG {
     std::vector<double> ddiag(static_cast<std::size_t>(nNodes), 0.0);  // ‖diagonal block‖_F²
     for (Index i = 0; i < n; ++i) {
       const Index I = i / s;
-      ddiag[static_cast<std::size_t>(I)] += lv.A.diag[static_cast<std::size_t>(i)] *
-                                            lv.A.diag[static_cast<std::size_t>(i)];
+      ddiag[static_cast<std::size_t>(I)] +=
+          lv.A.diag[static_cast<std::size_t>(i)] * lv.A.diag[static_cast<std::size_t>(i)];
       for (Index k = lv.A.start[static_cast<std::size_t>(i)];
            k < lv.A.start[static_cast<std::size_t>(i) + 1]; ++k) {
         const Index J = lv.A.nbr[static_cast<std::size_t>(k)] / s;
@@ -468,10 +469,11 @@ class GraphAMG {
   }
 
   void jacobiSweep(const Level& lv) const {
-    // Spectrally-scaled damped Jacobi: step = ω/λ_max(D⁻¹A). Scaling by λ_max is essential — a fixed
-    // ω is only stable when ω·λ_max < 2, which fails on operators with a large D⁻¹A spectrum (e.g. the
-    // Gauss-Newton Hessian JᵀJ), where an unscaled sweep diverges. ω≈1 is a decent smoother; the
-    // optimal high-frequency-damping value is 4/3 (== the 4th-kind Chebyshev degree-1 step).
+    // Spectrally-scaled damped Jacobi: step = ω/λ_max(D⁻¹A). Scaling by λ_max is essential — a
+    // fixed ω is only stable when ω·λ_max < 2, which fails on operators with a large D⁻¹A spectrum
+    // (e.g. the Gauss-Newton Hessian JᵀJ), where an unscaled sweep diverges. ω≈1 is a decent
+    // smoother; the optimal high-frequency-damping value is 4/3 (== the 4th-kind Chebyshev degree-1
+    // step).
     const double step = prm_.jacobiOmega / lv.lmax;
     lv.A.apply(lv.x, lv.res);  // res = A x
     for (std::size_t i = 0; i < lv.x.size(); ++i)
@@ -484,7 +486,8 @@ class GraphAMG {
   // step is exactly the optimal 4/(3λ) damped-Jacobi step. Guaranteed a good, symmetric smoother.
   void chebSweep(const Level& lv) const {
     const int k = prm_.chebDegree;
-    const double lam = 1.1 * lv.lmax;  // safety over-estimate: λ must bound the true spectral radius
+    const double lam =
+        1.1 * lv.lmax;  // safety over-estimate: λ must bound the true spectral radius
     auto& r = lv.res;
     auto& d = lv.t0;
     auto& Ad = lv.t1;

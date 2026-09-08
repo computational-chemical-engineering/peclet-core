@@ -13,11 +13,13 @@
 //     refinement `level` is spacing * 2**level wide. Root cells sit at level=lmax; level decreases
 //     toward 0 (finest). `cells` is always the FINEST grid (root cells * 2**lmax), as in flow.
 //
-// Per-leaf arrays are returned via the shared peclet::core::python::vector_to_ndarray (capsule-backed, no
-// extra copy); the Flow path returns host fields the same way. AMR is guarded by PECLET_CORE_HAVE_MORTON, so
-// this module REQUIRES the morton sibling checkout — its CMake points the include path at
-// ../../morton/include and defines PECLET_CORE_HAVE_MORTON. MPI is assumed already initialized by the host
-// (import mpi4py.MPI first); the distributed class uses MPI_COMM_WORLD and never calls Init/Finalize.
+// Per-leaf arrays are returned via the shared peclet::core::python::vector_to_ndarray
+// (capsule-backed, no extra copy); the Flow path returns host fields the same way. AMR is guarded
+// by PECLET_CORE_HAVE_MORTON, so this module REQUIRES the morton sibling checkout — its CMake
+// points the include path at
+// ../../morton/include and defines PECLET_CORE_HAVE_MORTON. MPI is assumed already initialized by
+// the host (import mpi4py.MPI first); the distributed class uses MPI_COMM_WORLD and never calls
+// Init/Finalize.
 //
 // Build: see python/CMakeLists.txt (the amr_bindings target -> peclet.core.amr).
 #include <mpi.h>
@@ -33,19 +35,17 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <Kokkos_Core.hpp>
 #include <optional>
 #include <set>
 #include <string>
 #include <vector>
 
-#include <Kokkos_Core.hpp>
-
 #include "peclet/core/amr/adapt.hpp"
 #include "peclet/core/amr/block_octree.hpp"
-#include "peclet/core/amr/flow.hpp"  // the canonical (device) AmrFlow exposed to Python
-#include "peclet/core/geom/scene_query.hpp"  // SphereBedQuery (Layer 2-for-core)
 #include "peclet/core/amr/distributed_adapt.hpp"
 #include "peclet/core/amr/distributed_octree.hpp"
+#include "peclet/core/amr/flow.hpp"         // the canonical (device) AmrFlow exposed to Python
 #include "peclet/core/amr/flow_oracle.hpp"  // oracle::AmrFlow (dev-only reference; not exposed)
 #include "peclet/core/amr/indicators.hpp"
 #include "peclet/core/amr/leaf_field.hpp"
@@ -53,6 +53,7 @@
 #include "peclet/core/amr/refine.hpp"
 #include "peclet/core/amr/vtu_io.hpp"
 #include "peclet/core/common/types.hpp"
+#include "peclet/core/geom/scene_query.hpp"  // SphereBedQuery (Layer 2-for-core)
 #include "peclet/core/geom/sdf.hpp"
 #include "peclet/core/python/kokkos_teardown.hpp"
 #include "peclet/core/python/ndarray_interop.hpp"
@@ -66,7 +67,7 @@ using namespace peclet::core;
 // (and Poisson / Flow / DistributedOctree). OpenMP/CUDA builds are indifferent.
 namespace peclet::core::pybind_amr {
 
-using BO = amr::BlockOctree<3>;       // 3D, Bits=21 (default) — codes fit a uint64
+using BO = amr::BlockOctree<3>;  // 3D, Bits=21 (default) — codes fit a uint64
 using DO = amr::DistributedOctree<3>;
 using Code = BO::Code;
 using Coord = BO::Coord;
@@ -83,7 +84,7 @@ template <class T>
 nb::ndarray<nb::numpy, T> vec2(std::vector<T> v, std::size_t cols) {
   const std::size_t n = v.size() / cols;
   return peclet::core::python::vector_to_ndarray<T>(std::move(v), {n, cols},
-                                           {static_cast<std::int64_t>(cols), 1});
+                                                    {static_cast<std::int64_t>(cols), 1});
 }
 
 // World centre of every leaf -> (N,3) float64.
@@ -106,7 +107,8 @@ nb::ndarray<nb::numpy, double> leafSizes(const BO& t, const amr::AmrGeometry<3>&
     throw std::runtime_error("sizes(axis): axis must be 0, 1 or 2");
   const Index n = t.numLeaves();
   std::vector<double> d(static_cast<std::size_t>(n));
-  for (Index i = 0; i < n; ++i) d[i] = geo.leafSize(t.level(i), axis);
+  for (Index i = 0; i < n; ++i)
+    d[i] = geo.leafSize(t.level(i), axis);
   return vec1<double>(std::move(d));
 }
 
@@ -114,7 +116,8 @@ nb::ndarray<nb::numpy, double> leafSizes(const BO& t, const amr::AmrGeometry<3>&
 nb::ndarray<nb::numpy, std::int32_t> leafLevels(const BO& t) {
   const Index n = t.numLeaves();
   std::vector<std::int32_t> d(static_cast<std::size_t>(n));
-  for (Index i = 0; i < n; ++i) d[i] = static_cast<std::int32_t>(t.level(i));
+  for (Index i = 0; i < n; ++i)
+    d[i] = static_cast<std::int32_t>(t.level(i));
   return vec1<std::int32_t>(std::move(d));
 }
 
@@ -122,12 +125,15 @@ nb::ndarray<nb::numpy, std::int32_t> leafLevels(const BO& t) {
 nb::ndarray<nb::numpy, std::uint64_t> leafCodes(const BO& t) {
   const Index n = t.numLeaves();
   std::vector<std::uint64_t> d(static_cast<std::size_t>(n));
-  for (Index i = 0; i < n; ++i) d[i] = static_cast<std::uint64_t>(t.code(i));
+  for (Index i = 0; i < n; ++i)
+    d[i] = static_cast<std::uint64_t>(t.code(i));
   return vec1<std::uint64_t>(std::move(d));
 }
 
 // A contiguous vector<double> as a (N,) float64 numpy array.
-nb::ndarray<nb::numpy, double> vecToArray(std::vector<double> v) { return vec1<double>(std::move(v)); }
+nb::ndarray<nb::numpy, double> vecToArray(std::vector<double> v) {
+  return vec1<double>(std::move(v));
+}
 
 // Validate a per-leaf field numpy array and view it as a contiguous vector<double>.
 std::vector<double> asField(const BO& t, const DArray& field, const char* who) {
@@ -139,10 +145,10 @@ std::vector<double> asField(const BO& t, const DArray& field, const char* who) {
 
 // ---- teardown registry -------------------------------------------------------------------------
 // The suite-wide pattern (peclet/core/python/kokkos_teardown.hpp): Kokkos::finalize() MUST run from
-// the atexit hook (else cudaErrorCudartUnloading on CUDA), but any wrapper that still holds Views at
-// that point -- an Octree/Flow at script or notebook scope, the normal case -- is destroyed after
-// finalize and Kokkos::abort()s the process. Every wrapper below is a Releasable (registered on
-// construction); the hook drops their Views (release()) BEFORE finalize.
+// the atexit hook (else cudaErrorCudartUnloading on CUDA), but any wrapper that still holds Views
+// at that point -- an Octree/Flow at script or notebook scope, the normal case -- is destroyed
+// after finalize and Kokkos::abort()s the process. Every wrapper below is a Releasable (registered
+// on construction); the hook drops their Views (release()) BEFORE finalize.
 using peclet::core::python::Releasable;
 
 // ---- serial single-block octree ----------------------------------------------------------------
@@ -172,7 +178,8 @@ inline std::array<double, 3> spacingsFromExtent(const std::array<double, 3>& ext
 // The SCALAR helper keeps its cubic contract: it returns one number, so an extent that does not
 // give one spacing is still refused with the three values. `spacings_from_extent` is the per-axis
 // form, and the constructors take the anisotropic extent directly.
-inline double spacingFromExtent(const std::array<double, 3>& extent, const std::array<long, 3>& cells) {
+inline double spacingFromExtent(const std::array<double, 3>& extent,
+                                const std::array<long, 3>& cells) {
   const std::array<double, 3> h = spacingsFromExtent(extent, cells);
   for (int d = 1; d < 3; ++d)
     if (std::fabs(h[d] - h[0]) > 1e-12 * std::fabs(h[0])) {
@@ -190,7 +197,8 @@ inline double spacingFromExtent(const std::array<double, 3>& extent, const std::
 // `spacing=` accepts one number (cubic cells) or three (a box mesh).
 using SpacingArg = std::variant<double, std::array<double, 3>>;
 inline std::array<double, 3> spacingOf(const SpacingArg& sp) {
-  if (const double* d = std::get_if<double>(&sp)) return {*d, *d, *d};
+  if (const double* d = std::get_if<double>(&sp))
+    return {*d, *d, *d};
   return std::get<std::array<double, 3>>(sp);
 }
 
@@ -222,15 +230,17 @@ inline std::array<double, 3> resolveSpacing(const std::optional<SpacingArg>& spa
     throw std::runtime_error(std::string(who) +
                              ": pass EITHER spacing= (the finest cell size) OR extent= (the box "
                              "side lengths; spacing = extent / cells), not both");
-  if (extent) return spacingsFromExtent(*extent, cells);
-  if (spacing) return spacingOf(*spacing);
+  if (extent)
+    return spacingsFromExtent(*extent, cells);
+  if (spacing)
+    return spacingOf(*spacing);
   return {1.0, 1.0, 1.0};
 }
 
 // A per-block adaptive octree with its world placement (origin + per-axis finest spacing).
-// Wraps peclet::core::amr::BlockOctree<3> + AmrGeometry<3>: build a uniform brick, refine toward a surface,
-// query leaves, and read leaf geometry / fields as numpy. The serial / single-rank form; for the
-// distributed (MPI) octree use DistributedOctree below.
+// Wraps peclet::core::amr::BlockOctree<3> + AmrGeometry<3>: build a uniform brick, refine toward a
+// surface, query leaves, and read leaf geometry / fields as numpy. The serial / single-rank form;
+// for the distributed (MPI) octree use DistributedOctree below.
 class Octree : public Releasable {
  public:
   Octree(std::array<long, 3> root, unsigned lmax, std::array<double, 3> origin,
@@ -270,7 +280,8 @@ class Octree : public Releasable {
     std::array<Coord, 3> fine{};
     for (int d = 0; d < 3; ++d) {
       double f = (x[d] - geo_.origin[d]) / geo_.h0[d];
-      if (f < 0) return -1;
+      if (f < 0)
+        return -1;
       fine[d] = static_cast<Coord>(f);
     }
     return t_.find(fine);
@@ -281,16 +292,17 @@ class Octree : public Releasable {
   Index refine_to_sphere(std::array<double, 3> center, double radius, unsigned target_level,
                          double band, bool balance) {
     geom::Sphere s{{center[0], center[1], center[2]}, radius};
-    return amr::refineToSdf(t_, geo_, [&](const Vec<3>& p) { return s.eval(p); }, target_level,
-                            band, balance);
+    return amr::refineToSdf(
+        t_, geo_, [&](const Vec<3>& p) { return s.eval(p); }, target_level, band, balance);
   }
 
   // Refine toward an arbitrary signed-distance field given as a Python callable f(x,y,z)->distance
   // (suite SDF sign: <0 inside solid). Convenient for scripting; the callback runs under the GIL.
   Index refine_to_sdf(std::function<double(double, double, double)> sdf, unsigned target_level,
                       double band, bool balance) {
-    return amr::refineToSdf(t_, geo_, [&](const Vec<3>& p) { return sdf(p[0], p[1], p[2]); },
-                            target_level, band, balance);
+    return amr::refineToSdf(
+        t_, geo_, [&](const Vec<3>& p) { return sdf(p[0], p[1], p[2]); }, target_level, band,
+        balance);
   }
 
   // Graded surface refinement: a per-point TARGET LEVEL callable instead of one global target
@@ -333,8 +345,9 @@ class Octree : public Releasable {
 
   // One solution-adaptive step driven by the Löhner indicator: refine leaves where the indicator
   // exceeds refine_thresh (down to finest_level), coarsen sibling groups all below coarsen_thresh,
-  // restore 2:1 balance, and conservatively remap `field` (N,) onto the new mesh. MUTATES the octree
-  // in place (num_leaves/centers/... then reflect the new mesh) and returns the remapped field (M,).
+  // restore 2:1 balance, and conservatively remap `field` (N,) onto the new mesh. MUTATES the
+  // octree in place (num_leaves/centers/... then reflect the new mesh) and returns the remapped
+  // field (M,).
   nb::ndarray<nb::numpy, double> adapt(DArray field, double refine_thresh, double coarsen_thresh,
                                        unsigned finest_level, double eps, bool linear) {
     auto fv = asField(t_, field, "adapt");
@@ -357,12 +370,13 @@ class Octree : public Releasable {
 // ---- geometric-multigrid Poisson solver --------------------------------------------------------
 
 // Cell-centered finite-volume Poisson solver (Lu = rhs) on an Octree, via a geometric multigrid
-// V-cycle (peclet::core::amr::AmrMultigrid). The operator L is the conservative two-point FV Laplacian
-// (negative-definite, suite sign convention); on a graded octree it is consistent and second-order
-// in the bulk (first-order at coarse/fine faces). `periodic=True` solves the singular periodic
-// problem (the constant null space is removed each cycle); the manufactured RHS b = apply(u_exact)
-// is exactly mean-zero, so the residual drives to round-off. The hierarchy snapshots the octree at
-// construction. (Cut-cell openness is handled by the flow solver, which sets it consistently.)
+// V-cycle (peclet::core::amr::AmrMultigrid). The operator L is the conservative two-point FV
+// Laplacian (negative-definite, suite sign convention); on a graded octree it is consistent and
+// second-order in the bulk (first-order at coarse/fine faces). `periodic=True` solves the singular
+// periodic problem (the constant null space is removed each cycle); the manufactured RHS b =
+// apply(u_exact) is exactly mean-zero, so the residual drives to round-off. The hierarchy snapshots
+// the octree at construction. (Cut-cell openness is handled by the flow solver, which sets it
+// consistently.)
 class Poisson : public Releasable {
  public:
   Poisson(const Octree& oct, bool periodic) : n_(oct.octreeRef().numLeaves()) {
@@ -393,7 +407,8 @@ class Poisson : public Releasable {
   nb::tuple solve(DArray rhs, std::optional<DArray> x0, int cycles, int pre, int post, double tol) {
     std::vector<double> rv = toVec(rhs, "solve");
     std::vector<double> u(static_cast<std::size_t>(n_), 0.0);
-    if (x0) u = toVec(*x0, "solve");
+    if (x0)
+      u = toVec(*x0, "solve");
     std::vector<double> res;
     double r = mg_.op(0).residual(u, rv, res);
     int done = 0;
@@ -401,7 +416,8 @@ class Poisson : public Releasable {
       mg_.vcycle(0, u, rv, pre, post);
       r = mg_.op(0).residual(u, rv, res);
       ++done;
-      if (tol > 0.0 && r <= tol) break;
+      if (tol > 0.0 && r <= tol)
+        break;
     }
     return nb::make_tuple(vec1<double>(std::move(u)), r, done);
   }
@@ -420,13 +436,14 @@ class Poisson : public Releasable {
 
 // ---- collocated incompressible flow ------------------------------------------------------------
 
-// Collocated (cell-centered) incompressible Stokes / Navier-Stokes step on an Octree with a cut-cell
-// immersed boundary (peclet::core::amr::AmrFlow). Each step() is: an implicit backward-Euler viscous momentum
-// predictor with no-slip (u=0) Dirichlet cut-cell IBM on the SDF solid, then the Almgren-Bell-Colella
-// approximate projection in incremental-rotational form (openness-weighted pressure Poisson). Stokes
-// by default; set_advection(True) adds explicit high-order (SOU / Koren-TVD) momentum advection.
-// Driven by a body force; iterate step() to steady state. Velocities/pressure are per-leaf (num_leaves,)
-// in Z-order slots. The octree is borrowed by reference (kept alive for the Flow's lifetime).
+// Collocated (cell-centered) incompressible Stokes / Navier-Stokes step on an Octree with a
+// cut-cell immersed boundary (peclet::core::amr::AmrFlow). Each step() is: an implicit
+// backward-Euler viscous momentum predictor with no-slip (u=0) Dirichlet cut-cell IBM on the SDF
+// solid, then the Almgren-Bell-Colella approximate projection in incremental-rotational form
+// (openness-weighted pressure Poisson). Stokes by default; set_advection(True) adds explicit
+// high-order (SOU / Koren-TVD) momentum advection. Driven by a body force; iterate step() to steady
+// state. Velocities/pressure are per-leaf (num_leaves,) in Z-order slots. The octree is borrowed by
+// reference (kept alive for the Flow's lifetime).
 //
 // Resolve the immersed boundary in a uniformly-finest band: the cut-cell and ±2 advection stencils
 // assume same-level neighbours, so keep the solid surface off 2:1 interfaces.
@@ -483,8 +500,9 @@ class Flow : public Releasable {
   void set_advection_scheme(int s) { flow_.setAdvectionScheme(s); }
   void set_implicit_advection(bool on) { flow_.setImplicitAdvection(on); }
 
-  // Build the cut-cell operators from a signed-distance callable f(x,y,z) (>0 in fluid, <0 in solid),
-  // and zero the velocity / pressure fields. Call before stepping; re-call to change the geometry.
+  // Build the cut-cell operators from a signed-distance callable f(x,y,z) (>0 in fluid, <0 in
+  // solid), and zero the velocity / pressure fields. Call before stepping; re-call to change the
+  // geometry.
   void set_solid(std::function<double(double, double, double)> sdf) {
     // The host operator builders sample the SDF from Kokkos host parallel regions. nanobind's
     // std::function wrapper takes the GIL for every call, so with the calling thread still
@@ -543,7 +561,8 @@ class Flow : public Releasable {
 
   // Per-leaf velocity component c (0=x,1=y,2=z) -> (num_leaves,) float64.
   nb::ndarray<nb::numpy, double> velocity(int c) const {
-    if (c < 0 || c > 2) throw std::runtime_error("velocity: component must be 0..2");
+    if (c < 0 || c > 2)
+      throw std::runtime_error("velocity: component must be 0..2");
     const auto& v = flow_.velocity(c);
     return vec1<double>(std::vector<double>(v.begin(), v.end()));
   }
@@ -555,8 +574,10 @@ class Flow : public Releasable {
   // Per-leaf fluid mask (False inside the solid) -> (num_leaves,) bool.
   nb::ndarray<nb::numpy, bool> is_fluid() const {
     auto* buf = new std::vector<std::uint8_t>(static_cast<std::size_t>(n_));
-    for (Index i = 0; i < n_; ++i) (*buf)[static_cast<std::size_t>(i)] = flow_.isFluid(i) ? 1 : 0;
-    nb::capsule owner(buf, [](void* p) noexcept { delete static_cast<std::vector<std::uint8_t>*>(p); });
+    for (Index i = 0; i < n_; ++i)
+      (*buf)[static_cast<std::size_t>(i)] = flow_.isFluid(i) ? 1 : 0;
+    nb::capsule owner(buf,
+                      [](void* p) noexcept { delete static_cast<std::vector<std::uint8_t>*>(p); });
     return nb::ndarray<nb::numpy, bool>(reinterpret_cast<bool*>(buf->data()),
                                         {static_cast<std::size_t>(n_)}, owner, {1});
   }
@@ -571,7 +592,8 @@ class Flow : public Releasable {
   nb::ndarray<nb::numpy, double> pressure() const { return vec1<double>(flow_.pressure()); }
   // ABC divergence-free FACE velocity, one value per CSR (sub)face -> (num_faces,) float64.
   nb::ndarray<nb::numpy, double> face_field() const { return vec1<double>(flow_.faceField()); }
-  // Write velocity component c (0=x,1=y,2=z) from a (num_leaves,) array — ICs / restart / warm-start.
+  // Write velocity component c (0=x,1=y,2=z) from a (num_leaves,) array — ICs / restart /
+  // warm-start.
   void set_velocity(int c, nb::ndarray<double, nb::c_contig> h) {
     flow_.setVelocity(c, std::vector<double>(h.data(), h.data() + h.shape(0)));
   }
@@ -595,7 +617,8 @@ class Flow : public Releasable {
 // Build it collectively (every rank constructs the same global geometry; ORB hands each rank a
 // block), refine the local octree toward a global surface, restore cross-block 2:1 balance,
 // load-rebalance leaves+fields onto a weighted ORB, gather face-neighbour field values across the
-// owner-based halo, and read this rank's local leaf geometry / fields as numpy. Uses MPI_COMM_WORLD.
+// owner-based halo, and read this rank's local leaf geometry / fields as numpy. Uses
+// MPI_COMM_WORLD.
 class DistributedOctree : public Releasable {
  public:
   DistributedOctree(std::array<long, 3> global_root, unsigned lmax, std::array<double, 3> origin,
@@ -647,7 +670,9 @@ class DistributedOctree : public Releasable {
   }
 
   // World leaf geometry of THIS rank's block (centres in global world coordinates).
-  nb::ndarray<nb::numpy, double> centers() const { return leafCenters(d_.local(), d_.localGeometry()); }
+  nb::ndarray<nb::numpy, double> centers() const {
+    return leafCenters(d_.local(), d_.localGeometry());
+  }
   nb::ndarray<nb::numpy, double> sizes(int axis) const {
     return leafSizes(d_.local(), d_.localGeometry(), axis);
   }
@@ -661,22 +686,26 @@ class DistributedOctree : public Releasable {
                          double band, bool balance) {
     geom::Sphere s{{center[0], center[1], center[2]}, radius};
     auto lgeo = d_.localGeometry();
-    Index n = amr::refineToSdf(d_.local(), lgeo, [&](const Vec<3>& p) { return s.eval(p); },
-                               target_level, band, /*balance=*/false);
-    if (balance) d_.balance();
+    Index n = amr::refineToSdf(
+        d_.local(), lgeo, [&](const Vec<3>& p) { return s.eval(p); }, target_level, band,
+        /*balance=*/false);
+    if (balance)
+      d_.balance();
     return n;
   }
 
   // Refine the local octree toward an arbitrary GLOBAL surface given as a Python SDF callable
   // f(x,y,z) (suite sign: <0 inside solid), then (if balance) restore cross-block 2:1 balance
-  // collectively. The distributed analogue of the serial Octree.refine_to_sdf. Collective when balance.
+  // collectively. The distributed analogue of the serial Octree.refine_to_sdf. Collective when
+  // balance.
   Index refine_to_sdf(std::function<double(double, double, double)> sdf, unsigned target_level,
                       double band, bool balance) {
     auto lgeo = d_.localGeometry();
-    Index n = amr::refineToSdf(d_.local(), lgeo,
-                               [&](const Vec<3>& p) { return sdf(p[0], p[1], p[2]); }, target_level,
-                               band, /*balance=*/false);
-    if (balance) d_.balance();
+    Index n = amr::refineToSdf(
+        d_.local(), lgeo, [&](const Vec<3>& p) { return sdf(p[0], p[1], p[2]); }, target_level,
+        band, /*balance=*/false);
+    if (balance)
+      d_.balance();
     return n;
   }
 
@@ -686,7 +715,8 @@ class DistributedOctree : public Releasable {
   // ---- load balancing ----
   // Re-decompose by leaf COUNT (weighted ORB) so each rank holds a near-equal share, migrating
   // leaves AND their fields. `fields` is (N,K) float64 (K per-leaf columns); returns this rank's
-  // (M,K) columns after migration. Pure redistribution; the partition is updated in place. Collective.
+  // (M,K) columns after migration. Pure redistribution; the partition is updated in place.
+  // Collective.
   nb::ndarray<nb::numpy, double> rebalance(DArray fields) {
     const Index n = d_.local().numLeaves();
     if (static_cast<Index>(fields.shape(0)) != n)
@@ -720,17 +750,18 @@ class DistributedOctree : public Releasable {
   }
 
   // ---- solution-adaptive refinement ----
-  // Löhner indicator per local leaf, evaluated across the owner-based halo so cross-block neighbours
-  // contribute exactly as in a whole-domain solve. `field` is this rank's (num_leaves,). Collective.
+  // Löhner indicator per local leaf, evaluated across the owner-based halo so cross-block
+  // neighbours contribute exactly as in a whole-domain solve. `field` is this rank's (num_leaves,).
+  // Collective.
   nb::ndarray<nb::numpy, double> lohner_indicator(DArray field, double eps) {
     auto fv = asField(d_.local(), field, "lohner_indicator");
     return vecToArray(amr::lohnerIndicatorDistributed(d_, fv, eps));
   }
 
   // One distributed solution-adaptive step: refine/coarsen each block's local octree from the
-  // Löhner indicator, restore cross-block 2:1 balance, and conservatively remap `field` (num_leaves,)
-  // onto the new local mesh. MUTATES the octree in place (keeping ORB ownership); returns the remapped
-  // local field (M,). Bit-identical across rank counts. Collective.
+  // Löhner indicator, restore cross-block 2:1 balance, and conservatively remap `field`
+  // (num_leaves,) onto the new local mesh. MUTATES the octree in place (keeping ORB ownership);
+  // returns the remapped local field (M,). Bit-identical across rank counts. Collective.
   nb::ndarray<nb::numpy, double> adapt(DArray field, double refine_thresh, double coarsen_thresh,
                                        unsigned finest_level, double eps, bool linear) {
     auto fv = asField(d_.local(), field, "adapt");
@@ -765,15 +796,17 @@ inline Flow::Flow(DistributedOctree& d, double rho, double mu, double dt)
 
 NB_MODULE(amr, m) {
   using namespace peclet::core::pybind_amr;
-  // The Flow path runs Kokkos kernels — initialise the device runtime on import (the backend/arch is
-  // fixed by the prefix the module was built against); the release-then-finalize atexit hook,
+  // The Flow path runs Kokkos kernels — initialise the device runtime on import (the backend/arch
+  // is fixed by the prefix the module was built against); the release-then-finalize atexit hook,
   // finalize() and execution_space are the suite-wide pattern (teardown registry above). Per-leaf
   // arrays are host-vector-backed (no Views).
   peclet::core::python::install(m);
   m.attr("__doc__") =
       "core adaptive-mesh-refinement: per-block BlockOctree (serial) and DistributedOctree "
-      "(MPI ORB) for the mesh, plus the device (Kokkos) AmrFlow cut-cell Stokes/Navier-Stokes solver. "
-      "Build a graded octree, refine to an SDF surface, read leaf geometry + per-leaf fields as numpy, "
+      "(MPI ORB) for the mesh, plus the device (Kokkos) AmrFlow cut-cell Stokes/Navier-Stokes "
+      "solver. "
+      "Build a graded octree, refine to an SDF surface, read leaf geometry + per-leaf fields as "
+      "numpy, "
       "load-rebalance, gather face neighbours, export VTU, and run the flow step on device.";
 
   m.def(
@@ -800,10 +833,11 @@ NB_MODULE(amr, m) {
       "anisotropic form of `spacing_from_extent`: it accepts any positive extent, because the "
       "octree's cells are boxes (core/docs/amr_anisotropic.md).");
 
-  nb::class_<Octree>(m, "Octree",
-                     "Serial single-block adaptive octree with a world placement (origin + finest "
-                     "spacing per axis). Leaves are addressed in Z-order slot order; every per-leaf "
-                     "array is indexed by that slot.")
+  nb::class_<Octree>(
+      m, "Octree",
+      "Serial single-block adaptive octree with a world placement (origin + finest "
+      "spacing per axis). Leaves are addressed in Z-order slot order; every per-leaf "
+      "array is indexed by that slot.")
       .def(
           "__init__",
           [](Octree* self, std::array<long, 3> cells, unsigned lmax, std::array<double, 3> origin,
@@ -845,19 +879,22 @@ NB_MODULE(amr, m) {
            "Index of the leaf containing world point x=(x,y,z), or -1 if outside the block.")
       .def("refine_to_sphere", &Octree::refine_to_sphere, nb::arg("center"), nb::arg("radius"),
            nb::arg("target_level") = 0u, nb::arg("band") = 1.0, nb::arg("balance") = true,
-           "Refine leaves the sphere surface passes through (plus `band` cells) down to target_level; "
+           "Refine leaves the sphere surface passes through (plus `band` cells) down to "
+           "target_level; "
            "optionally restore 2:1 balance. Returns the number of refinements performed.")
-      .def("refine_to_sdf", &Octree::refine_to_sdf, nb::arg("sdf"), nb::arg("target_level") = 0u,
-           nb::arg("band") = 1.0, nb::arg("balance") = true,
-           "Refine toward an arbitrary signed-distance field given as a callable f(x,y,z)->distance "
-           "(suite sign: <0 inside solid), down to target_level. Returns refinements performed.")
+      .def(
+          "refine_to_sdf", &Octree::refine_to_sdf, nb::arg("sdf"), nb::arg("target_level") = 0u,
+          nb::arg("band") = 1.0, nb::arg("balance") = true,
+          "Refine toward an arbitrary signed-distance field given as a callable f(x,y,z)->distance "
+          "(suite sign: <0 inside solid), down to target_level. Returns refinements performed.")
       .def("refine_to_sdf_graded", &Octree::refine_to_sdf_graded, nb::arg("sdf"),
            nb::arg("target_level"), nb::arg("band") = 2.0, nb::arg("balance") = true,
            "GRADED surface refinement (the mixed-level cut band, "
            "docs/amr_mixed_level_cut_band_plan.md §7): `target_level` is a callable "
            "f(x,y,z)->level giving the COARSEST acceptable level at a world point (0 = finest), "
            "so cut cells end up at SEVERAL levels — fine in throats/contacts, coarse on smooth "
-           "caps. The band margin is measured in cells of the level being created (not in the finest spacing as "
+           "caps. The band margin is measured in cells of the level being created (not in the "
+           "finest spacing as "
            "in refine_to_sdf). Requires Flow.set_ghost_sampled(True) — the classic overlay "
            "contracts a uniform finest band and raises on these level jumps. Returns "
            "refinements performed.")
@@ -875,9 +912,10 @@ NB_MODULE(amr, m) {
            "Split leaf `i` into its 8 children; returns True if it was split (level>0).")
       .def("balance", &Octree::balance,
            "Enforce 2:1 graded balance to a fixpoint; returns refinements performed.")
-      .def("lohner_indicator", &Octree::lohner_indicator, nb::arg("field"), nb::arg("eps") = 0.01,
-           "Löhner normalized-second-difference feature indicator E in [0,1] per leaf from a scalar "
-           "field (num_leaves,); large E = steep feature (refine), small = smooth (coarsen).")
+      .def(
+          "lohner_indicator", &Octree::lohner_indicator, nb::arg("field"), nb::arg("eps") = 0.01,
+          "Löhner normalized-second-difference feature indicator E in [0,1] per leaf from a scalar "
+          "field (num_leaves,); large E = steep feature (refine), small = smooth (coarsen).")
       .def("adapt", &Octree::adapt, nb::arg("field"), nb::arg("refine_thresh"),
            nb::arg("coarsen_thresh"), nb::arg("finest_level") = 0u, nb::arg("eps") = 0.01,
            nb::arg("linear") = true,
@@ -891,12 +929,14 @@ NB_MODULE(amr, m) {
 
   nb::class_<Poisson>(
       m, "Poisson",
-      "Cell-centered finite-volume Poisson solver (L u = rhs) on an Octree, by a geometric-multigrid "
+      "Cell-centered finite-volume Poisson solver (L u = rhs) on an Octree, by a "
+      "geometric-multigrid "
       "V-cycle. L is the conservative two-point FV Laplacian (suite sign). The hierarchy snapshots "
       "the octree at construction; per-leaf arrays are (num_leaves,) float64 in Z-order slots.")
-      .def(nb::init<const Octree&, bool>(), nb::arg("octree"), nb::arg("periodic") = true,
-           "Build the multigrid hierarchy from `octree`. periodic=True solves the singular periodic "
-           "problem (constant null space removed each cycle).")
+      .def(
+          nb::init<const Octree&, bool>(), nb::arg("octree"), nb::arg("periodic") = true,
+          "Build the multigrid hierarchy from `octree`. periodic=True solves the singular periodic "
+          "problem (constant null space removed each cycle).")
       .def_prop_ro("num_leaves", &Poisson::num_leaves, "Leaves on the finest level.")
       .def_prop_ro("num_levels", &Poisson::num_levels, "Number of multigrid levels.")
       .def("apply", &Poisson::apply, nb::arg("u"),
@@ -904,11 +944,12 @@ NB_MODULE(amr, m) {
            "(num_leaves,) -> (num_leaves,).")
       .def("residual", &Poisson::residual, nb::arg("u"), nb::arg("rhs"),
            "Volume-weighted L2 residual norm sqrt(sum V*(rhs - L u)^2).")
-      .def("solve", &Poisson::solve, nb::arg("rhs"), nb::arg("x0") = std::nullopt,
-           nb::arg("cycles") = 20, nb::arg("pre") = 2, nb::arg("post") = 2, nb::arg("tol") = 0.0,
-           "Solve L u = rhs with up to `cycles` V-cycles (pre/post Gauss-Seidel sweeps), from x0 or "
-           "0, stopping once residual <= tol (tol<=0 disables). Returns (u (num_leaves,), "
-           "final_residual, cycles_done).");
+      .def(
+          "solve", &Poisson::solve, nb::arg("rhs"), nb::arg("x0") = std::nullopt,
+          nb::arg("cycles") = 20, nb::arg("pre") = 2, nb::arg("post") = 2, nb::arg("tol") = 0.0,
+          "Solve L u = rhs with up to `cycles` V-cycles (pre/post Gauss-Seidel sweeps), from x0 or "
+          "0, stopping once residual <= tol (tol<=0 disables). Returns (u (num_leaves,), "
+          "final_residual, cycles_done).");
 
   nb::class_<Flow>(
       m, "Flow",
@@ -918,7 +959,8 @@ NB_MODULE(amr, m) {
       "state; velocities are per-leaf (num_leaves,) in Z-order slots.")
       .def(nb::init<const Octree&, double, double, double>(), nb::arg("octree"),
            nb::arg("density") = 1.0, nb::arg("viscosity") = 1.0, nb::arg("dt") = 1e6,
-           nb::keep_alive<1, 2>(),  // keep the octree alive for the Flow's lifetime (borrowed by ref)
+           nb::keep_alive<1,
+                          2>(),  // keep the octree alive for the Flow's lifetime (borrowed by ref)
            "Create a flow on `octree` with the given density, viscosity and time step. A large dt "
            "drives straight to the steady (Stokes) solution. The octree is borrowed by reference.")
       .def(nb::init<DistributedOctree&, double, double, double>(), nb::arg("octree"),
@@ -962,7 +1004,8 @@ NB_MODULE(amr, m) {
       .def("set_ghost_projection", &Flow::set_ghost_projection, nb::arg("on"),
            nb::arg("matrix_order") = 2, nb::arg("rhs_order") = 2,
            "DEFAULT since 2026-08-25 (AUTO: ghost, with an aperture fallback + stderr notice when "
-           "the finest band is too thin): the fluid-only constraint scheme — family-free, unconditionally "
+           "the finest band is too thin): the fluid-only constraint scheme — family-free, "
+           "unconditionally "
            "stable, protocol-independent (flow's attractor-campaign verdicts; == flow's "
            "set_collocated_scheme('ghost')). FULL directional ghost-cell projection (the AMR "
            "port): binary-openness pressure operator + wall-anchored closure overlay on the "
@@ -1012,9 +1055,10 @@ NB_MODULE(amr, m) {
            "Works with both the aperture and the ghost projection. Call before set_solid.")
       .def("set_advection_scheme", &Flow::set_advection_scheme, nb::arg("scheme"),
            "High-order advection flux: 0 = second-order upwind (default), 1 = Koren TVD.")
-      .def("set_implicit_advection", &Flow::set_implicit_advection, nb::arg("on"),
-           "Implicit first-order-upwind deferred-correction advection (default on): unconditionally "
-           "stable. Off = fully explicit high-order advection.")
+      .def(
+          "set_implicit_advection", &Flow::set_implicit_advection, nb::arg("on"),
+          "Implicit first-order-upwind deferred-correction advection (default on): unconditionally "
+          "stable. Off = fully explicit high-order advection.")
       .def("set_momentum_mg", &Flow::set_momentum_mg, nb::arg("on"),
            "Use the Galerkin velocity multigrid as the momentum solve preconditioner (default on; "
            "makes the momentum solve scale with resolution). Call before set_solid.")
@@ -1029,38 +1073,47 @@ NB_MODULE(amr, m) {
       .def("set_outer_iterations", &Flow::set_outer_iterations, nb::arg("n"), nb::arg("tol") = 1e-6,
            "Picard outer iterations over the lagged advection per step (default 1).")
       .def("step", &Flow::step, nb::arg("mom_iters") = 100, nb::arg("pres_iters") = 60,
-           "Advance one collocated projection step on device: `mom_iters` momentum solver iterations "
+           "Advance one collocated projection step on device: `mom_iters` momentum solver "
+           "iterations "
            "(BiCGStab/MG), `pres_iters` pressure MG-PCG iterations.")
       .def("velocity", &Flow::velocity, nb::arg("component"),
            "Per-leaf velocity component (0=x,1=y,2=z), (num_leaves,) float64.")
       .def("velocities", &Flow::velocities,
            "All three velocity components, (num_leaves, 3) float64.")
-      .def("is_fluid", &Flow::is_fluid, "Per-leaf fluid mask (False in the solid), (num_leaves,) bool.")
+      .def("is_fluid", &Flow::is_fluid,
+           "Per-leaf fluid mask (False in the solid), (num_leaves,) bool.")
       .def("divergence_norm", &Flow::divergence_norm,
-           "Volume-weighted L2 norm of the residual cell divergence (projection-quality diagnostic).")
+           "Volume-weighted L2 norm of the residual cell divergence (projection-quality "
+           "diagnostic).")
       .def("divergence_norm_face", &Flow::divergence_norm_face,
            "L2 norm of the divergence of the ABC divergence-free FACE field (≈ pressure-solve "
            "residual, far below divergence_norm — including across 2:1 interfaces).")
-      .def("pressure", &Flow::pressure, "Per-leaf pressure (incremental-rotational p), (num_leaves,) float64.")
+      .def("pressure", &Flow::pressure,
+           "Per-leaf pressure (incremental-rotational p), (num_leaves,) float64.")
       .def("face_field", &Flow::face_field,
            "ABC divergence-free FACE velocity, one value per CSR (sub)face (conservative flux / "
            "streamline post-processing).")
       .def("set_velocity", &Flow::set_velocity, nb::arg("component"), nb::arg("values"),
-           "Write velocity component c (0=x,1=y,2=z) from a (num_leaves,) array — initial conditions, "
+           "Write velocity component c (0=x,1=y,2=z) from a (num_leaves,) array — initial "
+           "conditions, "
            "restart, or warm-start. Call before step()/project().")
       .def("project", &Flow::project, nb::arg("pres_iters") = 60,
-           "Pressure projection only (no momentum solve) — project an externally-set velocity field to "
+           "Pressure projection only (no momentum solve) — project an externally-set velocity "
+           "field to "
            "divergence-free. Returns nothing; read the result via velocity()/velocities().")
       .def("last_mom_iters", &Flow::last_mom_iters,
            "Total momentum BiCGStab iterations (summed over the 3 components) of the last step.")
       .def("last_pres_iters", &Flow::last_pres_iters, "Pressure PCG iterations of the last step.")
       .def("last_outer_iters", &Flow::last_outer_iters,
-           "Picard outer iterations actually run in the last step (1 unless set_outer_iterations(>1)).");
+           "Picard outer iterations actually run in the last step (1 unless "
+           "set_outer_iterations(>1)).");
 
   nb::class_<DistributedOctree>(
       m, "DistributedOctree",
-      "MPI octree: an ORB block decomposition of a global root grid (one BlockOctree per rank, over "
-      "MPI_COMM_WORLD). Construct it collectively; refine/balance/rebalance/face_neighbor_gather are "
+      "MPI octree: an ORB block decomposition of a global root grid (one BlockOctree per rank, "
+      "over "
+      "MPI_COMM_WORLD). Construct it collectively; refine/balance/rebalance/face_neighbor_gather "
+      "are "
       "collective. Per-leaf arrays describe THIS rank's local block in global world coordinates.")
       .def(
           "__init__",
@@ -1090,7 +1143,8 @@ NB_MODULE(amr, m) {
                    "GLOBAL finest-level cell counts per axis (global root cells * 2**lmax).")
       .def_prop_ro("extent", &DistributedOctree::extent,
                    "Global box side lengths in world units (cells*spacing).")
-      .def_prop_ro("origin", &DistributedOctree::origin, "Global lower corner in world coordinates.")
+      .def_prop_ro("origin", &DistributedOctree::origin,
+                   "Global lower corner in world coordinates.")
       .def_prop_ro("spacing", &DistributedOctree::spacing,
                    "Finest cell size (dx, dy, dz), per axis.")
       .def_prop_ro("block_origin_root", &DistributedOctree::block_origin_root,
@@ -1111,11 +1165,13 @@ NB_MODULE(amr, m) {
            nb::arg("balance") = true,
            "Refine the local block toward a GLOBAL sphere surface down to target_level, then (if "
            "balance) restore cross-block 2:1 balance collectively. Returns the local count.")
-      .def("refine_to_sdf", &DistributedOctree::refine_to_sdf, nb::arg("sdf"),
-           nb::arg("target_level") = 0u, nb::arg("band") = 1.0, nb::arg("balance") = true,
-           "Refine the local block toward an arbitrary GLOBAL surface given as a callable f(x,y,z)->"
-           "distance (suite sign: <0 inside solid) — the distributed analogue of Octree.refine_to_sdf, "
-           "for rings / packed beds / any non-sphere geometry. Collective when balance=True.")
+      .def(
+          "refine_to_sdf", &DistributedOctree::refine_to_sdf, nb::arg("sdf"),
+          nb::arg("target_level") = 0u, nb::arg("band") = 1.0, nb::arg("balance") = true,
+          "Refine the local block toward an arbitrary GLOBAL surface given as a callable f(x,y,z)->"
+          "distance (suite sign: <0 inside solid) — the distributed analogue of "
+          "Octree.refine_to_sdf, "
+          "for rings / packed beds / any non-sphere geometry. Collective when balance=True.")
       .def("balance", &DistributedOctree::balance,
            "Restore cross-block 2:1 graded balance (collective). Returns this rank's refinements.")
       .def("rebalance", &DistributedOctree::rebalance, nb::arg("fields"),

@@ -94,8 +94,8 @@ struct Geo {
   AmrPoisson<3, 21> pres;
   double h;
   Index n;
-  std::vector<char> fluid;   // cell-center classification (sdf > 0)
-  std::vector<Vec<3>> cen;   // world cell centers
+  std::vector<char> fluid;  // cell-center classification (sdf > 0)
+  std::vector<Vec<3>> cen;  // world cell centers
 };
 
 Geo buildGeo(long N) {
@@ -193,7 +193,8 @@ struct A1Result {
 
 A1Result testGradLadder(const std::vector<long>& Ns) {
   std::printf("\n[A1] cell-gradient operators on a smooth P at CUT cells (fluid center, solid\n");
-  std::printf("     axis-neighbour); max error vs analytic grad, physical units. gauge = +5 added\n");
+  std::printf(
+      "     axis-neighbour); max error vs analytic grad, physical units. gauge = +5 added\n");
   std::printf("     to P on FLUID cells only (solid rows stay decoupled 0, as in the solver).\n");
   std::printf("%5s %12s %6s %12s %6s %12s %12s %10s\n", "N", "abc(gradOf)", "ord", "ghost", "ord",
               "gauge_abc", "gauge_ghost", "openSolid");
@@ -219,8 +220,9 @@ A1Result testGradLadder(const std::vector<long>& Ns) {
       });
       const Vec<3> ge = phiManGrad(g.cen[static_cast<std::size_t>(i)]);
       for (int c = 0; c < 3; ++c) {
-        const bool cutAxis = !g.fluid[static_cast<std::size_t>(g.pres.periodicNeighbor(i, c, +1))] ||
-                             !g.fluid[static_cast<std::size_t>(g.pres.periodicNeighbor(i, c, -1))];
+        const bool cutAxis =
+            !g.fluid[static_cast<std::size_t>(g.pres.periodicNeighbor(i, c, +1))] ||
+            !g.fluid[static_cast<std::size_t>(g.pres.periodicNeighbor(i, c, -1))];
         const double ga = gradOfAbc(g, P, i, c);
         const double gg = gradOfGhost(g, P, i, c);
         if (cutAxis) {
@@ -253,7 +255,8 @@ struct A2Result {
 
 A2Result testConstraint(const std::vector<long>& Ns) {
   std::printf("\n[A2] openness-weighted 1/2-1/2 divergence of the exact solenoidal Stokes field\n");
-  std::printf("     (masked to 0 at solid centers). near-IB = fluid cells with a cut/solid face;\n");
+  std::printf(
+      "     (masked to 0 at solid centers). near-IB = fluid cells with a cut/solid face;\n");
   std::printf("     bulk gated on the fixed shell r in [%.2f,%.2f], interior only.\n", R0 + 0.10,
               R0 + 0.22);
   std::printf("%5s %12s %6s %12s %6s\n", "N", "near-IB", "ord", "shell", "ord");

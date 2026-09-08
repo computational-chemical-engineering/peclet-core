@@ -27,7 +27,9 @@
 using namespace peclet::core;
 using namespace peclet::core::geom;
 
-static double relErr(double a, double b) { return std::fabs(a - b) / std::fabs(b); }
+static double relErr(double a, double b) {
+  return std::fabs(a - b) / std::fabs(b);
+}
 
 // angle (deg) between two rotations given as quaternions, sign/double-cover safe
 static double quatAngleDeg(Quat<double> a, Quat<double> b) {
@@ -46,16 +48,16 @@ int main() {
     };
     std::printf("  sphere R=%.2f offset: convergence in n (order=5, nseg=8)\n", R);
     for (int n : {8, 16, 32}) {
-      auto bp = bodyProperties<double>(f, Vec3<double>{-0.6, -0.6, -0.6},
-                                       Vec3<double>{0.9, 0.6, 0.9}, n);
+      auto bp =
+          bodyProperties<double>(f, Vec3<double>{-0.6, -0.6, -0.6}, Vec3<double>{0.9, 0.6, 0.9}, n);
       const double Vex = 4.0 / 3.0 * M_PI * R * R * R;
       const double Iex = 0.4 * Vex * R * R;
-      std::printf("    n=%2d  vol err %.2e  I err %.2e  |com err| %.2e  frame dev %.2e deg\n", n,
-                  relErr(bp.volume, Vex), relErr(bp.principal[0], Iex),
-                  std::sqrt((bp.com.x - C.x) * (bp.com.x - C.x) +
-                            (bp.com.y - C.y) * (bp.com.y - C.y) +
-                            (bp.com.z - C.z) * (bp.com.z - C.z)),
-                  quatAngleDeg(bp.quat, Quat<double>{0, 0, 0, 1}));
+      std::printf(
+          "    n=%2d  vol err %.2e  I err %.2e  |com err| %.2e  frame dev %.2e deg\n", n,
+          relErr(bp.volume, Vex), relErr(bp.principal[0], Iex),
+          std::sqrt((bp.com.x - C.x) * (bp.com.x - C.x) + (bp.com.y - C.y) * (bp.com.y - C.y) +
+                    (bp.com.z - C.z) * (bp.com.z - C.z)),
+          quatAngleDeg(bp.quat, Quat<double>{0, 0, 0, 1}));
       if (n == 32) {
         PECLET_CORE_CHECK(relErr(bp.volume, Vex) < 2e-5);
         PECLET_CORE_CHECK(relErr(bp.principal[0], Iex) < 2e-5);
@@ -78,8 +80,8 @@ int main() {
       return std::sqrt(ox * ox + oy * oy + oz * oz) +
              std::fmin(std::fmax(qx, std::fmax(qy, qz)), 0.0);
     };
-    auto bp = bodyProperties<double>(f, Vec3<double>{-0.8, -0.8, -0.8}, Vec3<double>{1.0, 0.8, 0.8},
-                                     40);
+    auto bp =
+        bodyProperties<double>(f, Vec3<double>{-0.8, -0.8, -0.8}, Vec3<double>{1.0, 0.8, 0.8}, 40);
     const double Vex = 8 * hx * hy * hz;
     double Iex[3] = {Vex / 3 * (hy * hy + hz * hz), Vex / 3 * (hx * hx + hz * hz),
                      Vex / 3 * (hx * hx + hy * hy)};
@@ -88,9 +90,9 @@ int main() {
       for (int j = i + 1; j < 3; ++j)
         if (Iex[j] < Iex[i])
           std::swap(Iex[i], Iex[j]);
-    const double eI = std::fmax(relErr(bp.principal[0], Iex[0]),
-                                std::fmax(relErr(bp.principal[1], Iex[1]),
-                                          relErr(bp.principal[2], Iex[2])));
+    const double eI =
+        std::fmax(relErr(bp.principal[0], Iex[0]),
+                  std::fmax(relErr(bp.principal[1], Iex[1]), relErr(bp.principal[2], Iex[2])));
     // recovered frame vs the true one: compare the DISTINCT axis (hx is unique -> smallest I is
     // about x_body). Column pairing/sign is free for the others; test the unique one.
     const Vec3<double> xTrue = rotate(q, Vec3<double>{1, 0, 0});
@@ -98,12 +100,13 @@ int main() {
     const double dot = std::fabs(bp.rotation[0][0] * xTrue.x + bp.rotation[1][0] * xTrue.y +
                                  bp.rotation[2][0] * xTrue.z);
     const double axErr = std::acos(std::fmin(1.0, dot)) * 180.0 / M_PI;
-    std::printf("  rotated box: vol err %.2e  worst principal err %.2e  com err %.2e  unique-axis "
-                "err %.4f deg\n",
-                relErr(bp.volume, Vex), eI,
-                std::sqrt(std::pow(bp.com.x - C.x, 2) + std::pow(bp.com.y - C.y, 2) +
-                          std::pow(bp.com.z - C.z, 2)),
-                axErr);
+    std::printf(
+        "  rotated box: vol err %.2e  worst principal err %.2e  com err %.2e  unique-axis "
+        "err %.4f deg\n",
+        relErr(bp.volume, Vex), eI,
+        std::sqrt(std::pow(bp.com.x - C.x, 2) + std::pow(bp.com.y - C.y, 2) +
+                  std::pow(bp.com.z - C.z, 2)),
+        axErr);
     PECLET_CORE_CHECK(relErr(bp.volume, Vex) < 2e-4);
     PECLET_CORE_CHECK(eI < 5e-4);
     PECLET_CORE_CHECK(axErr < 5e-2);
@@ -144,9 +147,9 @@ int main() {
         for (int j = i + 1; j < 3; ++j)
           if (Iex[j] < Iex[i])
             std::swap(Iex[i], Iex[j]);
-      const double e = std::fmax(relErr(bp.principal[0], Iex[0]),
-                                 std::fmax(relErr(bp.principal[1], Iex[1]),
-                                           relErr(bp.principal[2], Iex[2])));
+      const double e =
+          std::fmax(relErr(bp.principal[0], Iex[0]),
+                    std::fmax(relErr(bp.principal[1], Iex[1]), relErr(bp.principal[2], Iex[2])));
       std::printf("  hollow cylinder (tree): vol err %.2e  worst principal err %.2e\n",
                   relErr(bp.volume, Vex), e);
       PECLET_CORE_CHECK(relErr(bp.volume, Vex) < 1e-3);
@@ -163,12 +166,13 @@ int main() {
         for (int j = i + 1; j < 3; ++j)
           if (Iex[j] < Iex[i])
             std::swap(Iex[i], Iex[j]);
-      const double e = std::fmax(relErr(bp.principal[0], Iex[0]),
-                                 std::fmax(relErr(bp.principal[1], Iex[1]),
-                                           relErr(bp.principal[2], Iex[2])));
-      std::printf("  ellipsoid via BOUND leaf: vol err %.2e  worst principal err %.2e  (the voxel "
-                  "integrator is +3.5e-02 on this field)\n",
-                  relErr(bp.volume, Vex), e);
+      const double e =
+          std::fmax(relErr(bp.principal[0], Iex[0]),
+                    std::fmax(relErr(bp.principal[1], Iex[1]), relErr(bp.principal[2], Iex[2])));
+      std::printf(
+          "  ellipsoid via BOUND leaf: vol err %.2e  worst principal err %.2e  (the voxel "
+          "integrator is +3.5e-02 on this field)\n",
+          relErr(bp.volume, Vex), e);
       PECLET_CORE_CHECK(relErr(bp.volume, Vex) < 1e-5);
       PECLET_CORE_CHECK(e < 1e-4);
     }
@@ -199,9 +203,9 @@ int main() {
       auto bpM = bodyProperties<double>(evalRoot(moved), Vec3<double>{-1.0, -1.0, -1.0},
                                         Vec3<double>{1.0, 1.0, 1.0}, 40);
       // recovered com must be Tm.translation; recovered unique axis must be the rotated x
-      const double comErr = std::sqrt(std::pow(bpM.com.x - 0.15, 2) +
-                                      std::pow(bpM.com.y + 0.10, 2) +
-                                      std::pow(bpM.com.z - 0.08, 2));
+      const double comErr =
+          std::sqrt(std::pow(bpM.com.x - 0.15, 2) + std::pow(bpM.com.y + 0.10, 2) +
+                    std::pow(bpM.com.z - 0.08, 2));
       // The inverse principal transform W' such that toLocal(W', p_body) = com + R p_body:
       // toLocal(T, p) = invRotate(q_T, p - t_T)/s_T, so take q_W = conj(q_R) (then
       // invRotate(q_W, x) = rotate(q_R, x)) and t_W with rotate(q_R, t_W) = -com, i.e.
@@ -213,14 +217,15 @@ int main() {
       const int home = b.addReframed(moved, Wp);
       auto bpH = bodyProperties<double>(evalRoot(home), Vec3<double>{-0.8, -0.5, -0.5},
                                         Vec3<double>{0.8, 0.5, 0.5}, 40);
-      const double comH = std::sqrt(bpH.com.x * bpH.com.x + bpH.com.y * bpH.com.y +
-                                    bpH.com.z * bpH.com.z);
+      const double comH =
+          std::sqrt(bpH.com.x * bpH.com.x + bpH.com.y * bpH.com.y + bpH.com.z * bpH.com.z);
       const double frameH = quatAngleDeg(bpH.quat, Quat<double>{0, 0, 0, 1});
       const double eP = std::fmax(relErr(bpH.principal[0], bpM.principal[0]),
                                   relErr(bpH.principal[2], bpM.principal[2]));
-      std::printf("  reframe round trip: placed-com err %.2e; after addReframed(inverse principal) "
-                  "com %.2e, frame dev %.2e deg, principal drift %.2e\n",
-                  comErr, comH, frameH, eP);
+      std::printf(
+          "  reframe round trip: placed-com err %.2e; after addReframed(inverse principal) "
+          "com %.2e, frame dev %.2e deg, principal drift %.2e\n",
+          comErr, comH, frameH, eP);
       PECLET_CORE_CHECK(comErr < 1e-4);
       PECLET_CORE_CHECK(comH < 1e-4);
       PECLET_CORE_CHECK(frameH < 1e-3);

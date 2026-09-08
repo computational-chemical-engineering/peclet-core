@@ -116,18 +116,16 @@ void run() {
 
   // Ghost metadata vs the owner (coverLevels oracle): anchor and level agree.
   {
-    std::vector<std::array<Coord, 3>> anchors(
-        static_cast<std::size_t>(halo.numGhosts()));
+    std::vector<std::array<Coord, 3>> anchors(static_cast<std::size_t>(halo.numGhosts()));
     for (Index g = 0; g < halo.numGhosts(); ++g)
       anchors[static_cast<std::size_t>(g)] = halo.ghostCoord(g);
     std::vector<int> lv = world.coverLevels(anchors);
     for (Index g = 0; g < halo.numGhosts(); ++g) {
       PECLET_CORE_CHECK_EQ(lv[static_cast<std::size_t>(g)], halo.level(halo.numLocal() + g));
       for (int a = 0; a < 3; ++a)  // anchor is the covering leaf's lo: aligned to its level
-        PECLET_CORE_CHECK_EQ(
-            (long)(halo.ghostCoord(g)[a] >> lv[static_cast<std::size_t>(g)])
-                << lv[static_cast<std::size_t>(g)],
-            (long)halo.ghostCoord(g)[a]);
+        PECLET_CORE_CHECK_EQ((long)(halo.ghostCoord(g)[a] >> lv[static_cast<std::size_t>(g)])
+                                 << lv[static_cast<std::size_t>(g)],
+                             (long)halo.ghostCoord(g)[a]);
     }
   }
 
@@ -162,8 +160,7 @@ void run() {
   halo.exchangeHost(x);
   for (Index g = 0; g < halo.numGhosts(); ++g) {
     const Code gc = M::encode(halo.ghostCoord(g)).code();
-    PECLET_CORE_CHECK(x[static_cast<std::size_t>(halo.numLocal() + g)] ==
-                      3.0 * fAt(gc, h0) + 1.0);
+    PECLET_CORE_CHECK(x[static_cast<std::size_t>(halo.numLocal() + g)] == 3.0 * fAt(gc, h0) + 1.0);
   }
 
   // Dedup effectiveness: at np>1 the probe count into ghosts far exceeds the slot count.

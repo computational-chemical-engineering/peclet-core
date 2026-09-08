@@ -243,7 +243,8 @@ void checkAgglomerated(IVec<Dim> globalSize, std::size_t numBlocks) {
     }
     for (std::size_t g = 0; g < a.numBlocks(); ++g) {
       PECLET_CORE_CHECK_EQ(memberVol[g], volume<Dim>(a.sizes()[g]));  // exact union
-      PECLET_CORE_CHECK_EQ(static_cast<Index>(hi[g] - lo[g] + 1), static_cast<Index>(cnt[g]));  // contiguous
+      PECLET_CORE_CHECK_EQ(static_cast<Index>(hi[g] - lo[g] + 1),
+                           static_cast<Index>(cnt[g]));  // contiguous
       PECLET_CORE_CHECK_EQ(static_cast<Index>(rootOf[g]), static_cast<Index>(lo[g]));
     }
     // monotone: merging never increases the block count
@@ -265,8 +266,9 @@ void checkAgglomerated(IVec<Dim> globalSize, std::size_t numBlocks) {
   }
 }
 
-// (iv) The multigrid scenario end to end: 8 blocks of 12^3 halve twice in place to 3^3 (odd, stuck);
-// the whole-grid agglomeration restores even blocks and coarsened() proceeds to 3^3 on one block.
+// (iv) The multigrid scenario end to end: 8 blocks of 12^3 halve twice in place to 3^3 (odd,
+// stuck); the whole-grid agglomeration restores even blocks and coarsened() proceeds to 3^3 on one
+// block.
 void checkAgglomeratedUnblocksCoarsening() {
   BlockDecomposer<3> dec(8, {24, 24, 24});
   BlockDecomposer<3> c2 = dec.coarsened({2, 2, 2}).coarsened({2, 2, 2});  // global 6^3, blocks 3^3
@@ -322,12 +324,14 @@ int main() {
   checkSkewedBalances<3>({64, 48, 40}, 16);
 
   // Aligned ORB + nested coarsening (the distributed-multigrid nesting invariant). The channel-like
-  // case (x coarsens, z odd -> z never coarsens) is the one whose non-nesting caused the flow MG OOB.
-  checkAlignedCoarsen<3>({1508, 240, 503}, 2, {4, 16, 1}, {2, 2, 1});   // production channel structure
+  // case (x coarsens, z odd -> z never coarsens) is the one whose non-nesting caused the flow MG
+  // OOB.
+  checkAlignedCoarsen<3>({1508, 240, 503}, 2, {4, 16, 1},
+                         {2, 2, 1});  // production channel structure
   checkAlignedCoarsen<3>({1508, 240, 503}, 4, {4, 16, 1}, {2, 2, 1});
-  checkAlignedCoarsen<3>({132, 32, 131}, 2, {4, 16, 1}, {2, 2, 1});     // the local repro (axis-flip)
+  checkAlignedCoarsen<3>({132, 32, 131}, 2, {4, 16, 1}, {2, 2, 1});  // the local repro (axis-flip)
   checkAlignedCoarsen<3>({132, 32, 131}, 4, {4, 16, 1}, {2, 2, 1});
-  checkAlignedCoarsen<3>({64, 64, 64}, 8, {16, 16, 16}, {2, 2, 2});     // cubic, all axes coarsen
+  checkAlignedCoarsen<3>({64, 64, 64}, 8, {16, 16, 16}, {2, 2, 2});  // cubic, all axes coarsen
 
   // Coarse-level telescoping (agglomerated): tiling, exact-union groups, identity/whole-grid ends,
   // and the multigrid unblocking scenario. Non-powers-of-two are the interesting cases.

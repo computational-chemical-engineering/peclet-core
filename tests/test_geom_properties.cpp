@@ -62,12 +62,12 @@ static double nearestSurface(V p, const Surface& surf) {
 }
 
 struct Stats {
-  double eikonalMaxErr = 0;    // max | |grad| - 1 |
-  double gradMaxErr = 0;       // max |closed-form grad - FD grad|
-  double lipMax = 0;           // max |f(a)-f(b)| / |a-b|
-  double metricMaxErr = 0;     // max | |eval| - nearestSurface |
-  double ratioMin = 1e300;     // min |eval| / nearestSurface
-  double ratioMax = 0;         // max |eval| / nearestSurface
+  double eikonalMaxErr = 0;  // max | |grad| - 1 |
+  double gradMaxErr = 0;     // max |closed-form grad - FD grad|
+  double lipMax = 0;         // max |f(a)-f(b)| / |a-b|
+  double metricMaxErr = 0;   // max | |eval| - nearestSurface |
+  double ratioMin = 1e300;   // min |eval| / nearestSurface
+  double ratioMax = 0;       // max |eval| / nearestSurface
   int signFailures = 0;
   int eikonalSamples = 0, metricSamples = 0;
 };
@@ -94,12 +94,10 @@ static Stats measure(const Shape& sh, const Inside& inside, const Surface& surf,
     // consistent with a smooth field (second difference small).
     const V gfd = prim::gradient(sh, p, h);
     const double gl = len(gfd);
-    const bool smooth = std::fabs(sh.eval(V{p.x + h, p.y, p.z}) + sh.eval(V{p.x - h, p.y, p.z}) -
-                                  2 * f) < 1e-6 &&
-                        std::fabs(sh.eval(V{p.x, p.y + h, p.z}) + sh.eval(V{p.x, p.y - h, p.z}) -
-                                  2 * f) < 1e-6 &&
-                        std::fabs(sh.eval(V{p.x, p.y, p.z + h}) + sh.eval(V{p.x, p.y, p.z - h}) -
-                                  2 * f) < 1e-6;
+    const bool smooth =
+        std::fabs(sh.eval(V{p.x + h, p.y, p.z}) + sh.eval(V{p.x - h, p.y, p.z}) - 2 * f) < 1e-6 &&
+        std::fabs(sh.eval(V{p.x, p.y + h, p.z}) + sh.eval(V{p.x, p.y - h, p.z}) - 2 * f) < 1e-6 &&
+        std::fabs(sh.eval(V{p.x, p.y, p.z + h}) + sh.eval(V{p.x, p.y, p.z - h}) - 2 * f) < 1e-6;
     if (smooth && gl > 0.1) {
       if (Shape::exact_distance) {
         st.eikonalMaxErr = std::fmax(st.eikonalMaxErr, std::fabs(gl - 1.0));
@@ -143,11 +141,11 @@ template <class Shape>
 static void report(const char* name, const Shape& sh, const Inside& inside, const Surface& surf,
                    double box, Rng& rng) {
   const Stats st = measure(sh, inside, surf, box, rng);
-  std::printf("  %-20s exact=%d agrad=%d | sign_fail=%-4d eikonal=%.2e grad=%.2e lip=%.4f "
-              "metric=%.2e ratio=[%.4f,%.4f]\n",
-              name, (int)Shape::exact_distance, (int)Shape::analytic_gradient, st.signFailures,
-              st.eikonalMaxErr, st.gradMaxErr, st.lipMax, st.metricMaxErr, st.ratioMin,
-              st.ratioMax);
+  std::printf(
+      "  %-20s exact=%d agrad=%d | sign_fail=%-4d eikonal=%.2e grad=%.2e lip=%.4f "
+      "metric=%.2e ratio=[%.4f,%.4f]\n",
+      name, (int)Shape::exact_distance, (int)Shape::analytic_gradient, st.signFailures,
+      st.eikonalMaxErr, st.gradMaxErr, st.lipMax, st.metricMaxErr, st.ratioMin, st.ratioMax);
 
   PECLET_CORE_CHECK(st.signFailures == 0);
   // 1-Lipschitz is a THEOREM about true distance fields, so it is asserted only for the leaves
@@ -181,8 +179,9 @@ static void addSphere(Surface& s, double R, int n) {
 
 int main() {
   Rng rng;
-  std::printf("rung-2 property measurements "
-             "(sign / eikonal / analytic-grad / Lipschitz / metric)\n");
+  std::printf(
+      "rung-2 property measurements "
+      "(sign / eikonal / analytic-grad / Lipschitz / metric)\n");
 
   // --- Sphere -------------------------------------------------------------------------------
   {
@@ -207,11 +206,10 @@ int main() {
         surf.push_back(V{hx * a, hy * b, hz});
         surf.push_back(V{hx * a, hy * b, -hz});
       }
-    report("Box", prim::Box<double>{hx, hy, hz},
-           [&](V p) {
-             return std::fabs(p.x) < hx && std::fabs(p.y) < hy && std::fabs(p.z) < hz;
-           },
-           surf, 2.5, rng);
+    report(
+        "Box", prim::Box<double>{hx, hy, hz},
+        [&](V p) { return std::fabs(p.x) < hx && std::fabs(p.y) < hy && std::fabs(p.z) < hz; },
+        surf, 2.5, rng);
   }
 
   // --- HollowCylinder (dem form, y axis) ----------------------------------------------------
@@ -233,12 +231,13 @@ int main() {
         surf.push_back(V{r * c, -hgt / 2, r * s2});
       }
     }
-    report("HollowCylinder", prim::HollowCylinder<double>{ro, hgt, th},
-           [&](V p) {
-             const double r = std::sqrt(p.x * p.x + p.z * p.z);
-             return std::fabs(r - rMid) < th * 0.5 && std::fabs(p.y) < hgt * 0.5;
-           },
-           surf, 2.5, rng);
+    report(
+        "HollowCylinder", prim::HollowCylinder<double>{ro, hgt, th},
+        [&](V p) {
+          const double r = std::sqrt(p.x * p.x + p.z * p.z);
+          return std::fabs(r - rMid) < th * 0.5 && std::fabs(p.y) < hgt * 0.5;
+        },
+        surf, 2.5, rng);
   }
 
   // --- HollowCylinderShell (max form, z axis) -- bound-only, ratio is the point ---------------
@@ -259,12 +258,13 @@ int main() {
         surf.push_back(V{r * c, r * s2, -hgt / 2});
       }
     }
-    report("HollowCylinderShell", prim::HollowCylinderShell<double>{ro, ri, hgt},
-           [&](V p) {
-             const double r = std::sqrt(p.x * p.x + p.y * p.y);
-             return r < ro && r > ri && std::fabs(p.z) < hgt * 0.5;
-           },
-           surf, 2.5, rng);
+    report(
+        "HollowCylinderShell", prim::HollowCylinderShell<double>{ro, ri, hgt},
+        [&](V p) {
+          const double r = std::sqrt(p.x * p.x + p.y * p.y);
+          return r < ro && r > ri && std::fabs(p.z) < hgt * 0.5;
+        },
+        surf, 2.5, rng);
   }
 
   // --- Capsule ------------------------------------------------------------------------------
@@ -282,12 +282,13 @@ int main() {
         surf.push_back(V{rad * std::cos(t) * c, -hl - rad * std::sin(t), rad * std::cos(t) * s2});
       }
     }
-    report("Capsule", prim::Capsule<double>{rad, hl},
-           [&](V p) {
-             const double qy = p.y - std::fmin(std::fmax(p.y, -hl), hl);
-             return std::sqrt(p.x * p.x + qy * qy + p.z * p.z) < rad;
-           },
-           surf, 2.5, rng);
+    report(
+        "Capsule", prim::Capsule<double>{rad, hl},
+        [&](V p) {
+          const double qy = p.y - std::fmin(std::fmax(p.y, -hl), hl);
+          return std::sqrt(p.x * p.x + qy * qy + p.z * p.z) < rad;
+        },
+        surf, 2.5, rng);
   }
 
   // --- Torus --------------------------------------------------------------------------------
@@ -301,12 +302,13 @@ int main() {
         const double rr = R + r * std::cos(v);
         surf.push_back(V{rr * std::cos(u), r * std::sin(v), rr * std::sin(u)});
       }
-    report("Torus", prim::Torus<double>{R, r},
-           [&](V p) {
-             const double q = std::sqrt(p.x * p.x + p.z * p.z) - R;
-             return q * q + p.y * p.y < r * r;
-           },
-           surf, 2.5, rng);
+    report(
+        "Torus", prim::Torus<double>{R, r},
+        [&](V p) {
+          const double q = std::sqrt(p.x * p.x + p.z * p.z) - R;
+          return q * q + p.y * p.y < r * r;
+        },
+        surf, 2.5, rng);
   }
 
   // --- Cone (frustum) -----------------------------------------------------------------------
@@ -326,11 +328,12 @@ int main() {
         surf.push_back(V{rt * c * j / 20.0, hh, rt * s2 * j / 20.0});
       }
     }
-    report("Cone", prim::Cone<double>{rb, rt, hh},
-           [&](V p) {
-             return std::fabs(p.y) < hh && std::sqrt(p.x * p.x + p.z * p.z) < radiusAt(p.y);
-           },
-           surf, 2.5, rng);
+    report(
+        "Cone", prim::Cone<double>{rb, rt, hh},
+        [&](V p) {
+          return std::fabs(p.y) < hh && std::sqrt(p.x * p.x + p.z * p.z) < radiusAt(p.y);
+        },
+        surf, 2.5, rng);
   }
 
   // --- Ellipsoid (bound-only: the ratio band is the measurement) -----------------------------
@@ -344,12 +347,13 @@ int main() {
         surf.push_back(V{rx * std::sin(th) * std::cos(ph), ry * std::cos(th),
                          rz * std::sin(th) * std::sin(ph)});
       }
-    report("Ellipsoid", prim::Ellipsoid<double>{rx, ry, rz},
-           [&](V p) {
-             const double a = p.x / rx, b = p.y / ry, c = p.z / rz;
-             return a * a + b * b + c * c < 1.0;
-           },
-           surf, 2.5, rng);
+    report(
+        "Ellipsoid", prim::Ellipsoid<double>{rx, ry, rz},
+        [&](V p) {
+          const double a = p.x / rx, b = p.y / ry, c = p.z / rz;
+          return a * a + b * b + c * c < 1.0;
+        },
+        surf, 2.5, rng);
   }
 
   // --- Superquadric (bound-only) ------------------------------------------------------------
@@ -367,13 +371,14 @@ int main() {
         const double cp = sgnpow(std::cos(ph), 2.0 / e), sp = sgnpow(std::sin(ph), 2.0 / e);
         surf.push_back(V{rx * ct * cp, ry * st, rz * ct * sp});
       }
-    report("Superquadric e=4", prim::Superquadric<double>{rx, ry, rz, e},
-           [&](V p) {
-             return std::pow(std::fabs(p.x) / rx, e) + std::pow(std::fabs(p.y) / ry, e) +
-                        std::pow(std::fabs(p.z) / rz, e) <
-                    1.0;
-           },
-           surf, 2.5, rng);
+    report(
+        "Superquadric e=4", prim::Superquadric<double>{rx, ry, rz, e},
+        [&](V p) {
+          return std::pow(std::fabs(p.x) / rx, e) + std::pow(std::fabs(p.y) / ry, e) +
+                     std::pow(std::fabs(p.z) / rz, e) <
+                 1.0;
+        },
+        surf, 2.5, rng);
   }
 
   // --- Rounded box: offsetting an exact field must stay exact ---------------------------------
@@ -401,7 +406,7 @@ int main() {
       }
     const int ne = 90;
     for (int i = 0; i <= ne; ++i) {
-      const double t = -1 + 2.0 * i / ne;                 // position along the edge
+      const double t = -1 + 2.0 * i / ne;  // position along the edge
       for (int j = 0; j <= 24; ++j) {
         const double a = 0.5 * M_PI * j / 24.0, c = rr * std::cos(a), s2 = rr * std::sin(a);
         for (int sa = -1; sa <= 1; sa += 2)

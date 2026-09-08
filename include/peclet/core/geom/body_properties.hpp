@@ -46,13 +46,13 @@ namespace peclet::core::geom {
 
 template <class Real>
 struct BodyProperties {
-  Real volume = 0;               ///< |{phi < 0}|
-  Real mass = 0;                 ///< density * volume
-  Vec3<Real> com{0, 0, 0};       ///< centre of mass, input frame
-  Real inertia[3][3] = {};       ///< full tensor about the COM, input frame, at the given density
-  Real principal[3] = {};        ///< principal moments; principal[k] pairs with column k of R
-  Real rotation[3][3] = {};      ///< columns = principal axes in the input frame
-  Quat<Real> quat{0, 0, 0, 1};   ///< the same rotation, p_input = com + rotate(quat, p_body)
+  Real volume = 0;              ///< |{phi < 0}|
+  Real mass = 0;                ///< density * volume
+  Vec3<Real> com{0, 0, 0};      ///< centre of mass, input frame
+  Real inertia[3][3] = {};      ///< full tensor about the COM, input frame, at the given density
+  Real principal[3] = {};       ///< principal moments; principal[k] pairs with column k of R
+  Real rotation[3][3] = {};     ///< columns = principal axes in the input frame
+  Quat<Real> quat{0, 0, 0, 1};  ///< the same rotation, p_input = com + rotate(quat, p_body)
 };
 
 namespace body_detail {
@@ -66,9 +66,7 @@ template <class Real, class Phi>
 void interiorMoments(const Phi& phi, Vec3<Real> p0, Vec3<Real> d, int nseg, Real& m0, Real& m1,
                      Real& m2) {
   const int NS = nseg < 2 ? 2 : (nseg > 64 ? 64 : nseg);
-  auto at = [&](Real s) {
-    return phi(Vec3<Real>{p0.x + s * d.x, p0.y + s * d.y, p0.z + s * d.z});
-  };
+  auto at = [&](Real s) { return phi(Vec3<Real>{p0.x + s * d.x, p0.y + s * d.y, p0.z + s * d.z}); };
   auto root = [&](Real a, Real b, Real fa) {
     for (int it = 0; it < 40; ++it) {
       const Real m = Real(0.5) * (a + b);
@@ -304,12 +302,12 @@ BodyProperties<Real> bodyProperties(const Phi& phi, Vec3<Real> lo, Vec3<Real> hi
           return phi(Vec3<Real>{o[0] + a * H[0], o[1] + b * H[1], o[2] + c * H[2]});
         };
         const Real q = Real(0.25);
-        const Real g0 = at(Real(0.5) + q, Real(0.5), Real(0.5)) -
-                        at(Real(0.5) - q, Real(0.5), Real(0.5));
-        const Real g1 = at(Real(0.5), Real(0.5) + q, Real(0.5)) -
-                        at(Real(0.5), Real(0.5) - q, Real(0.5));
-        const Real g2 = at(Real(0.5), Real(0.5), Real(0.5) + q) -
-                        at(Real(0.5), Real(0.5), Real(0.5) - q);
+        const Real g0 =
+            at(Real(0.5) + q, Real(0.5), Real(0.5)) - at(Real(0.5) - q, Real(0.5), Real(0.5));
+        const Real g1 =
+            at(Real(0.5), Real(0.5) + q, Real(0.5)) - at(Real(0.5), Real(0.5) - q, Real(0.5));
+        const Real g2 =
+            at(Real(0.5), Real(0.5), Real(0.5) + q) - at(Real(0.5), Real(0.5), Real(0.5) - q);
         auto ab = [](Real v) { return v < Real(0) ? -v : v; };
         int hA = 0;
         if (ab(g1) >= ab(g0) && ab(g1) >= ab(g2))
@@ -331,8 +329,8 @@ BodyProperties<Real> bodyProperties(const Phi& phi, Vec3<Real> lo, Vec3<Real> hi
             Real d[3] = {0, 0, 0};
             d[hA] = H[hA];
             Real m0, m1, m2;
-            bd::interiorMoments(phi, Vec3<Real>{p0[0], p0[1], p0[2]},
-                                Vec3<Real>{d[0], d[1], d[2]}, nseg, m0, m1, m2);
+            bd::interiorMoments(phi, Vec3<Real>{p0[0], p0[1], p0[2]}, Vec3<Real>{d[0], d[1], d[2]},
+                                nseg, m0, m1, m2);
             if (m0 == Real(0))
               continue;
             const Real W = wi * wj * area;

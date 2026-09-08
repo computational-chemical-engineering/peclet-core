@@ -12,9 +12,9 @@
 //     zero-copy via `cupy.from_dlpack(...)` / `torch.from_dlpack(...)`.
 // Lifetime is correct because the exported array owns a capsule holding a *copy* of the View, and
 // Kokkos Views are reference-counted — the allocation lives exactly as long as Python references
-// it. The capsule is also a `Releasable` (kokkos_teardown.hpp): the module's shutdown drops its View
-// before Kokkos::finalize, so an array still referenced at interpreter exit (a notebook global) can
-// no longer abort the process with "deallocated after Kokkos::finalize".
+// it. The capsule is also a `Releasable` (kokkos_teardown.hpp): the module's shutdown drops its
+// View before Kokkos::finalize, so an array still referenced at interpreter exit (a notebook
+// global) can no longer abort the process with "deallocated after Kokkos::finalize".
 //
 // This header is only included by binding translation units (which link nanobind + Kokkos). It is
 // NOT pulled into the device kernels. Layout note: the suite is x-fastest (LayoutLeft), so a

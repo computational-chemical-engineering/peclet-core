@@ -232,9 +232,9 @@ void test_sphere_ghost() {
   PECLET_CORE_CHECK(dmax < 5e-3 * hmax);                       // fields agree
 }
 
-// FULL ghost projection (setGhostProjection, (2,2) production pair) on BOTH engines: binary-openness
-// operator + closure overlay + MG-preconditioned BiCGStab must agree oracle==device on a cut
-// geometry (same permeability, fields agree), and differ from the aperture projection (it
+// FULL ghost projection (setGhostProjection, (2,2) production pair) on BOTH engines:
+// binary-openness operator + closure overlay + MG-preconditioned BiCGStab must agree oracle==device
+// on a cut geometry (same permeability, fields agree), and differ from the aperture projection (it
 // replaces the O(1) cut-face constraint).
 void test_sphere_ghostproj() {
   const unsigned L = 4;
@@ -351,9 +351,10 @@ void test_graded_ghostproj() {
     usup /= static_cast<double>(N * N * N);
     PECLET_CORE_CHECK(std::isfinite(usup) && usup > 0.0 && usup < 1.0);  // stable
     const double k = 1e-3 * N * N * N / (6.0 * M_PI * 0.1 * R * usup);
-    std::printf("[flow] graded ghostproj (band 3): K=%.4f (Z&H 4.292; band-dominated), "
-                "leaves=%lld/%lld\n",
-                k, static_cast<long long>(t.numLeaves()), static_cast<long long>(N * N * N));
+    std::printf(
+        "[flow] graded ghostproj (band 3): K=%.4f (Z&H 4.292; band-dominated), "
+        "leaves=%lld/%lld\n",
+        k, static_cast<long long>(t.numLeaves()), static_cast<long long>(N * N * N));
     PECLET_CORE_CHECK(k > 3.0 && k < 6.5);  // sane drag (machinery lock, not accuracy)
   }
 }
@@ -405,9 +406,10 @@ void test_seam_sampled() {
       csum += uc[i];
       ssum += us[i];
     }
-    std::printf("[flow] seam-sampled (a) uniform band: |Us-Uc|max %.2e (mag %.2e), Umean rel "
-                "%.2e\n",
-                dmax, cmax, std::fabs(ssum - csum) / std::fabs(csum));
+    std::printf(
+        "[flow] seam-sampled (a) uniform band: |Us-Uc|max %.2e (mag %.2e), Umean rel "
+        "%.2e\n",
+        dmax, cmax, std::fabs(ssum - csum) / std::fabs(csum));
     PECLET_CORE_CHECK(dmax < 1e-9 * cmax);  // identity slots: bit-comparable paths
   }
 
@@ -468,9 +470,10 @@ void test_seam_sampled() {
         ++nf;
       }
     const double hmean = hsum / nf, dmean = dsum / nf;
-    std::printf("[flow] seam-sampled (b) two-level: Umean host %.6e dev %.6e (rel %.2e), "
-                "max|dev-host| %.3e (mag %.3e)\n",
-                hmean, dmean, std::fabs(dmean - hmean) / std::fabs(hmean), dmax, hmax);
+    std::printf(
+        "[flow] seam-sampled (b) two-level: Umean host %.6e dev %.6e (rel %.2e), "
+        "max|dev-host| %.3e (mag %.3e)\n",
+        hmean, dmean, std::fabs(dmean - hmean) / std::fabs(hmean), dmax, hmax);
     PECLET_CORE_CHECK(dmean > 0.0);
     PECLET_CORE_CHECK(std::fabs(dmean - hmean) / std::fabs(hmean) < 2e-3);
     PECLET_CORE_CHECK(dmax < 5e-3 * hmax);
@@ -614,12 +617,12 @@ void test_sphere_ghostproj_adv() {
   std::printf(
       "[flow] sphere+ghostproj+adv: Umean host %.6e dev %.6e (rel %.2e) aperture %.6e "
       "(scheme gap %.2e rel), max|dev-host| %.3e (mag %.3e), div ghost %.2e aperture %.2e\n",
-      hmean, dmean, std::fabs(dmean - hmean) / hmean, amean, std::fabs(dmean - amean) / amean,
-      dmax, hmax, gdiv, adiv);
+      hmean, dmean, std::fabs(dmean - hmean) / hmean, amean, std::fabs(dmean - amean) / amean, dmax,
+      hmax, gdiv, adiv);
   PECLET_CORE_CHECK(dmean > 0.0 && std::isfinite(dmean));
-  PECLET_CORE_CHECK(std::fabs(dmean - hmean) / hmean < 2e-3);  // device == oracle
-  PECLET_CORE_CHECK(dmax < 5e-3 * hmax);                       // fields agree
-  PECLET_CORE_CHECK(std::fabs(dmean - amean) / amean < 5e-2);  // ghost ≈ aperture NS physics
+  PECLET_CORE_CHECK(std::fabs(dmean - hmean) / hmean < 2e-3);    // device == oracle
+  PECLET_CORE_CHECK(dmax < 5e-3 * hmax);                         // fields agree
+  PECLET_CORE_CHECK(std::fabs(dmean - amean) / amean < 5e-2);    // ghost ≈ aperture NS physics
   PECLET_CORE_CHECK(std::isfinite(gdiv) && gdiv < 10.0 * adiv);  // same residual class
   {  // the DEFAULT must have resolved to the GHOST projection (== the explicit-ghost device
      // run, identical configuration and kernels — the 2026-08-25 default switch)
@@ -694,8 +697,8 @@ void test_adapt_midrun() {
   std::printf(
       "[flow] adapt-midrun: usup mid %.6e -> transferred %.6e -> continued %.6e, cold %.6e "
       "(rel %.2e); leaves %lld -> %lld\n",
-      uMid, uAfter, uCont, uCold, std::fabs(uCont - uCold) / uCold,
-      static_cast<long long>(leaves3), static_cast<long long>(t.numLeaves()));
+      uMid, uAfter, uCont, uCold, std::fabs(uCont - uCold) / uCold, static_cast<long long>(leaves3),
+      static_cast<long long>(t.numLeaves()));
   PECLET_CORE_CHECK(std::isfinite(uAfter) && uAfter > 0.0);
   PECLET_CORE_CHECK(std::fabs(uAfter - uMid) / uMid < 0.05);  // transfer preserves the state
   PECLET_CORE_CHECK(std::isfinite(uCont) && uCont > 0.0);
@@ -905,7 +908,7 @@ void test_advection() {
     hfl.setViscosity(mu);
     hfl.setDt(1e6);
     hfl.setBodyForce(G, 0, 0);
-    hfl.setAdvection(true);  // SOU + implicit FOU (defaults)
+    hfl.setAdvection(true);         // SOU + implicit FOU (defaults)
     hfl.setGhostProjection(false);  // explicit: this test validates the APERTURE NS path
     hfl.setSolid(sdf);
     for (int s = 0; s < 6; ++s)

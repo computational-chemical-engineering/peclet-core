@@ -1,8 +1,8 @@
 // core — orthogonal recursive bisection (ORB) domain decomposition.
 //
 // Ported from block_decomposer/src/BlockDecomposer.hpp (pbs::BlockDecomposer), modernized into the
-// peclet::core namespace. The global cell grid is split recursively along its largest axis into `numBlocks`
-// rank-owned blocks. Adds ownerOf() (a tree walk) for halo topology construction.
+// peclet::core namespace. The global cell grid is split recursively along its largest axis into
+// `numBlocks` rank-owned blocks. Adds ownerOf() (a tree walk) for halo topology construction.
 #ifndef PECLET_CORE_DECOMP_BLOCK_DECOMPOSER_HPP
 #define PECLET_CORE_DECOMP_BLOCK_DECOMPOSER_HPP
 
@@ -48,9 +48,10 @@ class BlockDecomposer {
 
   /// Aligned ORB: force every split position (and hence every block origin/size) on axis k to be a
   /// multiple of `align[k]`. This is what makes a decomposition safely COARSENABLE — a geometric
-  /// multigrid can then derive each coarse level by `coarsened()` (halving in place) and every level
-  /// nests, so restrict/prolong stay purely local. Set `align[k] = 2^(levels axis k coarsens)`.
-  /// `align[k] == 1` is the classic unaligned split. `globalSize[k]` must be a multiple of `align[k]`.
+  /// multigrid can then derive each coarse level by `coarsened()` (halving in place) and every
+  /// level nests, so restrict/prolong stay purely local. Set `align[k] = 2^(levels axis k
+  /// coarsens)`. `align[k] == 1` is the classic unaligned split. `globalSize[k]` must be a multiple
+  /// of `align[k]`.
   void init(std::size_t numBlocks, IVec<Dim> globalSize, const IVec<Dim>& align) {
     align_ = align;
     for (int i = 0; i < Dim; ++i)
@@ -142,11 +143,11 @@ class BlockDecomposer {
   }
 
   /// Derive the NESTED coarse decomposition: each block, split value and the global size divided by
-  /// `ratio` per axis (ratio[k] is 1 or the integer coarsening factor). The tree shape and leaf order
-  /// are preserved, so rank r's coarse block is exactly rank r's fine block coarsened in place — the
-  /// invariant a geometric-multigrid restrict/prolong relies on (coarse-local i ↔ fine-local ratio*i).
-  /// Exact iff this decomposition was built aligned to a multiple of `ratio` on each coarsened axis
-  /// (see the aligned `init`); asserts divisibility in debug builds.
+  /// `ratio` per axis (ratio[k] is 1 or the integer coarsening factor). The tree shape and leaf
+  /// order are preserved, so rank r's coarse block is exactly rank r's fine block coarsened in
+  /// place — the invariant a geometric-multigrid restrict/prolong relies on (coarse-local i ↔
+  /// fine-local ratio*i). Exact iff this decomposition was built aligned to a multiple of `ratio`
+  /// on each coarsened axis (see the aligned `init`); asserts divisibility in debug builds.
   BlockDecomposer<Dim> coarsened(const IVec<Dim>& ratio) const {
     BlockDecomposer<Dim> c;
     for (int k = 0; k < Dim; ++k) {
@@ -278,8 +279,7 @@ class BlockDecomposer {
     leavesUnder(2 * node + 2, out);
   }
   void agglomWalk(Index node, int d, int depth, IVec<Dim> origin, IVec<Dim> size,
-                  BlockDecomposer<Dim>& a, std::vector<int>& gmap,
-                  std::vector<int>& roots) const {
+                  BlockDecomposer<Dim>& a, std::vector<int>& gmap, std::vector<int>& roots) const {
     const TreeNode& nd = tree_[node];
     if (nd.splitDim == -1 || d == depth) {
       // becomes a block of the agglomerated decomposition
@@ -327,7 +327,6 @@ class BlockDecomposer {
   }
 
  private:
-
   /// Shared decomposition driver. `weights == nullptr` ⇒ equal-cell-count split (the classic ORB);
   /// otherwise the split position balances cumulative weight.
   void initImpl(std::size_t numBlocks, IVec<Dim> globalSize, const std::vector<Real>* weights);
@@ -341,7 +340,8 @@ class BlockDecomposer {
                       const std::vector<Real>* weights) const;
 
   IVec<Dim> globalSize_{};
-  IVec<Dim> align_{};  ///< per-axis split alignment (1 = unaligned); see the aligned init / coarsened
+  IVec<Dim>
+      align_{};  ///< per-axis split alignment (1 = unaligned); see the aligned init / coarsened
   IVec<Dim> cellExtent_{};  ///< fine cells per cell of THIS grid, per axis; split-axis choice only
   std::vector<IVec<Dim>> origins_;
   std::vector<IVec<Dim>> sizes_;
@@ -393,7 +393,8 @@ void BlockDecomposer<Dim>::initImpl(std::size_t numBlocks, IVec<Dim> globalSize,
 
       // Snap the split to a multiple of align_[kLargest] so the global split position
       // (cur.origin[kLargest] + szSub, with cur.origin already aligned) is a multiple too — the
-      // precondition for coarsened() to divide cleanly. Skip if the box is too small to split aligned.
+      // precondition for coarsened() to divide cleanly. Skip if the box is too small to split
+      // aligned.
       const Index a = align_[kLargest];
       if (a > 1 && cur.size[kLargest] >= 2 * a) {
         szSub = ((szSub + a / 2) / a) * a;

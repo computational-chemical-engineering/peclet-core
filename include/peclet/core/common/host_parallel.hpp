@@ -88,9 +88,8 @@ inline void hostParFor(Index n, Body&& body) {
 #if PECLET_CORE_HOST_PARALLEL_KOKKOS
   if (Kokkos::is_initialized()) {
     using HostExec = Kokkos::DefaultHostExecutionSpace;
-    Kokkos::parallel_for(
-        "peclet::core::hostParFor", Kokkos::RangePolicy<HostExec>(0, n),
-        [&body](const Index i) { body(i); });
+    Kokkos::parallel_for("peclet::core::hostParFor", Kokkos::RangePolicy<HostExec>(0, n),
+                         [&body](const Index i) { body(i); });
     Kokkos::fence("peclet::core::hostParFor");
     return;
   }

@@ -111,8 +111,8 @@ MarchOut march(oracle::AmrFlow<21>& fl, const BO& t, double h0, int maxSteps, in
     const auto& ux = fl.velocity(0);
     for (Index i = 0; i < n; ++i) {
       um = std::max(um, std::fabs(ux[static_cast<std::size_t>(i)]));
-      dm = std::max(dm, std::fabs(ux[static_cast<std::size_t>(i)] -
-                                  prev[static_cast<std::size_t>(i)]));
+      dm = std::max(dm,
+                    std::fabs(ux[static_cast<std::size_t>(i)] - prev[static_cast<std::size_t>(i)]));
     }
     out.umax = um;
     out.statRes = um > 0 ? dm / um : 0.0;
@@ -186,10 +186,11 @@ int main(int argc, char** argv) {
     setup(fl, t, h0, dt, /*sampled=*/true, cf);
     const int nStep = dt > 1e10 ? 200 : 300;
     MarchOut r = march(fl, t, h0, nStep, sweeps(dt), /*traceEvery=*/25, argv[2]);
-    std::printf("RESULT march %s dt %.0e cf %d K %.12e statRes %.3e umax %.3e bounded %d "
-                "leaves %lld\n",
-                argv[2], dt, cf, r.K, r.statRes, r.umax, r.bounded ? 1 : 0,
-                static_cast<long long>(t.numLeaves()));
+    std::printf(
+        "RESULT march %s dt %.0e cf %d K %.12e statRes %.3e umax %.3e bounded %d "
+        "leaves %lld\n",
+        argv[2], dt, cf, r.K, r.statRes, r.umax, r.bounded ? 1 : 0,
+        static_cast<long long>(t.numLeaves()));
     return r.bounded ? 0 : 1;
   }
   if (std::string_view(phase) == "cycle" && argc > 2) {

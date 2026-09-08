@@ -55,7 +55,9 @@ inline Index localFlat(const IVec<Dim>& gcell, const Block<Dim>& blk, int g) {
   return idx;
 }
 
-inline Index boxCellCount(const IVec<3>& size) { return size[0] * size[1] * size[2]; }
+inline Index boxCellCount(const IVec<3>& size) {
+  return size[0] * size[1] * size[2];
+}
 
 // Visit every cell of a global box in x-fastest order: f(n, gcell) with n the box-linear index.
 template <class F>

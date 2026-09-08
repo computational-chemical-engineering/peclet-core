@@ -41,7 +41,9 @@ double payload(Index i) {
   return std::fma(a, std::sqrt(x), std::cos(2.0 * x) / (1.0 + a * a));
 }
 
-Index countOf(Index i) { return (i * 7919) % 13; }  // 0..12, irregular — a realistic row width
+Index countOf(Index i) {
+  return (i * 7919) % 13;
+}  // 0..12, irregular — a realistic row width
 
 void run() {
   const Index n = 200003;  // prime-ish, so the last chunk of any schedule is ragged

@@ -104,9 +104,9 @@ Vec<3> velMan(const Vec<3>& p) {
 }
 double velManDiv(const Vec<3>& p) {
   const double tp = 2.0 * kPi;
-  return tp * (std::cos(tp * p[0]) * std::cos(tp * p[1]) +
-               std::cos(tp * p[1]) * std::cos(tp * p[2]) +
-               std::cos(tp * p[2]) * std::cos(tp * p[0]));
+  return tp *
+         (std::cos(tp * p[0]) * std::cos(tp * p[1]) + std::cos(tp * p[1]) * std::cos(tp * p[2]) +
+          std::cos(tp * p[2]) * std::cos(tp * p[0]));
 }
 
 // Standard ½/½ face-average divergence (the oracle::AmrFlow::divergence form, α=1).
@@ -171,9 +171,9 @@ void run() {
       double scale = 0.0, dmax = 0.0;
       for (Index i = 0; i < g.n; ++i) {
         scale = std::max(scale, std::fabs(lq[static_cast<std::size_t>(i)]));
-        dmax = std::max(dmax, std::fabs(dl[static_cast<std::size_t>(i)] -
-                                        (lq[static_cast<std::size_t>(i)] -
-                                         ls[static_cast<std::size_t>(i)])));
+        dmax = std::max(
+            dmax, std::fabs(dl[static_cast<std::size_t>(i)] -
+                            (lq[static_cast<std::size_t>(i)] - ls[static_cast<std::size_t>(i)])));
       }
       PECLET_CORE_CHECK(dmax < 1e-12 * scale);  // the delta IS the P5b quad correction
     }
@@ -216,8 +216,9 @@ void run() {
       for (int c = 0; c < 3; ++c) {
         const double gs = gradStd(g, phi, i, c);
         eGs = std::max(eGs, std::fabs(gs - ge[c]));
-        eGq = std::max(eGq, std::fabs(gs + gq[static_cast<std::size_t>(c)][static_cast<std::size_t>(i)] -
-                                      ge[c]));
+        eGq = std::max(
+            eGq,
+            std::fabs(gs + gq[static_cast<std::size_t>(c)][static_cast<std::size_t>(i)] - ge[c]));
       }
     }
     // (4) momentum ∇² (the velocity operator): SOLUTION-level order for the Helmholtz solve
@@ -306,12 +307,10 @@ void run() {
         g.ap.forEachFaceFull(i, [&](Index j, int axis, int dir, double, double dist, double) {
           const double ui = u[static_cast<std::size_t>(axis)][static_cast<std::size_t>(i)];
           const double uj = u[static_cast<std::size_t>(axis)][static_cast<std::size_t>(j)];
-          const double gphi = (dir > 0) ? (phi[static_cast<std::size_t>(j)] -
-                                           phi[static_cast<std::size_t>(i)]) /
-                                              dist
-                                        : (phi[static_cast<std::size_t>(i)] -
-                                           phi[static_cast<std::size_t>(j)]) /
-                                              dist;
+          const double gphi =
+              (dir > 0)
+                  ? (phi[static_cast<std::size_t>(j)] - phi[static_cast<std::size_t>(i)]) / dist
+                  : (phi[static_cast<std::size_t>(i)] - phi[static_cast<std::size_t>(j)]) / dist;
           ufS[static_cast<std::size_t>(slot)] = 0.5 * (ui + uj) - gphi;
           const unsigned Lj = g.t.level(j);
           fCf[static_cast<std::size_t>(slot)] = (Lj != Li) ? 1 : 0;
@@ -362,16 +361,17 @@ void run() {
       oUq = pN ? orderOf(pUq, eUq, pN, N) : 0;
       oAq = pN ? orderOf(pAq, eAq, pN, N) : 0;
       oAs = pN ? orderOf(pAs, eAs, pN, N) : 0;
-      std::printf("      | uf: whole std %.3e quad %.3e ord %5.2f | avg std %.3e ord %5.2f "
-                  "quad %.3e ord %5.2f\n",
-                  eUs, eUq, oUq, eAs, oAs, eAq, oAq);
+      std::printf(
+          "      | uf: whole std %.3e quad %.3e ord %5.2f | avg std %.3e ord %5.2f "
+          "quad %.3e ord %5.2f\n",
+          eUs, eUq, oUq, eAs, oAs, eAq, oAq);
       pUq = eUq;
       pAq = eAq;
       pAs = eAs;
       if (N == 64) {
-        PECLET_CORE_CHECK(oAq >= 1.7);         // steady advecting velocity ~2nd order
-        PECLET_CORE_CHECK(oAs <= oAq - 0.5);   // standard average is lower order
-        PECLET_CORE_CHECK(oUq >= 0.9);         // whole uf ≥ O(h) (φ part, transient-only)
+        PECLET_CORE_CHECK(oAq >= 1.7);        // steady advecting velocity ~2nd order
+        PECLET_CORE_CHECK(oAs <= oAq - 0.5);  // standard average is lower order
+        PECLET_CORE_CHECK(oUq >= 0.9);        // whole uf ≥ O(h) (φ part, transient-only)
       }
     }
     oDs = pN ? orderOf(pDs, eDs, pN, N) : 0;
@@ -380,9 +380,10 @@ void run() {
     oGq = pN ? orderOf(pGq, eGq, pN, N) : 0;
     oLs = pN ? orderOf(pLs, eLs, pN, N) : 0;
     oLq = pN ? orderOf(pLq, eLq, pN, N) : 0;
-    std::printf("%5ld | %10.3e %6.2f %10.3e %6.2f | %10.3e %6.2f %10.3e %6.2f | %10.3e %6.2f "
-                "%10.3e %6.2f\n",
-                N, eDs, oDs, eDq, oDq, eGs, oGs, eGq, oGq, eLs, oLs, eLq, oLq);
+    std::printf(
+        "%5ld | %10.3e %6.2f %10.3e %6.2f | %10.3e %6.2f %10.3e %6.2f | %10.3e %6.2f "
+        "%10.3e %6.2f\n",
+        N, eDs, oDs, eDq, oDq, eGs, oGs, eGq, oGq, eLs, oLs, eLq, oLq);
     pDs = eDs;
     pDq = eDq;
     pGs = eGs;
@@ -446,9 +447,9 @@ void run() {
       cfApplyHost(cs, phi, dl);
       double branch = 0.0, eCorner = 0.0, eP5b = 0.0;
       for (Index i = 0; i < g.n; ++i) {
-        branch = std::max(branch, std::fabs(dl[static_cast<std::size_t>(i)] -
-                                            (lq[static_cast<std::size_t>(i)] -
-                                             ls[static_cast<std::size_t>(i)])));
+        branch = std::max(
+            branch, std::fabs(dl[static_cast<std::size_t>(i)] -
+                              (lq[static_cast<std::size_t>(i)] - ls[static_cast<std::size_t>(i)])));
         if (!g.cfRow[static_cast<std::size_t>(i)])
           continue;
         const double ex = phiManLap(g.cen[static_cast<std::size_t>(i)]);
@@ -458,10 +459,11 @@ void run() {
       }
       const double oC = pNc ? orderOf(pC, eCorner, pNc, N) : 0;
       const double oP = pNc ? orderOf(pP, eP5b, pNc, N) : 0;
-      std::printf("  [corners] N=%3ld branch |delta-p5b| = %.2e; L trunc: upgraded %.3e "
-                  "(ord %5.2f) vs p5b-fallback %.3e (ord %5.2f)\n",
-                  N, branch, eCorner, oC, eP5b, oP);
-      PECLET_CORE_CHECK(branch > 0.0);        // the corner branch fires on this mesh
+      std::printf(
+          "  [corners] N=%3ld branch |delta-p5b| = %.2e; L trunc: upgraded %.3e "
+          "(ord %5.2f) vs p5b-fallback %.3e (ord %5.2f)\n",
+          N, branch, eCorner, oC, eP5b, oP);
+      PECLET_CORE_CHECK(branch > 0.0);            // the corner branch fires on this mesh
       PECLET_CORE_CHECK(eCorner <= eP5b * 1.02);  // upgraded stencil never worse, at worst ties
       pC = eCorner;
       pP = eP5b;

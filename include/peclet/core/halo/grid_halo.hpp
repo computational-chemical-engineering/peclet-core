@@ -17,8 +17,8 @@
 
 #include <cstdio>
 #include <cstdlib>
-#include <type_traits>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "peclet/core/common/mpi.hpp"
@@ -73,8 +73,7 @@ inline bool probeGpuAwareMpi() {
     return false;
   MPI_Comm_set_errhandler(self, MPI_ERRORS_RETURN);
   constexpr int N = 64;
-  View<int> src(Kokkos::view_alloc("peclet::core::halo::probeSrc", Kokkos::WithoutInitializing),
-                N);
+  View<int> src(Kokkos::view_alloc("peclet::core::halo::probeSrc", Kokkos::WithoutInitializing), N);
   View<int> dst("peclet::core::halo::probeDst", N);
   Kokkos::parallel_for(
       "peclet::core::halo::probeFill", Kokkos::RangePolicy<ExecSpace>(0, N),

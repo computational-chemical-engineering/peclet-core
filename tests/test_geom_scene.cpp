@@ -163,9 +163,8 @@ int main() {
     // NO effect on the value. That is exactly what makes it a good check of the quaternion path.
     const double ang = 1.0471975511965976, ax = 0.6, ay = 0.8, az = 0.0;
     nv[0].transform.translation = c;
-    nv[0].transform.rotation =
-        Quat<double>{ax * std::sin(ang / 2), ay * std::sin(ang / 2), az * std::sin(ang / 2),
-                     std::cos(ang / 2)};
+    nv[0].transform.rotation = Quat<double>{ax * std::sin(ang / 2), ay * std::sin(ang / 2),
+                                            az * std::sin(ang / 2), std::cos(ang / 2)};
     nv[0].transform.scale = s;
     const TablePtr<ShapeNode<double>> nodes{nv.data()};
     const TablePtr<GridDesc<double>> g{nullptr};
@@ -211,8 +210,8 @@ int main() {
     nv[4].params[1] = 0.10;
     nv[4].params[2] = 0.25;
     nv[4].transform.translation = Vec3<double>{-1.0, -0.5, 0.0};
-    nv[4].transform.rotation = Quat<double>{0, std::sin(0.7853981633974483), 0,
-                                            std::cos(0.7853981633974483)};
+    nv[4].transform.rotation =
+        Quat<double>{0, std::sin(0.7853981633974483), 0, std::cos(0.7853981633974483)};
     const TablePtr<ShapeNode<double>> nodes{nv.data()};
     const TablePtr<GridDesc<double>> g{nullptr};
     const PoolPtr<double> pl{nullptr};

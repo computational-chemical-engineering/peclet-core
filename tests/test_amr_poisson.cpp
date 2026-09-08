@@ -129,7 +129,6 @@ double solveError(unsigned L, double& residDrop) {
   return std::sqrt(err);
 }
 
-
 // ---- PHASE 3 GATE A3 (core/docs/amr_anisotropic.md §9, decision AM1) --------------------------
 //
 // MEASURED, 2026-09-06, and it is a HARDER limit than the design note guessed.
@@ -206,8 +205,8 @@ void test_anisotropic_mg() {
   double rEnd[3];
   for (int q = 0; q < 3; ++q) {
     const double a = static_cast<double>(asp[q]);
-    it[q] = vcyclesToTol(Vec<3>{1.0, 1.0 / a, 1.0 / a}, IVec<3>{1, asp[q], asp[q]}, 4, tol,
-                         rEnd[q]);
+    it[q] =
+        vcyclesToTol(Vec<3>{1.0, 1.0 / a, 1.0 / a}, IVec<3>{1, asp[q], asp[q]}, 4, tol, rEnd[q]);
     if (it[q] > 0)
       std::printf("A3 aspect %ld:1  cells = (16, %ld, %ld)  V-cycles to 1e-10: %d\n", asp[q],
                   16L * asp[q], 16L * asp[q], it[q]);
@@ -219,8 +218,9 @@ void test_anisotropic_mg() {
   // statement this gate is here to protect. The anisotropic rows are reported, not asserted: see
   // the header for why, and core/docs/amr_anisotropic.md §4 for the remedies.
   PECLET_CORE_CHECK(it[0] > 0 && it[0] <= 12);
-  std::printf("A3 VERDICT: the octree V-cycle is a convergent SOLVER only on (near-)cubic cells; "
-              "on a box mesh it is a preconditioner (see A2 = 1e-15 exact, A4 = -0.76%% drag).\n");
+  std::printf(
+      "A3 VERDICT: the octree V-cycle is a convergent SOLVER only on (near-)cubic cells; "
+      "on a box mesh it is a preconditioner (see A2 = 1e-15 exact, A4 = -0.76%% drag).\n");
 }
 
 void test_graded_solvable() {

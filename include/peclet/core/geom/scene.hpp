@@ -203,8 +203,9 @@ struct Instance {
   Vec3<Real> linVel{0, 0, 0};
   Vec3<Real> angVel{0, 0, 0};
   Vec3<Real> center{0, 0, 0};  ///< reference point of the rotation, in world coordinates
-  bool centerPinned = false;   ///< true: `center` is an explicit world point (the origin included);
-                               ///< false: the centre follows the body (consumers use the translation)
+  bool centerPinned =
+      false;  ///< true: `center` is an explicit world point (the origin included);
+              ///< false: the centre follows the body (consumers use the translation)
 };
 
 /// Rigid-body surface velocity of instance `inst` at world point p: linVel + angVel x (p - c),
@@ -341,16 +342,15 @@ PECLET_HD Vec3<Real> leafGrad(const ShapeNode<Real>& n, Vec3<Real> p, const Grid
       const GridDesc<Real>& d = grids(n.aux0);
       const Real hx = Real(0.5) / d.invSpacing.x, hy = Real(0.5) / d.invSpacing.y,
                  hz = Real(0.5) / d.invSpacing.z;
-      return Vec3<Real>{
-          (sampleGrid(Vec3<Real>{p.x + hx, p.y, p.z}, d, pool) -
-           sampleGrid(Vec3<Real>{p.x - hx, p.y, p.z}, d, pool)) /
-              (Real(2) * hx),
-          (sampleGrid(Vec3<Real>{p.x, p.y + hy, p.z}, d, pool) -
-           sampleGrid(Vec3<Real>{p.x, p.y - hy, p.z}, d, pool)) /
-              (Real(2) * hy),
-          (sampleGrid(Vec3<Real>{p.x, p.y, p.z + hz}, d, pool) -
-           sampleGrid(Vec3<Real>{p.x, p.y, p.z - hz}, d, pool)) /
-              (Real(2) * hz)};
+      return Vec3<Real>{(sampleGrid(Vec3<Real>{p.x + hx, p.y, p.z}, d, pool) -
+                         sampleGrid(Vec3<Real>{p.x - hx, p.y, p.z}, d, pool)) /
+                            (Real(2) * hx),
+                        (sampleGrid(Vec3<Real>{p.x, p.y + hy, p.z}, d, pool) -
+                         sampleGrid(Vec3<Real>{p.x, p.y - hy, p.z}, d, pool)) /
+                            (Real(2) * hy),
+                        (sampleGrid(Vec3<Real>{p.x, p.y, p.z + hz}, d, pool) -
+                         sampleGrid(Vec3<Real>{p.x, p.y, p.z - hz}, d, pool)) /
+                            (Real(2) * hz)};
     }
     default:
       return Vec3<Real>{0, 0, 0};
@@ -395,8 +395,8 @@ PECLET_HD Real evalTreeGrad(const Nodes& nodes, int nodeCount, int root, Vec3<Re
 
   {
     const auto& n = nodes(root);
-    stack[0] = Frame{root, 0, toCanonical(n.transform, p), n.transform.scale, Real(0),
-                     Vec3<Real>{0, 0, 0}};
+    stack[0] = Frame{
+        root, 0, toCanonical(n.transform, p), n.transform.scale, Real(0), Vec3<Real>{0, 0, 0}};
     sp = 1;
   }
 
@@ -415,7 +415,11 @@ PECLET_HD Real evalTreeGrad(const Nodes& nodes, int nodeCount, int root, Vec3<Re
       }
       f.stage = 1;
       const auto& c = nodes(n.aux0);
-      stack[sp] = Frame{n.aux0, 0, toCanonical(c.transform, f.can), c.transform.scale, Real(0),
+      stack[sp] = Frame{n.aux0,
+                        0,
+                        toCanonical(c.transform, f.can),
+                        c.transform.scale,
+                        Real(0),
                         Vec3<Real>{0, 0, 0}};
       ++sp;
       continue;
@@ -428,7 +432,11 @@ PECLET_HD Real evalTreeGrad(const Nodes& nodes, int nodeCount, int root, Vec3<Re
       f.leftGrad = resultGrad;
       f.stage = 2;
       const auto& c = nodes(n.aux1);
-      stack[sp] = Frame{n.aux1, 0, toCanonical(c.transform, f.can), c.transform.scale, Real(0),
+      stack[sp] = Frame{n.aux1,
+                        0,
+                        toCanonical(c.transform, f.can),
+                        c.transform.scale,
+                        Real(0),
                         Vec3<Real>{0, 0, 0}};
       ++sp;
       continue;
@@ -444,8 +452,7 @@ PECLET_HD Real evalTreeGrad(const Nodes& nodes, int nodeCount, int root, Vec3<Re
         g = (l >= r) ? f.leftGrad : resultGrad;
       } else {  // kDifference: max(l, -r); the right branch's gradient enters NEGATED
         combined = detail::hdMax(l, -r);
-        g = (l >= -r) ? f.leftGrad
-                      : Vec3<Real>{-resultGrad.x, -resultGrad.y, -resultGrad.z};
+        g = (l >= -r) ? f.leftGrad : Vec3<Real>{-resultGrad.x, -resultGrad.y, -resultGrad.z};
       }
       result = f.scale * combined;
       resultGrad = rotate(n.transform.rotation, g);

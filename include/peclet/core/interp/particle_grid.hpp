@@ -12,8 +12,8 @@
 // [origin, origin+L] stays in bounds (the half-cell overhang lands on a ghost cell); indices are
 // clamped defensively regardless.
 //
-// Header-only, Kokkos required. Templated on the view types so it composes with dem's float particle
-// SoA and flow's double grid fields (interpolation arithmetic is done in double).
+// Header-only, Kokkos required. Templated on the view types so it composes with dem's float
+// particle SoA and flow's double grid fields (interpolation arithmetic is done in double).
 #ifndef PECLET_CORE_INTERP_PARTICLE_GRID_HPP
 #define PECLET_CORE_INTERP_PARTICLE_GRID_HPP
 
@@ -58,7 +58,8 @@ void trilinearGather(int nParticles, PosView pos, FieldView field, OutView out, 
   const int ex = m.ex, ey = m.ey, ez = m.ez, g = m.g;
   const int nx = ex - 2 * g, ny = ey - 2 * g, nz = ez - 2 * g;
   Kokkos::parallel_for(
-      "peclet::core::interp::gather", Kokkos::RangePolicy<Exec>(0, nParticles), KOKKOS_LAMBDA(int p) {
+      "peclet::core::interp::gather", Kokkos::RangePolicy<Exec>(0, nParticles),
+      KOKKOS_LAMBDA(int p) {
         int i0, j0, k0;
         double wx, wy, wz;
         detail::axisStencil((double)pos(p, 0), m.ox, m.idx, nx, i0, wx);

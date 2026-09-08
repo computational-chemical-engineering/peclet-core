@@ -34,12 +34,12 @@
 #include <cmath>
 #include <cstddef>
 #include <initializer_list>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <tuple>
 #include <vector>
-#include <limits>
 
 #include "peclet/core/geom/scene.hpp"
 
@@ -48,8 +48,9 @@ namespace peclet::core::geom {
 inline constexpr int kNodeIntStride = 3;
 inline constexpr int kNodeRealStride = 16;
 inline constexpr int kInstanceIntStride = 2;
-inline constexpr int kInstanceRealStride = 18;        // reals[17] = centerPinned flag (2026-09-02)
-inline constexpr int kInstanceRealStrideLegacy = 17;  // pre-flag records: an all-zero centre = follows the body
+inline constexpr int kInstanceRealStride = 18;  // reals[17] = centerPinned flag (2026-09-02)
+inline constexpr int kInstanceRealStrideLegacy =
+    17;  // pre-flag records: an all-zero centre = follows the body
 
 // --- flat <-> POD conversion (the binding boundary) --------------------------------------------
 
@@ -109,7 +110,8 @@ void encodeInstance(const Instance<Real>& v, int* ints, Real* reals) {
 }
 
 template <class Real>
-Instance<Real> decodeInstance(const int* ints, const Real* reals, int stride = kInstanceRealStride) {
+Instance<Real> decodeInstance(const int* ints, const Real* reals,
+                              int stride = kInstanceRealStride) {
   Instance<Real> v;
   v.shapeRoot = ints[0];
   v.materialId = ints[1];
@@ -254,11 +256,11 @@ class SceneBuilder {
     Transform<Real> C;
     C.rotation = mulQuat(A.rotation, B.rotation);
     C.scale = A.scale * B.scale;
-    const Vec3<Real> rb = rotate(A.rotation, Vec3<Real>{B.translation.x * A.scale,
-                                                        B.translation.y * A.scale,
-                                                        B.translation.z * A.scale});
-    C.translation = Vec3<Real>{A.translation.x + rb.x, A.translation.y + rb.y,
-                               A.translation.z + rb.z};
+    const Vec3<Real> rb =
+        rotate(A.rotation, Vec3<Real>{B.translation.x * A.scale, B.translation.y * A.scale,
+                                      B.translation.z * A.scale});
+    C.translation =
+        Vec3<Real>{A.translation.x + rb.x, A.translation.y + rb.y, A.translation.z + rb.z};
     return C;
   }
 

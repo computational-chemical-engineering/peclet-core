@@ -112,18 +112,20 @@ int main() {
         }
     errs.push_back(sumQ / (double)nCut);
     errsNoSplit.push_back(sumNo / (double)nCut);
-    std::printf("    N=%3d  %5ld cut faces   mean err: quadrature %.3e   unsplit %.3e   "
-                "linear %.3e   (worst quad %.3e, worst linear %.3e)\n",
-                N, nCut, sumQ / nCut, sumNo / nCut, sumLin / nCut, worstQ, worstLin);
+    std::printf(
+        "    N=%3d  %5ld cut faces   mean err: quadrature %.3e   unsplit %.3e   "
+        "linear %.3e   (worst quad %.3e, worst linear %.3e)\n",
+        N, nCut, sumQ / nCut, sumNo / nCut, sumLin / nCut, worstQ, worstLin);
     PECLET_CORE_CHECK(worstQ < 1e-7);         // machine-ish even at the worst cut face
     PECLET_CORE_CHECK(sumQ < 1e-6 * sumLin);  // >= 10^6 better than the linear estimator
     PECLET_CORE_CHECK(sumQ < 1e-5 * sumNo);   // and splitting at the kinks is what buys it
   }
-  std::printf("    -> splitting the outer rule at the face-exit kinks buys %.0e (N=16) to %.0e "
-              "(N=64). The UNSPLIT error barely moves with h (%.2e -> %.2e), which is the point: "
-              "an aperture is a fraction, so a fixed kink costs a fixed amount.\n",
-              errsNoSplit[0] / errs[0], errsNoSplit.back() / errs.back(), errsNoSplit[0],
-              errsNoSplit.back());
+  std::printf(
+      "    -> splitting the outer rule at the face-exit kinks buys %.0e (N=16) to %.0e "
+      "(N=64). The UNSPLIT error barely moves with h (%.2e -> %.2e), which is the point: "
+      "an aperture is a fraction, so a fixed kink costs a fixed amount.\n",
+      errsNoSplit[0] / errs[0], errsNoSplit.back() / errs.back(), errsNoSplit[0],
+      errsNoSplit.back());
 
   // --- convergence is in the NODE COUNT, not in h ---------------------------------------------
   {
@@ -164,9 +166,10 @@ int main() {
                                             Vec3<double>{h, h, h}, 5, 8) *
                  h * h * h;
     const double exact = 1.0 - 4.0 / 3.0 * M_PI * R * R * R;
-    std::printf("  cell volume fractions sum to %.10f, exact fluid volume %.10f (rel %.2e) -- "
-                "weaker than the faces because the 2-D outer rule's kinks are CURVES\n",
-                vol, exact, std::fabs(vol - exact) / exact);
+    std::printf(
+        "  cell volume fractions sum to %.10f, exact fluid volume %.10f (rel %.2e) -- "
+        "weaker than the faces because the 2-D outer rule's kinks are CURVES\n",
+        vol, exact, std::fabs(vol - exact) / exact);
     PECLET_CORE_CHECK(std::fabs(vol - exact) / exact < 1e-5);
   }
 
@@ -196,9 +199,10 @@ int main() {
         }
     const double exact = 1.0 - 2.0 * M_PI * M_PI * 0.25 * 0.08 * 0.08;  // 1 - 2 pi^2 R r^2
     PECLET_CORE_CHECK(bad == 0);
-    std::printf("  torus (4 crossings per line; NO order claimed): %d cut faces, %d out of [0,1]; "
-                "volume %.8f vs exact %.8f (rel %.2e)\n",
-                cut, bad, vol, exact, std::fabs(vol - exact) / exact);
+    std::printf(
+        "  torus (4 crossings per line; NO order claimed): %d cut faces, %d out of [0,1]; "
+        "volume %.8f vs exact %.8f (rel %.2e)\n",
+        cut, bad, vol, exact, std::fabs(vol - exact) / exact);
     PECLET_CORE_CHECK(std::fabs(vol - exact) / exact < 5e-3);
   }
 
@@ -215,10 +219,10 @@ int main() {
     for (int j = 0; j < 32; ++j)
       for (int k = 0; k < 32; ++k) {
         const Vec3<double> o{0.5, j * h, k * h};
-        worst = std::fmax(worst,
-                          std::fabs(faceAperture<double>(
-                                        [&](Vec3<double> p) { return q.eval(p); }, o, 0, h, h, 5, 8) -
-                                    faceAperture<double>(sphere, o, 0, h, h, 5, 8)));
+        worst = std::fmax(
+            worst, std::fabs(faceAperture<double>([&](Vec3<double> p) { return q.eval(p); }, o, 0,
+                                                  h, h, 5, 8) -
+                             faceAperture<double>(sphere, o, 0, h, h, 5, 8)));
       }
     PECLET_CORE_CHECK(worst < 1e-14);
     std::printf("  SceneQueryView vs a raw lambda: worst face difference %.2e\n", worst);

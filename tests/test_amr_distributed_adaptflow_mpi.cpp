@@ -21,12 +21,11 @@
 #include <Kokkos_Core.hpp>
 #include <vector>
 
-#include "peclet/core/common/view.hpp"
-
 #include "peclet/core/amr/distributed_adapt.hpp"
 #include "peclet/core/amr/distributed_octree.hpp"
 #include "peclet/core/amr/flow.hpp"
 #include "peclet/core/common/mpi.hpp"
+#include "peclet/core/common/view.hpp"
 
 using namespace peclet::core;
 using namespace peclet::core::amr;
@@ -140,9 +139,8 @@ void run() {
       const Index si = self.local().find(world.globalCode(i));
       PECLET_CORE_CHECK(si >= 0);
       for (int c = 0; c < 3; ++c)
-        dmax = std::max(dmax,
-                        std::fabs(uw[(std::size_t)c][(std::size_t)i] -
-                                  us[(std::size_t)c][(std::size_t)si]));
+        dmax = std::max(dmax, std::fabs(uw[(std::size_t)c][(std::size_t)i] -
+                                        us[(std::size_t)c][(std::size_t)si]));
       dmax = std::max(dmax, std::fabs(pw[(std::size_t)i] - ps[(std::size_t)si]));
     }
     double gdmax = 0.0;
