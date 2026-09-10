@@ -45,10 +45,10 @@ static void checkPolynomials(const char* tag) {
     const Real lam = Real(0.2);
     checkClose<Real>(poly_D_slip(th, lam), th * (Real(1) + th) + lam * (Real(1) + Real(2) * th),
                      Real(0), tag);
-    checkClose<Real>(poly_N_nb_slip(th, lam),
-                     th * (Real(1) - th) + lam * (Real(1) - Real(2) * th), Real(0), tag);
-    checkClose<Real>(poly_Nc_slip(th, lam),
-                     Real(2) * (th * th - Real(1)) + Real(4) * lam * th, Real(0), tag);
+    checkClose<Real>(poly_N_nb_slip(th, lam), th * (Real(1) - th) + lam * (Real(1) - Real(2) * th),
+                     Real(0), tag);
+    checkClose<Real>(poly_Nc_slip(th, lam), Real(2) * (th * th - Real(1)) + Real(4) * lam * th,
+                     Real(0), tag);
   }
 
   const Real pairs[][2] = {{Real(0.3), Real(0.7)}, {Real(0.05), Real(0.95)}, {Real(1), Real(1)}};
