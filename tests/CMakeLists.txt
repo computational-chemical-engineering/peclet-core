@@ -8,6 +8,14 @@ target_link_libraries(test_domain PRIVATE peclet_core)
 target_include_directories(test_domain PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 peclet_core_add_test(domain test_domain)
 
+# Cut-cell IBM closure polynomials (peclet/core/scheme/cut_cell_closure.hpp): the ONE templated
+# copy that replaces flow's cut_cell_ibm.hpp (float) and amr's cut_cell.hpp cc:: (double)
+# independently-written polynomials (QUALITY_PLAN §3.G.2). Host-only, no Kokkos needed.
+add_executable(test_cut_cell_closure test_cut_cell_closure.cpp)
+target_link_libraries(test_cut_cell_closure PRIVATE peclet_core)
+target_include_directories(test_cut_cell_closure PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+peclet_core_add_test(cut_cell_closure test_cut_cell_closure)
+
 # Serial tests (no MPI).
 add_executable(test_decomposition test_decomposition.cpp)
 target_link_libraries(test_decomposition PRIVATE peclet_core)
