@@ -51,6 +51,10 @@ endforeach()
 file(TOUCH ${CMAKE_CURRENT_BINARY_DIR}/peclet/core/py.typed)
 target_include_directories(mpi_bindings PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 target_link_libraries(mpi_bindings PRIVATE MPI::MPI_CXX)
+# `peclet.core.mpi.build_toolchain`: the byte gate (state_hash.py) compares hashes only between builds
+# of one toolchain (compiler, version, build type) and SKIPS (77) against a reference recorded elsewhere.
+target_compile_definitions(mpi_bindings PRIVATE
+  "PECLET_CORE_BUILD_TOOLCHAIN=\"${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} ${CMAKE_BUILD_TYPE} ${CMAKE_SYSTEM_PROCESSOR}\"")
 # geom_bindings: host-only analytic-SDF scene authoring + rigid-body mass properties. No MPI, no
 # Kokkos -- preprocessing tooling. -> peclet.core.geom (NB_MODULE(geom, ...)).
 nanobind_add_module(geom_bindings NB_STATIC geom_bindings.cpp)
@@ -106,7 +110,9 @@ if(PECLET_CORE_PYTHON_TESTS)
   add_test(NAME python_state_hash
            COMMAND "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/state_hash.py"
                    --check "${CMAKE_CURRENT_SOURCE_DIR}/state_hash_reference.json")
-  set_tests_properties(python_state_hash PROPERTIES LABELS "python"
+  # The reference is toolchain-specific (its `toolchain` key): another compiler / version / build
+  # type exits 77 and ctest reports the gate SKIPPED (CI), never passed.
+  set_tests_properties(python_state_hash PROPERTIES LABELS "python" SKIP_RETURN_CODE 77
     ENVIRONMENT "${_py_env};OMP_NUM_THREADS=1")
   if(Kokkos_FOUND)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../tests/python tests_python)

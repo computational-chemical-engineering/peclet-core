@@ -153,6 +153,14 @@ def run_mpi(out, comm):
 RUNNERS = {"geom": run_geom, "mpi": run_mpi}
 
 
+def toolchain():
+    """The modules' compiler / version / build type (`peclet.core.mpi.build_toolchain`). Hashes are
+    comparable only between builds of one toolchain (FMA contraction, optimisation level), so a
+    reference recorded elsewhere is SKIPPED, not failed."""
+    from peclet.core import mpi as core_mpi
+    return getattr(core_mpi, "build_toolchain", "unknown")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--modules", default="geom,mpi", help="comma-separated subset of geom,mpi")
@@ -185,6 +193,12 @@ def main():
     rc = 0
     if args.check:
         ref = json.load(open(args.check))
+        want = ref.pop("toolchain", None)
+        have = toolchain()
+        if want is not None and want != have:
+            print(f"state_hash: reference recorded with toolchain '{want}', this build is '{have}' — "
+                  "not comparable; SKIPPED (exit 77). Re-record with --save on this toolchain to gate it.")
+            return 77
         # A recording may merge several rank counts; compare only the keys this run can produce
         # (no `.npN` suffix, or the suffix of the current communicator size).
         size = comm.size if comm is not None else 1
@@ -200,6 +214,7 @@ def main():
                 rc = 1
         print("state_hash: " + ("IDENTICAL" if rc == 0 else "DIFFERENCES FOUND"))
     if args.save:
+        out["toolchain"] = toolchain()
         with open(args.save, "w") as f:
             json.dump(out, f, indent=1, sort_keys=True)
     return rc
