@@ -4,18 +4,17 @@ name: CI
 # reported by ctest as "Not Run (skipped)" — never green by early-return. Three configurations:
 #
 #   cpp           header-only core + MPI, gcc/clang x Debug/Release, WITH the morton sibling (so the
-#                 host AMR/octree tests run; before 2026-09 CI never provided morton and all of them
-#                 were no-op passes). Serial + MPI np=1,2,4.
+#                 morton_indexer test runs; before 2026-09 CI never provided morton). Serial + MPI
+#                 np=1,2,4.
 #   kokkos-openmp the portable Kokkos path (OpenMP + Serial host backend, Kokkos 5.1.1 cached) —
-#                 device halo, device AMR, distributed AMR — plus the Python modules
-#                 (peclet.core.{mpi,geom,amr}) with their three test scripts as ctests.
+#                 device halo, device geometry, the face-CSR solver layer — plus the Python modules
+#                 (peclet.core.{mpi,geom}) with their test scripts as ctests.
 #   no-mpi        PECLET_CORE_ENABLE_MPI=OFF: the single-rank mpi_stub halo layer.
 #
 # What is NOT run here, and why (nothing is hidden — `ctest -N` lists it all):
 #   * label np8   the 8-rank instances: hosted runners have 4 cores and the oversubscribed np=8
 #                 halo tests hung there (CLAUDE.md, NBX tag race history). np=8 is a LOCAL gate.
-#   * label bench benchmarks + measurement studies (bench_halo, bench_amr_flow, study_amr_*):
-#                 timings and tables, no correctness gate.
+#   * label bench the halo benchmark (bench_halo): timings, no correctness gate.
 #   * GPU backends (CUDA/HIP): no GPU on free runners; covered by the consumer codes' local batteries.
 #
 # Thread bounds: the hosted runner has 4 cores / 16 GB. Single-rank suites run with
@@ -149,15 +148,15 @@ jobs:
       - name: Test MPI np=1,2,4 (OMP_NUM_THREADS=1; np8 excluded, see header)
         run: OMP_NUM_THREADS=1 ctest --test-dir build -L mpi -LE "np8|bench" --timeout 1200 --output-on-failure -j1
 
-      - name: Build the Python modules (peclet.core.mpi / geom / amr)
+      - name: Build the Python modules (peclet.core.mpi / geom)
         run: |
           cmake -S core/python -B build_py -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/kokkos-install" \
             -DPython_EXECUTABLE="$(which python3)"
           cmake --build build_py -j
-          PYTHONPATH=$PWD/build_py python3 -c "import peclet.core.mpi, peclet.core.geom, peclet.core.amr; print('peclet.core import OK')"
+          PYTHONPATH=$PWD/build_py python3 -c "import peclet.core.mpi, peclet.core.geom; print('peclet.core import OK')"
 
-      - name: Test Python (test_mpi.py np=1,2,4; test_amr.py serial + np=2; ndarray interop)
+      - name: Test Python (test_mpi.py np=1,2,4; state_hash; ndarray interop)
         run: |
           ctest --test-dir build_py -N
           OMP_NUM_THREADS=1 ctest --test-dir build_py -LE np8 --timeout 1200 --output-on-failure -j1

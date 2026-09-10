@@ -1,14 +1,13 @@
-# Python packaging for peclet-core's Python surface: the Lagrangian halo (`peclet.core.mpi`), the
-# analytic-SDF geometry (`peclet.core.geom`) and the AMR octree (`peclet.core.amr`). core itself is a
-# header-only C++20 library; these are the optional nanobind modules under python/ (scikit-build-core
-# points at that subdirectory). The `version` below is THE version source: CMakeLists.txt reads it.
+# Python packaging for peclet-core's Python surface: the Lagrangian halo (`peclet.core.mpi`) and the
+# analytic-SDF geometry (`peclet.core.geom`). core itself is a header-only C++20 library; these are
+# the nanobind modules under python/ (scikit-build-core points at that subdirectory). The `version`
+# below is THE version source: CMakeLists.txt reads it. (The AMR octree, `peclet.core.amr` until
+# 2026-09-10, is the separate peclet-amr package: `peclet.amr`.)
 #
-# `pip install .` builds them via scikit-build-core. They depend on siblings that are NOT on PyPI:
-#   * peclet.core.mpi needs MPI (and mpi4py at runtime); peclet.core.geom needs nothing else;
-#   * peclet.core.amr additionally needs a Kokkos prefix on CMAKE_PREFIX_PATH and the morton sibling (../../morton)
-#     — it is skipped automatically if either is absent.
+# `pip install .` builds them via scikit-build-core:
+#   * peclet.core.mpi needs MPI (and mpi4py at runtime); peclet.core.geom needs nothing else.
 #
-#   CMAKE_PREFIX_PATH=/path/to/extern/install/host-openmp pip install .
+#   pip install .
 #
 # This mirrors the developer flow documented in python/CMakeLists.txt; nanobind is added automatically
 # as a build requirement.
@@ -20,7 +19,7 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "peclet-core"
 version = "0.6.1"
-description = "peclet.core — shared core infrastructure: Lagrangian particle halo (MPI), SDF geometry + AMR octree"
+description = "peclet.core — shared core infrastructure: Lagrangian particle halo (MPI) and analytic-SDF geometry"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -37,7 +36,7 @@ Source = "https://github.com/computational-chemical-engineering/peclet-core"
 minimum-version = "0.8"
 cmake.version = ">=3.24"
 # The Python modules live in python/ (a standalone find_package project); the SKBUILD-guarded install
-# rules there install mpi (+ amr when morton + Kokkos are present) into peclet/core/.
+# rules there install mpi + geom into peclet/core/.
 cmake.source-dir = "python"
 wheel.install-dir = "."
 # Everything shipped in the wheel is placed by the CMake install() rules (compiled modules + the

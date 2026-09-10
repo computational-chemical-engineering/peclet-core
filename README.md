@@ -13,10 +13,11 @@ Shared infrastructure for the **peclet** suite (see `../docs/` for the suite-wid
 It provides the pieces every method code (`flow`, `dem`, `voro`, …) should
 share: a common MPI **block domain decomposition**, an efficient **asynchronous ghost-layer
 exchange** (CPU + portable Kokkos GPU), **particle migration**, **dynamic load balancing**, unified
-**SDF geometry** (`peclet::core::geom`), an **AMR octree** flow subsystem (`peclet::core::amr`), and **nanobind Python
-bindings**. Header-only C++20 (the device side, compiled through Kokkos, is also C++20; only the
-`morton` dependency pins C++17 — see `../docs/STYLE.md`). Cut-cell IBM is not a standalone shared
-module: it currently lives inside the AMR flow solver (`peclet::core::amr`) and in `flow`.
+**SDF geometry** (`peclet::core::geom`), the **face-CSR solver layer** (`peclet::core::solver`) and
+**nanobind Python bindings**. Header-only C++20 (the device side, compiled through Kokkos, is also
+C++20; only the `morton` dependency pins C++17 — see `../docs/STYLE.md`). The AMR octree and the
+Navier–Stokes solver on it are the separate [peclet-amr](https://github.com/computational-chemical-engineering/peclet-amr)
+package (`peclet::amr`, `peclet.amr`) since 2026-09-10 — relocated out of this tree with its history.
 
 ## What works today
 
@@ -46,28 +47,31 @@ module: it currently lives inside the AMR flow solver (`peclet::core::amr`) and 
 - `peclet::core::halo::rebalanceByParticleCount(...)` (`particle_rebalance.hpp`) — **dynamic load balancing**
   for the Lagrangian path: re-inits the decomposition in place with the **weighted ORB**
   (`BlockDecomposer::init(numBlocks, globalSize, weights)`) and migrates. The Eulerian/AMR counterpart
-  is `peclet::core::amr::DistributedOctree::rebalance`.
+  is `peclet::amr::DistributedOctree::rebalance` (peclet-amr).
 - `peclet::core::geom` (`sdf.hpp`, `grid_sdf.hpp`, `vti_io.hpp`) — shared SDF solids: analytic primitives +
   trilinear `GridSdf` behind one `Sdf` concept, with VTI (.vti) read/write.
 - `peclet::core::vof` (`include/peclet/core/vof/`) — layer L1 of the VoF stack: container-free
   `KOKKOS_INLINE_FUNCTION` kernels (PLIC plane↔volume and normals, the height-function curvature
   cascade, the cut-cell colour-transport rules, wetting). No `Kokkos::View` and no grid indexing in
   any signature, so one copy serves every VoF container; the drivers live in `flow`.
-- `peclet::core::amr` (`include/peclet/core/amr/`) — block-local-Morton **AMR octree** flow subsystem: `peclet::core::amr::AmrFlow`
-  (collocated projection Navier–Stokes), device + distributed multigrid (`pcg.hpp`, `multigrid.hpp`,
-  `velocity_mg.hpp`, `distributed_*.hpp`), cut-cell IBM (`cut_cell.hpp`) and solution-adaptive refinement
-  (`adapt.hpp`, `indicators.hpp`). See [docs/amr_collocated_projection.md](docs/amr_collocated_projection.md).
-- **Python bindings** (`python/mpi_bindings.cpp`, `python/geom_bindings.cpp`, `python/amr_bindings.cpp`) —
+- `peclet::core::solver` (`include/peclet/core/solver/`) — mesh-agnostic linear algebra: the
+  smoothed-aggregation graph AMG (`graph_amg.hpp`, host setup; `graph_amg_device.hpp`, device apply)
+  and the **assembled face-CSR operator layer** lifted out of the AMR tree on 2026-09-10 —
+  `face_csr.hpp` (host+device row kernels), `coloring.hpp` (greedy symmetrised graph colouring),
+  `csr_operator.hpp` (the device operator, Jacobi and multicolour Gauss–Seidel sweeps),
+  `csr_bicgstab.hpp` (preconditioned BiCGStab / defect correction) and `vector_ops.hpp`. Consumed by
+  voro's mesh optimiser and by peclet-amr.
+- **Python bindings** (`python/mpi_bindings.cpp`, `python/geom_bindings.cpp`) —
   **nanobind** modules over the shared zero-copy `View`↔ndarray bridge
   (`include/peclet/core/python/ndarray_interop.hpp`). `peclet.core.mpi` exposes the host Lagrangian halo
   (`ParticleMigrator`, `ParticleHalo`: migration / ghosts / rebalance); `peclet.core.geom` the analytic-SDF
-  scene authoring + rigid-body mass properties; `peclet.core.amr` the octree (`Octree`, `DistributedOctree`)
-  and the device AMR flow. Type stubs ship beside the modules (`python/packaging/core_*.pyi`, generated with
-  `python -m nanobind.stubgen`).
+  scene authoring + rigid-body mass properties. Type stubs ship beside the modules
+  (`python/packaging/core_*.pyi`, generated with `python -m nanobind.stubgen`). `python/state_hash.py`
+  is the structural byte gate: fixed-seed runs of every entry path, SHA-256 of the final state.
 
 Validated end-to-end by distributed explicit heat-diffusion solvers (plain, and **around an SDF solid
 obstacle**) matching a serial reference cell-for-cell across ranks, and consumed by the validated
-`flow` and `dem` distributed solvers. 109 ctests in the plain host+MPI build, 164 with Kokkos (`np` 1–8), plus 7
+`flow` and `dem` distributed solvers. 53 ctests in the plain host+MPI build, 68 with Kokkos (`np` 1–8), plus 6
 Python ctests in the `python/` build.
 
 ## Build / test / benchmark
@@ -75,8 +79,8 @@ Python ctests in the `python/` build.
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
-ctest --test-dir build --output-on-failure -LE bench  # 104 ctests: serial + MPI (np=1,2,4,8); 158 with -DPECLET_CORE_ENABLE_KOKKOS=ON
-ctest --test-dir build -L bench                       # benchmarks + measurement studies (label `bench`, ~3.5 min)
+ctest --test-dir build --output-on-failure -LE bench  # 52 ctests: serial + MPI (np=1,2,4,8); 67 with -DPECLET_CORE_ENABLE_KOKKOS=ON
+ctest --test-dir build -L bench                       # the halo benchmark (label `bench`)
 
 # halo microbenchmark: weak scaling, NBX vs persistent
 mpirun -np 4 ./build/benchmarks/bench_halo 48 1 300  # cells/rank/axis, ghost, iters
@@ -84,8 +88,8 @@ mpirun -np 4 ./build/benchmarks/bench_halo 48 1 300  # cells/rank/axis, ghost, i
 
 ctest labels: `mpi` (every mpirun test), `np8` (the 8-rank instances — a local gate, excluded in CI whose
 runners have 4 cores), `bench` (benchmarks/studies, excluded by default). A test that cannot run in a
-configuration (no `morton` sibling: the AMR/octree tests) exits 77 and ctest reports it **skipped**, never
-passed. The Python modules and their tests (`test_mpi.py` np=1,2,4,8, `test_amr.py` serial + np=2, the
+configuration (no `morton` sibling: `morton_indexer`) exits 77 and ctest reports it **skipped**, never
+passed. The Python modules and their tests (`test_mpi.py` np=1,2,4,8, `state_hash.py`, the
 ndarray-interop pytest) are a second CMake project: `cmake -S python -B build_py
 -DCMAKE_PREFIX_PATH=<kokkos prefix> && cmake --build build_py -j && ctest --test-dir build_py`.
 
@@ -99,21 +103,17 @@ pinned `morton` tag. The CMake project is
 
 ## Documentation
 
-`docs/` holds the four AMR reference notes that describe the design as it ships —
-[amr_collocated_projection.md](docs/amr_collocated_projection.md) (collocated projection, `maskSolid`,
-the div-free face field), [amr_mixed_level_cut_band_plan.md](docs/amr_mixed_level_cut_band_plan.md)
-(mixed-level cut band + graded refinement), [amr_setup_parallel_plan.md](docs/amr_setup_parallel_plan.md)
-(the parallel `setSolid` builders) and [amr_anisotropic.md](docs/amr_anisotropic.md) (per-axis root
-spacing). Dated campaign records and superseded plans live in
-[docs/archive/](docs/archive/README.md). Doxygen API pages (`docs/Doxyfile`, README + `include/`) are
-published to GitHub Pages by `.github/workflows/docs.yml`.
+The AMR reference notes and campaign records moved to peclet-amr with the code (`../amr/docs/`).
+What stays here is [docs/archive/](docs/archive/README.md) (the GPU-aware-MPI recipe) and the Doxygen
+API pages (`docs/Doxyfile`, README + `include/`), published to GitHub Pages by
+`.github/workflows/docs.yml`.
 
 ## Status
 
 Complete and in production. The block decomposition, the async ghost-layer exchange (CPU + portable
 Kokkos GPU, host-staged and opt-in GPU-aware), particle migration, dynamic load balancing (weighted
-ORB + AMR/Lagrangian rebalancing), SDF geometry, the AMR octree flow subsystem (device + distributed
-multigrid, collocated projection), and the nanobind Python bindings are all shipped and tested
-(109 ctests plain, 164 with Kokkos; `np` 1–8). `flow` (distributed cut-cell IBM Navier–Stokes) and `dem`
+ORB + Lagrangian rebalancing), SDF geometry, the face-CSR solver layer, and the nanobind Python bindings
+are all shipped and tested (53 ctests plain, 68 with Kokkos; `np` 1–8). `flow` (distributed cut-cell
+IBM Navier–Stokes), `dem`
 (distributed XPBD with load rebalancing) are validated consumers. CUDA is retired; Kokkos
 (CUDA / HIP / OpenMP) is the canonical device path. Remaining work is at-scale multi-GPU tuning.

@@ -16,32 +16,31 @@ retired; Kokkos is the canonical device path.
 ```bash
 # CPU library + tests (no device dependency):
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
-ctest --test-dir build --output-on-failure -LE bench   # 104 ctests (109 with `bench`): MPI halo + particle migration + diffusion + AMR
+ctest --test-dir build --output-on-failure -LE bench   # 52 ctests (53 with `bench`): decomposition, MPI halo, particle migration, diffusion, geometry
 
 # Portable Kokkos device halo (CUDA / HIP / OpenMP) -- opt-in, find_package(Kokkos):
 export PATH=/usr/local/cuda-13.2/bin:$PATH    # if the Kokkos install targets the CUDA backend
 cmake -S . -B build_kokkos -DPECLET_CORE_ENABLE_KOKKOS=ON \
   -DCMAKE_PREFIX_PATH=../extern/install/nvidia-cuda
-cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure -LE bench  # 158 ctests (164 with `bench`): + device halo / AMR np=1,2,4,8
+cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure -LE bench  # 67 ctests (68 with `bench`): + device halo / geometry / solver, np=1,2,4,8
 mpirun -np 4 ./build/benchmarks/bench_halo 48 1 300
 
-# Python modules + their ctests (test_mpi.py np=1,2,4,8; test_amr.py serial + np=2; ndarray interop):
+# Python modules + their ctests (test_mpi.py np=1,2,4,8; state_hash; ndarray interop):
 cmake -S python -B build_rel_py -DCMAKE_PREFIX_PATH=../extern/install/host-openmp
-cmake --build build_rel_py -j && ctest --test-dir build_rel_py --output-on-failure   # 7 ctests
+cmake --build build_rel_py -j && ctest --test-dir build_rel_py --output-on-failure   # 6 ctests
 ```
 
 **ctest protocol** (suite/docs/QUALITY_PLAN.md §3.D; helpers in `cmake/PecletCoreTest.cmake`, the ONE
 place every test is registered through): a test that cannot run in a configuration — no `morton`
-sibling (`PECLET_CORE_MORTON_DIR`), so `PECLET_CORE_HAVE_MORTON` is unset — exits 77
+sibling (`PECLET_CORE_MORTON_DIR`), so `PECLET_CORE_HAVE_MORTON` is unset (`morton_indexer`) — exits 77
 (`tests/test_util.hpp kSkipExitCode`; MPI tests via `tests/test_skip_mpi.hpp`, which
 Init/Finalizes first so the launcher forwards the 77 instead of aborting with 1) and ctest reports it
 "Not Run (skipped)", never Passed. Labels: `mpi` (every mpirun test), `np8` (8-rank instances —
-a LOCAL gate; CI's 4-core runners run `-LE np8`), `bench` (benchmarks + `study_amr_*`, excluded by
-default; `study_amr_seam_march` alone is ~3 min), `python`. Thread bounds for batteries on this
+a LOCAL gate; CI's 4-core runners run `-LE np8`), `bench` (`bench_halo`, excluded by default), `python`. Thread bounds for batteries on this
 host: `OMP_NUM_THREADS=2 OMP_PROC_BIND=false`, np=8 subset last. CI (`.github/workflows/ci.yml`)
 runs host+MPI (gcc/clang × Debug/Release), Kokkos-OpenMP + Python, and no-MPI, each with the
 `morton` tag checked out as a sibling; the clang-format check (`quality.yml`, clang-format 18.1.8)
-is blocking over `include/ tests/ python/ benchmarks/` minus `include/peclet/core/amr/`.
+is blocking over `include/ tests/ python/ benchmarks/`.
 
 The Kokkos halo path is provisioned via `find_package(Kokkos CONFIG)` against a cluster module or the
 suite's local install prefix (`../tools/bootstrap_deps.sh`). The legacy native-CUDA halo was retired.
@@ -50,7 +49,7 @@ CMake identifiers: `project(peclet_core VERSION …)` with the version read from
 one version source); targets `peclet_core` / `peclet::core` (header-only) and `peclet_halo` /
 `peclet::halo` (+ MPI, or the single-rank stub); `cmake --install` exports them for
 `find_package(peclet-core CONFIG)`. Python modules: `cmake -S python -B build_rel_py -DCMAKE_PREFIX_PATH=../extern/install/host-openmp`
-(→ `peclet.core.{mpi,geom,amr}` under `build_rel_py/peclet/core/`, `PYTHONPATH=build_rel_py`); their
+(→ `peclet.core.{mpi,geom}` under `build_rel_py/peclet/core/`, `PYTHONPATH=build_rel_py`); their
 stubs are `python/packaging/core_<mod>.pyi` — regenerate with `python -m nanobind.stubgen` after
 changing a binding.
 
@@ -81,7 +80,8 @@ Header-only under `include/peclet/core/`:
   through `CutcellMG::decomposition()` (see `../flow/CLAUDE.md`).
 - `decomp/block_indexer.hpp` — local↔global indexing for an extended (inner+ghost) block.
 - `decomp/morton_indexer.hpp` — `MortonIndexer<Dim>`: Z-order (Morton) cell indexing via the `morton`
-  primitive (`morton::Morton<Dim,Bits>`), guarded by `PECLET_CORE_HAVE_MORTON`. The cache-friendly alternative
+  primitive (`morton::Morton<Dim,Bits>`), guarded by `PECLET_CORE_HAVE_MORTON` — core's only morton
+  consumer since the AMR tree left. The cache-friendly alternative
   to the x-fastest order (which stays the convention): `codeOf`/`multiIndex` map global multi-index ↔
   Z-order code, `neighborCode` steps one cell along an axis directly in Morton space. Methods carry
   morton's `MORTON_HD`, so they are device-callable under a Kokkos build (the Kokkos build defines
@@ -126,7 +126,7 @@ Header-only under `include/peclet/core/`:
   `KOKKOS_INLINE_FUNCTION`s of scalars and small local arrays — **no `Kokkos::View`, no grid
   indexing, no halo types in any signature**, which is exactly what lets ONE copy serve all three
   VoF containers (flow's structured colour field, the per-bubble block container of Part III, and
-  the future AMR path). `vof/plic.hpp` is the PLIC toolbox (SZ2000 / Lehmann–Gekle plane↔volume,
+  the AMR path). `vof/plic.hpp` is the PLIC toolbox (SZ2000 / Lehmann–Gekle plane↔volume,
   MYC and Youngs normals on a supplied 3³ array, slab flux volumes); `vof/curvature.hpp` the
   Popinet height-function cascade + the PLIC-volumetric paraboloid fallback on supplied column sums
   and points; `vof/cutcell.hpp` the cut-cell colour-transport rules (`eps_eff`, Weymouth's
@@ -148,54 +148,25 @@ Header-only under `include/peclet/core/`:
   `ot_optimizer.hpp` and the AMR package are the consumers. Gate: `tests/test_csr_solver.cpp`
   (Kokkos build) — host row kernel vs device matvec, proper colouring of an asymmetric CSR,
   smoothers, BiCGStab + defect correction.
-- `amr/` — block-local-Morton **AMR octree** flow subsystem (`peclet::core::amr`, guarded by `PECLET_CORE_HAVE_MORTON`).
-  `amr/block_octree.hpp` is the per-block octree; `amr/flow.hpp` is the canonical device `AmrFlow`
-  (collocated-projection Navier–Stokes with `maskSolid` and a div-free face field), with
-  `amr/flow_oracle.hpp` an unexposed serial host reference. Device + distributed multigrid live in
-  `amr/pcg.hpp`, `amr/multigrid.hpp`, `amr/velocity_mg.hpp`, `amr/momentum.hpp` and the
-  `amr/distributed_*.hpp` set (`distributed_octree.hpp::rebalance` is the Eulerian leaf/field load
-  balancer). Cut-cell openness is `amr/cut_cell.hpp`; solution-adaptive refinement is `amr/adapt.hpp` /
-  `amr/indicators.hpp` / `amr/refine.hpp`.
-  The immersed boundary has **two projection schemes**. The default (AUTO since 2026-08-25) is the
-  **ghost projection** — `amr/ghost_projection.hpp`, the fluid-only constraint scheme, selected
-  explicitly with `setGhostProjection(true)`; it falls back to the older aperture projection with a
-  stderr notice when the finest band is too thin for its ±2 closure reach. `(2, 2)` closure orders
-  are the only pair cleared for production.
-  On top of that sits the **mixed-level cut band** (`amr/ghost_projection_sampled.hpp`,
-  `AmrFlow::setGhostSampled` / Python `Flow.set_ghost_sampled`): it drops the uniform-finest-band
-  contract so cut cells may live at SEVERAL octree levels — closure chain entries that cross a 2:1
-  boundary become degree-2 least-squares virtual samples, and identity weights at same level keep a
-  uniform band bit-identical to the classic path. Its mesh-generator side is
-  `refine.hpp::refineToSdfGraded` / `gapFloorTarget` (Python `Octree.refine_to_sdf_graded` /
-  `refine_to_gap_floor`). **DISTRIBUTED since 2026-08-30** (rungs D0–D2): the least-squares clouds
-  are a deterministic probe set resolved through `probeSlot` (never a search over the local leaf
-  array, which would make a cloud depend on what the rank happens to own), the sampled builders
-  probe inside `prepareDistributed`'s miss-collect fixpoint, and the clouds read ghost slots like
-  any other CSR the step consumes. Acceptance: np=1 bitwise vs single-rank, np=2/4 in the ~3e-7
-  march class (`tests/test_amr_distributed_seam_mpi.cpp`, np=1,2,4,8).
-  Two knobs exist for the cloud-economy study and are INERT at their defaults — do not set them in
-  production without reading the M2a table: `PECLET_CORE_GPS_RHO` (LS radius factor, default 2.2)
-  and `PECLET_CORE_GPS_MAXN` (nearest-N candidate cap, default 0 = uncapped).
-  Read `docs/amr_mixed_level_cut_band_plan.md` before touching any of it: it holds the design (§4),
-  six decisions each with the alternative to revisit (§5), the measured phase results, and the risk
-  register — of whose three unfinished rungs the distributed sample halo is now DONE, leaving
-  sub-face closures and pocket exclusion in LS clouds.
-  Design notes (`docs/`): `amr_collocated_projection.md` (the collocated projection + `uf`
-  advection), `amr_mixed_level_cut_band_plan.md`, `amr_setup_parallel_plan.md` (the parallel
-  builders, D1′), `amr_anisotropic.md` (per-axis root spacing). The dated campaign records are in
-  `docs/archive/` behind its README index — `amr_march_perf_and_distributed_plan.md` (march
-  economics + the distributed band; its status table names the two items still open),
-  `amr_distributed_flow.md`, `amr_device_assembly_plan.md`, `amr_aperture_advection_plan.md`.
+- **`amr/` is gone (2026-09-10)** — the whole AMR tree (the block-local-Morton octree, the distributed
+  octree with leaf halos and weighted-ORB rebalancing, the collocated-projection cut-cell
+  Navier–Stokes solver, its tests, studies, docs and campaign logs) is the **`peclet-amr`** package,
+  `../amr` (`peclet::amr`, Python `peclet.amr`), relocated with its git history under
+  `suite/docs/QUALITY_PLAN.md` D6 / G.2. It depends on core + morton; core depends on nothing of it.
+  What it left behind in core is the face-CSR solver layer under `solver/` (above) and
+  `decomp/morton_indexer.hpp` as the one remaining morton consumer. Read `../amr/CLAUDE.md` for the
+  AMR design, its two projection schemes and its environment-variable table.
 - `python/` — **nanobind** Python bindings over a
   shared **zero-copy `peclet::core::View`↔ndarray bridge** (`include/peclet/core/python/ndarray_interop.hpp`).
   `python/mpi_bindings.cpp` (→ `peclet.core.mpi`) is host-only (no Kokkos): exposes `ParticleMigrator`
   (migrate / gather_ghosts / rebalance) and `ParticleHalo` (the persistent `ParticleHaloTopology`) for an
   mpi4py driver, both constructed as `(origin, extent, cells, periodic)`. `python/geom_bindings.cpp`
-  (→ `peclet.core.geom`) is the analytic-SDF scene authoring. `python/amr_bindings.cpp` (→ `peclet.core.amr`)
-  exposes `Octree` / `DistributedOctree` (`Octree(cells, *, lmax, origin, spacing | extent)` — `cells` is
-  the FINEST grid, as in flow; the root brick is `cells / 2**lmax`) and the device `AmrFlow` (needs the
-  `morton` sibling + a Kokkos backend). All are built via `include(SuiteNanobind)` +
-  `suite_require_nanobind()` from `../cmake/SuiteNanobind.cmake` (suite-root).
+  (→ `peclet.core.geom`) is the analytic-SDF scene authoring. (`peclet.core.amr` is `peclet.amr` in
+  the peclet-amr package since 2026-09-10.) Both are built via `include(SuiteNanobind)` +
+  `suite_require_nanobind()` from `../cmake/SuiteNanobind.cmake` (suite-root). `python/state_hash.py`
+  is the structural byte gate (QUALITY_PLAN §3.G): fixed-seed runs of every `peclet.core.{geom,mpi}`
+  entry path, SHA-256 of the final state, `--check`ed against `python/state_hash_reference.json` by
+  the `python_state_hash` ctest (np=1) and by hand under `mpirun -np 2`.
 
 ## Gotchas
 

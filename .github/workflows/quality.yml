@@ -3,9 +3,8 @@ name: Quality
 # Code-quality gates. Python hard-fails on critical errors only. The C++ clang-format check is
 # BLOCKING (since 2026-09-08, suite/docs/QUALITY_PLAN.md §3.D.7): clang-format is pinned to 18.1.8
 # (the suite venv's version, installed from PyPI as morton does — the apt package drifts) and the tree
-# is formatted against the suite-wide 62-line .clang-format. include/peclet/core/amr/ is EXCLUDED
-# until the AMR branch under active development lands (a reformat there would conflict with it);
-# drop the grep -v below at that point.
+# is formatted against the suite-wide 62-line .clang-format over the whole tree (the AMR subtree that
+# was excluded until 2026-09-10 is the peclet-amr package now).
 
 on:
   push:
@@ -29,7 +28,7 @@ jobs:
             --exclude ".venv,venv,build,build_*,__pycache__,_deps,extern,legacy,notebooks"
 
   cpp-format:
-    name: clang-format 18.1.8 (blocking; amr/ excluded until the AMR branch lands)
+    name: clang-format 18.1.8 (blocking)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,8 +38,7 @@ jobs:
       - run: pip install "clang-format==18.1.8"
       - name: clang-format dry-run (uses the repo .clang-format)
         run: |
-          files=$(git ls-files 'include/*.hpp' 'tests/*.hpp' 'tests/*.cpp' 'benchmarks/*.cpp' 'python/*.cpp' \
-                  | grep -v '^include/peclet/core/amr/')
+          files=$(git ls-files 'include/*.hpp' 'tests/*.hpp' 'tests/*.cpp' 'benchmarks/*.cpp' 'python/*.cpp')
           [ -z "$files" ] && { echo "no C++ sources"; exit 0; }
           clang-format --version
           echo "$files" | wc -l

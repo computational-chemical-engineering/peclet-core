@@ -2,9 +2,9 @@ name: Release
 
 # Publish peclet-core to PyPI on a version tag via Trusted Publishing (OIDC) — configure the publisher
 # on PyPI first; no API token secret needed. SDIST ONLY: peclet-core's Python surface is the MPI particle
-# halo (peclet.core.mpi) + the Kokkos AMR octree (peclet.core.amr); both link MPI/Kokkos, whose ABI/arch
-# make a portable binary wheel impossible. Consumers `pip install peclet-core` and build against their
-# site MPI (+ optional Kokkos prefix), or use the suite containers. See ../docs/DEPLOYMENT.md.
+# halo (peclet.core.mpi), which links MPI, whose ABI makes a portable binary wheel impossible (the
+# Kokkos AMR octree is the peclet-amr package since 2026-09-10). Consumers `pip install peclet-core`
+# and build against their site MPI, or use the suite containers. See ../docs/RELEASE.md.
 
 on:
   push:

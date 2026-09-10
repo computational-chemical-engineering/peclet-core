@@ -29,9 +29,10 @@ target_include_directories(peclet_core INTERFACE
 target_compile_features(peclet_core INTERFACE cxx_std_20)
 
 # Optional: the morton spatial-index primitive (github.com/computational-chemical-engineering/
-# peclet-morton, header-only). Auto-detected as the sibling checkout ../morton; point
-# PECLET_CORE_MORTON_DIR elsewhere to override (or at a non-existent path to build WITHOUT it — the
-# guarded tests then report "Not Run (skipped)", never Passed).
+# peclet-morton, header-only), used by decomp/morton_indexer.hpp only (the AMR octree that also
+# needed it is the peclet-amr package since 2026-09-10). Auto-detected as the sibling checkout
+# ../morton; point PECLET_CORE_MORTON_DIR elsewhere to override (or at a non-existent path to build
+# WITHOUT it — the guarded test then reports "Not Run (skipped)", never Passed).
 set(PECLET_CORE_MORTON_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../morton" CACHE PATH
     "morton checkout (headers under <dir>/include/morton); unset/absent = build without morton")
 set(_morton_inc "${PECLET_CORE_MORTON_DIR}/include")
@@ -40,7 +41,7 @@ if(EXISTS "${_morton_inc}/morton/morton.hpp")
   target_compile_definitions(peclet_core INTERFACE PECLET_CORE_HAVE_MORTON=1)
   message(STATUS "peclet-core: morton found at ${_morton_inc}")
 else()
-  message(STATUS "peclet-core: morton NOT found at ${_morton_inc} — the AMR/octree tests will be "
+  message(STATUS "peclet-core: morton NOT found at ${_morton_inc} — the morton_indexer test will be "
                  "reported as skipped (set PECLET_CORE_MORTON_DIR)")
 endif()
 
