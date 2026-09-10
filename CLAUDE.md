@@ -135,6 +135,19 @@ Header-only under `include/peclet/core/`:
   `VofCurvature`, `VofBlockSet`) stay in `flow`, and flow's `src/vof/{plic,curvature,cutcell,
   wetting}.hpp` are thin includes + a using-directive so every `peclet::flow::vof::` spelling still
   resolves. Gate on the move: every flow VoF ctest bit-identical, both backends.
+- `solver/` — mesh-agnostic linear-algebra shared by the method codes. `solver/graph_amg.hpp` (+
+  `graph_amg_device.hpp`) is the smoothed-aggregation graph AMG (host setup, device apply).
+  `solver/face_csr.hpp`, `coloring.hpp`, `csr_operator.hpp`, `csr_bicgstab.hpp` and `vector_ops.hpp`
+  are the **assembled face-CSR operator layer**, lifted VERBATIM out of `amr/` on 2026-09-10
+  (QUALITY_PLAN G.2): the host+device row kernels (`FaceCsrOpT`, `FvCsrOpT`, `HostArr`), the greedy
+  symmetrised graph colouring (`Coloring`, `greedyColoring`), the device operator + smoothers
+  (`MomentumOp`, `applyMom`, `residualMom`, `jacobiMom`, `multicolorGSMom`), the preconditioned
+  BiCGStab / defect-correction solver (`MomentumSolver` — no template parameter; the AMR `Bits` was
+  vestigial) and the `axpy`/`zpby`/`negate`/`dotPlain`/`bicgPUpdate` primitives. The names keep their
+  AMR spelling on purpose (a rename is not a structural move): voro's `mesh_optimizer.hpp` /
+  `ot_optimizer.hpp` and the AMR package are the consumers. Gate: `tests/test_csr_solver.cpp`
+  (Kokkos build) — host row kernel vs device matvec, proper colouring of an asymmetric CSR,
+  smoothers, BiCGStab + defect correction.
 - `amr/` — block-local-Morton **AMR octree** flow subsystem (`peclet::core::amr`, guarded by `PECLET_CORE_HAVE_MORTON`).
   `amr/block_octree.hpp` is the per-block octree; `amr/flow.hpp` is the canonical device `AmrFlow`
   (collocated-projection Navier–Stokes with `maskSolid` and a div-free face field), with

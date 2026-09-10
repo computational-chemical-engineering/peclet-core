@@ -35,6 +35,7 @@
 #include "peclet/core/amr/fv_op.hpp"
 #include "peclet/core/amr/multigrid.hpp"
 #include "peclet/core/common/view.hpp"
+#include "peclet/core/solver/vector_ops.hpp"
 
 namespace peclet::core::amr {
 
@@ -103,21 +104,11 @@ inline void removeMeanVol(View<double> u, View<const double> invVol, View<const 
   removeMeanVolReduced(u, invVol, mask, n, {});
 }
 
-/// y += a·x
-inline void axpy(View<double> y, double a, View<const double> x, Index n) {
-  Kokkos::parallel_for("amr::pcg_axpy", n, KOKKOS_LAMBDA(const Index i) { y(i) += a * x(i); });
-}
-
-/// p = z + b·p  (CG direction update)
-inline void zpby(View<double> p, View<const double> z, double b, Index n) {
-  Kokkos::parallel_for(
-      "amr::pcg_zpby", n, KOKKOS_LAMBDA(const Index i) { p(i) = z(i) + b * p(i); });
-}
-
-/// y = −x  (negate in place)
-inline void negate(View<double> x, Index n) {
-  Kokkos::parallel_for("amr::pcg_negate", n, KOKKOS_LAMBDA(const Index i) { x(i) = -x(i); });
-}
+// axpy / zpby / negate: the shared device vector primitives (peclet/core/solver/vector_ops.hpp,
+// lifted 2026-09-10) — the same functions under their AMR spelling.
+using solver::axpy;
+using solver::negate;
+using solver::zpby;
 
 // ---------------------------------------------------------------------------
 // MG-preconditioned CG over a Multigrid, driving the system L x = rhs on its

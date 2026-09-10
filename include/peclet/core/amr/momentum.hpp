@@ -1,247 +1,50 @@
-// core — device (Kokkos) momentum operator + smoother/solver for the AMR
-// collocated flow step.
+// core — the AMR momentum solve: the Galerkin momentum multigrid (MomentumMG) over the shared
+// face-CSR solver layer.
 //
-// The cut-cell momentum operator A = (ρ/dt)I − μ∇² (+ implicit-FOU advection + the
-// ξ-polynomial Dirichlet overlay on cut cells) assembled by AmrCutCell::assembleOperator
-// as a per-cell diagonal + general face CSR, uploaded once and applied / solved entirely
-// in device kernels. This replaces the host-serial AmrCutCell::gaussSeidel that the drag
-// study found to be the bottleneck (the pressure Poisson was already on the device path).
+// The assembled operator (MomentumOp), its device kernels (apply / residual / weighted Jacobi /
+// multicolour Gauss–Seidel), the greedy graph colouring and the preconditioned BiCGStab
+// (MomentumSolver) were LIFTED verbatim to peclet/core/solver/ on 2026-09-10 (suite/docs/
+// QUALITY_PLAN.md G.2) — voro's mesh optimiser consumes them, so they are core infrastructure, not
+// AMR. This header keeps every AMR spelling resolving (the using-declarations and the
+// `MomentumSolver<Bits>` alias template below) and holds what IS octree-specific: MomentumMG,
+// whose Galerkin hierarchy is the uniformly-coarsened octree.
 //
-// A is generally NON-symmetric (the cut-cell D_rescale row scaling and the upwind
-// advection break symmetry), so the smoother is weighted Jacobi (parallel, deterministic:
-// reads only the previous iterate) and the Krylov accelerator is BiCGStab (handles
-// non-symmetric A) rather than CG. For moderate dt the reaction diagonal (ρ/dt) makes A
-// strongly diagonally dominant ⇒ Jacobi alone converges fast; BiCGStab covers the
-// large-dt / steady regime where the operator approaches the (ill-conditioned) viscous
-// Laplacian.
-//
-// Validation is by convergence + agreement with the host operator to tolerance (the GPU
-// matvec differs from host in the last bit by FMA contraction). Requires a Kokkos build +
-// the morton checkout (PECLET_CORE_HAVE_MORTON).
+// Requires a Kokkos build + the morton checkout (PECLET_CORE_HAVE_MORTON).
 #ifndef PECLET_CORE_AMR_MOMENTUM_HPP
 #define PECLET_CORE_AMR_MOMENTUM_HPP
 
 #ifdef PECLET_CORE_HAVE_MORTON
 
-#include <cmath>
-#include <functional>
+#include <cstddef>
 #include <map>
 #include <vector>
 
 #include "peclet/core/amr/block_octree.hpp"
 #include "peclet/core/amr/face_csr.hpp"   // shared host+device assembled-operator row kernels
 #include "peclet/core/amr/multigrid.hpp"  // restrictField / prolongAdd transfer kernels
-#include "peclet/core/amr/pcg.hpp"  // dotPlain-style primitives: axpy, zpby, negate
 #include "peclet/core/common/view.hpp"
+#include "peclet/core/solver/coloring.hpp"
+#include "peclet/core/solver/csr_bicgstab.hpp"
+#include "peclet/core/solver/csr_operator.hpp"
+#include "peclet/core/solver/vector_ops.hpp"
 
 namespace peclet::core::amr {
 
-/// Assembled momentum operator on the device: (A u)_i = diag_i u_i + Σ coef·u[nbr], with an
-/// optional implicit-FOU advection part (rebuilt each step from the lagged velocity): a
-/// per-cell outflow diagonal `advDiag` + per-face inflow coefficients over a second
-/// (face-geometry) CSR. hasAdv=false ⇒ the pure cut-cell operator, bit-exact unchanged.
-struct MomentumOp {
-  View<double> diag;      ///< size n
-  View<Index> faceStart;  ///< CSR row offsets, size n+1
-  View<Index> faceNbr;    ///< neighbour leaf per off-diagonal, size nnz
-  View<double> faceCoef;  ///< off-diagonal coefficient, size nnz
-  Index n = 0;
-  // Optional implicit-FOU advection (over the face-geometry CSR):
-  bool hasAdv = false;
-  View<double> advDiag;  ///< per-cell outflow (diagonal) advection weight, size n
-  View<Index> advStart;  ///< face-geom CSR row offsets, size n+1
-  View<Index> advNbr;    ///< face-geom neighbour per face, size nFaces
-  View<double> advCoef;  ///< per-face inflow advection coefficient (0 on outflow/solid faces)
-};
+using solver::applyMom;
+using solver::bicgPUpdate;
+using solver::Coloring;
+using solver::dotPlain;
+using solver::greedyColoring;
+using solver::jacobiMom;
+using solver::MomentumOp;
+using solver::momView;
+using solver::multicolorGSMom;
+using solver::residualMom;
 
-/// View the assembled momentum operator through the shared, backend-agnostic FaceCsrOpT, so the
-/// device kernels and the host serial solver (cut_cell.hpp) run the *same* row arithmetic
-/// (face_csr.hpp) and cannot drift. Non-const Views convert to their const accessor form
-/// implicitly; the advection arrays are empty (and untouched) when hasAdv is false.
-inline FaceCsrOpT<View<const double>, View<const Index>> momView(const MomentumOp& op) {
-  FaceCsrOpT<View<const double>, View<const Index>> v;
-  v.n = op.n;
-  v.diag = op.diag;
-  v.coef = op.faceCoef;
-  v.start = op.faceStart;
-  v.nbr = op.faceNbr;
-  v.hasAdv = op.hasAdv;
-  v.advDiag = op.advDiag;
-  v.advCoef = op.advCoef;
-  v.advStart = op.advStart;
-  v.advNbr = op.advNbr;
-  return v;
-}
-
-/// Au = A u (cut-cell operator + optional implicit-FOU advection).
-inline void applyMom(const MomentumOp& op, View<const double> u, View<double> Au) {
-  const auto A = momView(op);
-  Kokkos::parallel_for(
-      "amr::mom_apply", op.n, KOKKOS_LAMBDA(const Index i) { Au(i) = faceCsrApplyRow(A, i, u); });
-}
-
-/// res = b − A u.
-inline void residualMom(const MomentumOp& op, View<const double> u, View<const double> b,
-                        View<double> res) {
-  const auto A = momView(op);
-  Kokkos::parallel_for(
-      "amr::mom_residual", op.n,
-      KOKKOS_LAMBDA(const Index i) { res(i) = b(i) - faceCsrApplyRow(A, i, u); });
-}
-
-/// One weighted-Jacobi sweep of A u = b (in place). `tmp` is scratch (size n). Pass 1
-/// reads only the previous iterate, pass 2 updates ⇒ order-independent / deterministic.
-inline void jacobiMom(const MomentumOp& op, View<double> u, View<const double> b, View<double> tmp,
-                      double omega) {
-  const auto A = momView(op);
-  Kokkos::parallel_for(
-      "amr::mom_jacobi_compute", op.n, KOKKOS_LAMBDA(const Index i) {
-        double off, d;
-        faceCsrOffDiag(A, i, u, off, d);
-        tmp(i) = (d != 0.0) ? (b(i) - off) / d : u(i);
-      });
-  Kokkos::parallel_for(
-      "amr::mom_jacobi_update", op.n,
-      KOKKOS_LAMBDA(const Index i) { u(i) = (1.0 - omega) * u(i) + omega * tmp(i); });
-}
-
-/// Plain (unweighted) dot product.
-inline double dotPlain(View<const double> a, View<const double> b, Index n) {
-  double s = 0.0;
-  Kokkos::parallel_reduce(
-      "amr::mom_dot", n, KOKKOS_LAMBDA(const Index i, double& acc) { acc += a(i) * b(i); }, s);
-  return s;
-}
-
-/// BiCGStab direction update: p = r + β(p − ω v). (Free function — an extended
-/// __host__ __device__ lambda may not live in a private/protected member function.)
-inline void bicgPUpdate(View<double> p, View<const double> r, View<const double> v, double beta,
-                        double omega, Index n) {
-  Kokkos::parallel_for(
-      "amr::mom_pupdate", n,
-      KOKKOS_LAMBDA(const Index i) { p(i) = r(i) + beta * (p(i) - omega * v(i)); });
-}
-
-// ===========================================================================
-// Multicolour Gauss–Seidel smoother + graph colouring (the RB-GS mirror of flow's
-// ibmRbgsStencilColor on the AMR). On a 2:1-graded octree (or a Voronoi-cell mesh) the
-// face-adjacency graph needs a general greedy colouring (~6–8 colours); a colour is a set of
-// cells with no shared face, so all of one colour update in parallel reading the already-updated
-// other colours — a true GS sweep, deterministic (fixed cell order ⇒ fixed colouring). GS smooths
-// ~2× better than damped Jacobi (and is the strong fine smoother that "owns the cut band" the
-// rediscretized staircase velocity-MG excludes from its coarse grid). Mesh-agnostic: operates on a
-// face CSR + the assembled operator, no octree types.
-// ===========================================================================
-
-/// A graph colouring of a face CSR: cells grouped by colour. `hStart` (host, size nColors+1) slices
-/// `idx` (device, cells in colour order). Rebuilt when the connectivity changes (adapt / re-tess).
-struct Coloring {
-  std::vector<Index> hStart;
-  View<Index> idx;
-  int nColors = 1;
-};
-
-/// Greedy colouring of the face CSR (`start`/`nbr`, host): each cell gets the smallest colour not
-/// used by any face neighbour, so cells of one colour share no edge (race-free parallel GS sweep).
-/// Deterministic from the natural cell order.
-///
-/// The adjacency is **symmetrised** first (undirected: i conflicts with j if i∈nbr(j) OR j∈nbr(i)).
-/// The assembled cut-cell operator's CSR can be structurally *asymmetric* — the ξ-polynomial
-/// Dirichlet overlay adds extrapolation entries a cut cell references but its target doesn't
-/// reference back — and colouring only the outgoing edges would then leave two mutually-adjacent
-/// cells the same colour, a data race that makes the GS sweep a non-deterministic (inconsistent)
-/// operator and silently breaks the BiCGStab it preconditions (false convergence to NaN at scale).
-/// Symmetrising is the correctness guard; it costs one O(nnz) host pass at build/adapt time.
-inline Coloring greedyColoring(const std::vector<Index>& start, const std::vector<Index>& nbr,
-                               Index n) {
-  // Build the symmetric (undirected) adjacency in CSR form.
-  std::vector<Index> deg(static_cast<std::size_t>(n) + 1, 0);
-  for (Index i = 0; i < n; ++i)
-    for (Index k = start[static_cast<std::size_t>(i)]; k < start[static_cast<std::size_t>(i) + 1];
-         ++k) {
-      ++deg[static_cast<std::size_t>(i) + 1];
-      ++deg[static_cast<std::size_t>(nbr[static_cast<std::size_t>(k)]) + 1];
-    }
-  for (Index i = 0; i < n; ++i)
-    deg[static_cast<std::size_t>(i) + 1] += deg[static_cast<std::size_t>(i)];
-  std::vector<Index> aStart(deg);  // copy of the offsets
-  std::vector<Index> aNbr(static_cast<std::size_t>(deg[static_cast<std::size_t>(n)]));
-  std::vector<Index> acur(deg.begin(), deg.end() - 1);
-  for (Index i = 0; i < n; ++i)
-    for (Index k = start[static_cast<std::size_t>(i)]; k < start[static_cast<std::size_t>(i) + 1];
-         ++k) {
-      const Index j = nbr[static_cast<std::size_t>(k)];
-      aNbr[static_cast<std::size_t>(acur[static_cast<std::size_t>(i)]++)] = j;
-      aNbr[static_cast<std::size_t>(acur[static_cast<std::size_t>(j)]++)] = i;
-    }
-  std::vector<int> color(static_cast<std::size_t>(n), -1);
-  std::vector<int> stamp;  // stamp[c]==i ⇒ colour c forbidden for cell i (avoids per-cell clears)
-  int nColors = 1;
-  for (Index i = 0; i < n; ++i) {
-    for (Index k = aStart[static_cast<std::size_t>(i)]; k < aStart[static_cast<std::size_t>(i) + 1];
-         ++k) {
-      const int nc = color[static_cast<std::size_t>(aNbr[static_cast<std::size_t>(k)])];
-      if (nc >= 0) {
-        if (static_cast<std::size_t>(nc) >= stamp.size())
-          stamp.resize(static_cast<std::size_t>(nc) + 1, -1);
-        stamp[static_cast<std::size_t>(nc)] = static_cast<int>(i);
-      }
-    }
-    int c = 0;
-    while (c < static_cast<int>(stamp.size()) &&
-           stamp[static_cast<std::size_t>(c)] == static_cast<int>(i))
-      ++c;
-    color[static_cast<std::size_t>(i)] = c;
-    if (c + 1 > nColors)
-      nColors = c + 1;
-  }
-  Coloring col;
-  col.nColors = nColors;
-  col.hStart.assign(static_cast<std::size_t>(nColors) + 1, 0);
-  for (Index i = 0; i < n; ++i)
-    ++col.hStart[static_cast<std::size_t>(color[static_cast<std::size_t>(i)]) + 1];
-  for (int c = 0; c < nColors; ++c)
-    col.hStart[static_cast<std::size_t>(c) + 1] += col.hStart[static_cast<std::size_t>(c)];
-  std::vector<Index> idx(static_cast<std::size_t>(n));
-  std::vector<Index> cur(col.hStart.begin(), col.hStart.end() - 1);
-  for (Index i = 0; i < n; ++i) {
-    const int c = color[static_cast<std::size_t>(i)];
-    idx[static_cast<std::size_t>(cur[static_cast<std::size_t>(c)]++)] = i;
-  }
-  col.idx = toDevice(idx, "gs_coloring");
-  return col;
-}
-
-/// One **symmetric** multicolour Gauss–Seidel sweep of A u = b in place (momentum operator: diag +
-/// face CSR + optional implicit-FOU advection): a forward pass over colours 0…C-1 followed by a
-/// reverse pass C-1…0. Each colour is a parallel_for over its cells doing the GS point update
-/// reading the current (already-updated) neighbours; cells of one colour share no edge ⇒ race-free.
-///
-/// The forward+reverse pairing makes the smoother **symmetric**, which matters when the MG V-cycle
-/// is used as a *preconditioner* for BiCGStab (the momentum path): a forward-only GS V-cycle is a
-/// non-symmetric, non-normal operator that breaks BiCGStab's bi-orthogonal recurrence on the larger
-/// non-symmetric 64³ system (false convergence to NaN), whereas the symmetric (SGS) V-cycle keeps
-/// it robust — the textbook remedy, and the behaviour flow gets from its RB-GS / MG-as-solver path.
-inline void multicolorGSMom(const MomentumOp& op, View<double> u, View<const double> b,
-                            const Coloring& col, double omega) {
-  const auto A = momView(op);
-  auto idx = col.idx;
-  auto colorPass = [&](int c) {
-    const Index a0 = col.hStart[static_cast<std::size_t>(c)];
-    const Index a1 = col.hStart[static_cast<std::size_t>(c) + 1];
-    Kokkos::parallel_for(
-        "amr::gs_mom", Kokkos::RangePolicy<ExecSpace>(a0, a1), KOKKOS_LAMBDA(const Index k) {
-          const Index i = idx(k);
-          double off, d;
-          faceCsrOffDiag(A, i, u, off, d);
-          u(i) = faceCsrPointUpdate(b(i), off, d, u(i), omega);
-        });
-  };
-  for (int c = 0; c < col.nColors; ++c)
-    colorPass(c);  // forward
-  for (int c = col.nColors - 2; c >= 0; --c)
-    colorPass(c);  // reverse (last colour not repeated)
-}
+/// The BiCGStab solver never touched the octree: its `Bits` parameter was vestigial and is gone in
+/// core. Kept here as an alias template so `MomentumSolver<Bits>` keeps compiling.
+template <unsigned Bits = 21u>
+using MomentumSolver = solver::MomentumSolver;
 
 // ===========================================================================
 // MomentumMG — Galerkin geometric multigrid for the momentum operator.
@@ -431,222 +234,6 @@ class MomentumMG {
   std::vector<Octree> octs_;
   std::vector<Level> levels_;
   bool useGS_ = false;  // multicolour Gauss–Seidel smoother (opt-in; default weighted Jacobi)
-};
-
-// ---------------------------------------------------------------------------
-// Jacobi-preconditioned BiCGStab for the (non-symmetric) momentum operator. Reuses the
-// device matvec + Kokkos reductions; the preconditioner is `jacPre` damped-Jacobi sweeps
-// of A (diagonal-dominant ⇒ a cheap, effective smoother-preconditioner). Robust where
-// plain Jacobi stalls (large dt / weak reaction term).
-// ---------------------------------------------------------------------------
-template <unsigned Bits = 21u>
-class MomentumSolver {
- public:
-  void setJacobi(int preSweeps, double omega) {
-    jacPre_ = preSweeps;
-    omega_ = omega;
-  }
-
-  /// Distributed solve (docs/amr_distributed_flow.md, rung 2): `refresh` re-fills the ghost tail
-  /// [op.n, nExt) of a vector from its owners (LeafHaloExchange::exchange) and is called before
-  /// EVERY read of a vector's neighbour entries — the initial residual, each preconditioner
-  /// Jacobi sweep, each matvec of a preconditioned direction. `dotReduce` folds a local dot
-  /// into the global one (an MPI_Allreduce lambda — kept as a callable so this header stays
-  /// MPI-free; local rows only, ghosts are never summed). Scratch vectors are allocated at
-  /// nExt so they can carry ghost tails. Jacobi preconditioning reads only the previous
-  /// iterate, so the distributed iterate sequence matches the single-rank one bit-for-bit up
-  /// to the dots' reduction order. Unset (default): the single-rank behaviour, bit-identical.
-  void setDistributed(std::function<void(View<double>)> refresh,
-                      std::function<double(double)> dotReduce, Index nExt) {
-    haloFn_ = std::move(refresh);
-    dotReduce_ = std::move(dotReduce);
-    nExt_ = nExt;
-  }
-
-  /// Set a generic preconditioner `z = M⁻¹ r` (a host callable that launches device kernels) — the
-  /// multigrid V-cycle gives the smooth-mode coverage Jacobi lacks, so the momentum iteration count
-  /// stops growing with N. Decoupled from the MG type (Galerkin MomentumMG or rediscretized
-  /// VelocityMG) via std::function, so the two coarse-operator strategies are interchangeable
-  /// (and the solver carries no MG type). Pass an empty function to revert to damped-Jacobi. The
-  /// preconditioner never changes the converged solution (the matvec is the exact operator).
-  void setPreconditioner(std::function<void(View<const double>, View<double>)> fn) {
-    precFn_ = std::move(fn);
-  }
-
-  /// Plain weighted-Jacobi solve (the simple parallel mirror of the host GS smoother):
-  /// `sweeps` damped-Jacobi sweeps of A u = b in place. Returns the final residual L2.
-  double solveJacobi(const MomentumOp& op, View<double> u, View<const double> b, int sweeps) {
-    ensure(op.n);
-    for (int s = 0; s < sweeps; ++s) {
-      sync(u);
-      jacobiMom(op, u, b, tmp_, omega_);
-    }
-    sync(u);
-    residualMom(op, View<const double>(u), b, r_);
-    return std::sqrt(dot(View<const double>(r_), View<const double>(r_), op.n));
-  }
-
-  struct Result {
-    int iters = 0;
-    double res0 = 0.0;
-    double res = 0.0;
-  };
-
-  /// MG-preconditioned defect-correction (Richardson) solve of A u = b in place:
-  /// u ← u + M⁻¹(b − A u), M = the preconditioner (velocity-MG if set, else Jacobi sweeps).
-  /// Unlike BiCGStab it cannot break down — robust for the strongly non-symmetric momentum
-  /// operator with implicit-FOU advection, where the velocity-MG (built from the viscous base)
-  /// is only an approximate inverse. Converges when the advection is a perturbation of the
-  /// viscous+reaction operator (low–moderate cell Reynolds number). `maxIters` caps the
-  /// iterations; `tol` is relative to ||b−Au₀||.
-  Result solveDefectCorrection(const MomentumOp& op, View<double> u, View<const double> b,
-                               int maxIters = 200, double tol = 1e-8) {
-    const Index n = op.n;
-    ensure(n);
-    Result R;
-    sync(u);
-    residualMom(op, View<const double>(u), b, r_);
-    R.res0 = std::sqrt(dot(View<const double>(r_), View<const double>(r_), n));
-    if (R.res0 == 0.0)
-      return R;
-    double rnorm = R.res0;
-    int it = 0;
-    for (; it < maxIters; ++it) {
-      applyPrec(op, r_, phat_);                    // phat = M⁻¹ r
-      axpy(u, 1.0, View<const double>(phat_), n);  // u += phat
-      sync(u);
-      residualMom(op, View<const double>(u), b, r_);
-      rnorm = std::sqrt(dot(View<const double>(r_), View<const double>(r_), n));
-      if (rnorm <= tol * R.res0) {
-        ++it;
-        break;
-      }
-    }
-    R.iters = it;
-    R.res = rnorm;
-    return R;
-  }
-
-  /// Jacobi-preconditioned BiCGStab solve of A u = b in place. `maxIters` caps the outer
-  /// iterations; `tol` is relative to ||b−Au0||. Returns {iters, final residual L2}.
-  Result solveBiCGStab(const MomentumOp& op, View<double> u, View<const double> b,
-                       int maxIters = 500, double tol = 1e-10) {
-    const Index n = op.n;
-    ensure(n);
-    Result R;
-    // r = b − A u
-    sync(u);
-    residualMom(op, View<const double>(u), b, r_);
-    Kokkos::deep_copy(rhat_, r_);  // shadow residual
-    R.res0 = std::sqrt(dot(View<const double>(r_), View<const double>(r_), n));
-    if (R.res0 == 0.0)
-      return R;
-    double rho = 1, alpha = 1, omega = 1;
-    Kokkos::deep_copy(v_, 0.0);
-    Kokkos::deep_copy(p_, 0.0);
-    double rnorm = R.res0;
-    int it = 0;
-    for (; it < maxIters; ++it) {
-      double rhoNew = dot(View<const double>(rhat_), View<const double>(r_), n);
-      if (rhoNew == 0.0)
-        break;
-      double beta = (rhoNew / rho) * (alpha / omega);
-      // p = r + beta (p − omega v)
-      bicgPUpdate(p_, View<const double>(r_), View<const double>(v_), beta, omega, n);
-      applyPrec(op, p_, phat_);  // phat = M^{-1} p
-      sync(phat_);
-      applyMom(op, View<const double>(phat_), v_);
-      double rhatV = dot(View<const double>(rhat_), View<const double>(v_), n);
-      alpha = rhoNew / rhatV;
-      // s = r − alpha v
-      Kokkos::deep_copy(s_, r_);
-      axpy(s_, -alpha, View<const double>(v_), n);
-      double snorm = std::sqrt(dot(View<const double>(s_), View<const double>(s_), n));
-      if (snorm <= tol * R.res0) {
-        axpy(u, alpha, View<const double>(phat_), n);  // u += alpha phat
-        rnorm = snorm;
-        ++it;
-        break;
-      }
-      applyPrec(op, s_, shat_);  // shat = M^{-1} s
-      sync(shat_);
-      applyMom(op, View<const double>(shat_), t_);
-      double tt = dot(View<const double>(t_), View<const double>(t_), n);
-      omega = (tt != 0.0) ? dot(View<const double>(t_), View<const double>(s_), n) / tt : 0.0;
-      // u += alpha phat + omega shat
-      axpy(u, alpha, View<const double>(phat_), n);
-      axpy(u, omega, View<const double>(shat_), n);
-      // r = s − omega t
-      Kokkos::deep_copy(r_, s_);
-      axpy(r_, -omega, View<const double>(t_), n);
-      rnorm = std::sqrt(dot(View<const double>(r_), View<const double>(r_), n));
-      if (rnorm <= tol * R.res0) {
-        ++it;
-        break;
-      }
-      rho = rhoNew;
-      if (omega == 0.0)
-        break;
-    }
-    R.iters = it;
-    R.res = rnorm;
-    return R;
-  }
-
- private:
-  // z = M^{-1} v : the generic MG preconditioner if set, else `jacPre_` damped-Jacobi sweeps of
-  // A z = v starting from z = 0.
-  void applyPrec(const MomentumOp& op, View<double> v, View<double> z) {
-    if (precFn_) {
-      precFn_(View<const double>(v), z);
-      return;
-    }
-    Kokkos::deep_copy(z, 0.0);
-    if (jacPre_ <= 0) {  // no preconditioner ⇒ identity
-      Kokkos::deep_copy(z, v);
-      return;
-    }
-    for (int s = 0; s < jacPre_; ++s) {
-      if (s)
-        sync(z);  // ghosts of the previous iterate (first sweep: z = 0 everywhere already)
-      jacobiMom(op, z, View<const double>(v), tmp_, omega_);
-    }
-  }
-  /// Refresh the ghost tail of a vector before its neighbour entries are read (no-op
-  /// single-rank).
-  void sync(View<double> v) const {
-    if (haloFn_)
-      haloFn_(v);
-  }
-  /// Local dot over the owned rows, globally reduced when distributed.
-  double dot(View<const double> a, View<const double> b, Index n) const {
-    const double s = dotPlain(a, b, n);
-    return dotReduce_ ? dotReduce_(s) : s;
-  }
-  void ensure(Index n) {
-    if (nExt_ > n)
-      n = nExt_;  // scratch carries the ghost tail in distributed solves
-    if (r_.extent(0) == static_cast<std::size_t>(n))
-      return;
-    auto mk = [&](const char* l) { return View<double>(l, static_cast<std::size_t>(n)); };
-    r_ = mk("mom_r");
-    rhat_ = mk("mom_rhat");
-    p_ = mk("mom_p");
-    phat_ = mk("mom_phat");
-    v_ = mk("mom_v");
-    s_ = mk("mom_s");
-    shat_ = mk("mom_shat");
-    t_ = mk("mom_t");
-    tmp_ = mk("mom_tmp");
-  }
-
-  View<double> r_, rhat_, p_, phat_, v_, s_, shat_, t_, tmp_;
-  int jacPre_ = 2;
-  double omega_ = 0.7;
-  std::function<void(View<const double>, View<double>)> precFn_;  // generic z = M^{-1} r
-  std::function<void(View<double>)> haloFn_;   // ghost-tail refresh (unset ⇒ no-op)
-  std::function<double(double)> dotReduce_;    // global dot reduction (unset ⇒ local)
-  Index nExt_ = 0;                             // extended (local+ghost) scratch size
 };
 
 }  // namespace peclet::core::amr

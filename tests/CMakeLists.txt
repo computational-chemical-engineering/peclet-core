@@ -454,6 +454,16 @@ if(MPI_FOUND)
     target_link_libraries(test_geom_batch_device PRIVATE Kokkos::kokkos)
     peclet_core_add_test(geom_batch_device test_geom_batch_device WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # The face-CSR solver layer (peclet::core::solver: face_csr / coloring / csr_operator /
+    # csr_bicgstab / vector_ops, lifted out of the AMR tree 2026-09-10): host row kernels vs the
+    # device matvec, a proper symmetrised colouring, Jacobi / multicolour-SGS smoothing, BiCGStab
+    # and defect correction on a 7-point reaction-diffusion CSR. No MPI, no octree.
+    add_executable(test_csr_solver test_csr_solver.cpp)
+    target_include_directories(test_csr_solver PRIVATE
+      ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(test_csr_solver PRIVATE Kokkos::kokkos)
+    peclet_core_add_test(csr_solver test_csr_solver)
+
     # Device GraphAMG apply vs the host oracle (no MPI; serial + device).
     add_executable(test_graph_amg_device test_graph_amg_device.cpp)
     target_include_directories(test_graph_amg_device PRIVATE
