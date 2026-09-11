@@ -11,6 +11,21 @@ cross-cutting changes. Header-only C++20; the device side is compiled through Ko
 OpenMP) and is also C++20 — only the `morton` dependency pins C++17 (see `../docs/STYLE.md`). CUDA is
 retired; Kokkos is the canonical device path.
 
+## Settled decisions — do not reverse silently
+
+Chosen *against* the obvious or textbook alternative, on measured evidence. Full entries with
+verbatim quotes and provenance in [`../docs/decisions/core.md`](../docs/decisions/core.md); the index is
+[`../docs/DECISIONS.md`](../docs/DECISIONS.md). Reversing one takes a new recorded decision, not a
+judgement call in the moment.
+
+- **Rebalance is pure migration** — same global mesh, new owners — and must never use
+  `transferFields`.
+- **AMR PCG must mask solid AND project onto the fluid range** (mask + fluid-only mean), not just
+  one of the two.
+- **The CUDA-aware MPI device path is gated on an explicit env var**, never on the MPI query API
+  alone; auto-detection uses query plus a checksum loopback probe, never blind probing.
+- **Anisotropic coarse-grid partitioning requires `cellExtent`**, not raw cell-count `kLargest`.
+
 ## Build / test / benchmark
 
 ```bash
