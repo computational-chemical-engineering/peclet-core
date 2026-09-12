@@ -97,8 +97,22 @@ NB_MODULE(geom, m) {
       "evaluation, lattice baking, and rigid-body mass properties (mass, COM, inertia tensor, "
       "principal moments + quaternion) by implicit quadrature.";
 
-  nb::class_<PyScene>(m, "SceneBuilder")
-      .def(nb::init<>())
+  nb::class_<PyScene>(
+      m, "SceneBuilder",
+      "Authors an analytic constructive-solid-geometry (CSG) scene as two arrays: a forest of "
+      "NODES -- leaves (add_leaf), the union/intersection/difference combinators and "
+      "add_reframed copies, each addressed by the index its add_* call returns -- and a list of "
+      "INSTANCES (add_instance) that place one node's subtree in the world with a rigid-body "
+      "transform, optional linear/angular velocity and a material id. A node is a shape "
+      "DEFINITION; an instance is a PLACEMENT of one (see num_nodes vs num_instances). encode() "
+      "flattens both to the (node_ints, node_reals, inst_ints, inst_reals) arrays that "
+      "flow.set_scene, dem.add_analytic_wall and dem.add_scene_shape consume; eval()/eval_root() "
+      "evaluate the scene directly, for authoring and debugging (solvers evaluate on device from "
+      "the encoded arrays, not through this class).")
+      .def(nb::init<>(),
+           "SceneBuilder(): takes no arguments. Starts with an empty node forest and no "
+           "instances; build a tree bottom-up with add_leaf and the CSG combinators, place it "
+           "with add_instance, then encode() (or eval()/eval_root() to check it directly).")
       .def(
           "add_leaf",
           [](PyScene& s, const std::string& kind, std::vector<double> params,
@@ -126,13 +140,21 @@ NB_MODULE(geom, m) {
           [](PyScene& s, int a, int b2, std::array<double, 3> t, std::array<double, 4> q,
              double sc) { return s.b.addUnion(a, b2, makeTransform(t, q, sc)); },
           nb::arg("a"), nb::arg("b"), nb::arg("translation") = std::array<double, 3>{0, 0, 0},
-          nb::arg("rotation") = std::array<double, 4>{0, 0, 0, 1}, nb::arg("scale") = 1.0)
+          nb::arg("rotation") = std::array<double, 4>{0, 0, 0, 1}, nb::arg("scale") = 1.0,
+          "SDF min of subtrees `a` and `b` (their node indices) -- the shape occupied by either "
+          "one; returns the new combinator's node index. `translation`/`rotation` (quaternion x, "
+          "y, z, w)/`scale` transform the frame BOTH children are evaluated in, so the union can "
+          "be placed, rotated or scaled as one rigid piece without touching a or b.")
       .def(
           "add_intersection",
           [](PyScene& s, int a, int b2, std::array<double, 3> t, std::array<double, 4> q,
              double sc) { return s.b.addIntersection(a, b2, makeTransform(t, q, sc)); },
           nb::arg("a"), nb::arg("b"), nb::arg("translation") = std::array<double, 3>{0, 0, 0},
-          nb::arg("rotation") = std::array<double, 4>{0, 0, 0, 1}, nb::arg("scale") = 1.0)
+          nb::arg("rotation") = std::array<double, 4>{0, 0, 0, 1}, nb::arg("scale") = 1.0,
+          "SDF max of subtrees `a` and `b` (their node indices) -- the shape occupied by both; "
+          "returns the new combinator's node index. `translation`/`rotation` (quaternion x, y, "
+          "z, w)/`scale` transform the frame both children are evaluated in, exactly as in "
+          "add_union.")
       .def(
           "add_difference",
           [](PyScene& s, int a, int b2, std::array<double, 3> t, std::array<double, 4> q,
@@ -317,6 +339,19 @@ NB_MODULE(geom, m) {
           "p_input = com + R p_body) and quat (x,y,z,w). Sign-exact bracketing means bound-only "
           "leaves (ellipsoid, superquadric, CSG) carry NO systematic bias; measured ~4e-6 relative "
           "at n=32 (ctest geom_body).")
-      .def("num_nodes", [](PyScene& s) { return (int)s.b.nodes().size(); })
-      .def("num_instances", [](PyScene& s) { return (int)s.b.instances().size(); });
+      .def(
+          "num_nodes", [](PyScene& s) { return (int)s.b.nodes().size(); },
+          "Number of NODES in the shape forest -- every leaf (add_leaf), CSG combinator "
+          "(add_union/add_intersection/add_difference) and add_reframed copy adds exactly one, "
+          "whether or not it has ever been placed with add_instance. A node is a shape "
+          "DEFINITION addressed by the index its add_* call returned, not something a solver "
+          "sees directly.")
+      .def(
+          "num_instances", [](PyScene& s) { return (int)s.b.instances().size(); },
+          "Number of INSTANCES -- entries created by add_instance, i.e. shape trees actually "
+          "PLACED in the world with a transform and optional rigid-body velocity/material id. "
+          "This is what solvers iterate over. Distinct from num_nodes: one node (say a stirrer "
+          "built as a union of two leaves) can be instanced zero, one, or many times at "
+          "different places, so num_instances can be smaller, equal to, or larger than "
+          "num_nodes.");
 }
