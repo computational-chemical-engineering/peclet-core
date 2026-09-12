@@ -23,7 +23,9 @@
 //     keeps a reference to the exported View and release() drops it. The array's memory is gone
 //     from then on — after shutdown it is only ever touched by Python's own dealloc, never read.
 //   * a C++ class that keeps its own registry (dem's Simulation::releaseAll) plugs in via add_hook.
-//   * install(m) initializes Kokkos, registers ONE atexit hook per module that runs release_all()
+//   * install(m) initializes Kokkos — bounding the host thread pool by the process's real CPU
+//     budget when a cgroup quota makes it narrower than the visible machine (cpu_budget.hpp)
+//     — registers ONE atexit hook per module that runs release_all()
 //     and THEN Kokkos::finalize(), exposes it as m.finalize() for deterministic teardown
 //     (idempotent; after it, every bound object and zero-copy array of the module is dead), and
 //     publishes m.execution_space.
@@ -40,6 +42,8 @@
 #include <Kokkos_Core.hpp>
 #include <set>
 #include <vector>
+
+#include "peclet/core/common/cpu_budget.hpp"
 
 namespace peclet::core::python {
 
@@ -109,8 +113,18 @@ inline void destruct_bound_instance(T* self) noexcept {
 /// Module setup: initialize Kokkos (once per module — each module carries its own static Kokkos),
 /// register the atexit shutdown, expose `finalize()` and `execution_space`.
 inline void install(nb::module_& m) {
-  if (!Kokkos::is_initialized())
-    Kokkos::initialize();
+  if (!Kokkos::is_initialized()) {
+    // Size the host backend by the CPUs this process may USE, not the ones it can see: inside a
+    // cgroup CPU quota (Colab, Binder, Docker, Slurm) those differ, and the oversubscribed pool
+    // spin-waits itself to a standstill — >35x, silent, on a user's first run. defaultHostThreads()
+    // returns 0, and so says nothing at all, whenever OMP_NUM_THREADS / KOKKOS_NUM_THREADS is set
+    // or the budget is the whole machine, which makes this inert on an ordinary workstation.
+    // See peclet/core/common/cpu_budget.hpp and suite docs/SCALING_ISSUES.md issue 7.
+    Kokkos::InitializationSettings settings;
+    if (const int threads = defaultHostThreads(); threads > 0)
+      settings.set_num_threads(threads);
+    Kokkos::initialize(settings);
+  }
   m.def("finalize", &shutdown,
         "Release every live object and zero-copy array of this module, then Kokkos::finalize() "
         "(deterministic teardown; also run automatically at interpreter exit). Idempotent. After "

@@ -16,6 +16,14 @@ target_link_libraries(test_cut_cell_closure PRIVATE peclet_core)
 target_include_directories(test_cut_cell_closure PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 peclet_core_add_test(cut_cell_closure test_cut_cell_closure)
 
+# The CPU budget a cgroup quota imposes (peclet/core/common/cpu_budget.hpp): what every Python
+# module's Kokkos init sizes its host pool by, so a container does not oversubscribe itself into a
+# standstill. Fixture cgroup trees, host-only, no Kokkos needed.
+add_executable(test_cpu_budget test_cpu_budget.cpp)
+target_link_libraries(test_cpu_budget PRIVATE peclet_core)
+target_include_directories(test_cpu_budget PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+peclet_core_add_test(cpu_budget test_cpu_budget)
+
 # Serial tests (no MPI).
 add_executable(test_decomposition test_decomposition.cpp)
 target_link_libraries(test_decomposition PRIVATE peclet_core)
