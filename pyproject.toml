@@ -18,7 +18,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "peclet-core"
-version = "0.6.1"
+version = "1.0.0"
 description = "peclet.core — shared core infrastructure: Lagrangian particle halo (MPI) and analytic-SDF geometry"
 readme = "README.md"
 requires-python = ">=3.10"
