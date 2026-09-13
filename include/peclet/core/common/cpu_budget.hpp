@@ -148,14 +148,27 @@ inline int usableCpus() {
 
 /// The host thread count to hand a backend that has not been told one, or 0 for "say nothing".
 ///
-/// 0 whenever the user has expressed a preference (OMP_NUM_THREADS, KOKKOS_NUM_THREADS) — their
-/// choice is never overridden — and 0 when the budget is the whole machine, so that on an ordinary
+/// 0 whenever the user has expressed a preference the backend will act on itself — their choice is
+/// never overridden — and 0 when the budget is the whole machine, so that on an ordinary
 /// workstation this function changes NOTHING: same thread count, same schedule, same results. It
-/// speaks up only in the case it exists for, a quota narrower than the visible machine.
-inline int defaultHostThreads() {
-  for (const char* var : {"OMP_NUM_THREADS", "KOKKOS_NUM_THREADS"})
-    if (const char* v = std::getenv(var); v && *v)
-      return 0;
+/// speaks up only in the two cases it exists for: a quota narrower than the visible machine, and an
+/// `OMP_NUM_THREADS` that nothing else is going to read.
+///
+/// @param hostBackendReadsOmpEnv  true iff the host backend is OpenMP, whose RUNTIME reads
+///        `OMP_NUM_THREADS`. Kokkos itself reads only `KOKKOS_NUM_THREADS` (Kokkos_Core.cpp), so on
+///        the C++ threads or Serial backends — what a Windows or macOS wheel carries, since neither
+///        toolchain supplies an OpenMP Kokkos accepts — `OMP_NUM_THREADS` reaches nobody at all
+///        unless it is honoured here. Ignoring it silently would be worse than never supporting it:
+///        every peclet page tells a container user to set exactly that variable.
+inline int defaultHostThreads(bool hostBackendReadsOmpEnv) {
+  if (const char* v = std::getenv("KOKKOS_NUM_THREADS"); v && *v)
+    return 0;  // Kokkos reads this one itself, whatever the backend
+  if (const char* v = std::getenv("OMP_NUM_THREADS"); v && *v) {
+    if (hostBackendReadsOmpEnv)
+      return 0;  // the OpenMP runtime will act on it; do not second-guess the user
+    const int n = std::atoi(v);  // e.g. "4"; OpenMP's list form ("4,2") takes the outermost level
+    return n > 0 ? n : 0;
+  }
   const int usable = usableCpus();
   const int affinity = detail::affinityCpus();
   return (affinity > 0 && usable < affinity) ? usable : 0;
