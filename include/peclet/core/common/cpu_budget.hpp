@@ -154,22 +154,33 @@ inline int usableCpus() {
 /// speaks up only in the two cases it exists for: a quota narrower than the visible machine, and an
 /// `OMP_NUM_THREADS` that nothing else is going to read.
 ///
-/// @param hostBackendReadsOmpEnv  true iff the host backend is OpenMP, whose RUNTIME reads
-///        `OMP_NUM_THREADS`. Kokkos itself reads only `KOKKOS_NUM_THREADS` (Kokkos_Core.cpp), so on
-///        the C++ threads or Serial backends — what a Windows or macOS wheel carries, since neither
-///        toolchain supplies an OpenMP Kokkos accepts — `OMP_NUM_THREADS` reaches nobody at all
-///        unless it is honoured here. Ignoring it silently would be worse than never supporting it:
-///        every peclet page tells a container user to set exactly that variable.
-inline int defaultHostThreads(bool hostBackendReadsOmpEnv) {
+/// @param hostBackendSizesItself  true iff the host backend is OpenMP. Two things follow from it,
+///        and neither is true of the C++ threads or Serial backends — which is what a Windows or
+///        macOS wheel carries, since neither toolchain supplies an OpenMP that Kokkos accepts:
+///
+///        1. **It reads `OMP_NUM_THREADS`.** The OpenMP *runtime* does; Kokkos itself reads only
+///           `KOKKOS_NUM_THREADS` (Kokkos_Core.cpp). So on any other backend that variable reaches
+///           nobody at all unless it is honoured here — and every peclet page tells a container user
+///           to set exactly it.
+///        2. **Its own default is the whole machine.** `Kokkos::Threads` asks hwloc for the topology
+///           and falls back to **one thread** when hwloc is absent (Kokkos_Threads_Instance.cpp:487),
+///           which it is in every peclet wheel. Measured 2026-09-13 on 48 cores: unset, the quick
+///           start takes 4.43 s, exactly its one-thread time, against 0.64 s at 24 threads. So on
+///           those backends saying nothing is not neutral — it is a 7x cut, silently. Say the budget.
+inline int defaultHostThreads(bool hostBackendSizesItself) {
   if (const char* v = std::getenv("KOKKOS_NUM_THREADS"); v && *v)
     return 0;  // Kokkos reads this one itself, whatever the backend
   if (const char* v = std::getenv("OMP_NUM_THREADS"); v && *v) {
-    if (hostBackendReadsOmpEnv)
+    if (hostBackendSizesItself)
       return 0;  // the OpenMP runtime will act on it; do not second-guess the user
-    const int n = std::atoi(v);  // e.g. "4"; OpenMP's list form ("4,2") takes the outermost level
-    return n > 0 ? n : 0;
+    if (const int n = std::atoi(v); n > 0)
+      return n;  // e.g. "4"; OpenMP's list form ("4,2") takes the outermost level
+    // Unparseable. Fall through to the budget rather than returning 0: on a backend that does not
+    // size itself, 0 means one thread, and answering garbage with a 7x slowdown helps nobody.
   }
   const int usable = usableCpus();
+  if (!hostBackendSizesItself)
+    return usable;  // nothing else will; its own default is 1
   const int affinity = detail::affinityCpus();
   return (affinity > 0 && usable < affinity) ? usable : 0;
 }
