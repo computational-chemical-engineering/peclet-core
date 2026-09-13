@@ -101,25 +101,25 @@ int main() {
   // KOKKOS_NUM_THREADS), so we have to pass it on or the user's setting vanishes silently.
   {
     setenv("OMP_NUM_THREADS", "3", 1);
-    PECLET_CORE_CHECK_EQ(defaultHostThreads(true), 0);
-    PECLET_CORE_CHECK_EQ(defaultHostThreads(false), 3);
+    PECLET_CORE_CHECK_EQ(defaultHostThreads(/*sizesItself=*/true), 0);
+    PECLET_CORE_CHECK_EQ(defaultHostThreads(/*sizesItself=*/false), 3);
     setenv("OMP_NUM_THREADS", "", 1);                  // empty: no preference expressed
-    PECLET_CORE_CHECK_EQ(defaultHostThreads(false) >= 0, true);
-    setenv("OMP_NUM_THREADS", "not-a-number", 1);      // garbage: fall through, do not pass 0 on
-    PECLET_CORE_CHECK_EQ(defaultHostThreads(false), 0);
+    PECLET_CORE_CHECK_EQ(defaultHostThreads(/*sizesItself=*/false), usableCpus());
+    setenv("OMP_NUM_THREADS", "not-a-number", 1);      // garbage: never passed on as a count
+    PECLET_CORE_CHECK_EQ(defaultHostThreads(/*sizesItself=*/false) > 0, true);
     unsetenv("OMP_NUM_THREADS");
 
     // KOKKOS_NUM_THREADS is Kokkos' own, on every backend: stay quiet for both.
     setenv("KOKKOS_NUM_THREADS", "5", 1);
-    PECLET_CORE_CHECK_EQ(defaultHostThreads(true), 0);
-    PECLET_CORE_CHECK_EQ(defaultHostThreads(false), 0);
+    PECLET_CORE_CHECK_EQ(defaultHostThreads(/*sizesItself=*/true), 0);
+    PECLET_CORE_CHECK_EQ(defaultHostThreads(/*sizesItself=*/false), 0);
     unsetenv("KOKKOS_NUM_THREADS");
 
-    // Unset, on an unconstrained machine, it also stays quiet (usable == affinity).
-    if (detail::cgroupQuota("/sys/fs/cgroup", "/proc/self/cgroup") == 0) {
-      PECLET_CORE_CHECK_EQ(defaultHostThreads(true), 0);
-      PECLET_CORE_CHECK_EQ(defaultHostThreads(false), 0);
-    }
+    // Unset: OpenMP sizes itself from the whole machine, so stay quiet on an unconstrained one.
+    // A backend that does NOT size itself gets the budget regardless -- its own default is 1.
+    if (detail::cgroupQuota("/sys/fs/cgroup", "/proc/self/cgroup") == 0)
+      PECLET_CORE_CHECK_EQ(defaultHostThreads(/*sizesItself=*/true), 0);
+    PECLET_CORE_CHECK_EQ(defaultHostThreads(/*sizesItself=*/false), usableCpus());
   }
 
   fs::remove_all(root);

@@ -121,16 +121,17 @@ inline void install(nb::module_& m) {
     // returns 0, and so says nothing at all, whenever OMP_NUM_THREADS / KOKKOS_NUM_THREADS is set
     // or the budget is the whole machine, which makes this inert on an ordinary workstation.
     // See peclet/core/common/cpu_budget.hpp and suite docs/SCALING_ISSUES.md issue 7.
-    // Only the OpenMP backend's runtime reads OMP_NUM_THREADS; Kokkos itself reads only
-    // KOKKOS_NUM_THREADS. On the C++ threads backend a Windows or macOS wheel carries, that makes
-    // defaultHostThreads() the only thing standing between the user's OMP_NUM_THREADS and silence.
+    // Only the OpenMP backend sizes itself: its runtime reads OMP_NUM_THREADS (Kokkos reads only
+    // KOKKOS_NUM_THREADS) and its default is the whole machine. Kokkos::Threads -- what a Windows or
+    // macOS wheel carries -- does neither: without hwloc it defaults to ONE thread. So on that
+    // backend defaultHostThreads() is the difference between a multicore wheel and a 7x cut.
     Kokkos::InitializationSettings settings;
 #if defined(KOKKOS_ENABLE_OPENMP)
-    constexpr bool kHostReadsOmpEnv = std::is_same_v<Kokkos::DefaultHostExecutionSpace, Kokkos::OpenMP>;
+    constexpr bool kHostSizesItself = std::is_same_v<Kokkos::DefaultHostExecutionSpace, Kokkos::OpenMP>;
 #else
-    constexpr bool kHostReadsOmpEnv = false;
+    constexpr bool kHostSizesItself = false;
 #endif
-    if (const int threads = defaultHostThreads(kHostReadsOmpEnv); threads > 0)
+    if (const int threads = defaultHostThreads(kHostSizesItself); threads > 0)
       settings.set_num_threads(threads);
     Kokkos::initialize(settings);
   }
