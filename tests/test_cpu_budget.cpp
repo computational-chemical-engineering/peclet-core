@@ -9,7 +9,9 @@
 //  - cgroup v1's cfs pair, including -1 for "no quota";
 //  - no cgroup files at all leaves the affinity count alone;
 //  - usableCpus() on the real machine is >= 1 and never exceeds the affinity count;
-//  - defaultHostThreads() says NOTHING (0) when OMP_NUM_THREADS is set — the user's choice stands.
+//  - defaultHostThreads() says NOTHING (0) when OMP_NUM_THREADS is set AND the host backend's own
+//    runtime will read it (OpenMP) — the user's choice stands; and passes it on when nothing else
+//    will read it (the C++ threads / Serial backends a Windows or macOS wheel carries).
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -92,14 +94,32 @@ int main() {
       PECLET_CORE_CHECK(usable <= affinity);
   }
 
-  // --- 7. an explicit OMP_NUM_THREADS is never overridden ------------------------------------
+  // --- 7. an explicit OMP_NUM_THREADS is never overridden, and never dropped either ------------
+  //
+  // On the OpenMP backend the runtime reads it, so we say nothing. On the C++ threads and Serial
+  // backends -- what a Windows or macOS wheel carries -- NOTHING reads it (Kokkos itself reads only
+  // KOKKOS_NUM_THREADS), so we have to pass it on or the user's setting vanishes silently.
   {
     setenv("OMP_NUM_THREADS", "3", 1);
-    PECLET_CORE_CHECK_EQ(defaultHostThreads(), 0);
+    PECLET_CORE_CHECK_EQ(defaultHostThreads(true), 0);
+    PECLET_CORE_CHECK_EQ(defaultHostThreads(false), 3);
+    setenv("OMP_NUM_THREADS", "", 1);                  // empty: no preference expressed
+    PECLET_CORE_CHECK_EQ(defaultHostThreads(false) >= 0, true);
+    setenv("OMP_NUM_THREADS", "not-a-number", 1);      // garbage: fall through, do not pass 0 on
+    PECLET_CORE_CHECK_EQ(defaultHostThreads(false), 0);
     unsetenv("OMP_NUM_THREADS");
+
+    // KOKKOS_NUM_THREADS is Kokkos' own, on every backend: stay quiet for both.
+    setenv("KOKKOS_NUM_THREADS", "5", 1);
+    PECLET_CORE_CHECK_EQ(defaultHostThreads(true), 0);
+    PECLET_CORE_CHECK_EQ(defaultHostThreads(false), 0);
+    unsetenv("KOKKOS_NUM_THREADS");
+
     // Unset, on an unconstrained machine, it also stays quiet (usable == affinity).
-    if (detail::cgroupQuota("/sys/fs/cgroup", "/proc/self/cgroup") == 0)
-      PECLET_CORE_CHECK_EQ(defaultHostThreads(), 0);
+    if (detail::cgroupQuota("/sys/fs/cgroup", "/proc/self/cgroup") == 0) {
+      PECLET_CORE_CHECK_EQ(defaultHostThreads(true), 0);
+      PECLET_CORE_CHECK_EQ(defaultHostThreads(false), 0);
+    }
   }
 
   fs::remove_all(root);
