@@ -158,14 +158,35 @@ inline constexpr double kPvWeightWidth = 2.5;
 /// would silently discard the very columns that made the tier fire.
 inline constexpr double kPtWeightWidth = 3.5;
 
-/// Colour thresholds for "this cell is pure". A cell at 1 - 1e-12 is full for the purposes of a
-/// column-consistency test; the residue it contributes to the column sum is far below the height's
-/// own discretisation error.
-KOKKOS_INLINE_FUNCTION bool hfIsFull(double c) {
-  return c >= 1.0 - 1e-10;
+/// The FLOOR of the "this cell is pure" thresholds. A cell at 1 - 1e-12 is full for the purposes
+/// of a column-consistency test; the residue it contributes to the column sum is far below the
+/// height's own discretisation error.
+inline constexpr double kHfPureEps = 1e-10;
+
+/// Colour thresholds for "this cell is pure", at a caller-supplied tolerance.
+///
+/// **Why this is a parameter and not the constant it used to be.** The height function is the only
+/// consumer in the VoF stack that decides what a PURE cell is on its own. Every other one is told:
+/// the advector's `wispEps`, phase change's `pcEffInterfaceEps()`. When a caller runs the advector
+/// at a looser tolerance than this floor -- `enable_vof` sets `wispEps = 1e-8` -- the colour field
+/// legitimately carries bulk cells at `1 - O(1e-9)`: the advector calls them pure, so it fluxes
+/// them algebraically and never reconstructs them back onto exactly 1.0. Judging those same cells
+/// at 1e-10 makes the column walk fail to find a pure end, and the whole height-function tier
+/// collapses into the paraboloid fallback -- silently, because a fallback is not an error. That is
+/// measured: on the mode-2 droplet the HF tier fell from 790 cells to 134 (37 % -> 89 % fallback)
+/// over 2.5 periods, tracking 425 bulk cells drifting into the band between the two tolerances.
+///
+/// The residue argument is unchanged and covers the whole range a caller may ask for: a cell
+/// accepted as full at `1 - eps` contributes `eps` to the column sum, i.e. `eps` cells of height
+/// error, which at the 1e-8 the advector uses is eight orders below the height's own O(h^2) error.
+///
+/// `eps <= kHfPureEps` reproduces the pre-parameter arithmetic bit for bit, which is what the
+/// default argument on `hfColumnHeight` preserves for every caller that does not pass one.
+KOKKOS_INLINE_FUNCTION bool hfIsFull(double c, double eps) {
+  return c >= 1.0 - (eps > kHfPureEps ? eps : kHfPureEps);
 }
-KOKKOS_INLINE_FUNCTION bool hfIsEmpty(double c) {
-  return c <= 1e-10;
+KOKKOS_INLINE_FUNCTION bool hfIsEmpty(double c, double eps) {
+  return c <= (eps > kHfPureEps ? eps : kHfPureEps);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -180,6 +201,11 @@ KOKKOS_INLINE_FUNCTION bool hfIsEmpty(double c) {
 ///              that it *increases with liquid* whichever end the liquid is at.
 /// @param orient [out] +1 when the low end of the column is liquid, -1 when the high end is.
 /// @param monoTol tolerance on the monotonicity test (see below).
+/// @param pureEps tolerance of the PURITY test that finds the window ends (`hfIsFull`/`hfIsEmpty`).
+///                Pass the tolerance the COLOUR FIELD was advected at -- `WyAdvector::wispEps` --
+///                so that the cells the advector treats as pure are the cells this walk accepts as
+///                a window end. Floored at `kHfPureEps`; the default reproduces the pre-parameter
+///                arithmetic exactly.
 /// @return true iff the column is CONSISTENT.
 ///
 /// This is Popinet's **outward accumulation**, not a fixed symmetric window: starting at the centre
@@ -205,7 +231,7 @@ KOKKOS_INLINE_FUNCTION bool hfIsEmpty(double c) {
 /// normal (see the file header). An exactly balanced column (a symmetric double interface) is
 /// rejected.
 KOKKOS_INLINE_FUNCTION bool hfColumnHeight(const double* col, int nh, double& h, int& orient,
-                                           double monoTol) {
+                                           double monoTol, double pureEps = kHfPureEps) {
   h = 0.0;
   orient = 0;
   const int R = nh / 2;
@@ -224,23 +250,23 @@ KOKKOS_INLINE_FUNCTION bool hfColumnHeight(const double* col, int nh, double& h,
   int a = -1, b = -1;
   if (orient == 1) {
     for (int k = R; k >= 0; --k)
-      if (hfIsFull(col[k])) {
+      if (hfIsFull(col[k], pureEps)) {
         a = k;
         break;
       }
     for (int k = R; k < nh; ++k)
-      if (hfIsEmpty(col[k])) {
+      if (hfIsEmpty(col[k], pureEps)) {
         b = k;
         break;
       }
   } else {
     for (int k = R; k >= 0; --k)
-      if (hfIsEmpty(col[k])) {
+      if (hfIsEmpty(col[k], pureEps)) {
         a = k;
         break;
       }
     for (int k = R; k < nh; ++k)
-      if (hfIsFull(col[k])) {
+      if (hfIsFull(col[k], pureEps)) {
         b = k;
         break;
       }
