@@ -66,7 +66,8 @@ inline bool probeGpuAwareMpi() {
 #endif
 #ifdef KOKKOS_ENABLE_THREADS
   if (std::is_same_v<ExecSpace, Kokkos::Threads>)
-    return false;  // host backend, same as the two above — a wheel without a usable OpenMP gets this
+    return false;  // host backend, same as the two above — a wheel without a usable OpenMP gets
+                   // this
 #endif
   int inited = 0;
   MPI_Initialized(&inited);

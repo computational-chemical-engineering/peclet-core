@@ -122,12 +122,13 @@ inline void install(nb::module_& m) {
     // or the budget is the whole machine, which makes this inert on an ordinary workstation.
     // See peclet/core/common/cpu_budget.hpp and suite docs/SCALING_ISSUES.md issue 7.
     // Only the OpenMP backend sizes itself: its runtime reads OMP_NUM_THREADS (Kokkos reads only
-    // KOKKOS_NUM_THREADS) and its default is the whole machine. Kokkos::Threads -- what a Windows or
-    // macOS wheel carries -- does neither: without hwloc it defaults to ONE thread. So on that
+    // KOKKOS_NUM_THREADS) and its default is the whole machine. Kokkos::Threads -- what a Windows
+    // or macOS wheel carries -- does neither: without hwloc it defaults to ONE thread. So on that
     // backend defaultHostThreads() is the difference between a multicore wheel and a 7x cut.
     Kokkos::InitializationSettings settings;
 #if defined(KOKKOS_ENABLE_OPENMP)
-    constexpr bool kHostSizesItself = std::is_same_v<Kokkos::DefaultHostExecutionSpace, Kokkos::OpenMP>;
+    constexpr bool kHostSizesItself =
+        std::is_same_v<Kokkos::DefaultHostExecutionSpace, Kokkos::OpenMP>;
 #else
     constexpr bool kHostSizesItself = false;
 #endif

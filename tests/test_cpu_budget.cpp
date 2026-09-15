@@ -103,9 +103,9 @@ int main() {
     setenv("OMP_NUM_THREADS", "3", 1);
     PECLET_CORE_CHECK_EQ(defaultHostThreads(/*sizesItself=*/true), 0);
     PECLET_CORE_CHECK_EQ(defaultHostThreads(/*sizesItself=*/false), 3);
-    setenv("OMP_NUM_THREADS", "", 1);                  // empty: no preference expressed
+    setenv("OMP_NUM_THREADS", "", 1);  // empty: no preference expressed
     PECLET_CORE_CHECK_EQ(defaultHostThreads(/*sizesItself=*/false), usableCpus());
-    setenv("OMP_NUM_THREADS", "not-a-number", 1);      // garbage: never passed on as a count
+    setenv("OMP_NUM_THREADS", "not-a-number", 1);  // garbage: never passed on as a count
     PECLET_CORE_CHECK_EQ(defaultHostThreads(/*sizesItself=*/false) > 0, true);
     unsetenv("OMP_NUM_THREADS");
 

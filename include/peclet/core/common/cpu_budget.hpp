@@ -160,13 +160,15 @@ inline int usableCpus() {
 ///
 ///        1. **It reads `OMP_NUM_THREADS`.** The OpenMP *runtime* does; Kokkos itself reads only
 ///           `KOKKOS_NUM_THREADS` (Kokkos_Core.cpp). So on any other backend that variable reaches
-///           nobody at all unless it is honoured here — and every peclet page tells a container user
-///           to set exactly it.
-///        2. **Its own default is the whole machine.** `Kokkos::Threads` asks hwloc for the topology
-///           and falls back to **one thread** when hwloc is absent (Kokkos_Threads_Instance.cpp:487),
-///           which it is in every peclet wheel. Measured 2026-09-13 on 48 cores: unset, the quick
-///           start takes 4.43 s, exactly its one-thread time, against 0.64 s at 24 threads. So on
-///           those backends saying nothing is not neutral — it is a 7x cut, silently. Say the budget.
+///           nobody at all unless it is honoured here — and every peclet page tells a container
+///           user to set exactly it.
+///        2. **Its own default is the whole machine.** `Kokkos::Threads` asks hwloc for the
+///        topology
+///           and falls back to **one thread** when hwloc is absent
+///           (Kokkos_Threads_Instance.cpp:487), which it is in every peclet wheel. Measured
+///           2026-09-13 on 48 cores: unset, the quick start takes 4.43 s, exactly its one-thread
+///           time, against 0.64 s at 24 threads. So on those backends saying nothing is not neutral
+///           — it is a 7x cut, silently. Say the budget.
 inline int defaultHostThreads(bool hostBackendSizesItself) {
   if (const char* v = std::getenv("KOKKOS_NUM_THREADS"); v && *v)
     return 0;  // Kokkos reads this one itself, whatever the backend
