@@ -64,9 +64,13 @@ CMake identifiers: `project(peclet_core VERSION …)` with the version read from
 one version source); targets `peclet_core` / `peclet::core` (header-only) and `peclet_halo` /
 `peclet::halo` (+ MPI, or the single-rank stub); `cmake --install` exports them for
 `find_package(peclet-core CONFIG)`. Python modules: `cmake -S python -B build_rel_py -DCMAKE_PREFIX_PATH=../extern/install/host-openmp`
-(→ `peclet.core.{mpi,geom}` under `build_rel_py/peclet/core/`, `PYTHONPATH=build_rel_py`); their
-stubs are `python/packaging/core_<mod>.pyi` — regenerate with `python -m nanobind.stubgen` after
-changing a binding.
+(→ `peclet.halo` under `build_rel_py/peclet/halo/`, `PYTHONPATH=build_rel_py`); its stub is
+`python/packaging/_halo.pyi` — regenerate with `python -m nanobind.stubgen` after changing a
+binding. **`peclet.core.geom` left this repo on 2026-09-21** for the `peclet-geom` package
+(`../geom`, `peclet.geom`): it is host-only SDF authoring with no MPI in it, and living behind this
+repo's `find_package(MPI REQUIRED)` made it uninstallable without an MPI toolchain. The C++ headers
+`include/peclet/core/geom/` STAY here and peclet-geom vendors them at `PECLET_CORE_TAG`. See
+`../docs/CORE_BOUNDARY.md`.
 
 ## Architecture
 
@@ -116,8 +120,8 @@ Header-only under `include/peclet/core/`:
 - `halo/particle_rebalance.hpp` — `rebalanceByParticleCount(dec, mig, pos, payload, …)`: Lagrangian load
   balancing. Bins particles onto the grid, re-inits `dec` in place with the **weighted ORB** (so a
   migrator/halo holding a pointer to it sees the new partition), and migrates. Pure redistribution
-  (count/payload preserved). The dem distributed step is the consumer; also bound in `python/mpi_bindings.cpp`
-  (`peclet.core.mpi.ParticleMigrator.rebalance`).
+  (count/payload preserved). The dem distributed step is the consumer; also bound in `python/halo_bindings.cpp`
+  (`peclet.halo.ParticleMigrator.rebalance`, formerly `peclet.core.mpi.…`).
 - `halo/grid_halo.hpp` — `GridHalo<T>`: portable GPU-resident halo (Kokkos; CUDA / HIP / OpenMP
   backends). pack/unpack/self-copy run as `parallel_for` over the device `peclet::core::View<T>` field; only the
   compact halo buffers are host-staged for MPI by default (the field stays on the device), with an
@@ -173,14 +177,15 @@ Header-only under `include/peclet/core/`:
   AMR design, its two projection schemes and its environment-variable table.
 - `python/` — **nanobind** Python bindings over a
   shared **zero-copy `peclet::core::View`↔ndarray bridge** (`include/peclet/core/python/ndarray_interop.hpp`).
-  `python/mpi_bindings.cpp` (→ `peclet.core.mpi`) is host-only (no Kokkos): exposes `ParticleMigrator`
+  `python/halo_bindings.cpp` (→ `peclet.halo`) is host-only (no Kokkos): exposes `ParticleMigrator`
   (migrate / gather_ghosts / rebalance) and `ParticleHalo` (the persistent `ParticleHaloTopology`) for an
-  mpi4py driver, both constructed as `(origin, extent, cells, periodic)`. `python/geom_bindings.cpp`
-  (→ `peclet.core.geom`) is the analytic-SDF scene authoring. (`peclet.core.amr` is `peclet.amr` in
+  mpi4py driver, both constructed as `(origin, extent, cells, periodic)`. The analytic-SDF scene
+  authoring bindings moved to the **peclet-geom** package on 2026-09-21 (`peclet.geom`;
+  `../docs/CORE_BOUNDARY.md`) — the headers stay here, the bindings do not. (`peclet.core.amr` is `peclet.amr` in
   the peclet-amr package since 2026-09-10.) Both are built via `include(SuiteNanobind)` +
   `suite_require_nanobind()` from `../cmake/SuiteNanobind.cmake` (suite-root). `python/state_hash.py`
-  is the structural byte gate (QUALITY_PLAN §3.G): fixed-seed runs of every `peclet.core.{geom,mpi}`
-  entry path, SHA-256 of the final state, `--check`ed against `python/state_hash_reference.json` by
+  is the structural byte gate (QUALITY_PLAN §3.G): fixed-seed runs of every `peclet.halo`
+  entry path (geom's half moved with it to peclet-geom, byte-identical across the move), SHA-256 of the final state, `--check`ed against `python/state_hash_reference.json` by
   the `python_state_hash` ctest (np=1) and by hand under `mpirun -np 2`.
 
 ## Gotchas
