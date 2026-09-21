@@ -1,7 +1,7 @@
-# core
+# core — `peclet-halo` (+ the `peclet-core` compatibility shell)
 
-[![PyPI version](https://img.shields.io/pypi/v/peclet-core.svg)](https://pypi.org/project/peclet-core/)
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://pypi.org/project/peclet-core/)
+[![PyPI version](https://img.shields.io/pypi/v/peclet-halo.svg)](https://pypi.org/project/peclet-halo/)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://pypi.org/project/peclet-halo/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/computational-chemical-engineering/peclet-core/blob/main/LICENSE)
 [![CI](https://github.com/computational-chemical-engineering/peclet-core/actions/workflows/ci.yml/badge.svg)](https://github.com/computational-chemical-engineering/peclet-core/actions/workflows/ci.yml)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21132435.svg)](https://doi.org/10.5281/zenodo.21132435)
@@ -61,13 +61,22 @@ package (`peclet::amr`, `peclet.amr`) since 2026-09-10 — relocated out of this
   `csr_operator.hpp` (the device operator, Jacobi and multicolour Gauss–Seidel sweeps),
   `csr_bicgstab.hpp` (preconditioned BiCGStab / defect correction) and `vector_ops.hpp`. Consumed by
   voro's mesh optimiser and by peclet-amr.
-- **Python bindings** (`python/mpi_bindings.cpp`, `python/geom_bindings.cpp`) —
-  **nanobind** modules over the shared zero-copy `View`↔ndarray bridge
-  (`include/peclet/core/python/ndarray_interop.hpp`). `peclet.core.mpi` exposes the host Lagrangian halo
-  (`ParticleMigrator`, `ParticleHalo`: migration / ghosts / rebalance); `peclet.core.geom` the analytic-SDF
-  scene authoring + rigid-body mass properties. Type stubs ship beside the modules
-  (`python/packaging/core_*.pyi`, generated with `python -m nanobind.stubgen`). `python/state_hash.py`
-  is the structural byte gate: fixed-seed runs of every entry path, SHA-256 of the final state.
+- **Python bindings** (`python/halo_bindings.cpp`) — a **nanobind** module over the shared
+  zero-copy `View`↔ndarray bridge (`include/peclet/core/python/ndarray_interop.hpp`).
+  **`peclet.halo`** exposes the host Lagrangian halo (`ParticleMigrator`, `ParticleHalo`:
+  migration / ghosts / rebalance). Type stubs ship beside it (`python/packaging/_halo.pyi`,
+  generated with `python -m nanobind.stubgen`). `python/state_hash.py` is the structural byte gate:
+  fixed-seed runs of every entry path, SHA-256 of the final state.
+
+  **The scene-authoring bindings left this repository in peclet 1.2.0** for
+  [`peclet-geom`](https://pypi.org/project/peclet-geom/) (`peclet.geom`, wheels). They are
+  host-only with no MPI in them, and while they shared this distribution they inherited its
+  `find_package(MPI REQUIRED)` — so a pure-geometry API could not be installed without an MPI
+  toolchain. The C++ headers `include/peclet/core/geom/` **stay here**; peclet-geom vendors them at
+  `PECLET_CORE_TAG`. The old spellings keep working through the `peclet-core` compatibility shell
+  until 2.0.0 — `peclet.core.geom` is now `peclet.geom`, `peclet.core.mpi` is now `peclet.halo`,
+  and each pair is the same object. See
+  [docs/CORE_BOUNDARY.md](https://github.com/computational-chemical-engineering/peclet/blob/main/docs/CORE_BOUNDARY.md).
 
 Validated end-to-end by distributed explicit heat-diffusion solvers (plain, and **around an SDF solid
 obstacle**) matching a serial reference cell-for-cell across ranks, and consumed by the validated
