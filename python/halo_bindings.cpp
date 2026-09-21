@@ -243,7 +243,7 @@ class ParticleHalo {
   peclet::core::halo::ParticleHaloTopology<3> halo_;
 };
 
-NB_MODULE(mpi, m) {
+NB_MODULE(_halo, m) {
   m.attr("__doc__") = "core Lagrangian halo (block decomposition + particle migration/ghosts)";
   m.attr("build_toolchain") = PECLET_CORE_BUILD_TOOLCHAIN;  // state_hash.py compares like with like
   nb::class_<ParticleMigrator>(

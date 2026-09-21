@@ -1,0 +1,55 @@
+# peclet-core — the compatibility SHELL, pure Python, no build.
+#
+# From peclet 1.2.0 the code that used to live here is in two packages, cut at their install-time
+# requirement (suite/docs/CORE_BOUNDARY.md):
+#
+#     peclet.core.geom  ->  peclet.geom   (peclet-geom, WHEELS, numpy only)
+#     peclet.core.mpi   ->  peclet.halo   (peclet-halo, sdist, needs MPI)
+#
+# This distribution keeps `import peclet.core.{geom,mpi}` working by re-exporting them — the same
+# objects, not wrappers. It warns from 1.3.0 and is removed at 2.0.0, where the `<2` ceiling on its
+# pins makes a 2.x install fail LOUDLY at resolution instead of silently importing nothing.
+#
+# The umbrella release workflow copies this over pyproject.toml to build the shell, the same
+# pattern as packaging/pyproject-cu13.toml in the umbrella.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "peclet-core"
+version = "1.1.0"
+description = "peclet.core — compatibility shell: peclet.core.geom is now peclet.geom, peclet.core.mpi is now peclet.halo"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "E.A.J.F. Peters", email = "e.a.j.f.peters@tue.nl" }]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering",
+]
+# The `<2` ceiling is load-bearing, not caution: at 2.0.0 this shell is gone, and a 2.x environment
+# that installs peclet-core must fail at RESOLUTION with the constraint named, rather than resolve
+# and then fail at import. A pinned 1.x family keeps working forever.
+dependencies = ["peclet-geom>=1.0,<2", "peclet-halo>=1.1,<2"]
+
+[project.urls]
+Homepage = "https://github.com/computational-chemical-engineering/peclet"
+Documentation = "https://computational-chemical-engineering.github.io/peclet/"
+Source = "https://github.com/computational-chemical-engineering/peclet-core"
+
+[tool.hatch.build.targets.wheel]
+# Three files, mapped into the peclet.core package. `peclet` itself stays a PEP-420 namespace.
+[tool.hatch.build.targets.wheel.sources]
+"packaging/shell/core_init.py" = "peclet/core/__init__.py"
+"packaging/shell/core_geom.py" = "peclet/core/geom.py"
+"packaging/shell/core_mpi.py"  = "peclet/core/mpi.py"
+
+[tool.hatch.build.targets.wheel.force-include]
+"packaging/shell/core_init.py" = "peclet/core/__init__.py"
+"packaging/shell/core_geom.py" = "peclet/core/geom.py"
+"packaging/shell/core_mpi.py"  = "peclet/core/mpi.py"

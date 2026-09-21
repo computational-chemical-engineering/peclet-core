@@ -1,4 +1,4 @@
-"""Fixed-seed reference runs of every public entry path of the peclet.core Python modules, hashed.
+"""Fixed-seed reference runs of every public entry path of the peclet.core.mpi module, hashed.
 
 The structural gate of suite/docs/QUALITY_PLAN.md §3.G: a refactor that moves code verbatim must
 leave every final state BYTE-IDENTICAL. This script runs one deterministic scenario per public
@@ -14,8 +14,9 @@ run too; every per-rank array is gathered to rank 0 in
 rank order before hashing, so the hash names carry the rank count (``.np2``). Run at
 OMP_NUM_THREADS=1: the device reductions are order-dependent at more than one thread.
 
-``--modules`` selects ``mpi`` and ``geom`` (default: both). The AMR entry paths (``peclet.amr``,
-the peclet-amr package since 2026-09-10) have the same script in that repository.
+Only ``mpi`` here: the geom entry paths moved to the peclet-geom package on 2026-09-21
+(suite/docs/CORE_BOUNDARY.md) and carry the same script, with hashes byte-identical across the
+move. The AMR ones are in peclet-amr, likewise since 2026-09-10.
 """
 import argparse
 import hashlib
@@ -48,41 +49,10 @@ def gather_rows(comm, a):
 
 
 # ---------------------------------------------------------------------------------------------
-# peclet.core.geom — a CSG scene evaluated on a grid, baked, and its mass properties.
-# ---------------------------------------------------------------------------------------------
-def run_geom(out, comm):
-    from peclet.core import geom
-    if comm is not None and comm.rank != 0:
-        return
-    s = geom.SceneBuilder()
-    sph = s.add_leaf("sphere", [0.3])
-    box = s.add_leaf("box", [0.25, 0.15, 0.2], translation=[0.2, 0.1, 0.0],
-                     rotation=[0.0, 0.0, 0.3826834323650898, 0.9238795325112867])
-    tor = s.add_leaf("torus", [0.35, 0.08], translation=[-0.1, 0.0, 0.2])
-    u = s.add_union(sph, box)
-    d = s.add_difference(u, tor)
-    s.add_instance(d, translation=[0.5, 0.5, 0.5])
-    s.add_instance(sph, translation=[0.15, 0.8, 0.3], scale=0.5)
-    n = 24
-    g = (np.arange(n) + 0.5) / n
-    pts = np.stack(np.meshgrid(g, g, g, indexing="ij"), axis=-1).reshape(-1, 3)
-    pts = np.ascontiguousarray(pts, dtype=np.float64)
-    out["geom.eval"] = sha(s.eval(pts))
-    out["geom.eval_root"] = sha(s.eval_root(d, pts))
-    out["geom.eval_root_grad"] = sha(s.eval_root_grad(d, pts))
-    baked = s.bake(d, [-0.6, -0.6, -0.6], [0.05, 0.05, 0.05], [24, 24, 24])
-    out["geom.bake"] = sha(np.asarray(baked))
-    bp = s.body_properties(d, [-0.8, -0.8, -0.8], [0.8, 0.8, 0.8], n=24)
-    out["geom.body_properties"] = sha(
-        np.array([bp["volume"], bp["mass"]]), np.asarray(bp["com"]), np.asarray(bp["inertia_tensor"]),
-        np.asarray(bp["principal"]), np.asarray(bp["rotation"]), np.asarray(bp["quat"]))
-
-
-# ---------------------------------------------------------------------------------------------
 # peclet.core.mpi — ParticleMigrator migrate / gather_ghosts / rebalance and ParticleHalo.
 # ---------------------------------------------------------------------------------------------
 def run_mpi(out, comm):
-    from peclet.core import mpi as core_mpi
+    from peclet import halo as core_mpi
     size, rank = (comm.size, comm.rank) if comm is not None else (1, 0)
     tag = f".np{size}"
     origin, extent, cells = [0.0, 0.0, 0.0], [2.0, 1.0, 1.5], [8, 4, 6]
@@ -150,20 +120,20 @@ def run_mpi(out, comm):
         out["mpi.halo_reverse" + tag] = sha(*ca)
 
 
-RUNNERS = {"geom": run_geom, "mpi": run_mpi}
+RUNNERS = {"mpi": run_mpi}
 
 
 def toolchain():
     """The modules' compiler / version / build type (`peclet.core.mpi.build_toolchain`). Hashes are
     comparable only between builds of one toolchain (FMA contraction, optimisation level), so a
     reference recorded elsewhere is SKIPPED, not failed."""
-    from peclet.core import mpi as core_mpi
+    from peclet import halo as core_mpi
     return getattr(core_mpi, "build_toolchain", "unknown")
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--modules", default="geom,mpi", help="comma-separated subset of geom,mpi")
+    ap.add_argument("--modules", default="mpi", help="comma-separated subset of: mpi (geom moved to peclet-geom)")
     ap.add_argument("--save", metavar="FILE", help="write the hashes as JSON")
     ap.add_argument("--check", metavar="FILE", help="compare against a JSON recording")
     args = ap.parse_args()

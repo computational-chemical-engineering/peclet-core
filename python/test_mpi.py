@@ -9,7 +9,7 @@ import os
 import sys
 import numpy as np
 from mpi4py import MPI
-from peclet.core import mpi as core_mpi
+from peclet import halo as core_mpi
 
 comm = MPI.COMM_WORLD
 rank, size = comm.rank, comm.size
