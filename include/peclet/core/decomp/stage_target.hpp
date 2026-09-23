@@ -119,18 +119,20 @@ std::optional<SiblingMergeChoice<Dim>> shallowestLiftableMerge(const BlockDecomp
 }
 
 /// The Repartition candidate (design §11.2): a fresh proportional, unweighted, unaligned ORB of
-/// the level grid on the first np_L parent ranks, or std::nullopt when none lifts. np_L is as many
-/// ranks as the level's size justifies at `maxBlockCells` cells per rank, never more than the
-/// current rank count and never fewer than one:
-///   np_L = clamp(ceil(cells(levelGrid) / maxBlockCells), 1, cur.numBlocks())
-/// When the extent rule is on (`minExtent > 0`) np_L is further capped at
-/// prod_k max(1, floor(levelGrid[k] / (2*minExtent))) — blocks fat enough to survive the halving
-/// that follows; with `minExtent == 0` there is no cap. Then np_L, the largest power of two <=
-/// np_L, and its halvings down to 1 are tried in turn, and the first proportional ORB that lifts is
-/// returned. That guarantees ONE in-place lift below the stage, not more: a power-of-two count on
-/// an even grid keeps lifting, but np_L = 5 or 6 (the §6 heap / flat-bed fixtures of
-/// test_stage_target) lifts once and stages again at the next level. Owners are the identity on
-/// [0, n); groupOf is empty. A pure function, replicated on every rank.
+/// the level grid on the first np_L parent ranks, or std::nullopt when none lifts. np_L starts at
+/// as many ranks as the level's size justifies at `maxBlockCells` cells per rank,
+///   n = ceil(cells(levelGrid) / maxBlockCells),
+/// capped, when the extent rule is on (`minExtent > 0`), at prod_k max(1, floor(levelGrid[k] /
+/// (2*minExtent))) — blocks fat enough to survive the halving that follows (no cap at
+/// `minExtent == 0`) — and is then ROUNDED UP to a power of two and clamped to the current rank
+/// count: np_L = min(cur.numBlocks(), nextPow2(n)). Rounding up never violates the invariant (more
+/// ranks, smaller blocks), and a power-of-two block count on a grid with factors of two keeps
+/// lifting level after level instead of only once (np_L = 5 or 6 on the §6 heap / flat-bed
+/// fixtures lifted once and staged again at the next level; they now get 8). Note the round-up is
+/// applied after the extent cap, so it can exceed a cap that is not a power of two. Then np_L,
+/// the largest power of two <= np_L (when np_L is not one — a non-power-of-two rank count) and its
+/// halvings down to 1 are tried in turn, and the first proportional ORB that lifts is returned.
+/// Owners are the identity on [0, n); groupOf is empty. A pure function, replicated on every rank.
 /// Precondition: maxBlockCells > 0.
 template <int Dim, class Liftable>
 std::optional<StageTarget<Dim>> repartitionTarget(const BlockDecomposer<Dim>& cur,
@@ -144,7 +146,6 @@ std::optional<StageTarget<Dim>> repartitionTarget(const BlockDecomposer<Dim>& cu
   for (int k = 0; k < Dim; ++k)
     cells *= levelGrid[k];
   Index npL = (cells + maxBlockCells - 1) / maxBlockCells;
-  npL = npL < 1 ? 1 : (npL > np ? np : npL);
   if (minExtent > 0) {
     Index cap = 1;
     for (int k = 0; k < Dim; ++k) {
@@ -153,6 +154,11 @@ std::optional<StageTarget<Dim>> repartitionTarget(const BlockDecomposer<Dim>& cu
     }
     npL = npL < cap ? npL : cap;
   }
+  Index up = 1;  // nextPow2(npL), stopping once it reaches np (the clamp below)
+  while (up < npL && up < np)
+    up *= 2;
+  npL = up < np ? up : np;
+  npL = npL < 1 ? 1 : npL;
   Index p2 = 1;  // the largest power of two <= npL
   while (2 * p2 <= npL)
     p2 *= 2;

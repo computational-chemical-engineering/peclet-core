@@ -225,7 +225,13 @@ Header-only under `include/peclet/core/`:
   worse, silently corrupting ghost values. Two rules: **direct point-to-point tags stay below
   24576** (the suite's: 0–63, AMR 11/41/45, particle 7502/7503/7603/7604, voro 7601, flow VoF
   4096–20479) and **distinct NBX call sites use baseTags distinct modulo 128** (0, 11, 7301, 7401,
-  7402, 7411, 7501 today). Until 2026-09-05 the wire tag was `baseTag + round`, so the particle
+  7402, 7411, 7501 today). **Tags 1–10 belong to the Repartition stage** (`RedistributeTopology`:
+  `kTagBase = 1` + the per-topology `id`, the level index, in [0, 10); an out-of-range id throws).
+  Audited 2026-09-25 across `core`, `flow/src`, `amr`, `dem` and `voro`: no other direct tag lies in
+  [1, 10]. The nearest on a level's communicator is the `GridHalo` / `GridHaloTopology` default 0;
+  AMR's direct tags are 41/45/46 (its 11/12/21–24 are NBX baseTags); voro's `exchange(f, 1|3|9)`
+  second argument is a component count, not a tag. Pick new direct tags outside 0–10.
+  Until 2026-09-05 the wire tag was `baseTag + round`, so the particle
   topology's second round (7501 + 1) matched the direct forwardPositions tag 7502 — `particle_halo_np8`
   hung on GitHub's oversubscribed 2-core runners (CI red from 09-04) — and family-0 rounds walked
   over the AMR gather tags: `amr_distributed_{fv,mg,graded_mg,openness,poisson}_np{4,8}` returned

@@ -15,21 +15,23 @@
 //   C  the contract edges: InPlace is the identity; a negative maxBlockCells throws; a level grid
 //      that is not the decomposition's throws; the Repartition branch (design §11.1-11.2): a
 //      merge within the cap is accepted, one above it is replaced by a liftable proportional ORB
-//      on np_L = ceil(cells / maxBlockCells) ranks (power-of-two retry), and falls back to the
-//      heavy merge when no repartition lifts.
+//      on np_L = min(np, nextPow2(ceil(cells / maxBlockCells))) ranks (then the power-of-two
+//      retry), and falls back to the heavy merge when no repartition lifts.
 //   D  flow's FORCED telescope (`teleForce_ == L`, test-only) through `shallowestLiftableMerge`
 //      called directly, as S4 will: flow's test_telescope_mpi case B verbatim (32^3 on flow's
 //      aligned factory partition, nLevels 4, forced at level 1, telescoping on, flow's default
 //      minExtent 4) at np = 2 and 4 — where the forced merge must fire — then every forced level
 //      0..5 over Part A's grids and partitions, telescoping on and off. Same depth as well.
 //   E  G-B1 of the design (§11.6): the six weighted level-0 partitions of flow's weighted-dec0
-//   probe
-//      (flow tests/study/weighted_dec0_telescope_probe.py + weighted_dec0_results/, flow 0ae29d6;
+//      probe (flow tests/study/weighted_dec0_telescope_probe.py + weighted_dec0_results/, 0ae29d6;
 //      the eight table rows of amr/docs/amr_mg_core_boundary.md §6 — two partitions are run at two
 //      depths) as fixtures, rebuilt through core's weighted ORB and checked block for block against
 //      the probe's logs. With maxBlockCells = 0 the ladder is the MEASURED one (where the telescope
 //      fired and onto how many ranks); with maxBlockCells = the largest level-0 block the stage
-//      kinds are §11.1's.
+//      kinds are §11.1's, and every Repartition lands on 8 / 4 / 8 / 8 ranks (np_L rounded UP to
+//      a power of two; the unrounded ceil gave 5 / 4 / 6 / 5, and 5 or 6 blocks lifted only once,
+//      collapsing to one rank at L1) — below it the ladder is the unweighted one, merging only at
+//      the 6^3 -> 3^3 bottom.
 #include <algorithm>
 #include <cstdio>
 #include <limits>
@@ -459,12 +461,23 @@ void partCRepartition() {
   PECLET_CORE_CHECK(t.kind == StageKind::Repartition && t.dec.numBlocks() == 8u);
   t = chooseStageTarget(heap8, k96, flowLiftable, 32, 1);  // cap 1: one rank
   PECLET_CORE_CHECK(t.kind == StageKind::Repartition && t.dec.numBlocks() == 1u);
-  // np_L = ceil(cells / maxBlockCells): 7 does not lift (the root split is 41), the retry takes 4
-  PECLET_CORE_CHECK(!flowLiftable(Dec(7, k96)));
-  t = chooseStageTarget(heap8, k96, flowLiftable, 4, (cells + 6) / 7);
+  // np_L = min(np, nextPow2(ceil(cells / maxBlockCells))): 5, 6 and 7 all round UP to 8 (the
+  // coordinator's ruling on §11.2 — a power-of-two count keeps lifting; 5 lifted only once)
+  for (Index n : {5, 6, 7}) {
+    t = chooseStageTarget(heap8, k96, flowLiftable, 4, (cells + n - 1) / n);
+    PECLET_CORE_CHECK(t.kind == StageKind::Repartition && sameDec(t.dec, Dec(8, k96)));
+  }
+  t = chooseStageTarget(heap8, k96, flowLiftable, 4, cells / 3);  // 3 -> 4
   PECLET_CORE_CHECK(t.kind == StageKind::Repartition && t.dec.numBlocks() == 4u);
-  t = chooseStageTarget(heap8, k96, flowLiftable, 4, cells / 6);  // 6 lifts: taken as is
-  PECLET_CORE_CHECK(t.kind == StageKind::Repartition && t.dec.numBlocks() == 6u);
+  // on a non-power-of-two rank count the clamp is np itself; the retry then walks the powers of
+  // two below it: 7 does not lift (the root split is 41) -> 4; 6 lifts -> taken as is
+  PECLET_CORE_CHECK(!flowLiftable(Dec(7, k96)) && flowLiftable(Dec(6, k96)));
+  for (std::size_t np : {std::size_t{7}, std::size_t{6}}) {
+    const Dec cur(np, k96, pseudoRandomWeights(k96, 5u));
+    PECLET_CORE_CHECK(!flowLiftable(cur));
+    t = chooseStageTarget(cur, k96, flowLiftable, 0, 1);
+    PECLET_CORE_CHECK(t.kind == StageKind::Repartition && t.dec.numBlocks() == (np == 7 ? 4u : 6u));
+  }
   // a merge within the cap is accepted: the whole level is one finest block
   t = chooseStageTarget(heap8, k96, flowLiftable, 4, cells);
   PECLET_CORE_CHECK(t.kind == StageKind::SiblingMerge && t.dec.numBlocks() == 1u);
@@ -507,13 +520,17 @@ void partCRepartition() {
             }
             PECLET_CORE_CHECK(!(flowLiftable(cur) && !tooSmall));
             // np_L and the retry sequence, from the design's pseudocode
-            Index npL = std::clamp<Index>((gc + cap - 1) / cap, 1, np);
+            Index npL = (gc + cap - 1) / cap;
             if (me > 0) {
               Index c = 1;
               for (int k = 0; k < 3; ++k)
                 c *= std::max<Index>(1, g[k] / (2 * me));
               npL = std::min(npL, c);
             }
+            Index up = 1;  // nextPow2
+            while (up < npL)
+              up *= 2;
+            npL = std::max<Index>(1, std::min<Index>(np, up));
             std::vector<Index> tries{npL};
             Index p2 = 1;
             while (2 * p2 <= npL)
@@ -601,18 +618,18 @@ void partE() {
     std::vector<StageRec> capped;    // maxBlockCells = the largest level-0 block
   };
   const Row rows[] = {
-      {&kHeap8, 8, {{0, K::SiblingMerge, 1}}, {{0, K::Repartition, 5}, {1, K::SiblingMerge, 1}}},
-      {&kHeap8, 4, {{0, K::SiblingMerge, 1}}, {{0, K::Repartition, 5}, {1, K::SiblingMerge, 1}}},
+      {&kHeap8, 8, {{0, K::SiblingMerge, 1}}, {{0, K::Repartition, 8}, {4, K::SiblingMerge, 1}}},
+      {&kHeap8, 4, {{0, K::SiblingMerge, 1}}, {{0, K::Repartition, 8}}},
       {&kHeap4, 8, {{0, K::SiblingMerge, 1}}, {{0, K::Repartition, 4}, {4, K::SiblingMerge, 1}}},
       {&kHeap4, 4, {{0, K::SiblingMerge, 1}}, {{0, K::Repartition, 4}}},
       {&kFlat8,
        8,
        {{0, K::SiblingMerge, 4}, {4, K::SiblingMerge, 1}},
-       {{0, K::Repartition, 6}, {4, K::SiblingMerge, 1}}},
+       {{0, K::Repartition, 8}, {4, K::SiblingMerge, 1}}},
       {&kTilt8,
        8,
        {{0, K::SiblingMerge, 4}, {1, K::SiblingMerge, 1}},
-       {{0, K::Repartition, 5}, {1, K::SiblingMerge, 1}}},
+       {{0, K::Repartition, 8}, {4, K::SiblingMerge, 1}}},
       {&kTilt4, 8, {{1, K::SiblingMerge, 1}}, {{1, K::SiblingMerge, 1}}},
       {&kFlat4, 8, {{4, K::SiblingMerge, 1}}, {{4, K::SiblingMerge, 1}}},
   };
