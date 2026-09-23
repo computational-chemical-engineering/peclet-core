@@ -469,6 +469,14 @@ void partCRepartition() {
   }
   t = chooseStageTarget(heap8, k96, flowLiftable, 4, cells / 3);  // 3 -> 4
   PECLET_CORE_CHECK(t.kind == StageKind::Repartition && t.dec.numBlocks() == 4u);
+  // the round-up never overshoots the extent cap: on 64 ranks with minExtent 16 the cap is
+  // 3^3 = 27, nextPow2 would give 32 (blocks thinner than the cap allows) -> the largest power of
+  // two within the cap, 16
+  {
+    const Dec cur64(64, k96, pseudoRandomWeights(k96, 9u));
+    const auto r = repartitionTarget(cur64, k96, flowLiftable, 16, 1);
+    PECLET_CORE_CHECK(r && r->kind == StageKind::Repartition && r->dec.numBlocks() == 16u);
+  }
   // on a non-power-of-two rank count the clamp is np itself; the retry then walks the powers of
   // two below it: 7 does not lift (the root split is 41) -> 4; 6 lifts -> taken as is
   PECLET_CORE_CHECK(!flowLiftable(Dec(7, k96)) && flowLiftable(Dec(6, k96)));
@@ -521,16 +529,24 @@ void partCRepartition() {
             PECLET_CORE_CHECK(!(flowLiftable(cur) && !tooSmall));
             // np_L and the retry sequence, from the design's pseudocode
             Index npL = (gc + cap - 1) / cap;
+            Index ecap = np;
             if (me > 0) {
               Index c = 1;
               for (int k = 0; k < 3; ++k)
                 c *= std::max<Index>(1, g[k] / (2 * me));
-              npL = std::min(npL, c);
+              ecap = std::min<Index>(c, np);
+              npL = std::min(npL, ecap);
             }
             Index up = 1;  // nextPow2
             while (up < npL)
               up *= 2;
             npL = std::max<Index>(1, std::min<Index>(np, up));
+            if (npL > ecap) {  // never overshoot the extent cap
+              Index p = 1;
+              while (2 * p <= ecap)
+                p *= 2;
+              npL = p;
+            }
             std::vector<Index> tries{npL};
             Index p2 = 1;
             while (2 * p2 <= npL)

@@ -128,8 +128,9 @@ std::optional<SiblingMergeChoice<Dim>> shallowestLiftableMerge(const BlockDecomp
 /// count: np_L = min(cur.numBlocks(), nextPow2(n)). Rounding up never violates the invariant (more
 /// ranks, smaller blocks), and a power-of-two block count on a grid with factors of two keeps
 /// lifting level after level instead of only once (np_L = 5 or 6 on the §6 heap / flat-bed
-/// fixtures lifted once and staged again at the next level; they now get 8). Note the round-up is
-/// applied after the extent cap, so it can exceed a cap that is not a power of two. Then np_L,
+/// fixtures lifted once and staged again at the next level; they now get 8). The round-up never
+/// overshoots the extent cap: if it would (a cap that is not a power of two), np_L drops to the
+/// largest power of two within the cap, since the cap is what keeps blocks fat enough. Then np_L,
 /// the largest power of two <= np_L (when np_L is not one — a non-power-of-two rank count) and its
 /// halvings down to 1 are tried in turn, and the first proportional ORB that lifts is returned.
 /// Owners are the identity on [0, n); groupOf is empty. A pure function, replicated on every rank.
@@ -146,18 +147,26 @@ std::optional<StageTarget<Dim>> repartitionTarget(const BlockDecomposer<Dim>& cu
   for (int k = 0; k < Dim; ++k)
     cells *= levelGrid[k];
   Index npL = (cells + maxBlockCells - 1) / maxBlockCells;
+  Index cap = np;  // the extent cap; no cap beyond the rank count at minExtent == 0
   if (minExtent > 0) {
-    Index cap = 1;
+    Index c = 1;
     for (int k = 0; k < Dim; ++k) {
       const Index f = levelGrid[k] / (2 * static_cast<Index>(minExtent));
-      cap *= f > 1 ? f : 1;
+      c *= f > 1 ? f : 1;
     }
+    cap = c < np ? c : np;
     npL = npL < cap ? npL : cap;
   }
   Index up = 1;  // nextPow2(npL), stopping once it reaches np (the clamp below)
   while (up < npL && up < np)
     up *= 2;
   npL = up < np ? up : np;
+  if (npL > cap) {  // the round-up overshot a cap that is not a power of two: the largest power
+    Index p = 1;    // of two within the cap keeps the blocks fat enough (the cap's whole point)
+    while (2 * p <= cap)
+      p *= 2;
+    npL = p;
+  }
   npL = npL < 1 ? 1 : npL;
   Index p2 = 1;  // the largest power of two <= npL
   while (2 * p2 <= npL)
