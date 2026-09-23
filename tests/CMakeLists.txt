@@ -179,6 +179,13 @@ if(MPI_FOUND)
   target_link_libraries(test_grid_redistribute_mpi PRIVATE peclet_halo)
   target_include_directories(test_grid_redistribute_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+  # Coarse-level multigrid stage communicators + planned movement + id-keyed gather
+  # (decomp/stage_comm.hpp, redistribute_topology.hpp, gather_by_global_id.hpp), bitwise against
+  # transcriptions of flow's Telescope and amr's ReplicatedTailStage.
+  add_executable(test_stage_redistribute_mpi test_stage_redistribute_mpi.cpp)
+  target_link_libraries(test_stage_redistribute_mpi PRIVATE peclet_halo)
+  target_include_directories(test_stage_redistribute_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
   add_executable(test_diffusion test_diffusion.cpp)
   target_link_libraries(test_diffusion PRIVATE peclet_halo)
   target_include_directories(test_diffusion PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -208,6 +215,7 @@ if(MPI_FOUND)
       peclet_core_add_mpi_test(particle_migrator_view_np${np} test_particle_migrator_view_mpi ${np})
     endif()
     peclet_core_add_mpi_test(grid_redistribute_np${np} test_grid_redistribute_mpi ${np})
+    peclet_core_add_mpi_test(stage_redistribute_np${np} test_stage_redistribute_mpi ${np})
     peclet_core_add_mpi_test(grid_halo_np${np} test_grid_halo ${np})
     peclet_core_add_mpi_test(nbx_rounds_np${np} test_nbx_rounds ${np})
     peclet_core_add_mpi_test(particle_migration_np${np} test_particle_migration ${np})
