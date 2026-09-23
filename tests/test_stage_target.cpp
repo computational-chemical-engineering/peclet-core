@@ -14,6 +14,11 @@
 //      have; a level grid that is odd on an axis falls through to Replicated.
 //   C  the contract edges: InPlace is the identity; allowRepartition = true throws until S2; a
 //      level grid that is not the decomposition's throws.
+//   D  flow's FORCED telescope (`teleForce_ == L`, test-only) through `shallowestLiftableMerge`
+//      called directly, as S4 will: flow's test_telescope_mpi case B verbatim (32^3 on flow's
+//      aligned factory partition, nLevels 4, forced at level 1, telescoping on, flow's default
+//      minExtent 4) at np = 2 and 4 — where the forced merge must fire — then every forced level
+//      0..5 over Part A's grids and partitions, telescoping on and off. Same depth as well.
 #include <cstdio>
 #include <limits>
 #include <stdexcept>
@@ -30,6 +35,7 @@ using peclet::core::IVec;
 using peclet::core::Real;
 using peclet::core::decomp::BlockDecomposer;
 using peclet::core::decomp::chooseStageTarget;
+using peclet::core::decomp::shallowestLiftableMerge;
 using peclet::core::decomp::StageKind;
 using peclet::core::decomp::StageTarget;
 using Dec = BlockDecomposer<3>;
@@ -73,12 +79,14 @@ IVec<3> coarsenAlignment(Index gx, Index gy, Index gz) {
 // One level's stage decision.
 struct Stage {
   bool tele = false;
+  int depth = -1;  // the depth the search chose (compared on the forced path)
   Dec dec;
   std::vector<int> groupOf, rootOf;
 };
 
-// flow's trigger + depth search (initMpi, telescope on, no forced level), verbatim.
-Stage flowReference(const Dec& curDec, const IVec<3>& gs, int teleMinExtent) {
+// flow's trigger + depth search (initMpi), verbatim. `forced` is flow's `teleForce_ == L`.
+Stage flowReference(const Dec& curDec, const IVec<3>& gs, int teleMinExtent, bool telescope,
+                    bool forced) {
   Stage s;
   const bool canAny = can(gs[0]) || can(gs[1]) || can(gs[2]);
   bool blocked = false;
@@ -86,7 +94,8 @@ Stage flowReference(const Dec& curDec, const IVec<3>& gs, int teleMinExtent) {
     if (can(gs[ax]) && !evenOn(curDec, ax))
       blocked = true;
   const bool tooSmall = teleMinExtent > 0 && minExtentOf(curDec) < teleMinExtent;
-  const bool doTele = canAny && curDec.numBlocks() > 1 && (blocked || tooSmall);
+  const bool doTele =
+      canAny && curDec.numBlocks() > 1 && ((telescope && (blocked || tooSmall)) || forced);
   if (!doTele)
     return s;
   for (int d = curDec.treeDepth() - 1; d >= 0; --d) {
@@ -100,6 +109,7 @@ Stage flowReference(const Dec& curDec, const IVec<3>& gs, int teleMinExtent) {
       ok = false;
     if (ok && cand.numBlocks() < curDec.numBlocks()) {
       s.tele = true;
+      s.depth = d;
       s.dec = cand;
       s.groupOf = go;
       s.rootOf = ro;
@@ -109,25 +119,41 @@ Stage flowReference(const Dec& curDec, const IVec<3>& gs, int teleMinExtent) {
   return s;  // dSel < 0: no telescope
 }
 
-// The same decision through core. What stays with the caller is flow's own gate: telescoping on
-// and some axis of the level grid still coarsenable.
-Stage viaCore(const Dec& cur, const IVec<3>& gs, int teleMinExtent, bool& sawReplicated) {
+bool flowLiftable(const Dec& d) {
+  for (int ax = 0; ax < 3; ++ax)
+    if (can(d.globalSize()[ax]) && !evenOn(d, ax))
+      return false;
+  return true;
+}
+
+// The same decision through core, composed as S4 will. What stays with the caller is flow's own
+// gate (telescoping on, some axis of the level grid still coarsenable) and the forced level, which
+// calls the search directly.
+Stage viaCore(const Dec& cur, const IVec<3>& gs, int teleMinExtent, bool telescope, bool forced,
+              bool& sawReplicated) {
   Stage s;
   const bool canAny = can(gs[0]) || can(gs[1]) || can(gs[2]);
   if (!canAny)
     return s;
-  auto flowLiftable = [](const Dec& d) {
-    for (int ax = 0; ax < 3; ++ax)
-      if (can(d.globalSize()[ax]) && !evenOn(d, ax))
-        return false;
-    return true;
-  };
-  const StageTarget<3> t = chooseStageTarget(cur, gs, flowLiftable, teleMinExtent);
+  StageTarget<3> t;  // InPlace
+  if (telescope)
+    t = chooseStageTarget(cur, gs, flowLiftable, teleMinExtent);
+  if (t.kind == StageKind::InPlace && forced) {
+    if (auto m = shallowestLiftableMerge(cur, flowLiftable, teleMinExtent)) {
+      s.tele = true;
+      s.depth = m->depth;
+      s.dec = m->dec;
+      s.groupOf = m->groupOf;
+      s.rootOf = m->ownerOf;
+    }
+    return s;
+  }
   if (t.kind == StageKind::Replicated)
     sawReplicated = true;
   if (t.kind == StageKind::InPlace) {
     PECLET_CORE_CHECK(t.groupOf.empty());
-    PECLET_CORE_CHECK_EQ(t.ownerOf.size(), cur.numBlocks());
+    if (telescope)
+      PECLET_CORE_CHECK_EQ(t.ownerOf.size(), cur.numBlocks());
     return s;
   }
   if (t.kind == StageKind::SiblingMerge) {
@@ -144,20 +170,29 @@ bool sameDec(const Dec& a, const Dec& b) {
          a.globalSize() == b.globalSize();
 }
 
-long gCompared = 0, gStaged = 0;
+struct Counts {
+  long compared = 0, staged = 0, forcedStaged = 0;
+};
+Counts gA, gD;
 
-// Walk the whole ladder with both, comparing every level (predict()'s isotropic coarsening).
-void compareLadder(const std::string& name, Dec cur, int minExt) {
+// Walk the whole ladder with both, comparing every level (predict()'s isotropic coarsening). A
+// level stages only when L + 1 < nLevels, as in initMpi; `force` is flow's teleForce_ (-1 never).
+void compareLadder(const std::string& name, Dec cur, int minExt, Counts& n = gA, int force = -1,
+                   int nLevels = 16, bool telescope = true) {
   Dec ref = cur;
   IVec<3> gs = cur.globalSize();
-  for (int L = 0; L < 16; ++L) {
+  for (int L = 0; L < nLevels; ++L) {
     bool sawRep = false;
-    const Stage a = flowReference(ref, gs, minExt);
-    const Stage b = viaCore(cur, gs, minExt, sawRep);
-    ++gCompared;
+    Stage a, b;
+    if (L + 1 < nLevels) {
+      a = flowReference(ref, gs, minExt, telescope, force == L);
+      b = viaCore(cur, gs, minExt, telescope, force == L, sawRep);
+    }
+    ++n.compared;
     bool ok = !sawRep && a.tele == b.tele;
     if (ok && a.tele)
-      ok = sameDec(a.dec, b.dec) && a.groupOf == b.groupOf && a.rootOf == b.rootOf;
+      ok = sameDec(a.dec, b.dec) && a.groupOf == b.groupOf && a.rootOf == b.rootOf &&
+           (b.depth < 0 || b.depth == a.depth);
     if (!ok) {
       std::fprintf(stderr, "MISMATCH %s minExt=%d L=%d tele %d/%d replicated %d\n", name.c_str(),
                    minExt, L, a.tele, b.tele, sawRep);
@@ -165,7 +200,9 @@ void compareLadder(const std::string& name, Dec cur, int minExt) {
       return;
     }
     if (a.tele) {
-      ++gStaged;
+      ++n.staged;
+      if (force == L && b.depth >= 0)
+        ++n.forcedStaged;
       ref = a.dec;
       cur = b.dec;
     }
@@ -312,12 +349,51 @@ void partC() {
 
 }  // namespace
 
+// flow's test_telescope_mpi case B, then a sweep of forced levels.
+void partD() {
+  // Case B verbatim: {"B forced telescope@1 32^3", {32, 32, 32}, 4, 1, true, -1}, dec0 = nullptr
+  // -> flow's own factory decomposition(size, 32, 32, 32) (levels = 0: the aligned ORB), minExtent
+  // left at flow's default 4. np = 2 and 4 are the gated rank counts.
+  const IVec<3> g{32, 32, 32};
+  for (int np : {2, 4}) {
+    Counts c;
+    compareLadder("case B np" + std::to_string(np),
+                  Dec((std::size_t)np, g, coarsenAlignment(32, 32, 32)), 4, c, /*force=*/1,
+                  /*nLevels=*/4, /*telescope=*/true);
+    PECLET_CORE_CHECK_EQ(c.forcedStaged, 1);  // the forced merge fired, through the search
+    gD.compared += c.compared;
+    gD.staged += c.staged;
+    gD.forcedStaged += c.forcedStaged;
+  }
+  const IVec<3> grids[] = {{32, 32, 32}, {24, 24, 24}, {48, 48, 48}, {96, 48, 24},
+                           {40, 24, 18}, {64, 32, 16}, {20, 20, 20}, {36, 60, 44}};
+  for (const auto& gr : grids)
+    for (int np : {2, 3, 4, 6, 8, 12, 16, 27, 64}) {
+      if (static_cast<Index>(np) > gr[0] * gr[1] * gr[2] / 8)
+        continue;
+      const Dec parts[] = {Dec((std::size_t)np, gr),
+                           Dec((std::size_t)np, gr, coarsenAlignment(gr[0], gr[1], gr[2])),
+                           Dec((std::size_t)np, gr, pseudoRandomWeights(gr, 7u + np))};
+      for (const Dec& p : parts)
+        for (int force = 0; force <= 5; ++force)
+          for (int me : {0, 4})
+            for (bool tele : {true, false})
+              compareLadder("forced sweep", p, me, gD, force, 16, tele);
+    }
+}
+
 int main() {
   partA();
   std::printf("  A  flow's search: %ld ladder levels compared, %ld staged, all identical\n",
-              gCompared, gStaged);
-  PECLET_CORE_CHECK(gStaged > 0);
+              gA.compared, gA.staged);
+  PECLET_CORE_CHECK(gA.staged > 0);
   partB();
   partC();
+  partD();
+  std::printf(
+      "  D  forced telescope: %ld ladder levels compared, %ld staged, %ld by the forced search, "
+      "all identical\n",
+      gD.compared, gD.staged, gD.forcedStaged);
+  PECLET_CORE_CHECK(gD.forcedStaged > 0);
   PECLET_CORE_RETURN_TEST_RESULT();
 }

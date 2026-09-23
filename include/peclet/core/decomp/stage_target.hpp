@@ -26,6 +26,7 @@
 
 #include <cstddef>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -62,6 +63,46 @@ inline Index minBlockExtent(const BlockDecomposer<Dim>& d) {
   return m;
 }
 
+/// A sibling merge the search chose: the tree depth it truncates at, the merged decomposition, and
+/// its maps (`agglomerated(depth, &groupOf, &ownerOf)`).
+template <int Dim>
+struct SiblingMergeChoice {
+  int depth = -1;
+  BlockDecomposer<Dim> dec;
+  std::vector<int> groupOf;  ///< current block -> merged block
+  std::vector<int> ownerOf;  ///< merged block -> lowest parent rank of its group
+};
+
+/// The sibling-merge SEARCH on its own, with no trigger: the shallowest merge — fewest merges,
+/// i.e. the LARGEST depth d in [0, treeDepth) — whose `agglomerated(d)`
+///   * lifts (`liftable`, the method's predicate),
+///   * has fewer blocks than `cur`, and
+///   * when it has more than one block, keeps minBlockExtent >= 2*minExtent (0 disables),
+/// or std::nullopt when no depth qualifies. Flow's depth search (CutcellMG::initMpi) verbatim.
+///
+/// `chooseStageTarget` calls it behind the trigger. A caller that must merge whatever the trigger
+/// says calls it directly: that is how flow's test-only forced telescope (`teleForce_ == L`, which
+/// runs the search even where in-place coarsening is legal) maps onto core, so the policy's own
+/// signature carries no test hook.
+template <int Dim, class Liftable>
+std::optional<SiblingMergeChoice<Dim>> shallowestLiftableMerge(const BlockDecomposer<Dim>& cur,
+                                                               Liftable&& liftable, int minExtent) {
+  for (int d = cur.treeDepth() - 1; d >= 0; --d) {
+    SiblingMergeChoice<Dim> m;
+    m.depth = d;
+    m.dec = cur.agglomerated(d, &m.groupOf, &m.ownerOf);
+    bool ok = liftable(m.dec);
+    // Fat enough to STAY above the threshold after the halving that follows (a single block always
+    // qualifies): merging to blocks of 4 that become 2 on the next level would merge again there.
+    if (ok && minExtent > 0 && m.dec.numBlocks() > 1 &&
+        minBlockExtent(m.dec) < 2 * static_cast<Index>(minExtent))
+      ok = false;
+    if (ok && m.dec.numBlocks() < cur.numBlocks())
+      return m;
+  }
+  return std::nullopt;
+}
+
 /// Choose the stage target of a level whose current decomposition is `cur` over the level grid
 /// `levelGrid` (which must equal `cur.globalSize()`).
 ///
@@ -70,19 +111,34 @@ inline Index minBlockExtent(const BlockDecomposer<Dim>& d) {
 /// whose smallest block extent is below it is staged even when it could still coarsen in place,
 /// and a merged candidate with more than one block must keep an extent of at least 2*minExtent.
 ///
-/// Order (allowRepartition == false — flow's search, verbatim):
+/// Order (allowRepartition == false — flow's trigger + search, verbatim):
 ///   1. InPlace when `cur` has one block, or when liftable(cur) and no block is below minExtent;
-///   2. else SiblingMerge onto agglomerated(d) for the LARGEST d in [0, treeDepth) with
-///      liftable(agglomerated(d)), fewer blocks than `cur`, and (when it has more than one block)
-///      minBlockExtent >= 2*minExtent;
-///   3. else Replicated.
+///   2. else SiblingMerge onto shallowestLiftableMerge(cur, liftable, minExtent);
+///   3. else Replicated (unreachable under flow's rule, where depth 0 always lifts).
 /// Note what stays with the CALLER, because it is the method's rule, not core's: flow stages only
 /// when telescoping is enabled and some axis of the level grid can still coarsen at all. With no
 /// coarsenable axis flow's predicate is vacuously true, and a level below minExtent would
-/// otherwise be sent to step 2.
+/// otherwise be sent to step 2. flow's forced telescope calls shallowestLiftableMerge directly.
 ///
-/// allowRepartition == true is reserved for S2 (the Repartition kind and its movement); it throws
-/// until S2 settles that branch.
+/// What also stays in flow at S4: the outflow ghost-plane gathers (`teleGatherOutflowPlanes` /
+/// `teleGatherPlane`, WO-R2) — they move the plane beyond the inner block on the global outflow
+/// face, which the inner-cell RedistributeTopology does not describe.
+///
+/// allowRepartition == true is S2's and THROWS until S2 designs it. Two findings from S1 that the
+/// S2 design must start from — §4 of amr/docs/amr_mg_core_boundary.md is not implementable as
+/// written:
+///   (a) §4 orders "the largest d with liftable(agglomerated(d)) ..." BEFORE Repartition, and d
+///       ranges down to 0. Under flow's rule depth 0 (the whole grid on one block: origin 0, size
+///       even on every coarsenable axis) ALWAYS lifts, so the search never falls through and
+///       Repartition is unreachable — contradicting §6, where a weighted level-0 is meant to get a
+///       repartition instead of a collapse. Measured since (suite docs/SCALING_ISSUES.md #2 TRAP,
+///       flow 0ae29d6): on a weighted ORB the search lands at the SHALLOWEST ODD SPLIT of the tree
+///       — d = 0 (one rank) only when the root split is odd, d = 2 on 96^3 np=8 for a flat bed —
+///       so the repartition decision cannot be "only if no d qualifies"; it must weigh the depth
+///       the search found (how many ranks it leaves) against a fresh proportional ORB.
+///   (b) §4's np_L = min(cur.numBlocks(), cells(G_L) / (2*minExtent)^Dim) divides by zero at
+///       minExtent = 0, which is flow's "economic trigger disabled" setting; S2 must define np_L
+///       without the trigger.
 template <int Dim, class Liftable>
 StageTarget<Dim> chooseStageTarget(const BlockDecomposer<Dim>& cur,
                                    const std::type_identity_t<IVec<Dim>>& levelGrid,
@@ -91,7 +147,7 @@ StageTarget<Dim> chooseStageTarget(const BlockDecomposer<Dim>& cur,
   if (levelGrid != cur.globalSize())
     throw std::invalid_argument(
         "chooseStageTarget: levelGrid differs from the current decomposition's global size");
-  if (allowRepartition)
+  if (allowRepartition)  // see (a) and (b) above
     throw std::logic_error(
         "chooseStageTarget: allowRepartition is not implemented yet (design step S2)");
 
@@ -108,24 +164,12 @@ StageTarget<Dim> chooseStageTarget(const BlockDecomposer<Dim>& cur,
     return t;
   }
 
-  // Fewest merges (largest tree depth) at which the candidate lifts. depth 0 is the whole grid on
-  // one block.
-  for (int d = cur.treeDepth() - 1; d >= 0; --d) {
-    std::vector<int> go, ro;
-    BlockDecomposer<Dim> cand = cur.agglomerated(d, &go, &ro);
-    bool ok = liftable(cand);
-    // Fat enough to STAY above the threshold after the halving that follows (a single block always
-    // qualifies): merging to blocks of 4 that become 2 on the next level would merge again there.
-    if (ok && minExtent > 0 && cand.numBlocks() > 1 &&
-        minBlockExtent(cand) < 2 * static_cast<Index>(minExtent))
-      ok = false;
-    if (ok && cand.numBlocks() < nb) {
-      t.kind = StageKind::SiblingMerge;
-      t.dec = std::move(cand);
-      t.ownerOf = std::move(ro);
-      t.groupOf = std::move(go);
-      return t;
-    }
+  if (auto m = shallowestLiftableMerge(cur, liftable, minExtent)) {
+    t.kind = StageKind::SiblingMerge;
+    t.dec = std::move(m->dec);
+    t.ownerOf = std::move(m->ownerOf);
+    t.groupOf = std::move(m->groupOf);
+    return t;
   }
 
   t.kind = StageKind::Replicated;
