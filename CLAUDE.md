@@ -97,6 +97,12 @@ Header-only under `include/peclet/core/`:
   choice then compares physical extents (`size[k]*cellExtent[k]`) rather than cell counts, which is
   what stops the ORB bisecting an axis the fine grid would never have cut. flow drives all of this
   through `CutcellMG::decomposition()` (see `../flow/CLAUDE.md`).
+  The WEIGHTED ORB has the coarse-first form too: `init(…, weights, align)` sums the weights onto
+  the `align`-grid, runs the weighted ORB there and `refined(align)` back — never snap-after — and
+  is `init(…, weights)` bit for bit at `align = 1`. `chooseAlignedWeighted(np, G, w, budget =
+  1.05, aMax)` picks the largest `a` (align `2^a`) whose weight imbalance stays within budget, else
+  today's `init(…, weights)` with `a = 0`; pure and replicated (`../amr/docs/
+  amr_mg_core_boundary.md` §11.4, step S2a; gate `test_aligned_weighted` + `_mpi`).
 - `decomp/block_indexer.hpp` — local↔global indexing for an extended (inner+ghost) block.
 - `decomp/stage_target.hpp`, `stage_comm.hpp`, `redistribute_topology.hpp`,
   `gather_by_global_id.hpp` — **coarse-level multigrid stages** (suite decision "Coarse-level
