@@ -98,6 +98,17 @@ Header-only under `include/peclet/core/`:
   what stops the ORB bisecting an axis the fine grid would never have cut. flow drives all of this
   through `CutcellMG::decomposition()` (see `../flow/CLAUDE.md`).
 - `decomp/block_indexer.hpp` — local↔global indexing for an extended (inner+ghost) block.
+- `decomp/stage_target.hpp`, `stage_comm.hpp`, `redistribute_topology.hpp`,
+  `gather_by_global_id.hpp` — **coarse-level multigrid stages** (suite decision "Coarse-level
+  redistribution lives in core; the hierarchies stay in the methods",
+  `../amr/docs/amr_mg_core_boundary.md` §4, step S1). `chooseStageTarget` is the pure policy (the
+  caller's `liftable` predicate; with `allowRepartition=false` it IS flow's telescope search,
+  gated level by level by `test_stage_target`); `makeStageComm` the group/sub communicators;
+  `RedistributeTopology<Dim,T>` builds once and moves `forward`/`backward` through the caller's
+  index functors (SiblingMerge = group Gatherv/Scatterv, Replicated = Allgatherv; Repartition is
+  S2); `gatherByGlobalId` the id-keyed replicated gather. Bitwise against flow's `Telescope` and
+  amr's `ReplicatedTailStage` in `test_stage_redistribute_mpi`. Host-staged, MPI only (the no-MPI
+  stub lacks the collectives they use).
 - `decomp/morton_indexer.hpp` — `MortonIndexer<Dim>`: Z-order (Morton) cell indexing via the `morton`
   primitive (`morton::Morton<Dim,Bits>`), guarded by `PECLET_CORE_HAVE_MORTON` — core's only morton
   consumer since the AMR tree left. The cache-friendly alternative
