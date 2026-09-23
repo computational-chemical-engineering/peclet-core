@@ -107,14 +107,19 @@ Header-only under `include/peclet/core/`:
 - `decomp/stage_target.hpp`, `stage_comm.hpp`, `redistribute_topology.hpp`,
   `gather_by_global_id.hpp` — **coarse-level multigrid stages** (suite decision "Coarse-level
   redistribution lives in core; the hierarchies stay in the methods",
-  `../amr/docs/amr_mg_core_boundary.md` §4, step S1). `chooseStageTarget` is the pure policy (the
-  caller's `liftable` predicate; with `allowRepartition=false` it IS flow's telescope search,
-  gated level by level by `test_stage_target`); `makeStageComm` the group/sub communicators;
+  `../amr/docs/amr_mg_core_boundary.md` §4, steps S1 + S2b, spec §11). `chooseStageTarget` is the
+  pure policy (the caller's `liftable` predicate; with `maxBlockCells = 0` it IS flow's telescope
+  search, gated level by level by `test_stage_target`; `maxBlockCells > 0` — the finest level's
+  largest block — rejects a sibling merge that would hand a rank more cells than that and
+  repartitions the level onto a proportional ORB on `np_L` ranks instead, `repartitionTarget`);
+  `makeStageComm` the group/sub communicators (Repartition: `group` IS `parent`, not freed);
   `RedistributeTopology<Dim,T>` builds once and moves `forward`/`backward` through the caller's
-  index functors (SiblingMerge = group Gatherv/Scatterv, Replicated = Allgatherv; Repartition is
-  S2); `gatherByGlobalId` the id-keyed replicated gather. Bitwise against flow's `Telescope` and
-  amr's `ReplicatedTailStage` in `test_stage_redistribute_mpi`. Host-staged, MPI only (the no-MPI
-  stub lacks the collectives they use).
+  index functors (SiblingMerge = group Gatherv/Scatterv, Replicated = Allgatherv, Repartition =
+  planned Isend/Irecv over the box intersections on the parent, tags 1–10 by per-topology `id`);
+  `gatherByGlobalId` the id-keyed replicated gather. Bitwise against flow's `Telescope` and amr's
+  `ReplicatedTailStage` in `test_stage_redistribute_mpi`, and against `redistributeGridFields` in
+  `test_stage_repartition_mpi` (np 1–8). Host-staged, MPI only (the no-MPI stub lacks the
+  collectives they use).
 - `decomp/morton_indexer.hpp` — `MortonIndexer<Dim>`: Z-order (Morton) cell indexing via the `morton`
   primitive (`morton::Morton<Dim,Bits>`), guarded by `PECLET_CORE_HAVE_MORTON` — core's only morton
   consumer since the AMR tree left. The cache-friendly alternative

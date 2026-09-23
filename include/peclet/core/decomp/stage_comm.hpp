@@ -12,10 +12,14 @@
 // SiblingMerge reproduces flow's `Telescope` communicators exactly (flow/src/mac_cutcell_mg.hpp,
 // CutcellMG::initMpi): MPI_Comm_split(parent, group, rank) and MPI_Comm_split(parent, owner ? 0 :
 // MPI_UNDEFINED, group). Replicated: one group of every rank; every rank is an owner.
+// Repartition (design §11.2): there are no groups — every parent rank takes part in the
+// point-to-point movement, so `group` IS `parent` (the same handle, not a duplicate) and `members`
+// is empty; the owners are parent ranks [0, np_L), `sub` = MPI_Comm_split(parent, rank < np_L ? 0
+// : MPI_UNDEFINED, rank), and `myGroup` is -1 (a current block feeds several target blocks).
 //
 // The parent-rank convention is core's: parent rank r owns block r of the current decomposition.
-// The struct OWNS `group` and `sub` (not `parent`): non-copyable, movable, freed on destruction
-// with the same MPI_Finalized guard as GridHalo.
+// The struct OWNS `group` and `sub` (not `parent`, and not `group` when it is `parent`):
+// non-copyable, movable, freed on destruction with the same MPI_Finalized guard as GridHalo.
 #ifndef PECLET_CORE_DECOMP_STAGE_COMM_HPP
 #define PECLET_CORE_DECOMP_STAGE_COMM_HPP
 
@@ -35,7 +39,7 @@ struct StageComm {
   StageKind kind = StageKind::InPlace;
   bool active = false;     ///< this rank owns a target block
   int myTargetBlock = -1;  ///< the target block this rank owns, or -1
-  int myGroup = -1;        ///< the target block this rank's current block moves into
+  int myGroup = -1;  ///< the target block this rank's current block moves into (-1: Repartition)
   std::vector<int>
       members;  ///< parent ranks of this rank's group, in group-comm order (owner first)
 
@@ -67,7 +71,7 @@ struct StageComm {
     int fin = 0;
     MPI_Finalized(&fin);
     if (!fin) {
-      if (group != MPI_COMM_NULL)
+      if (group != MPI_COMM_NULL && group != parent)  // Repartition: group IS parent
         MPI_Comm_free(&group);
       if (sub != MPI_COMM_NULL)
         MPI_Comm_free(&sub);
@@ -78,13 +82,11 @@ struct StageComm {
 
 /// Build the stage communicators for `t` on `parent`. Collective on `parent`, whose size must equal
 /// the number of current blocks (`t.groupOf.size()` for SiblingMerge). Throws for InPlace (there is
-/// no stage) and Repartition (design step S2).
+/// no stage).
 template <int Dim>
 StageComm makeStageComm(MPI_Comm parent, const StageTarget<Dim>& t) {
   if (t.kind == StageKind::InPlace)
     throw std::invalid_argument("makeStageComm: an InPlace target has no stage");
-  if (t.kind == StageKind::Repartition)
-    throw std::logic_error("makeStageComm: Repartition is not implemented yet (design step S2)");
   int rank = 0, size = 1;
   MPI_Comm_rank(parent, &rank);
   MPI_Comm_size(parent, &size);
@@ -108,6 +110,23 @@ StageComm makeStageComm(MPI_Comm parent, const StageTarget<Dim>& t) {
         c.members.push_back(b);
     if (c.members.front() != t.ownerOf[static_cast<std::size_t>(myGroup)])
       throw std::logic_error("makeStageComm: a group's owner must be its lowest rank");
+  } else if (t.kind == StageKind::Repartition) {
+    const std::size_t npL = t.dec.numBlocks();
+    if (!t.groupOf.empty() || t.ownerOf.size() != npL || npL < 1 ||
+        npL > static_cast<std::size_t>(size))
+      throw std::invalid_argument(
+          "makeStageComm: a Repartition target needs 1..size blocks, ownerOf per block, no "
+          "groupOf");
+    for (std::size_t b = 0; b < npL; ++b)
+      if (t.ownerOf[b] != static_cast<int>(b))
+        throw std::invalid_argument(
+            "makeStageComm: a Repartition target's owners must be the identity on [0, np_L)");
+    const bool owner = static_cast<std::size_t>(rank) < npL;
+    c.group = parent;
+    MPI_Comm_split(parent, owner ? 0 : MPI_UNDEFINED, rank, &c.sub);
+    c.active = owner;
+    c.myGroup = -1;
+    c.myTargetBlock = owner ? rank : -1;
   } else {  // Replicated
     MPI_Comm_split(parent, 0, rank, &c.group);
     MPI_Comm_split(parent, 0, rank, &c.sub);

@@ -201,6 +201,16 @@ if(MPI_FOUND)
   target_link_libraries(test_aligned_weighted_mpi PRIVATE peclet_halo)
   target_include_directories(test_aligned_weighted_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+  # The Repartition stage (design §11.2-11.3, gate G-B2): planned point-to-point movement onto a
+  # proportional ORB on np_L ranks, bitwise against redistributeGridFields; every rank count 1..8
+  # (np > 4 carries the local `np8` label).
+  add_executable(test_stage_repartition_mpi test_stage_repartition_mpi.cpp)
+  target_link_libraries(test_stage_repartition_mpi PRIVATE peclet_halo)
+  target_include_directories(test_stage_repartition_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  foreach(np IN ITEMS 1 2 3 4 5 6 7 8)
+    peclet_core_add_mpi_test(stage_repartition_np${np} test_stage_repartition_mpi ${np})
+  endforeach()
+
   add_executable(test_diffusion test_diffusion.cpp)
   target_link_libraries(test_diffusion PRIVATE peclet_halo)
   target_include_directories(test_diffusion PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
