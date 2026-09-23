@@ -38,6 +38,16 @@ target_link_libraries(test_stage_target PRIVATE peclet_core)
 target_include_directories(test_stage_target PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 peclet_core_add_test(stage_target test_stage_target)
 
+# The aligned weighted ORB — init(numBlocks, globalSize, weights, align), coarse-first — and its
+# imbalance-budget chooser chooseAlignedWeighted (amr_mg_core_boundary.md §11.4, S2a): align = 1
+# is init(weights) bitwise (G-A1), the partition nests for log2(align) lifts under flow's and amr's
+# rules (G-A2), the chooser takes the largest a within budget or today's partition (G-A3). Pure
+# functions, no MPI; the rank-identity half is test_aligned_weighted_mpi.
+add_executable(test_aligned_weighted test_aligned_weighted.cpp)
+target_link_libraries(test_aligned_weighted PRIVATE peclet_core)
+target_include_directories(test_aligned_weighted PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+peclet_core_add_test(aligned_weighted test_aligned_weighted)
+
 # Smoothed-aggregation graph-AMG (peclet::core::solver) — host oracle, no Kokkos. Proves the
 # mesh-independent (O(N)) CG iteration count on a model vector-Laplacian.
 add_executable(test_graph_amg test_graph_amg.cpp)
@@ -186,6 +196,11 @@ if(MPI_FOUND)
   target_link_libraries(test_stage_redistribute_mpi PRIVATE peclet_halo)
   target_include_directories(test_stage_redistribute_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+  # chooseAlignedWeighted is replicated: the same (a, partition) on every rank (G-A3).
+  add_executable(test_aligned_weighted_mpi test_aligned_weighted_mpi.cpp)
+  target_link_libraries(test_aligned_weighted_mpi PRIVATE peclet_halo)
+  target_include_directories(test_aligned_weighted_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
   add_executable(test_diffusion test_diffusion.cpp)
   target_link_libraries(test_diffusion PRIVATE peclet_halo)
   target_include_directories(test_diffusion PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -216,6 +231,7 @@ if(MPI_FOUND)
     endif()
     peclet_core_add_mpi_test(grid_redistribute_np${np} test_grid_redistribute_mpi ${np})
     peclet_core_add_mpi_test(stage_redistribute_np${np} test_stage_redistribute_mpi ${np})
+    peclet_core_add_mpi_test(aligned_weighted_np${np} test_aligned_weighted_mpi ${np})
     peclet_core_add_mpi_test(grid_halo_np${np} test_grid_halo ${np})
     peclet_core_add_mpi_test(nbx_rounds_np${np} test_nbx_rounds ${np})
     peclet_core_add_mpi_test(particle_migration_np${np} test_particle_migration ${np})

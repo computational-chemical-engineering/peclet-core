@@ -6,6 +6,7 @@
 #ifndef PECLET_CORE_DECOMP_BLOCK_DECOMPOSER_HPP
 #define PECLET_CORE_DECOMP_BLOCK_DECOMPOSER_HPP
 
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -90,6 +91,70 @@ class BlockDecomposer {
     for (int i = 0; i < Dim; ++i)
       align_[i] = 1;
     initImpl(numBlocks, globalSize, &weights);
+  }
+
+  /// Aligned weighted ORB — COARSE-FIRST, never snap-after (amr/docs/amr_mg_core_boundary.md
+  /// §11.4; suite docs/DECOMPOSITION_AND_MULTIGRID.md open problem 9). Every split value, block
+  /// origin and block size on axis k is a multiple of `align[k]`, so `coarsened(align)` divides
+  /// cleanly and in-place lifting nests for log2(align[k]) levels; `align_` is set to `align`.
+  ///
+  /// Construction: sum `weights` onto the grid coarsened by `align` (coarse cell c carries the
+  /// total fine weight of its align-box), run the EXISTING weighted ORB there (align_ = 1), then
+  /// the EXISTING exact inverse `refined(align)`. On the coarse grid one cell IS the alignment
+  /// quantum, so a balanced split is never rounded into an unbalanced one — which is what snapping
+  /// a fine-grid split does (96|96 → 128|64). The unweighted aligned `init` above is the snapping
+  /// one and is deliberately left as it is.
+  ///
+  /// Contract: `align[k] >= 1`, `globalSize[k] % align[k] == 0`, `weights` covers the global grid
+  /// x-fastest. The coarse ORB is told each coarse cell's extent (`cellExtent = align`) — inert
+  /// when `align` is the same on every axis (the split-axis comparisons scale uniformly), and the
+  /// settled rule for anisotropic coarsening otherwise. With `align` all ones this is bit-exactly
+  /// `init(numBlocks, globalSize, weights)`: the coarse grid is the grid, each coarse weight is a
+  /// one-term sum (a copy), the ORB is the same call and `refined({1,…})` multiplies by 1.
+  void init(std::size_t numBlocks, IVec<Dim> globalSize, const std::vector<Real>& weights,
+            const IVec<Dim>& align) {
+    IVec<Dim> gc{};
+    Index nc = 1;
+    for (int k = 0; k < Dim; ++k) {
+      assert(align[k] >= 1 && "aligned weighted init(): align must be >= 1");
+      assert(globalSize[k] % align[k] == 0 &&
+             "aligned weighted init(): globalSize must be a multiple of align");
+      gc[k] = globalSize[k] / align[k];
+      nc *= gc[k];
+    }
+    // The coarse weight field. The fine grid is walked x-fastest, so every coarse cell receives
+    // its align-box in the box's own x-fastest order; the first cell of a box ASSIGNS (a one-term
+    // sum is then a bitwise copy), the rest accumulate. Deterministic, hence replicated.
+    std::vector<Real> wc(static_cast<std::size_t>(nc), 0.0);
+    BlockDecomposer<Dim> fineIndex;  // x-fastest indexing on the fine grid only
+    fineIndex.globalSize_ = globalSize;
+    BlockDecomposer<Dim> coarse;
+    coarse.globalSize_ = gc;
+    assert(weights.size() == static_cast<std::size_t>([&] {
+             Index v = 1;
+             for (int i = 0; i < Dim; ++i)
+               v *= globalSize[i];
+             return v;
+           }()) &&
+           "weights array must cover the global grid (x-fastest)");
+    forEachInBox<Dim>(IVec<Dim>{}, globalSize, [&](const IVec<Dim>& g) {
+      IVec<Dim> c{};
+      bool first = true;
+      for (int k = 0; k < Dim; ++k) {
+        c[k] = g[k] / align[k];
+        if (g[k] % align[k] != 0)
+          first = false;
+      }
+      const std::size_t ic = static_cast<std::size_t>(coarse.linearGlobal(c));
+      const Real wv = weights[static_cast<std::size_t>(fineIndex.linearGlobal(g))];
+      if (first)
+        wc[ic] = wv;
+      else
+        wc[ic] += wv;
+    });
+    coarse.cellExtent_ = align;
+    coarse.init(numBlocks, gc, wc);  // the existing weighted ORB (sets align_ = 1)
+    *this = coarse.refined(align);   // the existing exact inverse of coarsened(); align_ = align
   }
 
   std::size_t numBlocks() const { return origins_.size(); }
@@ -468,6 +533,108 @@ Index BlockDecomposer<Dim>::splitPosition(const IVec<Dim>& origin, const IVec<Di
     }
   }
   return best;
+}
+
+/// Weight imbalance of a decomposition — the balancer's own metric: the heaviest block's total
+/// weight over the mean, `max_b W(b) / (W_total / numBlocks)`. Each block's weight is summed over
+/// its box x-fastest and `W_total` is the sum of the block weights in block order, so the value is
+/// a pure function of (dec, weights). A field whose total is not positive has no defined imbalance
+/// and returns +infinity (no budget can be certified against it).
+template <int Dim>
+Real weightImbalance(const BlockDecomposer<Dim>& dec, const std::vector<Real>& weights) {
+  const std::size_t nb = dec.numBlocks();
+  double total = 0.0, hi = 0.0;
+  for (std::size_t b = 0; b < nb; ++b) {
+    IVec<Dim> bgn = dec.origins()[b], end{};
+    for (int k = 0; k < Dim; ++k)
+      end[k] = bgn[k] + dec.sizes()[b][k];
+    double w = 0.0;
+    forEachInBox<Dim>(bgn, end, [&](const IVec<Dim>& g) {
+      w += weights[static_cast<std::size_t>(dec.linearGlobal(g))];
+    });
+    total += w;
+    if (b == 0 || w > hi)
+      hi = w;
+  }
+  if (!(total > 0.0) || nb == 0)
+    return std::numeric_limits<Real>::infinity();
+  return hi / (total / static_cast<double>(nb));
+}
+
+/// What `chooseAlignedWeighted` returns: the partition, the alignment exponent `a` (align = 2^a on
+/// every axis; 0 = the plain weighted ORB) and that partition's `weightImbalance`, for logging.
+template <int Dim>
+struct AlignedWeightedChoice {
+  BlockDecomposer<Dim> dec;
+  int a = 0;
+  Real imbalance = 0.0;
+};
+
+/// Choose the alignment of a weighted ORB from an imbalance budget (amr/docs/
+/// amr_mg_core_boundary.md §11.4): the LARGEST `a` whose coarse-first aligned weighted ORB
+/// (`init(numBlocks, G, weights, {2^a,…})`) has `weightImbalance <= budget`, else `a = 0` with
+/// today's partition, `init(numBlocks, G, weights)`, bit for bit — never worse than now. A pure
+/// function of its arguments (`weights` is the global field on every rank), so every rank returns
+/// the same answer without communicating.
+///
+/// Candidates run from `aMax` down to 1, where `aMax` is capped by the caller's value, by every
+/// axis's factors of two (`G[k] % 2^a == 0`), and by the coarse grid still holding the blocks:
+/// `Π_k G[k]/2^a >= numBlocks` and every `G[k]/2^a >= 2`. The default `aMax` imposes no cap of its
+/// own. A candidate with an empty block is rejected whatever its imbalance (an empty block weighs
+/// nothing, so the metric alone would not see it). (`G` is spelled as the `std::array` that
+/// `IVec<Dim>` is, so `Dim` deduces from it.)
+template <std::size_t N, int Dim = static_cast<int>(N)>
+AlignedWeightedChoice<Dim> chooseAlignedWeighted(std::size_t numBlocks,
+                                                 const std::array<Index, N>& G,
+                                                 const std::vector<Real>& weights,
+                                                 Real budget = 1.05,
+                                                 int aMax = std::numeric_limits<int>::max()) {
+  int cap = aMax;
+  for (int k = 0; k < Dim; ++k) {
+    int tz = 0;
+    for (Index g = G[k]; g > 0 && g % 2 == 0; g /= 2)
+      ++tz;
+    cap = tz < cap ? tz : cap;
+  }
+  int top = 0;  // the largest a <= cap whose coarse grid still holds numBlocks, >= 2 cells per axis
+  while (top < cap) {
+    const int a = top + 1;
+    bool ok = true;
+    double cells = 1.0;
+    for (int k = 0; k < Dim; ++k) {
+      const Index gk = G[k] >> a;
+      if (gk < 2)
+        ok = false;
+      cells *= static_cast<double>(gk);
+    }
+    if (!ok || cells < static_cast<double>(numBlocks))
+      break;
+    top = a;
+  }
+  for (int a = top; a >= 1; --a) {
+    IVec<Dim> align{};
+    for (int k = 0; k < Dim; ++k)
+      align[k] = Index(1) << a;
+    AlignedWeightedChoice<Dim> c;
+    c.dec.init(numBlocks, G, weights, align);
+    bool empty = false;
+    for (const auto& sz : c.dec.sizes())
+      for (int k = 0; k < Dim; ++k)
+        if (sz[k] <= 0)
+          empty = true;
+    if (empty)
+      continue;
+    c.imbalance = weightImbalance(c.dec, weights);
+    if (c.imbalance <= budget) {
+      c.a = a;
+      return c;
+    }
+  }
+  AlignedWeightedChoice<Dim> c;
+  c.dec.init(numBlocks, G, weights);
+  c.a = 0;
+  c.imbalance = weightImbalance(c.dec, weights);
+  return c;
 }
 
 }  // namespace peclet::core::decomp
