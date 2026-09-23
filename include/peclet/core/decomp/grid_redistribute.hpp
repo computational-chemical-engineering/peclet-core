@@ -77,7 +77,11 @@ void redistributeGridFields(const BlockDecomposer<3>& oldDec, const BlockDecompo
                             int rank, int g, const std::vector<const T*>& oldFields,
                             const std::vector<T*>& newFields, MPI_Comm comm) {
   const int nF = static_cast<int>(oldFields.size());
-  const Block<3> ob = oldDec.block(rank), nbSelf = newDec.block(rank);
+  // A rank with no block in `newDec` (fewer new blocks than ranks) only sends: nothing is addressed
+  // to it, so `nbSelf` is never read there.
+  const Block<3> ob = oldDec.block(rank),
+                 nbSelf = static_cast<std::size_t>(rank) < newDec.numBlocks() ? newDec.block(rank)
+                                                                              : Block<3>{};
 
   struct Task {
     int dst;
