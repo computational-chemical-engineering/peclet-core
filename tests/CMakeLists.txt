@@ -30,6 +30,14 @@ target_link_libraries(test_decomposition PRIVATE peclet_core)
 target_include_directories(test_decomposition PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 peclet_core_add_test(decomposition test_decomposition)
 
+# Coarse-level multigrid stage policy (decomp/stage_target.hpp): chooseStageTarget against a
+# transcription of flow's inline telescope search, level by level over whole ladders (plain /
+# aligned / weighted ORBs, 1..1536 blocks). Pure function, no MPI.
+add_executable(test_stage_target test_stage_target.cpp)
+target_link_libraries(test_stage_target PRIVATE peclet_core)
+target_include_directories(test_stage_target PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+peclet_core_add_test(stage_target test_stage_target)
+
 # Smoothed-aggregation graph-AMG (peclet::core::solver) — host oracle, no Kokkos. Proves the
 # mesh-independent (O(N)) CG iteration count on a model vector-Laplacian.
 add_executable(test_graph_amg test_graph_amg.cpp)
