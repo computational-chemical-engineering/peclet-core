@@ -7,8 +7,8 @@ name: CI
 #                 morton_indexer test runs; before 2026-09 CI never provided morton). Serial + MPI
 #                 np=1,2,4.
 #   kokkos-openmp the portable Kokkos path (OpenMP + Serial host backend, Kokkos 5.1.1 cached) —
-#                 device halo, device geometry, the face-CSR solver layer — plus the Python modules
-#                 (peclet.core.{mpi,geom}) with their test scripts as ctests.
+#                 device halo, device geometry, the face-CSR solver layer — plus the Python module
+#                 (peclet.halo; peclet.geom left for peclet-geom in 1.2.0) with its tests as ctests.
 #   no-mpi        PECLET_CORE_ENABLE_MPI=OFF: the single-rank mpi_stub halo layer.
 #
 # What is NOT run here, and why (nothing is hidden — `ctest -N` lists it all):
@@ -148,13 +148,13 @@ jobs:
       - name: Test MPI np=1,2,4 (OMP_NUM_THREADS=1; np8 excluded, see header)
         run: OMP_NUM_THREADS=1 ctest --test-dir build -L mpi -LE "np8|bench" --timeout 1200 --output-on-failure -j1
 
-      - name: Build the Python modules (peclet.core.mpi / geom)
+      - name: Build the Python module (peclet.halo)
         run: |
           cmake -S core/python -B build_py -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/kokkos-install" \
             -DPython_EXECUTABLE="$(which python3)"
           cmake --build build_py -j
-          PYTHONPATH=$PWD/build_py python3 -c "import peclet.core.mpi, peclet.core.geom; print('peclet.core import OK')"
+          PYTHONPATH=$PWD/build_py python3 -c "import peclet.halo; print('peclet.halo import OK')"
 
       - name: Test Python (test_mpi.py np=1,2,4; state_hash; ndarray interop)
         run: |
