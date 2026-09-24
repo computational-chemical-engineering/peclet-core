@@ -244,32 +244,41 @@ class ParticleHalo {
 };
 
 NB_MODULE(_halo, m) {
-  m.attr("__doc__") = "core Lagrangian halo (block decomposition + particle migration/ghosts)";
+  m.attr("__doc__") =
+      "peclet.halo extension: the Lagrangian particle halo (ORB block decomposition, particle "
+      "migration, ghosts and count-weighted rebalancing) over MPI_COMM_WORLD.";
   m.attr("build_toolchain") = PECLET_CORE_BUILD_TOOLCHAIN;  // state_hash.py compares like with like
   nb::class_<ParticleMigrator>(
       m, "ParticleMigrator",
       "Lagrangian particle migration over an ORB block decomposition of the box "
       "[origin, origin+extent) binned on `cells` cells per axis (MPI_COMM_WORLD). Positions are "
-      "(N,3) float64, the per-particle payload (N,K) float64.")
+      "(N,3) float64, the per-particle payload a 2-D (N,K) float64 array with the same N (pack "
+      "velocity, id, ... into the K columns).\n\n"
+      "MPI must already be initialized (import mpi4py.MPI first); the module never calls "
+      "MPI_Init/Finalize. Construction does not communicate. migrate, rebalance and gather_ghosts "
+      "are collective over MPI_COMM_WORLD: every rank calls them, in the same order, even with no "
+      "particles.")
       .def(nb::init<std::array<double, 3>, std::array<double, 3>, std::array<long, 3>,
                     std::array<bool, 3>>(),
            nb::arg("origin"), nb::arg("extent"), nb::arg("cells"), nb::arg("periodic"),
            "origin: lower corner of the box; extent: its side lengths; cells: decomposition cells "
            "per axis (the ORB bins particles on this grid); periodic: per axis.")
       .def("migrate", &ParticleMigrator::migrate, nb::arg("positions"), nb::arg("payload"),
-           "Reassign every particle to the rank owning its (wrapped) position; returns this rank's "
-           "(positions (M,3), payload (M,K)) after the exchange.")
+           "Reassign every particle to the rank owning its (wrapped) position. Collective. Returns "
+           "this rank's (positions (M,3), payload (M,K)) after the exchange.")
       .def("rebalance", &ParticleMigrator::rebalance, nb::arg("positions"), nb::arg("payload"),
            "Re-decompose by particle count (weighted ORB) so each rank holds a near-equal share, "
-           "then "
-           "migrate. Pure redistribution (count/payload preserved); the partition is updated in "
-           "place. "
-           "Returns this rank's (positions (M,3), payload (M,K)).")
-      .def("gather_ghosts", &ParticleMigrator::gather_ghosts, nb::arg("positions"),
-           nb::arg("payload"), nb::arg("rcut"),
-           "Copies of particles within rcut of this rank's block (periodic images handled); "
-           "returns the "
-           "(ghost positions (G,3), ghost payload (G,K)).")
+           "then migrate. Pure redistribution (count/payload preserved); the partition is updated "
+           "in place, so later owner_of/migrate/gather_ghosts calls use it. Collective. Returns "
+           "this rank's (positions (M,3), payload (M,K)).")
+      .def(
+          "gather_ghosts", &ParticleMigrator::gather_ghosts, nb::arg("positions"),
+          nb::arg("payload"), nb::arg("rcut"),
+          "Copies of the particles OTHER ranks own that lie within distance rcut of this rank's "
+          "block, each at its periodic image nearest the block. A rank's own periodic images are "
+          "not included (np=1 gets none; ParticleHalo.build(include_periodic_self=True) covers "
+          "that). Collective. Returns (ghost positions (G,3), ghost payload (G,K)); the inputs are "
+          "not modified.")
       .def("wrap_position", &ParticleMigrator::wrap_position, nb::arg("x"),
            "Periodic-wrapped / boundary-clamped position for x (the canonical image).")
       .def("cell_of", &ParticleMigrator::cell_of, nb::arg("x"),
@@ -285,7 +294,9 @@ NB_MODULE(_halo, m) {
   nb::class_<ParticleHalo>(
       m, "ParticleHalo",
       "Persistent owner<->ghost particle halo over the same decomposition as ParticleMigrator: "
-      "build() the correspondence once, then forward/reverse Vec3 fields each step.")
+      "build() the correspondence once, then forward/reverse (N,3) float64 fields each step "
+      "while the owned particles and their order stay fixed. MPI must already be initialized; "
+      "build, forward_positions, forward and reverse communicate, so every rank calls them.")
       .def(nb::init<std::array<double, 3>, std::array<double, 3>, std::array<long, 3>,
                     std::array<bool, 3>>(),
            nb::arg("origin"), nb::arg("extent"), nb::arg("cells"), nb::arg("periodic"),
@@ -293,13 +304,20 @@ NB_MODULE(_halo, m) {
            "per axis (the ORB bins particles on this grid); periodic: per axis.")
       .def("build", &ParticleHalo::build, nb::arg("positions"), nb::arg("rcut"),
            nb::arg("include_periodic_self") = false,
-           "Establish the owner<->ghost correspondence over this rank's owned positions")
+           "Establish the owner<->ghost correspondence from this rank's owned positions (N,3): a "
+           "ghost here is a copy of a particle another rank owns within distance rcut of this "
+           "rank's block. "
+           "include_periodic_self also emits a rank's own periodic images (needed on an "
+           "undecomposed periodic axis, e.g. at np=1). Collective. Returns the ghost count G.")
       .def("forward_positions", &ParticleHalo::forward_positions, nb::arg("owned"),
-           "owned (N,3) -> ghost (G,3) with the periodic image shift (positions)")
+           "owned (N,3) -> ghost (G,3), adding each ghost's periodic image shift: use for "
+           "positions. N must be the count passed to the last build().")
       .def("forward", &ParticleHalo::forward, nb::arg("owned"),
-           "owned (N,3) -> ghost (G,3) verbatim (velocities, ...)")
+           "owned (N,3) -> ghost (G,3) copied verbatim: use for velocities and other fields "
+           "without an image shift.")
       .def("reverse", &ParticleHalo::reverse, nb::arg("ghost"), nb::arg("owned"),
-           "ghost (G,3) summed onto owned (N,3); returns owned + reversed contributions")
+           "ghost (G,3) contributions summed back onto their owners: returns a new (N,3) array, "
+           "owned + the reversed contributions (e.g. forces on ghosts); `owned` is not modified.")
       .def("owner_of", &ParticleHalo::owner_of, nb::arg("x"),
            "Rank that owns the block containing position x (after periodic wrap / boundary clamp).")
       .def_prop_ro("num_ghost", &ParticleHalo::num_ghost,
