@@ -19,7 +19,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "peclet-core"
-version = "1.1.1"
+version = "1.2.0"
 description = "peclet.core — compatibility shell: peclet.core.geom is now peclet.geom, peclet.core.mpi is now peclet.halo"
 readme = "README.md"
 requires-python = ">=3.10"
