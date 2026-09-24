@@ -38,12 +38,21 @@
 
 namespace peclet::core::decomp {
 
-enum class StageKind { InPlace, SiblingMerge, Repartition, Replicated };
+/// How a multigrid level moves when it can no longer coarsen in place (see chooseStageTarget and
+/// the file comment for the movement each kind implies).
+enum class StageKind {
+  InPlace,       ///< no stage: the level coarsens on its current decomposition
+  SiblingMerge,  ///< ORB tree truncated: contiguous runs of blocks merge onto their lowest rank
+  Repartition,   ///< a fresh proportional ORB of the level grid on the first np_L parent ranks
+  Replicated     ///< the whole level as one block, held identically on every rank
+};
 
-/// Where a level goes. `dec` is a decomposition of the SAME level grid as the current one.
+/// Where a level goes: the result of chooseStageTarget / repartitionTarget. A plain value,
+/// replicated on every rank of the parent communicator.
 template <int Dim>
 struct StageTarget {
-  StageKind kind = StageKind::InPlace;
+  StageKind kind = StageKind::InPlace;  ///< which movement reaches `dec`
+  /// The target decomposition, of the SAME level grid as the current one.
   BlockDecomposer<Dim> dec;
   /// Target block -> the rank that owns it, in the PARENT communicator (whose rank r owns block r
   /// of the current decomposition). InPlace: the identity. SiblingMerge: the lowest rank of each
@@ -82,8 +91,8 @@ inline Index largestBlockCells(const BlockDecomposer<Dim>& d) {
 /// its maps (`agglomerated(depth, &groupOf, &ownerOf)`).
 template <int Dim>
 struct SiblingMergeChoice {
-  int depth = -1;
-  BlockDecomposer<Dim> dec;
+  int depth = -1;            ///< ORB tree depth the merge truncates at (`agglomerated(depth)`)
+  BlockDecomposer<Dim> dec;  ///< the merged decomposition
   std::vector<int> groupOf;  ///< current block -> merged block
   std::vector<int> ownerOf;  ///< merged block -> lowest parent rank of its group
 };
@@ -99,6 +108,9 @@ struct SiblingMergeChoice {
 /// says calls it directly: that is how flow's test-only forced telescope (`teleForce_ == L`, which
 /// runs the search even where in-place coarsening is legal) maps onto core, so the policy's own
 /// signature carries no test hook.
+///
+/// Pure: no communication, replicated whenever `cur` and `liftable` are. Throws nothing of its
+/// own; an exception from `liftable` propagates.
 template <int Dim, class Liftable>
 std::optional<SiblingMergeChoice<Dim>> shallowestLiftableMerge(const BlockDecomposer<Dim>& cur,
                                                                Liftable&& liftable, int minExtent) {
@@ -134,7 +146,9 @@ std::optional<SiblingMergeChoice<Dim>> shallowestLiftableMerge(const BlockDecomp
 /// the largest power of two <= np_L (when np_L is not one — a non-power-of-two rank count) and its
 /// halvings down to 1 are tried in turn, and the first proportional ORB that lifts is returned.
 /// Owners are the identity on [0, n); groupOf is empty. A pure function, replicated on every rank.
-/// Precondition: maxBlockCells > 0.
+///
+/// Preconditions: `levelGrid == cur.globalSize()` (checked by chooseStageTarget, NOT here) and
+/// `maxBlockCells > 0` — throws std::invalid_argument otherwise.
 template <int Dim, class Liftable>
 std::optional<StageTarget<Dim>> repartitionTarget(const BlockDecomposer<Dim>& cur,
                                                   const std::type_identity_t<IVec<Dim>>& levelGrid,
@@ -222,6 +236,12 @@ std::optional<StageTarget<Dim>> repartitionTarget(const BlockDecomposer<Dim>& cu
 /// What also stays in flow at S4: the outflow ghost-plane gathers (`teleGatherOutflowPlanes` /
 /// `teleGatherPlane`, WO-R2) — they move the plane beyond the inner block on the global outflow
 /// face, which the inner-cell RedistributeTopology does not describe.
+///
+/// Pure: no communication. Every rank passing the same (replicated) `cur`, `minExtent` and
+/// `maxBlockCells`, and a `liftable` that answers alike, gets the same target — which is what
+/// makeStageComm and RedistributeTopology::build rely on. Throws std::invalid_argument when
+/// `levelGrid != cur.globalSize()` or `maxBlockCells < 0`; since both are replicated inputs, it
+/// throws on every rank alike.
 template <int Dim, class Liftable>
 StageTarget<Dim> chooseStageTarget(const BlockDecomposer<Dim>& cur,
                                    const std::type_identity_t<IVec<Dim>>& levelGrid,

@@ -25,11 +25,17 @@ struct Block {
   IVec<Dim> size{};    ///< extent in cells along each axis
 };
 
+/// Orthogonal recursive bisection of a `Dim`-dimensional global cell grid into `numBlocks`
+/// axis-aligned blocks; by the suite's convention block b is owned by rank b. Construction is
+/// deterministic and needs no communication, so every rank that builds it from the same arguments
+/// holds the same (replicated) decomposition. Indexing is x-fastest throughout (`linearGlobal`).
 template <int Dim>
 class BlockDecomposer {
  public:
   BlockDecomposer() = default;
+  /// Equal-cell-count ORB: see init(numBlocks, globalSize).
   BlockDecomposer(std::size_t numBlocks, IVec<Dim> globalSize) { init(numBlocks, globalSize); }
+  /// Weighted ORB: see init(numBlocks, globalSize, weights).
   BlockDecomposer(std::size_t numBlocks, IVec<Dim> globalSize, const std::vector<Real>& weights) {
     init(numBlocks, globalSize, weights);
   }
@@ -111,6 +117,10 @@ class BlockDecomposer {
   /// settled rule for anisotropic coarsening otherwise. With `align` all ones this is bit-exactly
   /// `init(numBlocks, globalSize, weights)`: the coarse grid is the grid, each coarse weight is a
   /// one-term sum (a copy), the ORB is the same call and `refined({1,…})` multiplies by 1.
+  ///
+  /// Pure and replicated: no communication, so `weights` must be the same global field on every
+  /// rank. The contract is checked by `assert` only — a violation in an NDEBUG build is undefined
+  /// behaviour, not an exception. chooseAlignedWeighted picks `align` from an imbalance budget.
   void init(std::size_t numBlocks, IVec<Dim> globalSize, const std::vector<Real>& weights,
             const IVec<Dim>& align) {
     IVec<Dim> gc{};
@@ -157,11 +167,16 @@ class BlockDecomposer {
     *this = coarse.refined(align);   // the existing exact inverse of coarsened(); align_ = align
   }
 
+  /// Number of blocks.
   std::size_t numBlocks() const { return origins_.size(); }
+  /// Global grid size in cells per axis.
   const IVec<Dim>& globalSize() const { return globalSize_; }
+  /// Inclusive lower corner of every block, in global cell coordinates, indexed by block.
   const std::vector<IVec<Dim>>& origins() const { return origins_; }
+  /// Extent in cells of every block, indexed by block.
   const std::vector<IVec<Dim>>& sizes() const { return sizes_; }
 
+  /// Block `b` as (origin, size). Precondition: `b < numBlocks()` (unchecked).
   Block<Dim> block(std::size_t b) const { return {origins_[b], sizes_[b]}; }
 
   /// Owning block index of a global cell coordinate. Caller must wrap into [0, globalSize) first.
@@ -539,7 +554,8 @@ Index BlockDecomposer<Dim>::splitPosition(const IVec<Dim>& origin, const IVec<Di
 /// weight over the mean, `max_b W(b) / (W_total / numBlocks)`. Each block's weight is summed over
 /// its box x-fastest and `W_total` is the sum of the block weights in block order, so the value is
 /// a pure function of (dec, weights). A field whose total is not positive has no defined imbalance
-/// and returns +infinity (no budget can be certified against it).
+/// and returns +infinity (no budget can be certified against it). Precondition: `weights` covers
+/// `dec.globalSize()` x-fastest (unchecked). No communication; replicated when its inputs are.
 template <int Dim>
 Real weightImbalance(const BlockDecomposer<Dim>& dec, const std::vector<Real>& weights) {
   const std::size_t nb = dec.numBlocks();
@@ -565,9 +581,9 @@ Real weightImbalance(const BlockDecomposer<Dim>& dec, const std::vector<Real>& w
 /// every axis; 0 = the plain weighted ORB) and that partition's `weightImbalance`, for logging.
 template <int Dim>
 struct AlignedWeightedChoice {
-  BlockDecomposer<Dim> dec;
-  int a = 0;
-  Real imbalance = 0.0;
+  BlockDecomposer<Dim> dec;  ///< the chosen partition
+  int a = 0;                 ///< alignment exponent: align = 2^a on every axis (0 = unaligned)
+  Real imbalance = 0.0;      ///< weightImbalance(dec, weights)
 };
 
 /// Choose the alignment of a weighted ORB from an imbalance budget (amr/docs/
@@ -583,6 +599,11 @@ struct AlignedWeightedChoice {
 /// own. A candidate with an empty block is rejected whatever its imbalance (an empty block weighs
 /// nothing, so the metric alone would not see it). (`G` is spelled as the `std::array` that
 /// `IVec<Dim>` is, so `Dim` deduces from it.)
+///
+/// Preconditions (as the aligned weighted init, assert-checked only): `weights` covers `G`
+/// x-fastest. A `budget` below 1 can never be met (for non-negative weights the imbalance is >= 1)
+/// and always yields
+/// `a = 0`.
 template <std::size_t N, int Dim = static_cast<int>(N)>
 AlignedWeightedChoice<Dim> chooseAlignedWeighted(std::size_t numBlocks,
                                                  const std::array<Index, N>& G,

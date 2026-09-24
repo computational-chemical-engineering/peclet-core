@@ -19,6 +19,14 @@ namespace peclet::core::decomp {
 /// rank) holds out[id] = the value some rank contributed for id. The ids over all ranks must be a
 /// permutation of [0, nGlobal) — each id exactly once — or this throws (on every rank).
 /// Collective on `comm`: one Allgather of the counts, one Allgatherv each of ids and values.
+/// `T` must be trivially copyable (it travels as raw bytes).
+///
+/// Throws std::invalid_argument when the ids are not such a permutation — decided on the gathered,
+/// replicated data, so on every rank alike — and std::overflow_error when the global vector exceeds
+/// INT_MAX entries or bytes (also every rank alike). Two checks are rank-LOCAL and run before the
+/// first collective: `ids.size() != vals.size()` (std::invalid_argument) and a single rank's
+/// contribution exceeding INT_MAX bytes (std::overflow_error); a throw there leaves the other ranks
+/// waiting in the Allgather, so treat it as fatal.
 template <class T>
 void gatherByGlobalId(const std::vector<long long>& ids, const std::vector<T>& vals,
                       long long nGlobal, std::vector<T>& out, MPI_Comm comm) {

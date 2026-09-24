@@ -70,8 +70,15 @@ inline void forBox(const IVec<3>& origin, const IVec<3>& size, F&& f) {
 }
 }  // namespace detail
 
-// Redistribute nFields grid fields from oldDec to newDec (this rank = `rank`). oldFields[f] is the
-// old padded local buffer, newFields[f] the (caller-allocated) new padded local buffer. Dim==3.
+/// Redistribute nFields grid fields from oldDec to newDec (this rank = `rank`). oldFields[f] is the
+/// old padded local buffer, newFields[f] the (caller-allocated) new padded local buffer, both with
+/// ghost width `g` (layout in the file comment). Dim == 3. Only inner cells move; ghosts of the new
+/// buffers are not written, so refill them with a halo exchange.
+///
+/// Collective on `comm` (one NBX round): every rank calls it, with the same replicated `oldDec`
+/// and `newDec`. Preconditions: `rank < oldDec.numBlocks()` (every rank sends its old block).
+/// `newDec` may have FEWER blocks than ranks — a rank without a new block only sends, and its
+/// `newFields` are not touched (may be empty). Pure copies: every value arrives bitwise.
 template <class T>
 void redistributeGridFields(const BlockDecomposer<3>& oldDec, const BlockDecomposer<3>& newDec,
                             int rank, int g, const std::vector<const T*>& oldFields,

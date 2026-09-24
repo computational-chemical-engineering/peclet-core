@@ -32,13 +32,21 @@
 
 namespace peclet::core::decomp {
 
+/// The communicators of one coarse-level multigrid stage, made by makeStageComm (the file comment
+/// spells out `group` and `sub` per StageKind).
+///
+/// Ownership: OWNS `group` and `sub` and frees them on destruction (guarded by MPI_Finalized, as
+/// GridHalo); does NOT own `parent`, nor `group` when it is `parent` (Repartition). Non-copyable,
+/// movable. `parent` must outlive it, and it must outlive every RedistributeTopology built on it —
+/// the topology keeps the raw communicator handle, not a copy. Destruction frees communicators,
+/// so destroy the StageComm of a stage on every rank of `parent` alike.
 struct StageComm {
   MPI_Comm parent = MPI_COMM_NULL;  ///< not owned
   MPI_Comm group = MPI_COMM_NULL;   ///< this rank's target block's members; owner = group rank 0
   MPI_Comm sub = MPI_COMM_NULL;     ///< owners only, key = target block; MPI_COMM_NULL elsewhere
-  StageKind kind = StageKind::InPlace;
-  bool active = false;     ///< this rank owns a target block
-  int myTargetBlock = -1;  ///< the target block this rank owns, or -1
+  StageKind kind = StageKind::InPlace;  ///< the kind of the StageTarget this was made for
+  bool active = false;                  ///< this rank owns a target block
+  int myTargetBlock = -1;               ///< the target block this rank owns, or -1
   int myGroup = -1;  ///< the target block this rank's current block moves into (-1: Repartition)
   std::vector<int>
       members;  ///< parent ranks of this rank's group, in group-comm order (owner first)
@@ -46,7 +54,9 @@ struct StageComm {
   StageComm() = default;
   StageComm(const StageComm&) = delete;
   StageComm& operator=(const StageComm&) = delete;
+  /// Takes over `o`'s communicators; `o` is left empty (all MPI_COMM_NULL, nothing to free).
   StageComm(StageComm&& o) noexcept { swap(o); }
+  /// Frees this object's own communicators first, then takes over `o`'s.
   StageComm& operator=(StageComm&& o) noexcept {
     if (this != &o) {
       release();
@@ -81,8 +91,16 @@ struct StageComm {
 };
 
 /// Build the stage communicators for `t` on `parent`. Collective on `parent`, whose size must equal
-/// the number of current blocks (`t.groupOf.size()` for SiblingMerge). Throws for InPlace (there is
-/// no stage).
+/// the number of current blocks (`t.groupOf.size()` for SiblingMerge); every rank passes the same
+/// replicated `t` (chooseStageTarget's result). Parent rank r is taken to own current block r.
+///
+/// Throws std::invalid_argument for an InPlace target (there is no stage), a SiblingMerge
+/// `groupOf` that does not map one block per rank, or a malformed Repartition target (not 1..size
+/// blocks, owners not the identity, or a non-empty `groupOf`); std::logic_error when a merge
+/// group's owner is not its lowest rank. The std::invalid_argument checks read only `t` and the
+/// size of `parent`, so with a replicated `t` they fire on every rank alike, before any
+/// communication. The std::logic_error (a broken `agglomerated` invariant, not a caller error)
+/// fires after the splits and on the offending group's ranks only: treat it as fatal.
 template <int Dim>
 StageComm makeStageComm(MPI_Comm parent, const StageTarget<Dim>& t) {
   if (t.kind == StageKind::InPlace)

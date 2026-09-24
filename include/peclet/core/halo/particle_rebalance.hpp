@@ -1,7 +1,7 @@
 // core — particle-count load re-balancing for the Lagrangian path.
 //
 // The Eulerian/AMR side rebalances by re-decomposing on a per-cell *work* weight and migrating the
-// owned data (see peclet::core::amr::DistributedOctree::rebalance). This is the Lagrangian
+// owned data (see peclet::amr::DistributedOctree::rebalance, in peclet-amr). This is the Lagrangian
 // counterpart: when particles drift (e.g. a dense DEM packing densifies and skews the per-block
 // count), the equal-cell ORB no longer balances the load. rebalanceByParticleCount() bins the
 // particles onto the decomposition grid, re-decomposes with the *weighted* ORB so every block
@@ -25,6 +25,7 @@
 namespace peclet::core::halo {
 
 namespace detail {
+/// Identity alias that blocks template argument deduction through it (C++20 std::type_identity).
 template <class T>
 struct NonDeduced {
   using type = T;
@@ -36,6 +37,12 @@ struct NonDeduced {
 /// `dec`). `weightOut`, when non-null, receives the agreed global per-cell count grid (x-fastest).
 /// Returns this rank's new local particle count. (`pos` is a non-deduced parameter — `Dim` is fixed
 /// by `dec`/`mig` — because `int Dim` cannot deduce from a `std::array`'s `size_t` bound.)
+///
+/// Collective on `comm`: one MPI_Allreduce of the global per-cell count grid (size
+/// product(globalSize) doubles — mind it on a fine decomposition grid) and the migration's NBX
+/// round. `payload` holds `stride` bytes per particle. The new partition is the unaligned weighted
+/// ORB `init(numBlocks, globalSize, weights)`; the coarse-first aligned form
+/// (`init(…, weights, align)` / chooseAlignedWeighted) is not used here.
 template <int Dim>
 std::size_t rebalanceByParticleCount(decomp::BlockDecomposer<Dim>& dec, ParticleMigrator<Dim>& mig,
                                      std::vector<typename detail::NonDeduced<Vec<Dim>>::type>& pos,

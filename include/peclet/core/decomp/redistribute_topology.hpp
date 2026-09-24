@@ -52,6 +52,14 @@
 
 namespace peclet::core::decomp {
 
+/// The planned, repeatable movement of a multigrid level's fields onto a stage target and back
+/// (the file comment has the per-kind collectives and the layout contract). Built once per
+/// hierarchy build by build(); forward() / backward() then move `T` payload with no handshake.
+///
+/// `T` must be trivially copyable (it travels as raw bytes). The topology stores the raw
+/// communicator handles of the StageComm given to build(), so that StageComm must outlive every
+/// forward()/backward(). The staging buffers are members: one topology is not safe to use from two
+/// threads at once. Host-staged, MPI only.
 template <int Dim, class T>
 class RedistributeTopology {
   static_assert(std::is_trivially_copyable_v<T>, "RedistributeTopology moves T as raw bytes");
@@ -63,6 +71,7 @@ class RedistributeTopology {
   /// id in [0, kTagSpan) — [1, 10], below the AMR direct tags (11 / 41 / 45) and never the halo
   /// default 0 (core CLAUDE.md: direct tags stay below NBX's reserved [24576, 32768)).
   static constexpr int kTagBase = 1;
+  /// Number of distinct `id`s, hence the tags kTagBase .. kTagBase + kTagSpan - 1.
   static constexpr int kTagSpan = 10;
 
   /// Establish the movement from `src` (the level's current decomposition; parent rank r owns
@@ -72,6 +81,16 @@ class RedistributeTopology {
   /// the caller's arrays; each is called once per cell here and never again. `id` (Repartition
   /// only; ignored otherwise) is the per-topology tag offset — the level index — so two levels'
   /// stages on one communicator cannot pair messages across each other.
+  ///
+  /// Preconditions: every rank passes the same replicated `src` and `dst` (with `dst` the target
+  /// `c` was made for), and `src.numBlocks()` equals the size of the parent communicator. Throws
+  /// std::invalid_argument for an InPlace target, a StageComm made for another target, source and
+  /// target over different grids, a block count that is not one per parent rank, a Repartition `id`
+  /// outside [0, kTagSpan) or a malformed Repartition target, or an index functor mapping two cells
+  /// to one slot; std::logic_error when the blocks do not tile the target (a broken decomposition).
+  /// build() does not communicate, so a throw is local: the checks on replicated inputs fire on
+  /// every rank alike, the ones on the caller's index functors need not — treat any throw as fatal
+  /// rather than letting the other ranks go on to forward().
   template <class SrcIndex, class DstIndex>
   void build(const BlockDecomposer<Dim>& src, const StageTarget<Dim>& dst, const StageComm& c,
              SrcIndex&& srcIndex, DstIndex&& dstIndex, int id = 0) {
@@ -134,6 +153,7 @@ class RedistributeTopology {
     requireDistinct(dstSlots_, "dstIndex");
   }
 
+  /// The kind of the target this topology was built for (InPlace before build()).
   StageKind kind() const { return kind_; }
   /// Whether this rank holds target fields (dst in forward, the input of backward).
   bool active() const { return active_; }
@@ -145,7 +165,11 @@ class RedistributeTopology {
   /// Level -> target. Collective on the movement's communicator: every rank takes part, active or
   /// not. `src[f]` is field f on this rank's current block; `dst[f]` (read on active ranks only;
   /// may be empty elsewhere) receives it on the target block. Target slots not named by `dstIndex`
-  /// are untouched.
+  /// are untouched. The field count must be the same on every rank. Throws
+  /// std::invalid_argument when an active rank's `src` and `dst` differ in field count (or, for
+  /// Repartition, a rank that sends or receives lacks a field), and std::overflow_error when one
+  /// message would exceed INT_MAX bytes (MPI's int counts) — both checked on the calling rank
+  /// before its own MPI call, so a throw on one rank leaves its peers waiting: treat it as fatal.
   void forward(const std::vector<const T*>& src, const std::vector<T*>& dst) {
     const std::size_t nF = src.size();
     if (active_ && dst.size() != nF)
@@ -186,7 +210,8 @@ class RedistributeTopology {
   /// Target -> level, overwriting `src[f]` on this rank's current block. SiblingMerge: collective
   /// on the group communicator (`dst` read on the owner only). Replicated: no communication — every
   /// rank picks its own cells from its replicated target. Repartition: the mirror of forward on the
-  /// parent communicator (`dst` read on active ranks only).
+  /// parent communicator (`dst` read on active ranks only). Same field-count contract and throws
+  /// as forward().
   void backward(const std::vector<const T*>& dst, const std::vector<T*>& src) {
     const std::size_t nF = src.size();
     if (active_ && dst.size() != nF)
