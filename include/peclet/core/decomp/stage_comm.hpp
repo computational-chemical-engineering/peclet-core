@@ -48,8 +48,8 @@ struct StageComm {
   bool active = false;                  ///< this rank owns a target block
   int myTargetBlock = -1;               ///< the target block this rank owns, or -1
   int myGroup = -1;  ///< the target block this rank's current block moves into (-1: Repartition)
-  std::vector<int>
-      members;  ///< parent ranks of this rank's group, in group-comm order (owner first)
+  /// Parent ranks of this rank's group, in group-comm order (owner first); empty for Repartition.
+  std::vector<int> members;
 
   StageComm() = default;
   StageComm(const StageComm&) = delete;

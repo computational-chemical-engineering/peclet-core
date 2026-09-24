@@ -602,8 +602,7 @@ struct AlignedWeightedChoice {
 ///
 /// Preconditions (as the aligned weighted init, assert-checked only): `weights` covers `G`
 /// x-fastest. A `budget` below 1 can never be met (for non-negative weights the imbalance is >= 1)
-/// and always yields
-/// `a = 0`.
+/// and always yields `a = 0`.
 template <std::size_t N, int Dim = static_cast<int>(N)>
 AlignedWeightedChoice<Dim> chooseAlignedWeighted(std::size_t numBlocks,
                                                  const std::array<Index, N>& G,

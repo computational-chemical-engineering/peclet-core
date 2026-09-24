@@ -28,7 +28,7 @@ namespace detail {
 /// Identity alias that blocks template argument deduction through it (C++20 std::type_identity).
 template <class T>
 struct NonDeduced {
-  using type = T;
+  using type = T;  ///< `T` itself, in a non-deduced context
 };
 }  // namespace detail
 
