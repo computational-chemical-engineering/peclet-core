@@ -1,4 +1,4 @@
-"""MPI test of the peclet.core.mpi Python shim (core particle migration + ghosts via mpi4py).
+"""MPI test of the peclet.halo Python module (core particle migration + ghosts via mpi4py).
 
 Run: PYTHONPATH=<python build tree> mpirun -np 4 python3 python/test_mpi.py
 Validates, from Python: migration conserves particles and places each on its owning rank, ghost
@@ -101,10 +101,10 @@ if comm.allreduce(float(acc[:, 0].sum()), MPI.SUM) != comm.allreduce(ng, MPI.SUM
 
 total = comm.allreduce(fail, MPI.SUM)
 if rank == 0:
-    print(f"# peclet.core.mpi: count={gcount} idsum_ok={gsum == expect_sum} ghosts={gghost} "
+    print(f"# peclet.halo: count={gcount} idsum_ok={gsum == expect_sum} ghosts={gghost} "
           f"imbalance {imb_before:.3f}->{imb_after:.3f}")
     if total == 0:
-        print(f"OK (np={size}): peclet.core.mpi migrate + gather_ghosts work from Python/mpi4py")
+        print(f"OK (np={size}): peclet.halo migrate + gather_ghosts work from Python/mpi4py")
     else:
         sys.stderr.write(f"FAILED (np={size}): {total}\n")
 sys.exit(0 if total == 0 else 1)

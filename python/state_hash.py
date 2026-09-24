@@ -1,4 +1,4 @@
-"""Fixed-seed reference runs of every public entry path of the peclet.core.mpi module, hashed.
+"""Fixed-seed reference runs of every public entry path of the peclet.halo module, hashed.
 
 The structural gate of suite/docs/QUALITY_PLAN.md §3.G: a refactor that moves code verbatim must
 leave every final state BYTE-IDENTICAL. This script runs one deterministic scenario per public
@@ -49,7 +49,7 @@ def gather_rows(comm, a):
 
 
 # ---------------------------------------------------------------------------------------------
-# peclet.core.mpi — ParticleMigrator migrate / gather_ghosts / rebalance and ParticleHalo.
+# peclet.halo — ParticleMigrator migrate / gather_ghosts / rebalance and ParticleHalo.
 # ---------------------------------------------------------------------------------------------
 def run_mpi(out, comm):
     from peclet import halo as core_mpi
@@ -124,7 +124,7 @@ RUNNERS = {"mpi": run_mpi}
 
 
 def toolchain():
-    """The modules' compiler / version / build type (`peclet.core.mpi.build_toolchain`). Hashes are
+    """The modules' compiler / version / build type (`peclet.halo.build_toolchain`). Hashes are
     comparable only between builds of one toolchain (FMA contraction, optimisation level), so a
     reference recorded elsewhere is SKIPPED, not failed."""
     from peclet import halo as core_mpi

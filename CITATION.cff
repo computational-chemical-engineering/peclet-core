@@ -4,8 +4,10 @@ title: "peclet-core: shared infrastructure for GPU-accelerated, parallel transpo
 abstract: >-
   Header-only C++20 + MPI infrastructure shared across the peclet suite: ORB block domain decomposition,
   asynchronous ghost-layer exchange (NBX + persistent neighborhood-collective engines, GPU-resident
-  variant), Lagrangian particle migration and ghosts, SDF geometry with VTI I/O, an AMR octree, and
-  dynamic (weighted-ORB) load balancing. Optional Kokkos GPU backends and Python bindings.
+  variant), Lagrangian particle migration and ghosts, dynamic (weighted-ORB) load balancing, the
+  coarse-level multigrid stages that redistribute a level onto fewer ranks, SDF geometry with VTI I/O,
+  and a face-CSR solver layer. Optional Kokkos GPU backends; Python bindings for the particle halo
+  (peclet-halo).
 type: software
 authors:
   - family-names: Peters
@@ -31,7 +33,7 @@ keywords:
   - MPI
   - ghost-layer exchange
   - signed distance function
-  - adaptive mesh refinement
+  - multigrid
   - load balancing
   - Kokkos
   - GPU computing

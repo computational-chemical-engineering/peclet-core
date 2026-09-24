@@ -1,13 +1,15 @@
-# Python packaging for peclet-core's Python surface: the Lagrangian halo (`peclet.core.mpi`) and the
-# analytic-SDF geometry (`peclet.core.geom`). core itself is a header-only C++20 library; these are
-# the nanobind modules under python/ (scikit-build-core points at that subdirectory). The `version`
-# below is THE version source: CMakeLists.txt reads it. (The AMR octree, `peclet.core.amr` until
-# 2026-09-10, is the separate peclet-amr package: `peclet.amr`.)
+# Python packaging for this repository's Python surface, the peclet-halo distribution: the
+# Lagrangian particle halo `peclet.halo` (python/halo_bindings.cpp). core itself is a header-only
+# C++20 library; the module is built by the nanobind project under python/ (scikit-build-core points
+# at that subdirectory). The `version` below is THE version source: CMakeLists.txt reads it.
 #
-# `pip install .` builds them via scikit-build-core:
-#   * peclet.core.mpi needs MPI (and mpi4py at runtime); peclet.core.geom needs nothing else.
+# This repository publishes a second distribution from the same tag: the pure-Python peclet-core
+# compatibility shell (packaging/pyproject-core.toml, its own version literal), which keeps
+# `peclet.core.mpi` / `peclet.core.geom` importing until 2.0.0 (suite docs/CORE_BOUNDARY.md). The
+# SDF scene-authoring bindings are the peclet-geom package (`peclet.geom`) since 1.2.0, and the AMR
+# octree is peclet-amr (`peclet.amr`) since 2026-09-10.
 #
-#   pip install .
+#   pip install .      # needs MPI (mpicxx) to build, and mpi4py at runtime to initialise MPI
 #
 # This mirrors the developer flow documented in python/CMakeLists.txt; nanobind is added automatically
 # as a build requirement.
@@ -58,14 +60,14 @@ Changelog = "https://github.com/computational-chemical-engineering/peclet-core/b
 [tool.scikit-build]
 minimum-version = "0.8"
 cmake.version = ">=3.24"
-# The Python modules live in python/ (a standalone find_package project); the SKBUILD-guarded install
-# rules there install mpi + geom into peclet/core/.
+# The Python module lives in python/ (a standalone find_package project); the SKBUILD-guarded install
+# rules there install _halo, its __init__.py, stub and py.typed into peclet/halo/.
 cmake.source-dir = "python"
 wheel.install-dir = "."
-# Everything shipped in the wheel is placed by the CMake install() rules (compiled modules + the
-# peclet/core/__init__.py); disable scikit-build-core's package auto-discovery so it doesn't also try.
+# Everything shipped in the wheel is placed by the CMake install() rules (the compiled module + the
+# peclet/halo/__init__.py); disable scikit-build-core's package auto-discovery so it doesn't also try.
 wheel.packages = []
 # SuiteNanobind.cmake is the umbrella's (../../cmake) in a suite checkout and the vendored copy in cmake/
-# in a standalone sdist, so `pip install peclet-core` builds without the suite (it did not from 0.1.0
+# in a standalone sdist, so `pip install peclet-halo` builds without the suite (it did not from 0.1.0
 # through 0.6.0 -- the `peclet[mpi]` extra was unusable).
 sdist.include = ["include", "python", "cmake", "CMakeLists.txt", "README.md", "LICENSE"]
