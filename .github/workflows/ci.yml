@@ -63,11 +63,11 @@ jobs:
       CXX: ${{ matrix.cxx }}
     steps:
       # Sibling layout, exactly as in the suite checkout: core/CMakeLists.txt auto-detects ../morton.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: core
       - name: Checkout morton (pinned tag)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: computational-chemical-engineering/peclet-morton
           ref: ${{ env.MORTON_TAG }}
@@ -93,11 +93,11 @@ jobs:
     name: ubuntu / gcc / Kokkos OpenMP + MPI + morton + Python / Release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: core
       - name: Checkout morton (pinned tag)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: computational-chemical-engineering/peclet-morton
           ref: ${{ env.MORTON_TAG }}
@@ -165,11 +165,11 @@ jobs:
     name: ubuntu / gcc / no MPI (mpi_stub) + morton / Release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: core
       - name: Checkout morton (pinned tag)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: computational-chemical-engineering/peclet-morton
           ref: ${{ env.MORTON_TAG }}
