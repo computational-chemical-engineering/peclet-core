@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 `core` is the shared infrastructure library of the **peclet** suite
-(sibling repos under `../`: `flow`, `dem`, `voro`, `morton`). The suite-wide design contract lives in `../docs/` — read
+(sibling repos under `../`: `flow`, `pnm`, `dem`, `voro`, `coupling`, `amr`, `geom`, `morton`). The suite-wide design contract lives in `../docs/` — read
 `../docs/ARCHITECTURE.md`, `CONVENTIONS.md`, `STYLE.md`, `INTERFACES.md`, `ROADMAP.md` before
 cross-cutting changes. Header-only C++20; the device side is compiled through Kokkos (CUDA / HIP /
 OpenMP) and is also C++20 — only the `morton` dependency pins C++17 (see `../docs/STYLE.md`). CUDA is
@@ -31,17 +31,19 @@ judgement call in the moment.
 ```bash
 # CPU library + tests (no device dependency):
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
-ctest --test-dir build --output-on-failure -LE bench   # 53 ctests (54 with `bench`): decomposition, MPI halo, particle migration, diffusion, geometry
+ctest --test-dir build --output-on-failure -LE bench   # 72 ctests (73 with `bench`): decomposition, MPI halo, particle migration, MG stages, diffusion, geometry
 
 # Portable Kokkos device halo (CUDA / HIP / OpenMP) -- opt-in, find_package(Kokkos):
 export PATH=/usr/local/cuda-13.2/bin:$PATH    # if the Kokkos install targets the CUDA backend
 cmake -S . -B build_kokkos -DPECLET_CORE_ENABLE_KOKKOS=ON \
   -DCMAKE_PREFIX_PATH=../extern/install/nvidia-cuda
-cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure -LE bench  # 68 ctests (69 with `bench`): + device halo / geometry / solver, np=1,2,4,8
+cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure -LE bench  # 87 ctests (88 with `bench`): + device halo / geometry / solver, np=1,2,4,8
 mpirun -np 4 ./build/benchmarks/bench_halo 48 1 300
 
-# Python modules + their ctests (test_mpi.py np=1,2,4,8; state_hash; ndarray interop):
-cmake -S python -B build_rel_py -DCMAKE_PREFIX_PATH=../extern/install/host-openmp
+# Python modules + their ctests (test_mpi.py np=1,2,4,8; state_hash; ndarray interop). Release is
+# load-bearing: state_hash's reference toolchain string is "GNU 14.2.0 Release x86_64", and a build
+# with no CMAKE_BUILD_TYPE reports the byte gate SKIPPED (77), not passed.
+cmake -S python -B build_rel_py -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=../extern/install/host-openmp
 cmake --build build_rel_py -j && ctest --test-dir build_rel_py --output-on-failure   # 6 ctests
 ```
 
@@ -63,7 +65,7 @@ suite's local install prefix (`../tools/bootstrap_deps.sh`). The legacy native-C
 CMake identifiers: `project(peclet_core VERSION …)` with the version read from `pyproject.toml` (the
 one version source); targets `peclet_core` / `peclet::core` (header-only) and `peclet_halo` /
 `peclet::halo` (+ MPI, or the single-rank stub); `cmake --install` exports them for
-`find_package(peclet-core CONFIG)`. Python modules: `cmake -S python -B build_rel_py -DCMAKE_PREFIX_PATH=../extern/install/host-openmp`
+`find_package(peclet-core CONFIG)`. Python modules: `cmake -S python -B build_rel_py -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=../extern/install/host-openmp`
 (→ `peclet.halo` under `build_rel_py/peclet/halo/`, `PYTHONPATH=build_rel_py`); its stub is
 `python/packaging/_halo.pyi` — regenerate with `python -m nanobind.stubgen` after changing a
 binding. **`peclet.core.geom` left this repo on 2026-09-21** for the `peclet-geom` package
@@ -197,14 +199,15 @@ Header-only under `include/peclet/core/`:
   What it left behind in core is the face-CSR solver layer under `solver/` (above) and
   `decomp/morton_indexer.hpp` as the one remaining morton consumer. Read `../amr/CLAUDE.md` for the
   AMR design, its two projection schemes and its environment-variable table.
-- `python/` — **nanobind** Python bindings over a
-  shared **zero-copy `peclet::core::View`↔ndarray bridge** (`include/peclet/core/python/ndarray_interop.hpp`).
-  `python/halo_bindings.cpp` (→ `peclet.halo`) is host-only (no Kokkos): exposes `ParticleMigrator`
+- `python/` — the **nanobind** Python bindings. The shared **zero-copy `peclet::core::View`↔ndarray
+  bridge** (`include/peclet/core/python/ndarray_interop.hpp`) lives in core but is used by the Kokkos
+  consumers' modules (flow, pnm, dem, coupling, amr) and by `tests/python`'s probe, not by
+  `peclet.halo`. `python/halo_bindings.cpp` (→ `peclet.halo`) is host-only (no Kokkos): exposes `ParticleMigrator`
   (migrate / gather_ghosts / rebalance) and `ParticleHalo` (the persistent `ParticleHaloTopology`) for an
   mpi4py driver, both constructed as `(origin, extent, cells, periodic)`. The analytic-SDF scene
   authoring bindings moved to the **peclet-geom** package on 2026-09-21 (`peclet.geom`;
   `../docs/CORE_BOUNDARY.md`) — the headers stay here, the bindings do not. (`peclet.core.amr` is `peclet.amr` in
-  the peclet-amr package since 2026-09-10.) Both are built via `include(SuiteNanobind)` +
+  the peclet-amr package since 2026-09-10.) It is built via `include(SuiteNanobind)` +
   `suite_require_nanobind()` from `../cmake/SuiteNanobind.cmake` (suite-root). `python/state_hash.py`
   is the structural byte gate (QUALITY_PLAN §3.G): fixed-seed runs of every `peclet.halo`
   entry path (geom's half moved with it to peclet-geom, byte-identical across the move), SHA-256 of the final state, `--check`ed against `python/state_hash_reference.json` by
@@ -227,7 +230,7 @@ Header-only under `include/peclet/core/`:
   4096–20479) and **distinct NBX call sites use baseTags distinct modulo 128** (0, 11, 7301, 7401,
   7402, 7411, 7501 today). **Tags 1–10 belong to the Repartition stage** (`RedistributeTopology`:
   `kTagBase = 1` + the per-topology `id`, the level index, in [0, 10); an out-of-range id throws).
-  Audited 2026-09-25 across `core`, `flow/src`, `amr`, `dem` and `voro`: no other direct tag lies in
+  Audited 2026-09-24 across `core`, `flow/src`, `amr`, `dem` and `voro`: no other direct tag lies in
   [1, 10]. The nearest on a level's communicator is the `GridHalo` / `GridHaloTopology` default 0;
   AMR's direct tags are 41/45/46 (its 11/12/21–24 are NBX baseTags); voro's `exchange(f, 1|3|9)`
   second argument is a component count, not a tag. Pick new direct tags outside 0–10.
