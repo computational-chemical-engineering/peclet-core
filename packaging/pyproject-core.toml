@@ -41,6 +41,7 @@ dependencies = ["peclet-geom>=1.0,<2", "peclet-halo>=1.1,<2"]
 Homepage = "https://github.com/computational-chemical-engineering/peclet"
 Documentation = "https://computational-chemical-engineering.github.io/peclet/"
 Source = "https://github.com/computational-chemical-engineering/peclet-core"
+Changelog = "https://github.com/computational-chemical-engineering/peclet/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 # Three files, mapped into the peclet.core package. `peclet` itself stays a PEP-420 namespace.
