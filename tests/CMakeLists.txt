@@ -227,6 +227,13 @@ if(MPI_FOUND)
   target_link_libraries(test_particle_halo_mpi PRIVATE peclet_halo)
   target_include_directories(test_particle_halo_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+  # ParticleHaloTopology::build(..., allImages = true) on a slab whose periodic z axis the ORB never
+  # splits (np 1..8): every periodic image within rcut is sent, keyed (id, image), against a
+  # brute-force image-count oracle; reverse sums every image; the default stays the one-image rule.
+  add_executable(test_particle_halo_images_mpi test_particle_halo_images_mpi.cpp)
+  target_link_libraries(test_particle_halo_images_mpi PRIVATE peclet_halo)
+  target_include_directories(test_particle_halo_images_mpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
   # The device particle-migrator view: needs Kokkos + MPI. peclet_halo carries both when
   # PECLET_CORE_ENABLE_KOKKOS is on (same target the Kokkos grid-halo test links).
   if(PECLET_CORE_ENABLE_KOKKOS)
@@ -250,6 +257,7 @@ if(MPI_FOUND)
     peclet_core_add_mpi_test(diffusion_sdf_np${np} test_diffusion_sdf ${np})
     peclet_core_add_mpi_test(ghost_particles_np${np} test_ghost_particles_mpi ${np})
     peclet_core_add_mpi_test(particle_halo_np${np} test_particle_halo_mpi ${np})
+    peclet_core_add_mpi_test(particle_halo_images_np${np} test_particle_halo_images_mpi ${np})
   endforeach()
 
   # Portable GPU-resident halo : device result must match the CPU path, on whatever backend

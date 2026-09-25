@@ -49,7 +49,20 @@ class ParticleHaloTopology {
   /// byte-identical to the cross-rank-only behaviour (no self-ghosts, no MPI self-messages).
   /// Self-ghosts occupy the ghost slots AFTER the received ones ([numReceived, numGhost)) and are
   /// filled locally (no MPI).
-  void build(const std::vector<Vec<Dim>>& pos, double rcut, bool includePeriodicSelf = false) {
+  ///
+  /// `allImages` changes what the CROSS-RANK exchange sends. Off (the default), each owned particle
+  /// goes to each other rank at most once, at the single periodic image nearest that rank's block
+  /// (`withinRcutOfBlock`). On a periodic axis the ORB leaves undecomposed, that nearest image is
+  /// always the unshifted one (its gap on the axis is 0), so a wrapped image inside `rcut` is never
+  /// sent. On, EVERY periodic image of the particle within `rcut` of rank r's block is sent
+  /// (`imagesWithinRcutOfBlock` with the identity allowed), one send entry per image: the same
+  /// owned index may then appear several times in one rank's send list, each with its own shift,
+  /// and a receiver identifies a ghost by (owner id, shift). Every exchange works per entry, so
+  /// forwardPositions places each image, and reverse sums every image's contribution onto the
+  /// owner. The shift of an allImages entry is exactly 0 or +-L per axis. Off => byte-identical to
+  /// the one-image behaviour.
+  void build(const std::vector<Vec<Dim>>& pos, double rcut, bool includePeriodicSelf = false,
+             bool allImages = false) {
     numOwned_ = pos.size();
     int nranks = 0;
     MPI_Comm_size(mig_->comm(), &nranks);
@@ -59,10 +72,21 @@ class ParticleHaloTopology {
     std::map<int, std::vector<Index>> sendMap;
     std::map<int, std::vector<Vec<Dim>>> shiftMap;
     Vec<Dim> img;
+    std::vector<Vec<Dim>> imgShifts;
     for (std::size_t i = 0; i < pos.size(); ++i) {
       for (int r = 0; r < nranks; ++r) {
         if (r == me)
           continue;
+        if (allImages) {
+          // Every qualifying image, one send entry each (the identity included).
+          imgShifts.clear();
+          mig_->imagesWithinRcutOfBlock(pos[i], r, rcut, /*allowIdentity=*/true, imgShifts);
+          for (const auto& sh : imgShifts) {
+            sendMap[r].push_back(static_cast<Index>(i));
+            shiftMap[r].push_back(sh);
+          }
+          continue;
+        }
         if (!mig_->withinRcutOfBlock(pos[i], r, rcut, img))
           continue;
         Vec<Dim> shift;
@@ -243,7 +267,9 @@ class ParticleHaloTopology {
   // per-ghost (for position forwards). Rebuild after each build().
   struct FlatTopo {
     std::vector<int> sendRanks;      // neighbour ranks I send owned copies to
-    std::vector<Index> sendIdx;      // concatenated owned indices to send (all ranks)
+    std::vector<Index> sendIdx;      // concatenated owned indices to send (all ranks); with
+                                     // allImages an index may repeat within one rank's slice
+                                     // (one entry per periodic image)
     std::vector<int> sendCounts;     // per send rank
     std::vector<int> sendOffsets;    // prefix sum into sendIdx (size sendRanks+1)
     std::vector<int> recvRanks;      // neighbour ranks I receive ghosts from

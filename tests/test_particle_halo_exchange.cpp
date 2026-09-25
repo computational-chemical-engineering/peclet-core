@@ -5,8 +5,12 @@
 // to match the CPU result bit-for-bit:
 //   forward(id)        -> each ghost carries its owner's id,
 //   reverse(ones, sum) -> each owned particle accumulates a count of how many ranks ghost it.
+// Run twice: the default topology, and build(..., allImages = true), where one owned particle may
+// sit several times in one rank's send list (one entry per periodic image) and the device reverse
+// must still sum every image's contribution (atomic add over repeated sendIdx entries).
 #include <mpi.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -78,56 +82,77 @@ int main(int argc, char** argv) {
       ownId[i] = (double)id;
     }
 
-    ParticleHaloTopology<3> halo;
-    halo.init(mig);
-    halo.build(pos, rcut);
-    const std::size_t G = halo.numGhost();
+    long long repeated = 0;
+    auto run = [&](bool allImages) {
+      ParticleHaloTopology<3> halo;
+      halo.init(mig);
+      halo.build(pos, rcut, /*includePeriodicSelf=*/allImages, allImages);
+      const std::size_t G = halo.numGhost();
+      if (allImages) {  // count repeated owned indices within one rank's send slice
+        const auto t = halo.flatten();
+        for (std::size_t k = 0; k < t.sendRanks.size(); ++k) {
+          std::vector<Index> sl(t.sendIdx.begin() + t.sendOffsets[k],
+                                t.sendIdx.begin() + t.sendOffsets[k + 1]);
+          std::sort(sl.begin(), sl.end());
+          for (std::size_t j = 1; j < sl.size(); ++j)
+            repeated += (sl[j] == sl[j - 1]) ? 1 : 0;
+        }
+      }
 
-    // --- CPU reference exchanges ---
-    std::vector<double> ghCpu(G), ownCntCpu(Nown, 0.0), ones(G, 1.0);
-    halo.forward(ownId.data(), ghCpu.data());
-    halo.reverse(ones.data(), ownCntCpu.data());
+      // --- CPU reference exchanges ---
+      std::vector<double> ghCpu(G), ownCntCpu(Nown, 0.0), ones(G, 1.0);
+      halo.forward(ownId.data(), ghCpu.data());
+      halo.reverse(ones.data(), ownCntCpu.data());
 
-    // --- device exchanges ---
-    ParticleHalo<3> dhalo;
-    dhalo.init(halo);
+      // --- device exchanges ---
+      ParticleHalo<3> dhalo;
+      dhalo.init(halo);
 
-    View<double> dOwn(Kokkos::view_alloc("own", Kokkos::WithoutInitializing), Nown);
-    View<double> dGhost(Kokkos::view_alloc("ghost", Kokkos::WithoutInitializing), G);
-    {
-      auto hOwn = Kokkos::create_mirror_view(dOwn);
-      for (std::size_t i = 0; i < Nown; ++i)
-        hOwn(i) = ownId[i];
-      Kokkos::deep_copy(dOwn, hOwn);
-    }
-    dhalo.forward(dOwn, dGhost);
-    std::vector<double> ghDev(G);
-    {
-      auto hGhost = Kokkos::create_mirror_view(dGhost);
-      Kokkos::deep_copy(hGhost, dGhost);
+      View<double> dOwn(Kokkos::view_alloc("own", Kokkos::WithoutInitializing), Nown);
+      View<double> dGhost(Kokkos::view_alloc("ghost", Kokkos::WithoutInitializing), G);
+      {
+        auto hOwn = Kokkos::create_mirror_view(dOwn);
+        for (std::size_t i = 0; i < Nown; ++i)
+          hOwn(i) = ownId[i];
+        Kokkos::deep_copy(dOwn, hOwn);
+      }
+      dhalo.forward(dOwn, dGhost);
+      std::vector<double> ghDev(G);
+      {
+        auto hGhost = Kokkos::create_mirror_view(dGhost);
+        Kokkos::deep_copy(hGhost, dGhost);
+        for (std::size_t i = 0; i < G; ++i)
+          ghDev[i] = hGhost(i);
+      }
+
+      View<double> dGones(Kokkos::view_alloc("gones", Kokkos::WithoutInitializing), G);
+      View<double> dOwnCnt("owncnt", Nown);  // zero-initialised
+      Kokkos::deep_copy(dGones, 1.0);
+      dhalo.reverse(dGones, dOwnCnt);
+      std::vector<double> ownCntDev(Nown);
+      {
+        auto hCnt = Kokkos::create_mirror_view(dOwnCnt);
+        Kokkos::deep_copy(hCnt, dOwnCnt);
+        for (std::size_t i = 0; i < Nown; ++i)
+          ownCntDev[i] = hCnt(i);
+      }
+
+      // --- device must match CPU bit-for-bit ---
       for (std::size_t i = 0; i < G; ++i)
-        ghDev[i] = hGhost(i);
-    }
-
-    View<double> dGones(Kokkos::view_alloc("gones", Kokkos::WithoutInitializing), G);
-    View<double> dOwnCnt("owncnt", Nown);  // zero-initialised
-    Kokkos::deep_copy(dGones, 1.0);
-    dhalo.reverse(dGones, dOwnCnt);
-    std::vector<double> ownCntDev(Nown);
-    {
-      auto hCnt = Kokkos::create_mirror_view(dOwnCnt);
-      Kokkos::deep_copy(hCnt, dOwnCnt);
+        if (ghDev[i] != ghCpu[i])
+          ++fail;
       for (std::size_t i = 0; i < Nown; ++i)
-        ownCntDev[i] = hCnt(i);
-    }
-
-    // --- device must match CPU bit-for-bit ---
-    for (std::size_t i = 0; i < G; ++i)
-      if (ghDev[i] != ghCpu[i])
-        ++fail;
-    for (std::size_t i = 0; i < Nown; ++i)
-      if (ownCntDev[i] != ownCntCpu[i])
-        ++fail;
+        if (ownCntDev[i] != ownCntCpu[i])
+          ++fail;
+    };
+    run(false);
+    run(true);
+    // The allImages pass must actually exercise repeated send entries where a periodic axis is
+    // undecomposed (np 2 and 4 of this ORB; np 1 has no cross-rank exchange).
+    long long repeatedAll = 0;
+    MPI_Allreduce(&repeated, &repeatedAll, 1, MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    if (size >= 2 && repeatedAll == 0)
+      ++fail;
   }
 
   int total = 0;

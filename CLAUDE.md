@@ -31,13 +31,13 @@ judgement call in the moment.
 ```bash
 # CPU library + tests (no device dependency):
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
-ctest --test-dir build --output-on-failure -LE bench   # 72 ctests (73 with `bench`): decomposition, MPI halo, particle migration, MG stages, diffusion, geometry
+ctest --test-dir build --output-on-failure -LE bench   # 76 ctests (77 with `bench`): decomposition, MPI halo, particle migration, MG stages, diffusion, geometry
 
 # Portable Kokkos device halo (CUDA / HIP / OpenMP) -- opt-in, find_package(Kokkos):
 export PATH=/usr/local/cuda-13.2/bin:$PATH    # if the Kokkos install targets the CUDA backend
 cmake -S . -B build_kokkos -DPECLET_CORE_ENABLE_KOKKOS=ON \
   -DCMAKE_PREFIX_PATH=../extern/install/nvidia-cuda
-cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure -LE bench  # 87 ctests (88 with `bench`): + device halo / geometry / solver, np=1,2,4,8
+cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure -LE bench  # 91 ctests (92 with `bench`): + device halo / geometry / solver, np=1,2,4,8
 mpirun -np 4 ./build/benchmarks/bench_halo 48 1 300
 
 # Python modules + their ctests (test_mpi.py np=1,2,4,8; state_hash; ndarray interop). Release is
@@ -158,6 +158,14 @@ Header-only under `include/peclet/core/`:
   particle proximity; `forward` (owner→ghost), `reverse` (ghost→owner, accumulate) and
   `forwardPositions` (periodic image shift) are the cheap per-step exchanges. The standard distributed
   particle schemes (frozen/replicate, Newton-on, force-accumulate) are compositions of these.
+  `build(pos, rcut, includePeriodicSelf = false, allImages = false)`: by default each particle goes
+  to each other rank ONCE, at the image nearest that rank's block — on a periodic axis the ORB left
+  undecomposed that is always the unshifted image, so a wrapped image inside `rcut` is dropped and a
+  pair crossing a rank face while wrapping that axis is seen by neither owner. `allImages = true`
+  (opt-in, 1.3.0; dem's distributed step, `../dem/docs/contact_solve_framework.md` §5.3)
+  sends every image within `rcut`, one send entry per image, so an owned index may repeat in one
+  rank's `sendIdx` and a ghost is identified by (owner id, shift); forward/reverse work per entry.
+  Off is byte-identical to the one-image rule. Gate: `test_particle_halo_images_mpi` (np 1–8).
 - `halo/particle_halo.hpp` — `ParticleHalo<Dim>`: the Kokkos GPU-resident driver for
   `ParticleHaloTopology` (on-device forward gather + reverse atomic-accumulate; host-staged or
   GPU-aware MPI). Built from `ParticleHaloTopology::flatten()`; consumed by dem's distributed step.
