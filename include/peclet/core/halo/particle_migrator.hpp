@@ -218,24 +218,45 @@ class ParticleMigrator {
         nc[d] = 3;
       }
     }
+    // Per-axis prefilter (exact): an image qualifies only if its total squared gap is below rc2,
+    // so every one of its per-axis gaps is -- keep, per axis and in candidate order, the shifts
+    // whose own gap passes, then enumerate their product in the same nesting (axis 0 fastest) as
+    // the full 3^Dim walk. Same set, same order, typically one candidate per axis instead of 27
+    // combinations (this runs for every owned particle x every rank at every topology build).
+    const double rc2 = rcut * rcut;
+    int keep[Dim][3];
+    double keepGap2[Dim][3];
+    int nk[Dim];
+    for (int d = 0; d < Dim; ++d) {
+      nk[d] = 0;
+      for (int k = 0; k < nc[d]; ++k) {
+        const double p = x[d] + cand[d][k];
+        const double gap = (p < lo[d]) ? (lo[d] - p) : (p > hi[d]) ? (p - hi[d]) : 0.0;
+        if (gap * gap < rc2) {
+          keep[d][nk[d]] = k;
+          keepGap2[d][nk[d]] = gap * gap;
+          ++nk[d];
+        }
+      }
+      if (nk[d] == 0)
+        return;
+    }
     int total = 1;
     for (int d = 0; d < Dim; ++d)
-      total *= nc[d];
-    const double rc2 = rcut * rcut;
+      total *= nk[d];
     for (int idx = 0; idx < total; ++idx) {
       Vec<Dim> shift{};
       int t = idx;
       bool identity = true;
       double d2 = 0.0;
       for (int d = 0; d < Dim; ++d) {
-        const int k = t % nc[d];
-        t /= nc[d];
+        const int j = t % nk[d];
+        t /= nk[d];
+        const int k = keep[d][j];
         shift[d] = cand[d][k];
         if (k != 0)
           identity = false;
-        const double p = x[d] + shift[d];
-        const double gap = (p < lo[d]) ? (lo[d] - p) : (p > hi[d]) ? (p - hi[d]) : 0.0;
-        d2 += gap * gap;
+        d2 += keepGap2[d][j];
       }
       if (d2 < rc2 && (allowIdentity || !identity))
         outShifts.push_back(shift);
