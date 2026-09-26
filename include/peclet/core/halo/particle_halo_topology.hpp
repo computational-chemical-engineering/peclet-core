@@ -283,20 +283,20 @@ class ParticleHaloTopology {
   // pack). recvOffsets index the contiguous [0,numGhost) ghost array (in recvRanks order); shift is
   // per-ghost (for position forwards). Rebuild after each build().
   struct FlatTopo {
-    std::vector<int> sendRanks;      // neighbour ranks I send owned copies to
-    std::vector<Index> sendIdx;      // concatenated owned indices to send (all ranks); with
-                                     // allImages an index may repeat within one rank's slice
-                                     // (one entry per periodic image)
+    std::vector<int> sendRanks;       // neighbour ranks I send owned copies to
+    std::vector<Index> sendIdx;       // concatenated owned indices to send (all ranks); with
+                                      // allImages an index may repeat within one rank's slice
+                                      // (one entry per periodic image)
     std::vector<Vec<Dim>> sendShift;  // parallel to sendIdx: the periodic image offset the entry is
                                       // sent with (the receiver's ghost shift for that entry)
-    std::vector<int> sendCounts;     // per send rank
-    std::vector<int> sendOffsets;    // prefix sum into sendIdx (size sendRanks+1)
-    std::vector<int> recvRanks;      // neighbour ranks I receive ghosts from
-    std::vector<int> recvCounts;     // per recv rank
-    std::vector<Index> recvOffsets;  // per recv rank: start in the [0,numReceived) ghost array
-    std::vector<Vec<Dim>> shift;     // per ghost: periodic image offset (add to forwarded position)
-    std::vector<Index> selfIdx;      // owned index of each LOCAL periodic self-ghost (size numSelf)
-    Index numReceived = 0;           // ghost slots [0,numReceived) are cross-rank (MPI), the rest
+    std::vector<int> sendCounts;      // per send rank
+    std::vector<int> sendOffsets;     // prefix sum into sendIdx (size sendRanks+1)
+    std::vector<int> recvRanks;       // neighbour ranks I receive ghosts from
+    std::vector<int> recvCounts;      // per recv rank
+    std::vector<Index> recvOffsets;   // per recv rank: start in the [0,numReceived) ghost array
+    std::vector<Vec<Dim>> shift;  // per ghost: periodic image offset (add to forwarded position)
+    std::vector<Index> selfIdx;   // owned index of each LOCAL periodic self-ghost (size numSelf)
+    Index numReceived = 0;        // ghost slots [0,numReceived) are cross-rank (MPI), the rest
                             // [numReceived, numGhost) are local self-ghosts gathered from selfIdx
   };
   FlatTopo flatten() const {
