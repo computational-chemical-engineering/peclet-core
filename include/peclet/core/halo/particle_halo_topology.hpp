@@ -98,11 +98,13 @@ class ParticleHaloTopology {
     }
     sendRanks_.clear();
     sendIdx_.clear();
+    sendShift_.clear();
     sendRankPos_.clear();
     for (auto& [r, idx] : sendMap) {
       sendRankPos_[r] = sendRanks_.size();
       sendRanks_.push_back(r);
       sendIdx_.push_back(std::move(idx));
+      sendShift_.push_back(shiftMap[r]);  // the image each entry is sent as (parallel to sendIdx_)
     }
 
     // Exchange the shift vectors (one NBX round) to size the ghost array + matched recv lists.
@@ -270,6 +272,8 @@ class ParticleHaloTopology {
     std::vector<Index> sendIdx;      // concatenated owned indices to send (all ranks); with
                                      // allImages an index may repeat within one rank's slice
                                      // (one entry per periodic image)
+    std::vector<Vec<Dim>> sendShift;  // parallel to sendIdx: the periodic image offset the entry is
+                                      // sent with (the receiver's ghost shift for that entry)
     std::vector<int> sendCounts;     // per send rank
     std::vector<int> sendOffsets;    // prefix sum into sendIdx (size sendRanks+1)
     std::vector<int> recvRanks;      // neighbour ranks I receive ghosts from
@@ -284,10 +288,13 @@ class ParticleHaloTopology {
     FlatTopo t;
     t.sendRanks = sendRanks_;
     t.sendOffsets.push_back(0);
-    for (const auto& idx : sendIdx_) {
+    for (std::size_t k = 0; k < sendIdx_.size(); ++k) {
+      const auto& idx = sendIdx_[k];
       t.sendCounts.push_back(static_cast<int>(idx.size()));
       for (Index id : idx)
         t.sendIdx.push_back(id);
+      for (const auto& sh : sendShift_[k])
+        t.sendShift.push_back(sh);
       t.sendOffsets.push_back(static_cast<int>(t.sendIdx.size()));
     }
     t.recvRanks = recvRanks_;
@@ -307,6 +314,7 @@ class ParticleHaloTopology {
   // Owner side: particles I send as ghosts to each neighbour rank.
   std::vector<int> sendRanks_;
   std::vector<std::vector<Index>> sendIdx_;
+  std::vector<std::vector<Vec<Dim>>> sendShift_;  // parallel to sendIdx_: each entry's image offset
   std::map<int, std::size_t> sendRankPos_;
 
   // Ghost side: ghosts I receive from each neighbour rank (contiguous slots, in recvRanks_ order).

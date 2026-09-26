@@ -169,6 +169,14 @@ int main(int argc, char** argv) {
   halo.init(mig);
   halo.build(pos, rcut, /*includePeriodicSelf=*/true, /*allImages=*/true);
   const auto topo = halo.flatten();
+  // sendShift is parallel to sendIdx, and each entry's image offset is exactly 0 or +-L per axis
+  // (the sender side of the per-ghost shift: consumers identify a send entry by (rank, image)).
+  check(topo.sendShift.size() == topo.sendIdx.size(), "sendShift parallel to sendIdx");
+  for (const auto& sh : topo.sendShift)
+    for (int d = 0; d < 3; ++d) {
+      const double a = std::fabs(sh[d]);
+      check(a == 0.0 || std::fabs(a - dsize[d]) < 1e-9 * dsize[d], "sendShift entry is 0 or +-L");
+    }
   const std::size_t G = halo.numGhost();
   const std::size_t NR = static_cast<std::size_t>(topo.numReceived);
   std::vector<double> ghId(G);
