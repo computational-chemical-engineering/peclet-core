@@ -199,6 +199,32 @@ class ParticleMigrator {
   /// periodic face (an undecomposed periodic axis, or np=1). `allowIdentity=false` drops the
   /// un-shifted image, so r==self yields only the periodic self-wrap copies (a particle is never
   /// its own ghost).
+  /// True iff some point of the box [bmin, bmax] (a periodic image of it included) lies within
+  /// `rcut` of rank r's block. A point of the box has, per axis and per image, a gap no smaller
+  /// than the box's, so false proves that NO point of the box qualifies for r -- a candidate filter
+  /// that is a superset of every per-particle test (withinRcutOfBlock, imagesWithinRcutOfBlock).
+  bool boxWithinRcutOfBlock(const Vec<Dim>& bmin, const Vec<Dim>& bmax, int r, double rcut) const {
+    const auto& o = dec_->origins()[r];
+    const auto& s = dec_->sizes()[r];
+    const IVec<Dim>& gsize = dec_->globalSize();
+    double d2 = 0.0;
+    for (int d = 0; d < Dim; ++d) {
+      const double lo = map_.origin[d] + o[d] * map_.cellSize[d];
+      const double hi = map_.origin[d] + (o[d] + s[d]) * map_.cellSize[d];
+      auto gap = [&](double shift) {
+        const double a = bmin[d] + shift, b = bmax[d] + shift;
+        return std::max(0.0, std::max(lo - b, a - hi));
+      };
+      double g = gap(0.0);
+      if (map_.periodic[d]) {
+        const double L = map_.cellSize[d] * static_cast<double>(gsize[d]);
+        g = std::min(g, std::min(gap(-L), gap(L)));
+      }
+      d2 += g * g;
+    }
+    return d2 < rcut * rcut;
+  }
+
   void imagesWithinRcutOfBlock(const Vec<Dim>& x, int r, double rcut, bool allowIdentity,
                                std::vector<Vec<Dim>>& outShifts) const {
     const auto& o = dec_->origins()[r];

@@ -21,6 +21,7 @@
 #ifndef PECLET_CORE_HALO_PARTICLE_HALO_TOPOLOGY_HPP
 #define PECLET_CORE_HALO_PARTICLE_HALO_TOPOLOGY_HPP
 
+#include <algorithm>
 #include <cstring>
 #include <map>
 #include <vector>
@@ -73,10 +74,24 @@ class ParticleHaloTopology {
     std::map<int, std::vector<Vec<Dim>>> shiftMap;
     Vec<Dim> img;
     std::vector<Vec<Dim>> imgShifts;
+    // Candidate ranks (ascending): those whose block comes within rcut of the bounding box of my
+    // particles, images included (boxWithinRcutOfBlock). A superset of every rank any particle can
+    // qualify for, so the send lists -- entries and order -- are those of the all-ranks loop; the
+    // per-particle work drops from O(numRanks) to O(neighbours).
+    std::vector<int> cand;
+    if (!pos.empty()) {
+      Vec<Dim> bmin = pos[0], bmax = pos[0];
+      for (const auto& x : pos)
+        for (int d = 0; d < Dim; ++d) {
+          bmin[d] = std::min(bmin[d], x[d]);
+          bmax[d] = std::max(bmax[d], x[d]);
+        }
+      for (int r = 0; r < nranks; ++r)
+        if (r != me && mig_->boxWithinRcutOfBlock(bmin, bmax, r, rcut))
+          cand.push_back(r);
+    }
     for (std::size_t i = 0; i < pos.size(); ++i) {
-      for (int r = 0; r < nranks; ++r) {
-        if (r == me)
-          continue;
+      for (const int r : cand) {
         if (allImages) {
           // Every qualifying image, one send entry each (the identity included).
           imgShifts.clear();
