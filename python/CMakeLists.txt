@@ -105,6 +105,16 @@ if(PECLET_CORE_PYTHON_TESTS)
   # type exits 77 and ctest reports the gate SKIPPED (CI), never passed.
   set_tests_properties(python_state_hash PROPERTIES LABELS "python" SKIP_RETURN_CODE 77
     ENVIRONMENT "${_py_env};OMP_NUM_THREADS=1")
+  # The peclet-core compatibility shell (packaging/shell) warns on `import peclet.core.{geom,mpi}`
+  # and the canonical `peclet.geom` / `peclet.halo` stay silent — CORE_BOUNDARY step 2, gated.
+  # The geom half SKIPs (77) where the separate peclet-geom distribution is not installed.
+  foreach(_old IN ITEMS geom mpi)
+    add_test(NAME python_shell_deprecation_${_old}
+             COMMAND "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_shell_deprecation.py"
+                     ${_old} "${CMAKE_CURRENT_SOURCE_DIR}/../packaging/shell")
+    set_tests_properties(python_shell_deprecation_${_old} PROPERTIES LABELS "python"
+      SKIP_RETURN_CODE 77 ENVIRONMENT "${_py_env}")
+  endforeach()
   if(Kokkos_FOUND)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../tests/python tests_python)
   else()

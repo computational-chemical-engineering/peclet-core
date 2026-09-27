@@ -110,7 +110,9 @@ jobs:
                                   python3-dev python3-pip
           # nanobind is located through the interpreter (cmake/SuiteNanobind.cmake); mpi4py builds
           # against the apt OpenMPI just installed (same MPI the modules link).
-          python3 -m pip install "nanobind==${NANOBIND_VERSION}" numpy pytest mpi4py
+          # peclet-geom (a wheel) lets python_shell_deprecation_geom run instead of SKIPping: the
+          # compatibility shell re-exports it, so the warning gate needs it importable.
+          python3 -m pip install "nanobind==${NANOBIND_VERSION}" numpy pytest mpi4py "peclet-geom>=1.0,<2"
 
       - name: Cache Kokkos install
         id: kokkos-cache

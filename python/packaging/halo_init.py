@@ -8,7 +8,7 @@ Needs an MPI toolchain to build and an MPI runtime to use, which is why it ships
 `pip install peclet[mpi]` while its former housemate `peclet.geom` ships wheels.
 
 Until peclet 1.2.0 this was ``peclet.core.mpi`` in the ``peclet-core`` distribution. That spelling
-still works and is the same object; it warns from 1.3.0 and is removed in 2.0.0.
+still works and is the same object; it warns from 1.3.1 and is removed in 2.0.0.
 """
 from importlib.metadata import PackageNotFoundError, version as _version
 

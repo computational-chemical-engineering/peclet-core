@@ -107,8 +107,8 @@ after `cmake --install`, or as a sibling checkout in the suite.
   `find_package(MPI REQUIRED)` — so a pure-geometry API could not be installed without an MPI
   toolchain. The C++ headers `include/peclet/core/geom/` **stay here**; peclet-geom vendors them at
   `PECLET_CORE_TAG`. The old spellings keep working through the `peclet-core` compatibility shell
-  until 2.0.0 — `peclet.core.geom` is now `peclet.geom`, `peclet.core.mpi` is now `peclet.halo`,
-  and each pair is the same object. See
+  until 2.0.0, with a `DeprecationWarning` since 1.3.1 — `peclet.core.geom` is now `peclet.geom`,
+  `peclet.core.mpi` is now `peclet.halo`, and each pair is the same object. See
   [docs/CORE_BOUNDARY.md](https://github.com/computational-chemical-engineering/peclet/blob/main/docs/CORE_BOUNDARY.md).
 
 Validated end-to-end by distributed explicit heat-diffusion solvers (plain, and **around an SDF solid

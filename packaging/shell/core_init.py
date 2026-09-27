@@ -13,7 +13,8 @@ Why the split: `peclet.core.geom` is host-only SDF authoring with no MPI in it, 
 distribution with the halo bindings whose build requires an MPI toolchain — so a pure-geometry API
 could not be pip-installed without MPI. See suite/docs/CORE_BOUNDARY.md.
 
-These spellings keep working unchanged in peclet 1.2.0, gain a DeprecationWarning in 1.3.0, and are
+These spellings keep working unchanged in peclet 1.2.0, warn (DeprecationWarning, on importing
+``peclet.core.geom`` / ``peclet.core.mpi``) from peclet-core 1.3.1 in family 1.3.0, and are
 removed in 2.0.0. The canonical spellings are ``from peclet import geom`` and
 ``from peclet import halo``.
 """
