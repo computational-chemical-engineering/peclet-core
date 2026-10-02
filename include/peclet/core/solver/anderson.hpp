@@ -115,11 +115,15 @@ struct reduction_identity<peclet::core::solver::detail::anderson::SumN<N>> {
 namespace peclet::core::solver {
 namespace detail::anderson {
 
-/// COUNT: inner entries where buf != prev.
-inline double countChanged(View<const double> buf, View<const double> prev, const IVec<3>& e,
-                           int g) {
+/// A reduction result held on the device: a reduction into it does not synchronise the host, so
+/// a phase's reductions queue back to back and are read back behind one fence (design §6.1).
+template <class T>
+using DeviceScalar = Kokkos::View<T, MemSpace>;
+
+/// COUNT: inner entries where buf != prev, into `out` (no host synchronisation).
+inline void countChanged(View<const double> buf, View<const double> prev, const IVec<3>& e, int g,
+                         const DeviceScalar<Index>& out) {
   const Index ex = e[0], exy = e[0] * e[1];
-  Index n = 0;
   Kokkos::parallel_reduce(
       "anderson::count", innerPolicy(e, g),
       KOKKOS_LAMBDA(const Index x, const Index y, const Index z, Index& acc) {
@@ -127,8 +131,7 @@ inline double countChanged(View<const double> buf, View<const double> prev, cons
         if (buf(i) != prev(i))
           ++acc;
       },
-      n);
-  return static_cast<double>(n);
+      Kokkos::Sum<Index, MemSpace>(out));
 }
 
 /// The window columns the mix reads, oldest first.
@@ -178,10 +181,11 @@ inline void residual(View<const double> buf, View<double> x) {
       KOKKOS_LAMBDA(const Index i) { x(i) = buf(i) - x(i); });
 }
 
-/// Pass 2, residual part: {Σ X², Σ buf²} over the inner entries of one Velocity field.
-inline SumN<2> selfSums(View<const double> x, View<const double> buf, const IVec<3>& e, int g) {
+/// Pass 2, residual part: {Σ X², Σ buf²} over the inner entries of one Velocity field, into `out`
+/// (no host synchronisation).
+inline void selfSums(View<const double> x, View<const double> buf, const IVec<3>& e, int g,
+                     const DeviceScalar<SumN<2>>& out) {
   const Index ex = e[0], exy = e[0] * e[1];
-  SumN<2> s;
   Kokkos::parallel_reduce(
       "anderson::self_sums", innerPolicy(e, g),
       KOKKOS_LAMBDA(const Index xi, const Index y, const Index z, SumN<2>& acc) {
@@ -189,16 +193,16 @@ inline SumN<2> selfSums(View<const double> x, View<const double> buf, const IVec
         acc.v[0] += x(i) * x(i);
         acc.v[1] += buf(i) * buf(i);
       },
-      Kokkos::Sum<SumN<2>>(s));
-  return s;
+      Kokkos::Sum<SumN<2>, MemSpace>(out));
 }
 
 /// Pass 2, one window column j against the new column s, over the inner entries of one Velocity
-/// field: {⟨dR_s,dR_j⟩, ⟨dG_s,dG_j⟩, ⟨dG_s,dR_j⟩, ⟨dG_j,dR_s⟩, ⟨dR_j,X⟩}.
-inline SumN<5> columnSums(View<const double> dRs, View<const double> dGs, View<const double> dRj,
-                          View<const double> dGj, View<const double> x, const IVec<3>& e, int g) {
+/// field: {⟨dR_s,dR_j⟩, ⟨dG_s,dG_j⟩, ⟨dG_s,dR_j⟩, ⟨dG_j,dR_s⟩, ⟨dR_j,X⟩}, into `out` (no host
+/// synchronisation).
+inline void columnSums(View<const double> dRs, View<const double> dGs, View<const double> dRj,
+                       View<const double> dGj, View<const double> x, const IVec<3>& e, int g,
+                       const DeviceScalar<SumN<5>>& out) {
   const Index ex = e[0], exy = e[0] * e[1];
-  SumN<5> s;
   Kokkos::parallel_reduce(
       "anderson::column_sums", innerPolicy(e, g),
       KOKKOS_LAMBDA(const Index xi, const Index y, const Index z, SumN<5>& acc) {
@@ -210,8 +214,7 @@ inline SumN<5> columnSums(View<const double> dRs, View<const double> dGs, View<c
         acc.v[3] += gj * rs;
         acc.v[4] += rj * x(i);
       },
-      Kokkos::Sum<SumN<5>>(s));
-  return s;
+      Kokkos::Sum<SumN<5>, MemSpace>(out));
 }
 
 // ---- host linear algebra (deterministic, n ≤ kMaxWindow) ----------------------------------------
@@ -410,6 +413,7 @@ class AndersonCore {
         alloc(dR_[s], "dR");
         alloc(dG_[s], "dG");
       }
+      allocReductionScratch();
     } catch (const std::exception&) {
       failed = 1.0;
     }
@@ -441,7 +445,8 @@ class AndersonCore {
 
   /// §4.3 steps 0–1. Detects an external write of the state (inner entries only), then either
   /// applies the pending mix (accelerate, pending, active) or records the input. Returns whether
-  /// the state now holds a mixed iterate. Collective (one 1-double sum) while active.
+  /// the state now holds a mixed iterate. Collective (one 1-double sum) while active; one host
+  /// synchronisation (the COUNT read-back).
   bool prepare(bool accelerate) {
     if (prepared_)
       throw std::logic_error("AndersonCore::prepare: called twice without complete()");
@@ -450,9 +455,15 @@ class AndersonCore {
     if (status_ != Status::Active)
       return false;
     if (havePrev_) {
+      const std::size_t ns = st_.fields.size();
+      for (std::size_t f = 0; f < ns; ++f)
+        detail::anderson::countChanged(st_.fields[f], gPrev_[f], st_.extent, st_.ghost,
+                                       Kokkos::subview(countDev_, f));
+      Kokkos::deep_copy(ExecSpace(), countHost_, countDev_);
+      ExecSpace().fence("anderson::count");  // the one host synchronisation of prepare()
       double changed = 0.0;
-      for (std::size_t f = 0; f < st_.fields.size(); ++f)
-        changed += detail::anderson::countChanged(st_.fields[f], gPrev_[f], st_.extent, st_.ghost);
+      for (std::size_t f = 0; f < ns; ++f)
+        changed += static_cast<double>(countHost_(f));
       sumAll(&changed, 1);
       if (changed > 0.0)
         invalidate();
@@ -471,7 +482,7 @@ class AndersonCore {
       }
     } else {
       for (std::size_t f = 0; f < st_.fields.size(); ++f)
-        Kokkos::deep_copy(x_[f], st_.fields[f]);
+        Kokkos::deep_copy(ExecSpace(), x_[f], st_.fields[f]);  // stream-ordered, no fence
     }
     pending_ = false;
     return mixed_;
@@ -497,7 +508,8 @@ class AndersonCore {
   }
 
   /// §4.3 steps 3–7, after the caller's step. `pressureSolveFailed` must be rank-consistent.
-  /// Collective while active: a (5·columns + 2)-double sum and a broadcast of rank 0's decisions.
+  /// Collective while active: a (5·columns + 2)-double sum and a broadcast of rank 0's decisions;
+  /// one host synchronisation (the pass-2 read-back). The device copies are stream-ordered.
   void complete(bool pressureSolveFailed = false) {
     if (!prepared_)
       throw std::logic_error("AndersonCore::complete: called without prepare()");
@@ -534,17 +546,32 @@ class AndersonCore {
     }
 
     // --- 4. reductions (§6.1; rev 1: Velocity fields only, no pass 1) ---
-    std::vector<double> packet(static_cast<std::size_t>(5 * nCols + 2), 0.0);
-    for (std::size_t f = 0; f < ns; ++f) {
+    // Every reduction lands in its own device slot (velocity field v, window position k), so the
+    // (nCols + 1)·n_v reductions queue without a host synchronisation and are read back behind ONE
+    // fence. The per-field partials are added on the host in field order, as before: the kernels,
+    // their value types and the summation order are unchanged, so the result is bit-identical.
+    for (std::size_t f = 0, v = 0; f < ns; ++f) {
       if (st_.roles[f] != AndersonRole::Velocity)
         continue;
-      const da::SumN<2> ss = da::selfSums(x_[f], st_.fields[f], e, g);
+      da::selfSums(x_[f], st_.fields[f], e, g, Kokkos::subview(selfDev_, v));
+      for (int k = 0; k < nCols; ++k) {
+        const int j = cols[k];
+        da::columnSums(dR_[s][f], dG_[s][f], dR_[j][f], dG_[j][f], x_[f], e, g,
+                       Kokkos::subview(colDev_, v * kMaxWindow + k));
+      }
+      ++v;
+    }
+    Kokkos::deep_copy(ExecSpace(), selfHost_, selfDev_);
+    if (nCols > 0)
+      Kokkos::deep_copy(ExecSpace(), colHost_, colDev_);
+    ExecSpace().fence("anderson::pass2");  // the one host synchronisation of complete()
+    std::vector<double> packet(static_cast<std::size_t>(5 * nCols + 2), 0.0);
+    for (std::size_t v = 0; v < selfHost_.extent(0); ++v) {
+      const da::SumN<2>& ss = selfHost_(v);
       packet[0] += ss.v[0];
       packet[1] += ss.v[1];
       for (int k = 0; k < nCols; ++k) {
-        const int j = cols[k];
-        const da::SumN<5> cs =
-            da::columnSums(dR_[s][f], dG_[s][f], dR_[j][f], dG_[j][f], x_[f], e, g);
+        const da::SumN<5>& cs = colHost_(v * kMaxWindow + k);
         for (int q = 0; q < 5; ++q)
           packet[static_cast<std::size_t>(2 + 5 * k + q)] += cs.v[q];
       }
@@ -607,7 +634,7 @@ class AndersonCore {
     // --- 6. commit on the device ---
     std::swap(rPrev_, x_);
     for (std::size_t f = 0; f < ns; ++f)
-      Kokkos::deep_copy(gPrev_[f], st_.fields[f]);
+      Kokkos::deep_copy(ExecSpace(), gPrev_[f], st_.fields[f]);  // stream-ordered, no fence
     havePrev_ = true;
 
     // --- 7. next coefficients ---
@@ -807,7 +834,22 @@ class AndersonCore {
 
   void restoreLastOutput() {
     for (std::size_t f = 0; f < st_.fields.size(); ++f)
-      Kokkos::deep_copy(st_.fields[f], gPrev_[f]);
+      Kokkos::deep_copy(ExecSpace(), st_.fields[f], gPrev_[f]);  // stream-ordered, no fence
+  }
+
+  /// The device slots of the per-step reductions and their host mirrors (a few hundred bytes; not
+  /// part of the §6.3 history and not in memoryBytes()).
+  void allocReductionScratch() {
+    namespace da = detail::anderson;
+    std::size_t nv = 0;
+    for (const AndersonRole r : st_.roles)
+      nv += r == AndersonRole::Velocity ? 1 : 0;
+    countDev_ = Kokkos::View<Index*, MemSpace>("anderson::count", st_.fields.size());
+    selfDev_ = Kokkos::View<da::SumN<2>*, MemSpace>("anderson::self_sums", nv);
+    colDev_ = Kokkos::View<da::SumN<5>*, MemSpace>("anderson::column_sums", nv * kMaxWindow);
+    countHost_ = Kokkos::create_mirror_view(countDev_);
+    selfHost_ = Kokkos::create_mirror_view(selfDev_);
+    colHost_ = Kokkos::create_mirror_view(colDev_);
   }
 
   bool allMixed() const {
@@ -913,6 +955,13 @@ class AndersonCore {
   // device (design §4.2): one view per state field per vector
   std::vector<View<double>> x_, rPrev_, gPrev_;
   std::vector<View<double>> dR_[kMaxWindow], dG_[kMaxWindow];
+  // per-step reduction slots: COUNT by field; pass 2 by velocity field (· kMaxWindow + position)
+  Kokkos::View<Index*, MemSpace> countDev_;
+  Kokkos::View<detail::anderson::SumN<2>*, MemSpace> selfDev_;
+  Kokkos::View<detail::anderson::SumN<5>*, MemSpace> colDev_;
+  typename Kokkos::View<Index*, MemSpace>::host_mirror_type countHost_;
+  typename Kokkos::View<detail::anderson::SumN<2>*, MemSpace>::host_mirror_type selfHost_;
+  typename Kokkos::View<detail::anderson::SumN<5>*, MemSpace>::host_mirror_type colHost_;
 
   // host
   int mk_ = 0;
