@@ -37,7 +37,7 @@ ctest --test-dir build --output-on-failure -LE bench   # 76 ctests (77 with `ben
 export PATH=/usr/local/cuda-13.2/bin:$PATH    # if the Kokkos install targets the CUDA backend
 cmake -S . -B build_kokkos -DPECLET_CORE_ENABLE_KOKKOS=ON \
   -DCMAKE_PREFIX_PATH=../extern/install/nvidia-cuda
-cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure -LE bench  # 92 ctests (93 with `bench`): + device halo / geometry / solver / VoF PV fit, np=1,2,4,8
+cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure -LE bench  # 96 ctests (97 with `bench`): + device halo / geometry / solver / VoF PV fit / Anderson, np=1,2,4,8
 mpirun -np 4 ./build/benchmarks/bench_halo 48 1 300
 
 # Python modules + their ctests (test_mpi.py np=1,2,4,8; state_hash; ndarray interop). Release is
@@ -199,6 +199,15 @@ Header-only under `include/peclet/core/`:
   `ot_optimizer.hpp` and the AMR package are the consumers. Gate: `tests/test_csr_solver.cpp`
   (Kokkos build) — host row kernel vs device matvec, proper colouring of an asymmetric CSR,
   smoothers, BiCGStab + defect correction.
+  `solver/anderson.hpp` is **`AndersonCore`**, type-II Anderson acceleration of a steady march
+  (design: `../flow/doc/steady_acceleration.md`; register "AndersonCore lives in core from the
+  start"): grid-agnostic over an `AndersonState` (padded state views + roles Velocity / Pressure /
+  Carried + SDF fluid mask + metric weight `cP` + gauge flag), split `prepare` / `complete` around
+  the caller's own step, history `(2m+3)·n_s·8·n_pad` bytes. MPI-free: the collectives are two
+  callables in `AndersonComm`; `solver/anderson_mpi.hpp` builds them from an `MPI_Comm` and is the
+  MPI side. Gates: `tests/test_anderson.cpp` (U2–U6, metric, memory formula; U1 runs only with
+  `--u1`, see the file) and `tests/test_anderson_mpi.cpp` (U7, np 1/2/4: γ bitwise on all ranks,
+  np = 1 bit-identical to serial).
 - **`amr/` is gone (2026-09-10)** — the whole AMR tree (the block-local-Morton octree, the distributed
   octree with leaf halos and weighted-ORB rebalancing, the collocated-projection cut-cell
   Navier–Stokes solver, its tests, studies, docs and campaign logs) is the **`peclet-amr`** package,
