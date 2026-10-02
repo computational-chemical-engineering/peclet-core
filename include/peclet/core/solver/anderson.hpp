@@ -60,9 +60,6 @@ struct AndersonState {
   IVec<3> extent{};
   /// Ghost width G.
   int ghost = 2;
-  /// Relative tolerance of the caller's inner solves; sets the Ritz floor
-  /// max(kNoiseFloor, kRitzFloorFactor·innerTolerance) (design §4.1, rev 1); 0 = unknown.
-  double innerTolerance = 0.0;
   /// Collectives; empty = a single rank.
   AndersonComm comm;
 };
@@ -197,24 +194,20 @@ inline void selfSums(View<const double> x, View<const double> buf, const IVec<3>
 }
 
 /// Pass 2, one window column j against the new column s, over the inner entries of one Velocity
-/// field: {⟨dR_s,dR_j⟩, ⟨dG_s,dG_j⟩, ⟨dG_s,dR_j⟩, ⟨dG_j,dR_s⟩, ⟨dR_j,X⟩}, into `out` (no host
-/// synchronisation).
-inline void columnSums(View<const double> dRs, View<const double> dGs, View<const double> dRj,
-                       View<const double> dGj, View<const double> x, const IVec<3>& e, int g,
-                       const DeviceScalar<SumN<5>>& out) {
+/// field: {⟨dR_s,dR_j⟩, ⟨dR_j,X⟩}, into `out` (no host synchronisation). Reads dR_s, dR_j and X
+/// only (design §6.1, rev 2: no reduction reads a dG column; dG is read by MIX alone).
+inline void columnSums(View<const double> dRs, View<const double> dRj, View<const double> x,
+                       const IVec<3>& e, int g, const DeviceScalar<SumN<2>>& out) {
   const Index ex = e[0], exy = e[0] * e[1];
   Kokkos::parallel_reduce(
       "anderson::column_sums", innerPolicy(e, g),
-      KOKKOS_LAMBDA(const Index xi, const Index y, const Index z, SumN<5>& acc) {
+      KOKKOS_LAMBDA(const Index xi, const Index y, const Index z, SumN<2>& acc) {
         const Index i = xi + y * ex + z * exy;
-        const double rs = dRs(i), gs = dGs(i), rj = dRj(i), gj = dGj(i);
+        const double rs = dRs(i), rj = dRj(i);
         acc.v[0] += rs * rj;
-        acc.v[1] += gs * gj;
-        acc.v[2] += gs * rj;
-        acc.v[3] += gj * rs;
-        acc.v[4] += rj * x(i);
+        acc.v[1] += rj * x(i);
       },
-      Kokkos::Sum<SumN<5>, MemSpace>(out));
+      Kokkos::Sum<SumN<2>, MemSpace>(out));
 }
 
 // ---- host linear algebra (deterministic, n ≤ kMaxWindow) ----------------------------------------
@@ -319,42 +312,6 @@ inline void truncatedSolve(const ScaledEig& se, const double* b, double condMin,
     x[k] = se.dinv[k] * y[k];
 }
 
-/// ρ(T) by Gelfand's formula with repeated squaring (design §4.6 step 3).
-inline double gelfandRadius(int n, const Mat& t, int squarings) {
-  auto maxAbs = [n](const Mat& m) {
-    double s = 0.0;
-    for (int i = 0; i < n; ++i)
-      for (int j = 0; j < n; ++j)
-        s = std::max(s, std::abs(m[i][j]));
-    return s;
-  };
-  const double t0 = maxAbs(t);
-  if (!(t0 > 0.0))
-    return t0 == 0.0 ? 0.0 : std::numeric_limits<double>::quiet_NaN();
-  Mat a = {}, sq = {};
-  for (int i = 0; i < n; ++i)
-    for (int j = 0; j < n; ++j)
-      a[i][j] = t[i][j] / t0;
-  double logRho = std::log(t0);
-  for (int k = 0; k < squarings; ++k) {
-    for (int i = 0; i < n; ++i)
-      for (int j = 0; j < n; ++j) {
-        double s = 0.0;
-        for (int l = 0; l < n; ++l)
-          s += a[i][l] * a[l][j];
-        sq[i][j] = s;
-      }
-    const double s = maxAbs(sq);
-    if (s == 0.0)
-      return 0.0;
-    for (int i = 0; i < n; ++i)
-      for (int j = 0; j < n; ++j)
-        a[i][j] = sq[i][j] / s;
-    logRho = 2.0 * logRho + std::log(s);
-  }
-  return std::exp(std::ldexp(logRho, -squarings));
-}
-
 }  // namespace detail::anderson
 
 // ---------------------------------------------------------------------------------------------
@@ -377,16 +334,12 @@ class AndersonCore {
   static constexpr double kRestartGrowth = 4.0;
   static constexpr int kMaxRestarts = 5;
   static constexpr double kNoiseFloor = 1e-10;
-  /// Rev 1: the Ritz guard runs only at residual ≥ max(kNoiseFloor, kRitzFloorFactor·τ),
-  /// τ = AndersonState::innerTolerance (below that the window differences are inner-solve noise).
-  static constexpr double kRitzFloorFactor = 1000.0;
   static constexpr double kCondMin = 1e-12;
-  static constexpr double kRitzDelta = 1e-3;
-  static constexpr double kRitzHi = 1e-2;
-  static constexpr int kRitzConsecutive = 3;
-  static constexpr int kGelfandSquarings = 20;
+  // Rev 2: no instability guard — no Ritz estimate, no status "unstable". A Ritz value of the
+  // caller's non-normal map in the velocity-only metric is no stability test; evidence that the
+  // plain map is unstable comes from the caller's plain steps (design "Revision 2", D5).
 
-  enum class Status : int { Active = 0, Disabled = 1, Unstable = 2 };
+  enum class Status : int { Active = 0, Disabled = 1 };
 
   /// Allocates the history (design §6.3: (2m+3)·n_s·8·n_pad bytes). Collective over state.comm
   /// (one 1-double sum, so that every rank throws when one rank's allocation fails). Throws
@@ -508,7 +461,7 @@ class AndersonCore {
   }
 
   /// §4.3 steps 3–7, after the caller's step. `pressureSolveFailed` must be rank-consistent.
-  /// Collective while active: a (5·columns + 2)-double sum and a broadcast of rank 0's decisions;
+  /// Collective while active: a (2·columns + 2)-double sum and a broadcast of rank 0's decisions;
   /// one host synchronisation (the pass-2 read-back). The device copies are stream-ordered.
   void complete(bool pressureSolveFailed = false) {
     if (!prepared_)
@@ -545,18 +498,17 @@ class AndersonCore {
         da::residual(st_.fields[f], x_[f]);
     }
 
-    // --- 4. reductions (§6.1; rev 1: Velocity fields only, no pass 1) ---
+    // --- 4. reductions (§6.1; rev 1: Velocity fields only, no pass 1; rev 2: RR and b only) ---
     // Every reduction lands in its own device slot (velocity field v, window position k), so the
     // (nCols + 1)·n_v reductions queue without a host synchronisation and are read back behind ONE
-    // fence. The per-field partials are added on the host in field order, as before: the kernels,
-    // their value types and the summation order are unchanged, so the result is bit-identical.
+    // fence. The per-field partials are added on the host in field order.
     for (std::size_t f = 0, v = 0; f < ns; ++f) {
       if (st_.roles[f] != AndersonRole::Velocity)
         continue;
       da::selfSums(x_[f], st_.fields[f], e, g, Kokkos::subview(selfDev_, v));
       for (int k = 0; k < nCols; ++k) {
         const int j = cols[k];
-        da::columnSums(dR_[s][f], dG_[s][f], dR_[j][f], dG_[j][f], x_[f], e, g,
+        da::columnSums(dR_[s][f], dR_[j][f], x_[f], e, g,
                        Kokkos::subview(colDev_, v * kMaxWindow + k));
       }
       ++v;
@@ -565,15 +517,15 @@ class AndersonCore {
     if (nCols > 0)
       Kokkos::deep_copy(ExecSpace(), colHost_, colDev_);
     ExecSpace().fence("anderson::pass2");  // the one host synchronisation of complete()
-    std::vector<double> packet(static_cast<std::size_t>(5 * nCols + 2), 0.0);
+    std::vector<double> packet(static_cast<std::size_t>(2 * nCols + 2), 0.0);
     for (std::size_t v = 0; v < selfHost_.extent(0); ++v) {
       const da::SumN<2>& ss = selfHost_(v);
       packet[0] += ss.v[0];
       packet[1] += ss.v[1];
       for (int k = 0; k < nCols; ++k) {
-        const da::SumN<5>& cs = colHost_(v * kMaxWindow + k);
-        for (int q = 0; q < 5; ++q)
-          packet[static_cast<std::size_t>(2 + 5 * k + q)] += cs.v[q];
+        const da::SumN<2>& cs = colHost_(v * kMaxWindow + k);
+        for (int q = 0; q < 2; ++q)
+          packet[static_cast<std::size_t>(2 + 2 * k + q)] += cs.v[q];
       }
     }
     sumAll(packet.data(), static_cast<int>(packet.size()));
@@ -594,7 +546,7 @@ class AndersonCore {
       } else {
         reasonCode_ = Reason::NonFinitePlain;
       }
-      reason_ = reasonText(reasonCode_, ritzRadius_);
+      reason_ = reasonText(reasonCode_);
       status_ = Status::Disabled;
       reset();
       havePrev_ = false;
@@ -603,14 +555,10 @@ class AndersonCore {
     if (havePrev_) {
       for (int k = 0; k < nCols; ++k) {
         const int j = cols[k];
-        const double* v = &packet[static_cast<std::size_t>(2 + 5 * k)];
+        const double* v = &packet[static_cast<std::size_t>(2 + 2 * k)];
         rr_[s][j] = rr_[j][s] = v[0];
-        gg_[s][j] = gg_[j][s] = v[1];
-        gr_[s][j] = v[2];
-        gr_[j][s] = v[3];
-        b_[j] = v[4];
+        b_[j] = v[1];
       }
-      mixedCol_[s] = mixed_;
       for (int k = 0; k < nCols; ++k)
         order_[k] = cols[k];
       mk_ = nCols;
@@ -622,7 +570,7 @@ class AndersonCore {
       if (numRestarts_ >= kMaxRestarts) {
         status_ = Status::Disabled;
         reasonCode_ = Reason::TooManyRestarts;
-        reason_ = reasonText(reasonCode_, ritzRadius_);
+        reason_ = reasonText(reasonCode_);
       }
     }
     decCount_ = (rho < rhoPrev_) ? decCount_ + 1 : 0;
@@ -637,8 +585,7 @@ class AndersonCore {
       Kokkos::deep_copy(ExecSpace(), gPrev_[f], st_.fields[f]);  // stream-ordered, no fence
     havePrev_ = true;
 
-    // --- 7. next coefficients ---
-    ritzRadius_ = std::numeric_limits<double>::quiet_NaN();
+    // --- 7. next coefficients (rev 2: no Ritz block) ---
     if (status_ == Status::Active && engaged_ && mk_ >= 1) {
       // A column with a zero norm (D_j = 0, §4.4 step 1) carries nothing: drop it first. Under the
       // velocity metric that is a column in which only Carried fields moved.
@@ -654,26 +601,6 @@ class AndersonCore {
       if (mk_ >= 1) {
         solveTruncated();
         pending_ = true;
-        // Rev 1 (design §4.3 step 7, R3): only on a mixed call, over a window whose every column
-        // was formed at a mixed call, and only above the Ritz floor; otherwise the consecutive
-        // count restarts.
-        const bool eligible =
-            mixed_ && mk_ >= 2 && allMixed() && ritzFloor() <= residual_ && residual_ <= kRitzHi;
-        if (!eligible) {
-          ritzCount_ = 0;
-        } else {
-          ritzRadius_ = ritzEstimate();
-          ritzCount_ = (ritzRadius_ > 1.0 + kRitzDelta) ? ritzCount_ + 1 : 0;
-          if (ritzCount_ >= kRitzConsecutive) {
-            status_ = Status::Unstable;
-            reasonCode_ = Reason::Unstable;
-            reason_ = reasonText(reasonCode_, ritzRadius_);
-            pending_ = false;
-            reset();
-          }
-        }
-      } else {
-        ritzCount_ = 0;  // every column dropped: not an eligible call
       }
     }
     broadcastDecisions();
@@ -686,7 +613,7 @@ class AndersonCore {
   void reset() {
     mk_ = 0;
     pending_ = engaged_ = false;
-    decCount_ = ritzCount_ = 0;
+    decCount_ = 0;
     rhoMin_ = rhoPrev_ = std::numeric_limits<double>::infinity();
   }
 
@@ -703,7 +630,7 @@ class AndersonCore {
     if (status_ == Status::Active) {
       status_ = Status::Disabled;
       reasonCode_ = Reason::DisabledByCaller;
-      reason_ = reasonText(reasonCode_, ritzRadius_);
+      reason_ = reasonText(reasonCode_);
     }
     pending_ = false;
   }
@@ -711,11 +638,8 @@ class AndersonCore {
   // ---- status ---------------------------------------------------------------------------------
 
   Status status() const { return status_; }
-  /// "active" | "disabled" | "unstable".
-  const char* statusName() const {
-    return status_ == Status::Active ? "active"
-                                     : (status_ == Status::Disabled ? "disabled" : "unstable");
-  }
+  /// "active" | "disabled".
+  const char* statusName() const { return status_ == Status::Active ? "active" : "disabled"; }
   const std::string& reason() const { return reason_; }
   /// Relative velocity residual of the last evaluation (design §3.2); +inf before the first.
   double residual() const { return residual_; }
@@ -723,10 +647,6 @@ class AndersonCore {
   int numResets() const { return numResets_; }
   /// Window columns in use (mk).
   int numColumns() const { return mk_; }
-  /// Last Ritz estimate ρ(I + M) (design §4.6); NaN when the last evaluation did not compute it.
-  double ritzRadius() const { return ritzRadius_; }
-  /// The Ritz floor max(kNoiseFloor, kRitzFloorFactor·innerTolerance) (design §4.1, rev 1).
-  double ritzFloor() const { return std::max(kNoiseFloor, kRitzFloorFactor * st_.innerTolerance); }
   int window() const { return m_; }
   double mixing() const { return beta_; }
   bool engaged() const { return engaged_; }
@@ -759,7 +679,6 @@ class AndersonCore {
     NonFiniteMixed,
     NonFinitePlain,
     TooManyRestarts,
-    Unstable,
     DisabledByCaller,
   };
 
@@ -774,10 +693,9 @@ class AndersonCore {
     int order[kMaxWindow];
     double gamma[kMaxWindow];
     double residual;
-    double ritzRadius;
   };
 
-  static std::string reasonText(Reason r, double ritz) {
+  static std::string reasonText(Reason r) {
     switch (r) {
       case Reason::None:
         return "";
@@ -789,12 +707,6 @@ class AndersonCore {
         return "non-finite residual on a plain step";
       case Reason::TooManyRestarts:
         return "too many restarts";
-      case Reason::Unstable: {
-        char msg[160];
-        std::snprintf(msg, sizeof msg,
-                      "the plain map is locally unstable at this dt (Ritz radius %.6g)", ritz);
-        return msg;
-      }
       case Reason::DisabledByCaller:
         return "disabled by the caller";
     }
@@ -821,8 +733,6 @@ class AndersonCore {
       if (st_.roles[f] != AndersonRole::Velocity && st_.roles[f] != AndersonRole::Carried)
         throw std::invalid_argument("AndersonCore: a role must be Velocity or Carried");
     }
-    if (!std::isfinite(st_.innerTolerance) || st_.innerTolerance < 0.0)
-      throw std::invalid_argument("AndersonCore: innerTolerance must be finite and >= 0");
   }
 
   Index numPadded() const { return st_.extent[0] * st_.extent[1] * st_.extent[2]; }
@@ -846,17 +756,10 @@ class AndersonCore {
       nv += r == AndersonRole::Velocity ? 1 : 0;
     countDev_ = Kokkos::View<Index*, MemSpace>("anderson::count", st_.fields.size());
     selfDev_ = Kokkos::View<da::SumN<2>*, MemSpace>("anderson::self_sums", nv);
-    colDev_ = Kokkos::View<da::SumN<5>*, MemSpace>("anderson::column_sums", nv * kMaxWindow);
+    colDev_ = Kokkos::View<da::SumN<2>*, MemSpace>("anderson::column_sums", nv * kMaxWindow);
     countHost_ = Kokkos::create_mirror_view(countDev_);
     selfHost_ = Kokkos::create_mirror_view(selfDev_);
     colHost_ = Kokkos::create_mirror_view(colDev_);
-  }
-
-  bool allMixed() const {
-    for (int k = 0; k < mk_; ++k)
-      if (!mixedCol_[order_[k]])
-        return false;
-    return true;
   }
 
   void dropColumn(int k) {
@@ -890,30 +793,6 @@ class AndersonCore {
     detail::anderson::truncatedSolve(se, b, kCondMin, gamma_);
   }
 
-  /// ρ(I + XX⁺·XR) on the window (design §4.6).
-  double ritzEstimate() const {
-    namespace da = detail::anderson;
-    const int n = mk_;
-    da::Mat xx = {}, xr = {};
-    for (int a = 0; a < n; ++a)
-      for (int c = 0; c < n; ++c) {
-        const int i = order_[a], j = order_[c];
-        xx[a][c] = gg_[i][j] - gr_[i][j] - gr_[j][i] + rr_[i][j];
-        xr[a][c] = gr_[i][j] - rr_[i][j];
-      }
-    const auto se = da::scaledEigen(n, xx);
-    da::Mat t = {};
-    for (int c = 0; c < n; ++c) {  // column c of M = XX⁺ · XR[:, c]
-      double col[kMaxWindow], mc[kMaxWindow];
-      for (int a = 0; a < n; ++a)
-        col[a] = xr[a][c];
-      da::truncatedSolve(se, col, kCondMin, mc);
-      for (int a = 0; a < n; ++a)
-        t[a][c] = (a == c ? 1.0 : 0.0) + mc[a];
-    }
-    return da::gelfandRadius(n, t, kGelfandSquarings);
-  }
-
   void broadcastDecisions() {
     if (!st_.comm.broadcast)
       return;
@@ -928,7 +807,6 @@ class AndersonCore {
       p.gamma[k] = k < mk_ ? gamma_[k] : 0.0;
     }
     p.residual = residual_;
-    p.ritzRadius = ritzRadius_;
     st_.comm.broadcast(&p, sizeof p);
     if (st_.comm.rank == 0)
       return;
@@ -943,9 +821,8 @@ class AndersonCore {
       gamma_[k] = p.gamma[k];
     }
     residual_ = p.residual;
-    ritzRadius_ = p.ritzRadius;
     if (reasonCode_ != oldReason)
-      reason_ = reasonText(reasonCode_, ritzRadius_);
+      reason_ = reasonText(reasonCode_);
   }
 
   AndersonState st_;
@@ -958,29 +835,26 @@ class AndersonCore {
   // per-step reduction slots: COUNT by field; pass 2 by velocity field (· kMaxWindow + position)
   Kokkos::View<Index*, MemSpace> countDev_;
   Kokkos::View<detail::anderson::SumN<2>*, MemSpace> selfDev_;
-  Kokkos::View<detail::anderson::SumN<5>*, MemSpace> colDev_;
+  Kokkos::View<detail::anderson::SumN<2>*, MemSpace> colDev_;
   typename Kokkos::View<Index*, MemSpace>::host_mirror_type countHost_;
   typename Kokkos::View<detail::anderson::SumN<2>*, MemSpace>::host_mirror_type selfHost_;
-  typename Kokkos::View<detail::anderson::SumN<5>*, MemSpace>::host_mirror_type colHost_;
+  typename Kokkos::View<detail::anderson::SumN<2>*, MemSpace>::host_mirror_type colHost_;
 
   // host
   int mk_ = 0;
-  int order_[kMaxWindow] = {};  // slot indices, oldest → newest
-  double rr_[kMaxWindow][kMaxWindow] = {}, gg_[kMaxWindow][kMaxWindow] = {},
-         gr_[kMaxWindow][kMaxWindow] = {};  // gr_[i][j] = ⟨Δg_i, Δr_j⟩
-  bool mixedCol_[kMaxWindow] = {};  // the column in this slot was formed at a mixed call (rev 1)
-  double b_[kMaxWindow] = {};       // ⟨Δr_j, r_k⟩ by slot
-  double gamma_[kMaxWindow] = {};   // by window position, oldest first
+  int order_[kMaxWindow] = {};              // slot indices, oldest → newest
+  double rr_[kMaxWindow][kMaxWindow] = {};  // ⟨Δr_i, Δr_j⟩ by slot
+  double b_[kMaxWindow] = {};               // ⟨Δr_j, r_k⟩ by slot
+  double gamma_[kMaxWindow] = {};           // by window position, oldest first
   bool havePrev_ = false, pending_ = false, engaged_ = false;
   bool prepared_ = false, mixed_ = false, noticed_ = false;
-  int decCount_ = 0, ritzCount_ = 0, numRestarts_ = 0, numResets_ = 0;
+  int decCount_ = 0, numRestarts_ = 0, numResets_ = 0;
   double rhoPrev_ = std::numeric_limits<double>::infinity();
   double rhoMin_ = std::numeric_limits<double>::infinity();
   Status status_ = Status::Active;
   Reason reasonCode_ = Reason::None;
   std::string reason_;
   double residual_ = std::numeric_limits<double>::infinity();
-  double ritzRadius_ = std::numeric_limits<double>::quiet_NaN();
 };
 
 }  // namespace peclet::core::solver

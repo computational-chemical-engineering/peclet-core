@@ -1,6 +1,6 @@
 // AndersonCore (peclet::core::solver, solver/anderson.hpp) on synthetic maps: the core unit tests
-// U1–U6 of flow doc/steady_acceleration.md §8, the §6.3 memory formula, and the host linear
-// algebra (Jacobi eigendecomposition, Gelfand radius). Device kernels on whatever backend Kokkos
+// U1–U6, U4b and U10 of flow doc/steady_acceleration.md §8 (rev 2), the §6.3 memory formula, and
+// the host linear algebra (Jacobi eigendecomposition). Device kernels on whatever backend Kokkos
 // was built for; single rank (U7 is test_anderson_mpi.cpp).
 #include <algorithm>
 #include <cmath>
@@ -351,17 +351,23 @@ void testU3() {
   }
 }
 
-// ---- U4: instability (eigenvalue 1.02 + a rotation of modulus 1.01) vs a stable twin -----------
+// ---- U4 (rev 2): the core converges on an unstable map and judges nothing ----------------------
+// J: the bulk evenly spread on [0, 0.9], one outlier entry, and a 2×2 block on two entries; c = 1.
+// U4: outlier 1.02 and a rotation of modulus 1.01 (ρ(J) = 1.02, the plain march diverges). U4b:
+// outlier 0.5 and the non-normal block [[0.99, 1], [0, 0.99]] (ρ(J) = 0.99, the plain march
+// converges). 400 step(true) calls with no stop on each: status Active after every call, 0
+// restarts, residual ≤ 1e-10 within 300 (U4) / 150 (U4b) calls (rev-2 oracle: 162 / 91 calls,
+// round-off sensitive). U4 pins the GMRES-like property the design relies on (§2.4): stability
+// evidence must come from the caller's plain steps. U4b is the counterexample that removed the
+// rev-1 Ritz guard: on this STABLE map it declared "unstable" at call 13 (radius 1.027).
 struct U4Result {
-  int engagedAt = -1, unstableAt = -1, steps = 0;
-  std::vector<double> residual, ritz;  // per call
-  double lastRitz = std::numeric_limits<double>::quiet_NaN();
-  double maxRitz = 0.0;
-  AndersonCore::Status status = AndersonCore::Status::Active;
+  int engagedAt = -1, steps = 0, firstBelow = -1, numRestarts = 0;
+  bool alwaysActive = true;
+  double minResidual = std::numeric_limits<double>::infinity();
 };
 
-U4Result runU4(double outlier, double rotModulus, int maxSteps, double innerTolerance = 0.0,
-               double stopResidual = 0.0) {
+U4Result runU4(double outlier, double b00, double b01, double b10, double b11, int calls,
+               double target) {
   const Box b(25, 20, 20, 2);
   std::vector<double> lam(b.nPad, 0.0);
   std::vector<Index> innerIdx;
@@ -375,46 +381,48 @@ U4Result runU4(double outlier, double rotModulus, int maxSteps, double innerTole
   LinearMap map = makeLinearMap(lam, std::vector<double>(b.nPad, 1.0));
   map.i0 = innerIdx[nBulk + 1];
   map.i1 = innerIdx[nBulk + 2];
-  map.ra = rotModulus * std::cos(0.5);
-  map.rb = rotModulus * std::sin(0.5);
+  map.b00 = b00;
+  map.b01 = b01;
+  map.b10 = b10;
+  map.b11 = b11;
   View<double> x("u4_x", b.nPad);
-  AndersonState st = oneField(b, x);
-  st.innerTolerance = innerTolerance;
-  AndersonCore acc(st, 5);
+  AndersonCore acc(oneField(b, x), 5);
   U4Result r;
-  for (int k = 1; k <= maxSteps && acc.status() == AndersonCore::Status::Active &&
-                  !(acc.residual() <= stopResidual);
-       ++k) {
+  for (int k = 1; k <= calls; ++k) {
     evaluate(acc, true, [&] { applyLinear(map, x); });
     r.steps = k;
-    r.residual.push_back(acc.residual());
-    r.ritz.push_back(acc.ritzRadius());
     if (r.engagedAt < 0 && acc.engaged())
       r.engagedAt = k;
-    if (std::isfinite(acc.ritzRadius())) {
-      r.lastRitz = acc.ritzRadius();
-      r.maxRitz = std::max(r.maxRitz, r.lastRitz);
-    }
-    if (acc.status() == AndersonCore::Status::Unstable)
-      r.unstableAt = k;
+    r.alwaysActive = r.alwaysActive && acc.status() == AndersonCore::Status::Active;
+    r.minResidual = std::min(r.minResidual, acc.residual());
+    if (r.firstBelow < 0 && acc.residual() <= target)
+      r.firstBelow = k;
   }
-  r.status = acc.status();
+  r.numRestarts = acc.numRestarts();
   return r;
 }
 
 void testU4() {
-  const U4Result bad = runU4(1.02, 1.01, 400);
-  std::printf("U4: unstable map: engaged at %d, status %s at step %d, last Ritz %.6f\n",
-              bad.engagedAt, bad.status == AndersonCore::Status::Unstable ? "unstable" : "other",
-              bad.unstableAt, bad.lastRitz);
-  PECLET_CORE_CHECK(bad.status == AndersonCore::Status::Unstable);
-  PECLET_CORE_CHECK(bad.unstableAt >= 0 && bad.unstableAt - bad.engagedAt <= 3 * 5);
-  const U4Result ok = runU4(0.996, 0.95, 400);
-  std::printf("U4: stable twin: status %s, max Ritz %.6f, last Ritz %.6f\n",
-              ok.status == AndersonCore::Status::Active ? "active" : "other", ok.maxRitz,
-              ok.lastRitz);
-  PECLET_CORE_CHECK(ok.status == AndersonCore::Status::Active);
-  PECLET_CORE_CHECK(std::abs(ok.lastRitz - 0.996) <= 1e-3);
+  const double ra = 1.01 * std::cos(0.5), rb = 1.01 * std::sin(0.5);
+  const U4Result r = runU4(1.02, ra, -rb, rb, ra, 400, 1e-10);
+  std::printf(
+      "U4: unstable map (1.02, rotation 1.01): engaged at %d, active after every call %d, "
+      "%d restarts, residual <= 1e-10 at call %d, min residual %.3e over %d calls\n",
+      r.engagedAt, r.alwaysActive ? 1 : 0, r.numRestarts, r.firstBelow, r.minResidual, r.steps);
+  PECLET_CORE_CHECK(r.alwaysActive);
+  PECLET_CORE_CHECK(r.numRestarts == 0);
+  PECLET_CORE_CHECK(r.firstBelow >= 1 && r.firstBelow <= 300);
+}
+
+void testU4b() {
+  const U4Result r = runU4(0.5, 0.99, 1.0, 0.0, 0.99, 400, 1e-10);
+  std::printf(
+      "U4b: stable non-normal map ([[0.99, 1], [0, 0.99]]): engaged at %d, active after every "
+      "call %d, %d restarts, residual <= 1e-10 at call %d, min residual %.3e over %d calls\n",
+      r.engagedAt, r.alwaysActive ? 1 : 0, r.numRestarts, r.firstBelow, r.minResidual, r.steps);
+  PECLET_CORE_CHECK(r.alwaysActive);
+  PECLET_CORE_CHECK(r.numRestarts == 0);
+  PECLET_CORE_CHECK(r.firstBelow >= 1 && r.firstBelow <= 150);
 }
 
 // ---- U5: rank-1 differences — columns drop, γ stays finite
@@ -545,11 +553,6 @@ void testMemory() {
   PECLET_CORE_CHECK(throwsInvalid([&] { AndersonCore a(oneField(b, f), 9); }));
   PECLET_CORE_CHECK(throwsInvalid([&] { AndersonCore a(oneField(b, f), 5, 0.0); }));
   PECLET_CORE_CHECK(throwsInvalid([&] { AndersonCore a(oneField(b, g), 5); }));
-  PECLET_CORE_CHECK(throwsInvalid([&] {
-    AndersonState s = oneField(b, f);
-    s.innerTolerance = -1e-8;
-    AndersonCore a(s, 5);
-  }));
   PECLET_CORE_CHECK(  // the revision-0 Pressure role (= 1) no longer exists
       throwsInvalid([&] { AndersonCore a(oneField(b, f, static_cast<AndersonRole>(1))); }));
 }
@@ -624,138 +627,6 @@ void testLinearAlgebra() {
     }
   std::printf("jacobi: max |V L V^T - A| = %.3e\n", err);
   PECLET_CORE_CHECK(err < 1e-13);
-  // Gelfand: a rotation block of modulus 1.01 next to 0.5; a diagonal 2.
-  da::Mat t = {};
-  t[0][0] = 1.01 * std::cos(0.5);
-  t[0][1] = -1.01 * std::sin(0.5);
-  t[1][0] = 1.01 * std::sin(0.5);
-  t[1][1] = 1.01 * std::cos(0.5);
-  t[2][2] = 0.5;
-  const double rho = da::gelfandRadius(3, t, AndersonCore::kGelfandSquarings);
-  da::Mat d = {};
-  d[0][0] = 0.25;
-  d[1][1] = -2.0;
-  const double rho2 = da::gelfandRadius(2, d, AndersonCore::kGelfandSquarings);
-  da::Mat z = {};
-  std::printf("gelfand: rotation 1.01 -> %.9f, diag(0.25, -2) -> %.9f\n", rho, rho2);
-  PECLET_CORE_CHECK(std::abs(rho - 1.01) < 1e-5);
-  PECLET_CORE_CHECK(std::abs(rho2 - 2.0) < 1e-12);
-  PECLET_CORE_CHECK(da::gelfandRadius(2, z, AndersonCore::kGelfandSquarings) == 0.0);
-}
-
-// ---- U8 (rev 1): no Ritz guard on plain windows
-// --------------------------------------------------- x ← Λx + c + η: Λ diagonal, evenly spread on
-// [0, 0.999] over the inner entries; η a seeded pseudo-random perturbation of norm 1e-8·‖x‖ per
-// evaluation (the inner-solve noise).
-void testU8() {
-  const Box b(25, 20, 20, 2);
-  std::vector<double> lam(static_cast<std::size_t>(b.nPad), 0.0);
-  std::vector<Index> innerIdx;
-  for (Index i = 0; i < b.nPad; ++i)
-    if (b.inner(i))
-      innerIdx.push_back(i);
-  for (std::size_t k = 0; k < innerIdx.size(); ++k)
-    lam[static_cast<std::size_t>(innerIdx[k])] =
-        0.999 * static_cast<double>(k) / static_cast<double>(innerIdx.size() - 1);
-  const LinearMap lin = makeLinearMap(lam, std::vector<double>(b.nPad, 1.0));
-  View<double> x("u8_x", b.nPad), eta("u8_eta", b.nPad);
-  std::mt19937_64 rng(8);
-  std::uniform_real_distribution<double> unit(-1.0, 1.0);
-  auto noisyMap = [&] {
-    const auto xh = download(x);
-    double xx = 0.0;
-    for (const Index i : innerIdx)
-      xx += xh[static_cast<std::size_t>(i)] * xh[static_cast<std::size_t>(i)];
-    std::vector<double> e(static_cast<std::size_t>(b.nPad), 0.0);
-    double ee = 0.0;
-    for (const Index i : innerIdx) {
-      const double v = unit(rng);
-      e[static_cast<std::size_t>(i)] = v;
-      ee += v * v;
-    }
-    const double scale = 1e-8 * std::sqrt(xx) / std::sqrt(ee);
-    for (double& v : e)
-      v *= scale;
-    Kokkos::deep_copy(eta, peclet::core::toDevice(e, "u8_e"));
-    applyLinear(lin, x);
-    View<double> xv = x;
-    View<const double> ev = eta;
-    Kokkos::parallel_for(
-        "u8_noise", x.extent(0), KOKKOS_LAMBDA(const std::size_t i) { xv(i) += ev(i); });
-  };
-  AndersonState st = oneField(b, x);
-  st.innerTolerance = 1e-8;
-  AndersonCore acc(st, 5);
-  bool plainNaN = true, plainActive = true;
-  int plainReadings = 0;
-  double plainMax = 0.0;
-  for (int k = 0; k < 200; ++k) {
-    evaluate(acc, false, noisyMap);
-    plainNaN = plainNaN && std::isnan(acc.ritzRadius());
-    if (std::isfinite(acc.ritzRadius())) {
-      ++plainReadings;
-      plainMax = std::max(plainMax, acc.ritzRadius());
-    }
-    plainActive = plainActive && acc.status() == AndersonCore::Status::Active;
-  }
-  const double resPlain = acc.residual();
-  bool neverUnstable = true;
-  int readings = 0;
-  double maxRitz = 0.0;
-  for (int k = 0; k < 50; ++k) {
-    evaluate(acc, true, noisyMap);
-    neverUnstable = neverUnstable && acc.status() != AndersonCore::Status::Unstable;
-    if (std::isfinite(acc.ritzRadius())) {
-      ++readings;
-      maxRitz = std::max(maxRitz, acc.ritzRadius());
-    }
-  }
-  std::printf(
-      "U8: plain phase (200): Ritz NaN on every call %d (%d readings, max %.6f), active %d, "
-      "residual %.3e; accelerated phase (50): status %s, %d Ritz readings (max %.6f), residual "
-      "%.3e\n",
-      plainNaN ? 1 : 0, plainReadings, plainMax, plainActive ? 1 : 0, resPlain, acc.statusName(),
-      readings, maxRitz, acc.residual());
-  PECLET_CORE_CHECK(plainNaN);
-  PECLET_CORE_CHECK(plainActive);
-  PECLET_CORE_CHECK(neverUnstable);
-}
-
-// ---- U9 (rev 1): the Ritz floor, on U4's stable twin run to a residual of 1e-12
-// ------------------
-void testU9() {
-  const U4Result tight = runU4(0.996, 0.95, 2000, 1e-8, 1e-12);
-  bool nanBelow = true;
-  int above = 0;
-  for (std::size_t k = 0; k < tight.residual.size(); ++k) {
-    if (tight.residual[k] < 1e-5)
-      nanBelow = nanBelow && std::isnan(tight.ritz[k]);
-    else if (std::isfinite(tight.ritz[k]))
-      ++above;
-  }
-  std::printf(
-      "U9: innerTolerance 1e-8: %d steps to %.3e; Ritz NaN at every residual < 1e-5 %d, "
-      "%d readings above\n",
-      tight.steps, tight.residual.back(), nanBelow ? 1 : 0, above);
-  PECLET_CORE_CHECK(tight.residual.back() <= 1e-12);
-  PECLET_CORE_CHECK(nanBelow);
-  PECLET_CORE_CHECK(above >= 1);
-  const U4Result open = runU4(0.996, 0.95, 2000, 0.0, 1e-12);
-  double minRes = std::numeric_limits<double>::infinity();
-  int below = 0, underFloor = 0;
-  for (std::size_t k = 0; k < open.residual.size(); ++k)
-    if (std::isfinite(open.ritz[k])) {
-      minRes = std::min(minRes, open.residual[k]);
-      below += open.residual[k] < 1e-5 ? 1 : 0;
-      underFloor += open.residual[k] < AndersonCore::kNoiseFloor ? 1 : 0;
-    }
-  std::printf(
-      "U9: innerTolerance 0: %d steps; %d readings below 1e-5, smallest residual read "
-      "%.3e, readings below 1e-10: %d\n",
-      open.steps, below, minRes, underFloor);
-  PECLET_CORE_CHECK(below >= 1);
-  PECLET_CORE_CHECK(minRes < 1e-9);
-  PECLET_CORE_CHECK(underFloor == 0);
 }
 
 // ---- U10 (rev 1): Carried fields — mixed, never measured
@@ -835,10 +706,9 @@ int main(int argc, char** argv) {
   runTest("U2", testU2);
   runTest("U3", testU3);
   runTest("U4", testU4);
+  runTest("U4b", testU4b);
   runTest("U5", testU5);
   runTest("U6", testU6);
-  runTest("U8", testU8);
-  runTest("U9", testU9);
   runTest("U10", testU10);
   PECLET_CORE_RETURN_TEST_RESULT();
 }

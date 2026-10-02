@@ -34,12 +34,14 @@ struct Box {
   }
 };
 
-/// x ← Λx + c on every padded entry (Λ diagonal), then an optional 2×2 block on entries (i0, i1):
-/// (g_i0, g_i1) += ρ·R(θ)·(x_i0, x_i1) (their diagonal entries are 0).
+/// x ← Λx + c on every padded entry (Λ diagonal), then an optional general 2×2 block B on entries
+/// (i0, i1): (g_i0, g_i1) += B·(x_i0, x_i1) (their diagonal entries are 0). A rotation of modulus
+/// ρ is B = [[ρ cos θ, −ρ sin θ], [ρ sin θ, ρ cos θ]] (U4); a Jordan-type block [[λ, κ], [0, λ]] is
+/// non-normal (U4b).
 struct LinearMap {
   View<double> lam, c, tmp;
   Index i0 = -1, i1 = -1;
-  double ra = 0.0, rb = 0.0;  // ρ cos θ, ρ sin θ
+  double b00 = 0.0, b01 = 0.0, b10 = 0.0, b11 = 0.0;
 };
 
 inline LinearMap makeLinearMap(const std::vector<double>& lam, const std::vector<double>& c) {
@@ -59,12 +61,12 @@ inline void applyLinear(const LinearMap& m, View<double> buf) {
       KOKKOS_LAMBDA(const std::size_t i) { buf(i) = lam(i) * tmp(i) + c(i); });
   if (m.i0 >= 0) {
     const Index i0 = m.i0, i1 = m.i1;
-    const double ra = m.ra, rb = m.rb;
+    const double b00 = m.b00, b01 = m.b01, b10 = m.b10, b11 = m.b11;
     Kokkos::parallel_for(
-        "t_rotation", 1, KOKKOS_LAMBDA(const int) {
+        "t_block", 1, KOKKOS_LAMBDA(const int) {
           const double a = tmp(i0), b = tmp(i1);
-          buf(i0) += ra * a - rb * b;
-          buf(i1) += rb * a + ra * b;
+          buf(i0) += b00 * a + b01 * b;
+          buf(i1) += b10 * a + b11 * b;
         });
   }
 }

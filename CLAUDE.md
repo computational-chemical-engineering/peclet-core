@@ -202,16 +202,18 @@ Header-only under `include/peclet/core/`:
   `solver/anderson.hpp` is **`AndersonCore`**, type-II Anderson acceleration of a steady march
   (design: `../flow/doc/steady_acceleration.md`; register "AndersonCore lives in core from the
   start"): grid-agnostic over an `AndersonState` (padded state views + roles Velocity / Carried +
-  ghost width + `innerTolerance`; the metric is the velocity only, the revision-0 Pressure role,
-  SDF mask, `cP` and gauge flag were deleted in WO-3b), split `prepare` / `complete` around
-  the caller's own step, history `(2m+3)·n_s·8·n_pad` bytes. MPI-free: the collectives are two
-  callables in `AndersonComm`; `solver/anderson_mpi.hpp` builds them from an `MPI_Comm` and is the
-  MPI side. Rev 1 of the design: the Ritz guard runs only on a mixed call over an all-mixed
-  window above the floor max(1e-10, 1000·`innerTolerance`). Gates: `tests/test_anderson.cpp`
-  (U1a–c, U2–U6, U8 no guard on plain windows, U9 the Ritz floor, U10 Carried fields, metric,
-  memory formula) and `tests/test_anderson_mpi.cpp` (U7, np 1/2/4: γ bitwise on all ranks, np = 1
-  bit-identical to serial); both print a per-test `digest` of every iterate for bit-identity
-  checks across builds.
+  ghost width; the metric is the velocity only, the revision-0 Pressure role, SDF mask, `cP` and
+  gauge flag were deleted in WO-3b, rev 1's `innerTolerance` in WO-3c), split `prepare` /
+  `complete` around the caller's own step, history `(2m+3)·n_s·8·n_pad` bytes. MPI-free: the
+  collectives are two callables in `AndersonComm`; `solver/anderson_mpi.hpp` builds them from an
+  `MPI_Comm` and is the MPI side. Rev 2 of the design: **no instability guard** — no Ritz
+  estimate, no status "unstable" (`Status` is Active / Disabled); a Ritz value of a non-normal map
+  is no stability test, and stability evidence comes from the caller's plain steps. Pass 2 reduces
+  RR and b only (2·columns + 2 doubles; no reduction reads dG). Gates: `tests/test_anderson.cpp`
+  (U1a–c, U2–U6, U4 converges on an unstable map and judges nothing, U4b a stable non-normal map,
+  U10 Carried fields, metric, memory formula) and `tests/test_anderson_mpi.cpp` (U7, np 1/2/4: γ
+  bitwise on all ranks, np = 1 bit-identical to serial); both print a per-test `digest` of every
+  iterate for bit-identity checks across builds.
 - **`amr/` is gone (2026-09-10)** — the whole AMR tree (the block-local-Morton octree, the distributed
   octree with leaf halos and weighted-ORB rebalancing, the collocated-projection cut-cell
   Navier–Stokes solver, its tests, studies, docs and campaign logs) is the **`peclet-amr`** package,
