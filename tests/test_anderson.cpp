@@ -519,13 +519,9 @@ void testMemory() {
       AndersonState s;
       s.extent = b.e;
       s.ghost = b.g;
-      View<double> sdf("mem_sdf", b.nPad);
-      Kokkos::deep_copy(sdf, 1.0);
-      s.sdf = sdf;
       for (int f = 0; f < nf; ++f) {
         s.fields.push_back(View<double>("mem_f", b.nPad));
-        s.roles.push_back(f == 1 ? AndersonRole::Pressure
-                                 : (f >= 4 ? AndersonRole::Carried : AndersonRole::Velocity));
+        s.roles.push_back((f == 1 || f >= 4) ? AndersonRole::Carried : AndersonRole::Velocity);
       }
       AndersonCore acc(s, m);
       const std::size_t formula = static_cast<std::size_t>(2 * m + 3) *
@@ -554,72 +550,55 @@ void testMemory() {
     s.innerTolerance = -1e-8;
     AndersonCore a(s, 5);
   }));
-  PECLET_CORE_CHECK(throwsInvalid([&] { AndersonCore a(oneField(b, f, AndersonRole::Pressure)); }));
+  PECLET_CORE_CHECK(  // the revision-0 Pressure role (= 1) no longer exists
+      throwsInvalid([&] { AndersonCore a(oneField(b, f, static_cast<AndersonRole>(1))); }));
 }
 
 // ---- the metric: velocity at unit weight, fluid-centred gauge-free pressure at cP² ------------
 void testMetric() {
-  // One evaluation from x = 0 makes r = g, so residual² = ⟨g,g⟩_W / U². A constant added to P on
-  // every cell (the gauge) and any value on solid-centred P must not change it; cP² scales the P
-  // part.
+  // Rev 1 (D3): the metric is the velocity at unit weight over every inner entry. From an input
+  // x0 the residual is ‖g_u − x0_u‖/‖g_u‖ over inner Velocity entries: ghosts and Carried fields
+  // (any values, moved or not) do not enter.
   const Box b(8, 6, 4, 2);
-  std::vector<double> sdfh(b.nPad), uh(b.nPad), ph(b.nPad);
+  std::vector<double> u0(b.nPad), uh(b.nPad), ph(b.nPad);
   for (Index i = 0; i < b.nPad; ++i) {
-    sdfh[i] = (i % 5 == 0) ? -1.0 : 1.0;
+    u0[i] = 0.5 * std::cos(0.13 * static_cast<double>(i));
     uh[i] = std::sin(0.37 * static_cast<double>(i));
     ph[i] = std::cos(0.21 * static_cast<double>(i));
   }
-  auto residualOf = [&](double pShift, double solidValue, double cP, bool gauged) {
-    View<double> u("m_u", b.nPad), p("m_p", b.nPad);
+  auto residualOf = [&](double carriedShift, double ghostValue) {
+    View<double> u = peclet::core::toDevice(u0, "m_u"), p("m_p", b.nPad);
     AndersonState s;
     s.fields = {u, p};
-    s.roles = {AndersonRole::Velocity, AndersonRole::Pressure};
-    s.sdf = peclet::core::toDevice(sdfh, "m_sdf");
+    s.roles = {AndersonRole::Velocity, AndersonRole::Carried};
     s.extent = b.e;
     s.ghost = b.g;
-    s.cP = cP;
-    s.gauged = gauged;
     AndersonCore acc(s, 3);
-    std::vector<double> pp = ph;
-    for (Index i = 0; i < b.nPad; ++i)
-      pp[i] = sdfh[i] > 0.0 ? ph[i] + pShift : solidValue;
-    View<double> ug = peclet::core::toDevice(uh, "m_ug"), pg = peclet::core::toDevice(pp, "m_pg");
+    std::vector<double> ug = uh, pg = ph;
+    for (Index i = 0; i < b.nPad; ++i) {
+      pg[i] += carriedShift;
+      if (!b.inner(i))
+        ug[i] = ghostValue;
+    }
     acc.prepare(false);
-    Kokkos::deep_copy(u, ug);
-    Kokkos::deep_copy(p, pg);
+    Kokkos::deep_copy(u, peclet::core::toDevice(ug, "m_ug"));
+    Kokkos::deep_copy(p, peclet::core::toDevice(pg, "m_pg"));
     complete(acc);
     return acc.residual();
   };
-  // host reference
-  double uu = 0.0, pSum = 0.0, nF = 0.0;
+  double rr = 0.0, uu = 0.0;
   for (Index i = 0; i < b.nPad; ++i)
     if (b.inner(i)) {
+      rr += (uh[i] - u0[i]) * (uh[i] - u0[i]);
       uu += uh[i] * uh[i];
-      if (sdfh[i] > 0.0) {
-        pSum += ph[i];
-        nF += 1.0;
-      }
     }
-  const double pMean = pSum / nF;
-  double pp = 0.0;
-  for (Index i = 0; i < b.nPad; ++i)
-    if (b.inner(i) && sdfh[i] > 0.0)
-      pp += (ph[i] - pMean) * (ph[i] - pMean);
-  const double cP = 0.3;
-  const double ref = std::sqrt((uu + cP * cP * pp) / uu);
-  const double r0 = residualOf(0.0, 7.0, cP, true);
-  const double r1 = residualOf(123.0, -55.0, cP, true);
-  std::printf("metric: residual %.15f (host reference %.15f), with a gauge shift %.15f\n", r0, ref,
-              r1);
+  const double ref = std::sqrt(rr / uu);
+  const double r0 = residualOf(0.0, 0.0);
+  const double r1 = residualOf(123.0, -55.0);
+  std::printf("metric: residual %.15f (host reference %.15f), Carried and ghosts changed %.15f\n",
+              r0, ref, r1);
   PECLET_CORE_CHECK(std::abs(r0 / ref - 1.0) < 1e-13);
-  PECLET_CORE_CHECK(std::abs(r1 / ref - 1.0) < 1e-11);
-  // ungauged: the mean is NOT removed
-  double ppRaw = 0.0;
-  for (Index i = 0; i < b.nPad; ++i)
-    if (b.inner(i) && sdfh[i] > 0.0)
-      ppRaw += ph[i] * ph[i];
-  const double refRaw = std::sqrt((uu + cP * cP * ppRaw) / uu);
-  PECLET_CORE_CHECK(std::abs(residualOf(0.0, 7.0, cP, false) / refRaw - 1.0) < 1e-13);
+  PECLET_CORE_CHECK(r1 == r0);
 }
 
 // ---- host linear algebra ------------------------------------------------------------------------
@@ -779,6 +758,70 @@ void testU9() {
   PECLET_CORE_CHECK(underFloor == 0);
 }
 
+// ---- U10 (rev 1): Carried fields — mixed, never measured
+// ----------------------------------------- Velocity + Carried. For 10 steps the map moves both
+// (velocity: x ← Λx + c; Carried: an affine map whose output satisfies Σ_inner p = S); afterwards
+// it moves only the Carried field. The residual is then 0, and every mixed Carried state keeps
+// Σ_inner p = S (U2 for Carried).
+void testU10() {
+  const Box b(16, 12, 10, 2);
+  const LinearMap lu =
+      makeLinearMap(peclet::core::test::u1Spectrum(b), std::vector<double>(b.nPad, 1.0));
+  std::vector<double> lam(b.nPad, 0.0), c(b.nPad, 0.0), mh(b.nPad, 0.0);
+  for (Index i = 0; i < b.nPad; ++i)
+    if (b.inner(i)) {
+      lam[i] = 0.99 * std::fmod(0.618034 * static_cast<double>(i), 1.0);
+      c[i] = 1.0 + 0.5 * std::sin(0.1 * static_cast<double>(i));
+      mh[i] = 1.0;
+    }
+  const LinearMap lp = makeLinearMap(lam, c);
+  View<double> mask = peclet::core::toDevice(mh, "u10_mask");
+  const double S = 3.0 * static_cast<double>(b.nInner);
+  const double invN = 1.0 / static_cast<double>(b.nInner);
+  auto innerSum = [&](View<const double> v) {
+    const auto h = download(v);
+    long double sum = 0.0L;
+    for (Index i = 0; i < b.nPad; ++i)
+      if (b.inner(i))
+        sum += h[i];
+    return static_cast<double>(sum);
+  };
+  View<double> u("u10_u", b.nPad), p("u10_p", b.nPad);
+  AndersonState st;
+  st.fields = {u, p};
+  st.roles = {AndersonRole::Velocity, AndersonRole::Carried};
+  st.extent = b.e;
+  st.ghost = b.g;
+  AndersonCore acc(st, 5);
+  double worstMix = 0.0, worstRes = 0.0;
+  int nMixed = 0;
+  for (int k = 1; k <= 40; ++k) {
+    if (acc.prepare(true)) {
+      worstMix = std::max(worstMix, std::abs(innerSum(p) - S));
+      ++nMixed;
+    }
+    if (k <= 10)
+      applyLinear(lu, u);
+    applyLinear(lp, p);
+    const double shift = (innerSum(p) - S) * invN;
+    View<double> pv = p;
+    View<const double> mk = mask;
+    Kokkos::parallel_for(
+        "u10_shift", p.extent(0), KOKKOS_LAMBDA(const std::size_t i) { pv(i) -= shift * mk(i); });
+    complete(acc);
+    if (k > 10)
+      worstRes = std::max(worstRes, acc.residual());
+  }
+  std::printf(
+      "U10: %d mixed states, max |Σp − S|/|S| over them = %.3e; max residual after step "
+      "10 = %.3e, status %s\n",
+      nMixed, worstMix / S, worstRes, acc.statusName());
+  PECLET_CORE_CHECK(nMixed >= 5);
+  PECLET_CORE_CHECK(worstRes == 0.0);
+  PECLET_CORE_CHECK(worstMix <= 1e-14 * std::abs(S));
+  PECLET_CORE_CHECK(acc.status() == AndersonCore::Status::Active);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -796,5 +839,6 @@ int main(int argc, char** argv) {
   runTest("U6", testU6);
   runTest("U8", testU8);
   runTest("U9", testU9);
+  runTest("U10", testU10);
   PECLET_CORE_RETURN_TEST_RESULT();
 }

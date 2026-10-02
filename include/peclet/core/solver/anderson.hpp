@@ -30,11 +30,11 @@
 
 namespace peclet::core::solver {
 
-/// What a state field is to the metric (design §3.1).
+/// What a state field is to the metric (design §3.1–3.2, rev 1: the metric is velocity only).
+/// The integer values are those of revision 0, whose Pressure role (= 1) was deleted (WO-3b).
 enum class AndersonRole : int {
-  Velocity = 0,  ///< unit weight, every inner entry
-  Pressure = 1,  ///< weight cP², fluid-centred inner entries only, fluid mean removed if gauged
-  Carried = 2,   ///< mixed, stored and differenced like the others, but not measured
+  Velocity = 0,  ///< measured at unit weight, every inner entry
+  Carried = 2,   ///< mixed, stored and differenced like the others, but not measured (e.g. P)
 };
 
 /// The collectives of a distributed run. Both callables empty = a single rank (serial, or np = 1
@@ -48,26 +48,18 @@ struct AndersonComm {
 };
 
 /// The state descriptor (design §5.1): exactly what the caller's step reads across steps, as full
-/// padded x-fastest buffers over one box, plus what the metric needs. Grid-agnostic; the caller's
+/// padded x-fastest buffers over one box, with their roles. Grid-agnostic; the caller's
 /// parameter signature (flow: dt, ρ, μ, F) is NOT here — the adapter checks it.
 struct AndersonState {
   /// The state buffers, each over the full padded box (extent(0) == extent[0]·extent[1]·extent[2]),
   /// read and written in place by the caller's step. The mix writes them too.
   std::vector<View<double>> fields;
-  /// One role per field. At most one Pressure field.
+  /// One role per field.
   std::vector<AndersonRole> roles;
-  /// Cell-centred signed distance over the same padded box; only its sign is used (fluid where
-  /// > 0). Required when a Pressure field is present, otherwise may be empty.
-  View<const double> sdf;
   /// Padded extents e (inner + 2·ghost per axis); inner entries are ghost ≤ i < e − ghost.
   IVec<3> extent{};
   /// Ghost width G.
   int ghost = 2;
-  /// Pressure metric weight c_P = 1/(μ + ρ/Δt) in the caller's internal units (design §3.2).
-  double cP = 1.0;
-  /// The pressure has a constant nullspace (no Dirichlet-pressure face): its fluid mean is removed
-  /// from the metric, with the mean over the GLOBAL count of inner fluid cells.
-  bool gauged = true;
   /// Relative tolerance of the caller's inner solves; sets the Ritz floor
   /// max(kNoiseFloor, kRitzFloorFactor·innerTolerance) (design §4.1, rev 1); 0 = unknown.
   double innerTolerance = 0.0;
@@ -139,20 +131,6 @@ inline double countChanged(View<const double> buf, View<const double> prev, cons
   return static_cast<double>(n);
 }
 
-/// Inner fluid-centred cells (sdf > 0).
-inline double countFluid(View<const double> sdf, const IVec<3>& e, int g) {
-  const Index ex = e[0], exy = e[0] * e[1];
-  Index n = 0;
-  Kokkos::parallel_reduce(
-      "anderson::fluid", innerPolicy(e, g),
-      KOKKOS_LAMBDA(const Index x, const Index y, const Index z, Index& acc) {
-        if (sdf(x + y * ex + z * exy) > 0.0)
-          ++acc;
-      },
-      n);
-  return static_cast<double>(n);
-}
-
 /// The window columns the mix reads, oldest first.
 struct MixColumns {
   View<const double> dG[kMaxWindow];
@@ -200,85 +178,37 @@ inline void residual(View<const double> buf, View<double> x) {
       KOKKOS_LAMBDA(const Index i) { x(i) = buf(i) - x(i); });
 }
 
-/// Pass 1 (gauged): fluid sums of up to three pressure vectors (an empty view contributes 0).
-inline SumN<3> fluidSums(View<const double> a, View<const double> b, View<const double> c,
-                         View<const double> sdf, const IVec<3>& e, int g) {
-  const Index ex = e[0], exy = e[0] * e[1];
-  const bool hb = b.extent(0) > 0, hc = c.extent(0) > 0;
-  SumN<3> s;
-  Kokkos::parallel_reduce(
-      "anderson::fluid_sums", innerPolicy(e, g),
-      KOKKOS_LAMBDA(const Index x, const Index y, const Index z, SumN<3>& acc) {
-        const Index i = x + y * ex + z * exy;
-        if (sdf(i) > 0.0) {
-          acc.v[0] += a(i);
-          if (hb)
-            acc.v[1] += b(i);
-          if (hc)
-            acc.v[2] += c(i);
-        }
-      },
-      Kokkos::Sum<SumN<3>>(s));
-  return s;
-}
-
-// The `Pressure` branches below are plain `if`s on a template constant, not `if constexpr`: an
-// nvcc extended lambda may not first-capture a variable inside a constexpr-if.
-
-/// Pass 2, residual part: {Σ (X−mX)², Σ buf²} over inner entries (fluid-centred only and the
-/// buf term skipped when `pressure`, whose mean mX is 0 unless gauged).
-template <bool Pressure>
-inline SumN<2> selfSums(View<const double> x, View<const double> buf, double mX,
-                        View<const double> sdf, const IVec<3>& e, int g) {
+/// Pass 2, residual part: {Σ X², Σ buf²} over the inner entries of one Velocity field.
+inline SumN<2> selfSums(View<const double> x, View<const double> buf, const IVec<3>& e, int g) {
   const Index ex = e[0], exy = e[0] * e[1];
   SumN<2> s;
   Kokkos::parallel_reduce(
       "anderson::self_sums", innerPolicy(e, g),
       KOKKOS_LAMBDA(const Index xi, const Index y, const Index z, SumN<2>& acc) {
         const Index i = xi + y * ex + z * exy;
-        if (Pressure) {
-          if (sdf(i) > 0.0) {
-            const double r = x(i) - mX;
-            acc.v[0] += r * r;
-          }
-        } else {
-          acc.v[0] += x(i) * x(i);
-          acc.v[1] += buf(i) * buf(i);
-        }
+        acc.v[0] += x(i) * x(i);
+        acc.v[1] += buf(i) * buf(i);
       },
       Kokkos::Sum<SumN<2>>(s));
   return s;
 }
 
-/// Mean-shifted pressure vector or a plain one (mean 0 for velocity: a − 0.0 == a exactly).
-struct Centred {
-  View<const double> v;
-  double mean = 0.0;
-};
-
-/// Pass 2, one window column j against the new column s:
-/// {⟨dR_s,dR_j⟩, ⟨dG_s,dG_j⟩, ⟨dG_s,dR_j⟩, ⟨dG_j,dR_s⟩, ⟨dR_j,X⟩} over inner entries
-/// (fluid-centred only when `Pressure`).
-template <bool Pressure>
-inline SumN<5> columnSums(Centred dRs, Centred dGs, Centred dRj, Centred dGj, Centred x,
-                          View<const double> sdf, const IVec<3>& e, int g) {
+/// Pass 2, one window column j against the new column s, over the inner entries of one Velocity
+/// field: {⟨dR_s,dR_j⟩, ⟨dG_s,dG_j⟩, ⟨dG_s,dR_j⟩, ⟨dG_j,dR_s⟩, ⟨dR_j,X⟩}.
+inline SumN<5> columnSums(View<const double> dRs, View<const double> dGs, View<const double> dRj,
+                          View<const double> dGj, View<const double> x, const IVec<3>& e, int g) {
   const Index ex = e[0], exy = e[0] * e[1];
   SumN<5> s;
   Kokkos::parallel_reduce(
       "anderson::column_sums", innerPolicy(e, g),
       KOKKOS_LAMBDA(const Index xi, const Index y, const Index z, SumN<5>& acc) {
         const Index i = xi + y * ex + z * exy;
-        if (Pressure) {
-          if (!(sdf(i) > 0.0))
-            return;
-        }
-        const double rs = dRs.v(i) - dRs.mean, gs = dGs.v(i) - dGs.mean;
-        const double rj = dRj.v(i) - dRj.mean, gj = dGj.v(i) - dGj.mean;
+        const double rs = dRs(i), gs = dGs(i), rj = dRj(i), gj = dGj(i);
         acc.v[0] += rs * rj;
         acc.v[1] += gs * gj;
         acc.v[2] += gs * rj;
         acc.v[3] += gj * rs;
-        acc.v[4] += rj * (x.v(i) - x.mean);
+        acc.v[4] += rj * x(i);
       },
       Kokkos::Sum<SumN<5>>(s));
   return s;
@@ -455,17 +385,16 @@ class AndersonCore {
 
   enum class Status : int { Active = 0, Disabled = 1, Unstable = 2 };
 
-  /// Allocates the history (design §6.3: (2m+3)·n_s·8·n_pad bytes) and counts the global fluid
-  /// cells. Collective over state.comm. Throws std::invalid_argument for an inconsistent descriptor
-  /// and std::runtime_error (on every rank) when the history does not fit.
+  /// Allocates the history (design §6.3: (2m+3)·n_s·8·n_pad bytes). Collective over state.comm
+  /// (one 1-double sum, so that every rank throws when one rank's allocation fails). Throws
+  /// std::invalid_argument for an inconsistent descriptor and std::runtime_error (on every rank)
+  /// when the history does not fit.
   explicit AndersonCore(AndersonState state, int window = 5, double mixing = 1.0)
       : st_(std::move(state)), m_(window), beta_(mixing) {
     validate();
     const std::size_t ns = st_.fields.size();
     const Index nPad = numPadded();
-    double local[2] = {0.0, 0.0};  // {fluid cells, allocation failed}
-    if (pressure_ >= 0 && st_.gauged)
-      local[0] = detail::anderson::countFluid(st_.sdf, st_.extent, st_.ghost);
+    double failed = 0.0;
     try {
       auto alloc = [&](std::vector<View<double>>& set, const char* label) {
         set.resize(ns);
@@ -482,10 +411,10 @@ class AndersonCore {
         alloc(dG_[s], "dG");
       }
     } catch (const std::exception&) {
-      local[1] = 1.0;
+      failed = 1.0;
     }
-    sumAll(local, 2);
-    if (local[1] > 0.0) {
+    sumAll(&failed, 1);
+    if (failed > 0.0) {
       char msg[512];
       std::snprintf(msg, sizeof msg,
                     "AndersonCore: window %d needs %zu bytes ((2m+3)*n_s*8*n_pad, n_s = %zu, "
@@ -495,7 +424,6 @@ class AndersonCore {
                     memoryBytesFor(2, ns, nPad));
       throw std::runtime_error(msg);
     }
-    numFluid_ = local[0];
   }
 
   AndersonCore(const AndersonCore&) = delete;
@@ -569,8 +497,7 @@ class AndersonCore {
   }
 
   /// §4.3 steps 3–7, after the caller's step. `pressureSolveFailed` must be rank-consistent.
-  /// Collective while active: a 3-double sum (gauged pressure), a (5·columns + 2)-double sum and a
-  /// broadcast of rank 0's decisions.
+  /// Collective while active: a (5·columns + 2)-double sum and a broadcast of rank 0's decisions.
   void complete(bool pressureSolveFailed = false) {
     if (!prepared_)
       throw std::logic_error("AndersonCore::complete: called without prepare()");
@@ -606,42 +533,20 @@ class AndersonCore {
         da::residual(st_.fields[f], x_[f]);
     }
 
-    // --- 4. reductions (§6.1) ---
-    double mX = 0.0, mRs = 0.0, mGs = 0.0;
-    if (pressure_ >= 0 && st_.gauged) {
-      const std::size_t p = static_cast<std::size_t>(pressure_);
-      const da::SumN<3> ps = da::fluidSums(
-          x_[p], s >= 0 ? View<const double>(dR_[s][p]) : View<const double>(),
-          s >= 0 ? View<const double>(dG_[s][p]) : View<const double>(), st_.sdf, e, g);
-      double sums[3] = {ps.v[0], ps.v[1], ps.v[2]};
-      sumAll(sums, 3);
-      if (numFluid_ > 0.0) {
-        mX = sums[0] / numFluid_;
-        mRs = sums[1] / numFluid_;
-        mGs = sums[2] / numFluid_;
-      }
-    }
+    // --- 4. reductions (§6.1; rev 1: Velocity fields only, no pass 1) ---
     std::vector<double> packet(static_cast<std::size_t>(5 * nCols + 2), 0.0);
     for (std::size_t f = 0; f < ns; ++f) {
-      const AndersonRole role = st_.roles[f];
-      if (role == AndersonRole::Carried)
+      if (st_.roles[f] != AndersonRole::Velocity)
         continue;
-      const bool isP = role == AndersonRole::Pressure;
-      const double w = isP ? st_.cP * st_.cP : 1.0;
-      const da::SumN<2> ss = isP ? da::selfSums<true>(x_[f], st_.fields[f], mX, st_.sdf, e, g)
-                                 : da::selfSums<false>(x_[f], st_.fields[f], 0.0, st_.sdf, e, g);
-      packet[0] += w * ss.v[0];
+      const da::SumN<2> ss = da::selfSums(x_[f], st_.fields[f], e, g);
+      packet[0] += ss.v[0];
       packet[1] += ss.v[1];
       for (int k = 0; k < nCols; ++k) {
         const int j = cols[k];
-        const double mRj = isP ? (j == s ? mRs : mR_[j]) : 0.0;
-        const double mGj = isP ? (j == s ? mGs : mG_[j]) : 0.0;
-        const da::Centred dRs{dR_[s][f], isP ? mRs : 0.0}, dGs{dG_[s][f], isP ? mGs : 0.0};
-        const da::Centred dRj{dR_[j][f], mRj}, dGj{dG_[j][f], mGj}, xc{x_[f], isP ? mX : 0.0};
-        const da::SumN<5> cs = isP ? da::columnSums<true>(dRs, dGs, dRj, dGj, xc, st_.sdf, e, g)
-                                   : da::columnSums<false>(dRs, dGs, dRj, dGj, xc, st_.sdf, e, g);
+        const da::SumN<5> cs =
+            da::columnSums(dR_[s][f], dG_[s][f], dR_[j][f], dG_[j][f], x_[f], e, g);
         for (int q = 0; q < 5; ++q)
-          packet[static_cast<std::size_t>(2 + 5 * k + q)] += w * cs.v[q];
+          packet[static_cast<std::size_t>(2 + 5 * k + q)] += cs.v[q];
       }
     }
     sumAll(packet.data(), static_cast<int>(packet.size()));
@@ -678,9 +583,7 @@ class AndersonCore {
         gr_[j][s] = v[3];
         b_[j] = v[4];
       }
-      mR_[s] = mRs;
       mixedCol_[s] = mixed_;
-      mG_[s] = mGs;
       for (int k = 0; k < nCols; ++k)
         order_[k] = cols[k];
       mk_ = nCols;
@@ -710,7 +613,8 @@ class AndersonCore {
     // --- 7. next coefficients ---
     ritzRadius_ = std::numeric_limits<double>::quiet_NaN();
     if (status_ == Status::Active && engaged_ && mk_ >= 1) {
-      // A column with a zero W-norm (D_j = 0, §4.4 step 1) carries nothing: drop it first.
+      // A column with a zero norm (D_j = 0, §4.4 step 1) carries nothing: drop it first. Under the
+      // velocity metric that is a column in which only Carried fields moved.
       for (int k = 0; k < mk_;) {
         if (rr_[order_[k]][order_[k]] > 0.0) {
           ++k;
@@ -786,7 +690,7 @@ class AndersonCore {
                                      : (status_ == Status::Disabled ? "disabled" : "unstable");
   }
   const std::string& reason() const { return reason_; }
-  /// Relative W-residual of the last evaluation (design §3.2); +inf before the first.
+  /// Relative velocity residual of the last evaluation (design §3.2); +inf before the first.
   double residual() const { return residual_; }
   int numRestarts() const { return numRestarts_; }
   int numResets() const { return numResets_; }
@@ -887,18 +791,11 @@ class AndersonCore {
     for (std::size_t f = 0; f < ns; ++f) {
       if (static_cast<Index>(st_.fields[f].extent(0)) != nPad)
         throw std::invalid_argument("AndersonCore: a state field is not the full padded box");
-      if (st_.roles[f] == AndersonRole::Pressure) {
-        if (pressure_ >= 0)
-          throw std::invalid_argument("AndersonCore: at most one Pressure field");
-        pressure_ = static_cast<int>(f);
-      }
+      if (st_.roles[f] != AndersonRole::Velocity && st_.roles[f] != AndersonRole::Carried)
+        throw std::invalid_argument("AndersonCore: a role must be Velocity or Carried");
     }
-    if (pressure_ >= 0 && static_cast<Index>(st_.sdf.extent(0)) != nPad)
-      throw std::invalid_argument("AndersonCore: a Pressure field needs the padded cell SDF");
     if (!std::isfinite(st_.innerTolerance) || st_.innerTolerance < 0.0)
       throw std::invalid_argument("AndersonCore: innerTolerance must be finite and >= 0");
-    if (!std::isfinite(st_.cP))
-      throw std::invalid_argument("AndersonCore: cP must be finite");
   }
 
   Index numPadded() const { return st_.extent[0] * st_.extent[1] * st_.extent[2]; }
@@ -940,7 +837,7 @@ class AndersonCore {
     return se.lamMin / se.lamMax;
   }
 
-  /// γ = argmin ‖r_k − ΔR γ‖_W by the scaled normal equations (design §4.4).
+  /// γ = argmin ‖r_k − ΔR γ‖ by the scaled normal equations (design §4.4).
   void solveTruncated() {
     detail::anderson::Mat a = {};
     windowBlock(rr_, a);
@@ -1012,8 +909,6 @@ class AndersonCore {
   AndersonState st_;
   int m_;
   double beta_;
-  int pressure_ = -1;    // index of the Pressure field, or -1
-  double numFluid_ = 0;  // global inner fluid-centred cells (gauged pressure only)
 
   // device (design §4.2): one view per state field per vector
   std::vector<View<double>> x_, rPrev_, gPrev_;
@@ -1023,10 +918,9 @@ class AndersonCore {
   int mk_ = 0;
   int order_[kMaxWindow] = {};  // slot indices, oldest → newest
   double rr_[kMaxWindow][kMaxWindow] = {}, gg_[kMaxWindow][kMaxWindow] = {},
-         gr_[kMaxWindow][kMaxWindow] = {};            // gr_[i][j] = ⟨Δg_i, Δr_j⟩_W
-  double mR_[kMaxWindow] = {}, mG_[kMaxWindow] = {};  // per-slot fluid P-means (gauged)
+         gr_[kMaxWindow][kMaxWindow] = {};  // gr_[i][j] = ⟨Δg_i, Δr_j⟩
   bool mixedCol_[kMaxWindow] = {};  // the column in this slot was formed at a mixed call (rev 1)
-  double b_[kMaxWindow] = {};       // ⟨Δr_j, r_k⟩_W by slot
+  double b_[kMaxWindow] = {};       // ⟨Δr_j, r_k⟩ by slot
   double gamma_[kMaxWindow] = {};   // by window position, oldest first
   bool havePrev_ = false, pending_ = false, engaged_ = false;
   bool prepared_ = false, mixed_ = false, noticed_ = false;

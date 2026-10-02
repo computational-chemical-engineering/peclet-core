@@ -6,8 +6,7 @@
 //   - γ, the column count and the status are bitwise equal on every rank after every step;
 //   - after 20 steps the iterates agree with the serial run to 1e-13 (relative to max|x|), and at
 //     np = 1 they are bit-identical (an Allreduce / Bcast on one rank is the identity).
-// A second case carries a gauged Pressure field with a solid mask and a Carried field, so the
-// fluid count, the fluid means and the cP-weighted metric are reduced across ranks too.
+// A second case adds two Carried fields (mixed with the same γ on every rank, never measured).
 #include <mpi.h>
 
 #include <algorithm>
@@ -55,9 +54,6 @@ double srcOf(int field, Index x, Index y, Index z) {
     return 1.0;
   return 1.0 + 0.3 * std::sin(0.11 * static_cast<double>(x + 3 * y + 7 * z) + field);
 }
-double sdfOf(Index x, Index y, Index z) {
-  return ((x * 7 + y * 3 + z * 5) % 11 == 0) ? -1.0 : 1.0;
-}
 
 /// The state of a z-slab [z0, z0 + nz) of the global box, with its own padded box and maps.
 struct Slab {
@@ -65,14 +61,7 @@ struct Slab {
   Index z0;
   std::vector<View<double>> fields;
   std::vector<LinearMap> maps;
-  View<double> sdf;
   Slab(int nFields, Index z0_, Index nz) : box(kNx, kNy, nz, 2), z0(z0_) {
-    std::vector<double> sd(static_cast<std::size_t>(box.nPad), 1.0);
-    for (Index z = 0; z < nz; ++z)
-      for (Index y = 0; y < kNy; ++y)
-        for (Index x = 0; x < kNx; ++x)
-          sd[static_cast<std::size_t>(box.pad(x, y, z))] = sdfOf(x, y, z0 + z);
-    sdf = peclet::core::toDevice(sd, "slab_sdf");
     for (int f = 0; f < nFields; ++f) {
       std::vector<double> lam(static_cast<std::size_t>(box.nPad), 0.0),
           c(static_cast<std::size_t>(box.nPad), 1.0);
@@ -91,11 +80,8 @@ struct Slab {
     AndersonState s;
     s.fields = fields;
     s.roles = roles;
-    s.sdf = sdf;
     s.extent = box.e;
     s.ghost = box.g;
-    s.cP = 0.25;
-    s.gauged = true;
     return s;
   }
   /// FNV-1a over every iterate (all fields, padded) and γ / residual / columns / status after
@@ -216,8 +202,8 @@ int main(int argc, char** argv) {
       peclet::core::test::g_failures = 1;
     } else {
       runCase("U1", {AndersonRole::Velocity}, rank, size);
-      runCase("velocity+pressure+carried",
-              {AndersonRole::Velocity, AndersonRole::Pressure, AndersonRole::Carried}, rank, size);
+      runCase("velocity+carried",
+              {AndersonRole::Velocity, AndersonRole::Carried, AndersonRole::Carried}, rank, size);
     }
     failures = peclet::core::test::g_failures;
   }
