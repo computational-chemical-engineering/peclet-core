@@ -729,7 +729,7 @@ KOKKOS_INLINE_FUNCTION void pvFitInit(PvFit& f) {
   f.npoly = 0;
 }
 
-/// Fold one stencil cell's PLIC polygon into the fit.
+/// One stencil cell's PLIC polygon in the PV fit: the parameters of `pvFitTerm` and `pvFitAdd`.
 ///
 /// @param mx,my,mz,alpha  the cell's PLIC plane in ITS OWN unit-cell coordinates (`plic.hpp`).
 /// @param off             the cell's integer index offset from the target cell.
@@ -744,11 +744,25 @@ KOKKOS_INLINE_FUNCTION void pvFitInit(PvFit& f) {
 ///                        integrated with the wrong sign of `z'`. Jibben's area projection
 ///                        `A (n.n_p)` decays to zero over the same range; this is the explicit
 ///                        version of the same guard.
-/// @return true if the polygon contributed.
-KOKKOS_INLINE_FUNCTION bool pvFitAdd(PvFit& f, double mx, double my, double mz, double alpha,
-                                     const double off[3], const double org[3], const double t1[3],
-                                     const double t2[3], const double nn[3], double dW,
-                                     double cosMin, const VofMetric& g) {
+///
+/// `pvFitAdd` is the composition of `pvFitTerm` (the per-polygon map) and `pvFitAccum` (the `+=`
+/// into the normal equations), bitwise (`tests/test_vof_pvfit.cpp`). The split lets a device
+/// fallback evaluate the stencil's terms in parallel and still accumulate them in the canonical
+/// order (flow `doc/vof_step_performance_design.md` §4.7, §5.11).
+struct PvTerm {
+  double w, B, s[6];
+  bool ok;
+};
+
+/// One stencil polygon's contribution to the PV fit: everything `pvFitAdd` computes before the
+/// accumulation — the polygon, the frame transform, the moments `s`, the Wendland weight `w` and
+/// `B`. Same parameters as `pvFitAdd`. Sets `t.ok` and returns it: false exactly where `pvFitAdd`
+/// returns false (a rejected polygon), and then `w`, `B`, `s` are unspecified.
+KOKKOS_INLINE_FUNCTION bool pvFitTerm(PvTerm& t, double mx, double my, double mz, double alpha,
+                                      const double off[3], const double org[3], const double t1[3],
+                                      const double t2[3], const double nn[3], double dW,
+                                      double cosMin, const VofMetric& g) {
+  t.ok = false;
   const double n2 = mx * mx + my * my + mz * mz;
   if (!(n2 > 0.0))
     return false;
@@ -804,12 +818,38 @@ KOKKOS_INLINE_FUNCTION bool pvFitAdd(PvFit& f, double mx, double my, double mz, 
     return false;
 
   const double B = b0 * s[0] + b1 * s[1] + b2 * s[2];
+  t.w = w;
+  t.B = B;
+  for (int i = 0; i < 6; ++i)
+    t.s[i] = s[i];
+  t.ok = true;
+  return true;
+}
+
+/// Fold one accepted term (`t.ok`) into the fit — the accumulation half of `pvFitAdd`, with its
+/// expressions verbatim. Calling it in the stencil's canonical order reproduces `pvFitAdd`'s sums.
+KOKKOS_INLINE_FUNCTION void pvFitAccum(PvFit& f, const PvTerm& t) {
+  const double w = t.w, B = t.B;
+  const double* s = t.s;
   for (int i = 0; i < 6; ++i) {
     f.b[i] += w * s[i] * B;
     for (int j = 0; j < 6; ++j)
       f.A[i][j] += w * s[i] * s[j];
   }
   ++f.npoly;
+}
+
+/// Fold one stencil cell's PLIC polygon into the fit: `pvFitTerm`, then `pvFitAccum` if the
+/// polygon is accepted. Parameters as documented above `PvTerm`.
+/// @return true if the polygon contributed.
+KOKKOS_INLINE_FUNCTION bool pvFitAdd(PvFit& f, double mx, double my, double mz, double alpha,
+                                     const double off[3], const double org[3], const double t1[3],
+                                     const double t2[3], const double nn[3], double dW,
+                                     double cosMin, const VofMetric& g) {
+  PvTerm t;
+  if (!pvFitTerm(t, mx, my, mz, alpha, off, org, t1, t2, nn, dW, cosMin, g))
+    return false;
+  pvFitAccum(f, t);
   return true;
 }
 

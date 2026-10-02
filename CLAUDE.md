@@ -37,7 +37,7 @@ ctest --test-dir build --output-on-failure -LE bench   # 76 ctests (77 with `ben
 export PATH=/usr/local/cuda-13.2/bin:$PATH    # if the Kokkos install targets the CUDA backend
 cmake -S . -B build_kokkos -DPECLET_CORE_ENABLE_KOKKOS=ON \
   -DCMAKE_PREFIX_PATH=../extern/install/nvidia-cuda
-cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure -LE bench  # 91 ctests (92 with `bench`): + device halo / geometry / solver, np=1,2,4,8
+cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure -LE bench  # 92 ctests (93 with `bench`): + device halo / geometry / solver / VoF PV fit, np=1,2,4,8
 mpirun -np 4 ./build/benchmarks/bench_halo 48 1 300
 
 # Python modules + their ctests (test_mpi.py np=1,2,4,8; state_hash; ndarray interop). Release is

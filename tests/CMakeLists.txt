@@ -282,6 +282,14 @@ if(MPI_FOUND)
     target_link_libraries(test_csr_solver PRIVATE Kokkos::kokkos)
     peclet_core_add_test(csr_solver test_csr_solver)
 
+    # VoF PV fit: pvFitAdd == pvFitTerm + pvFitAccum bitwise, device and host spaces (10^5
+    # random cases incl. rejected polygons; flow vof_step_performance_design.md §5.11, WO-7a).
+    add_executable(test_vof_pvfit test_vof_pvfit.cpp)
+    target_include_directories(test_vof_pvfit PRIVATE
+      ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(test_vof_pvfit PRIVATE Kokkos::kokkos)
+    peclet_core_add_test(vof_pvfit test_vof_pvfit)
+
     # Device GraphAMG apply vs the host oracle (no MPI; serial + device).
     add_executable(test_graph_amg_device test_graph_amg_device.cpp)
     target_include_directories(test_graph_amg_device PRIVATE
