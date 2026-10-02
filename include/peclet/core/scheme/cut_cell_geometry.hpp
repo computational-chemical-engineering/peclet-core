@@ -188,6 +188,17 @@ PECLET_CORE_CC_HD double tetPositiveFraction(double v0, double v1, double v2, do
   return detail::tetTwoPositive(pos[0], pos[1], neg[0], neg[1]);
 }
 
+/// PL aperture of one face from its fan (§2.2): the corner values in loop order c00, c10, c11, c01
+/// over the face's tangent axes (t1 < t2) and the face-centre value cc,
+/// ¼ (F(c00,c10,cc) + F(c10,c11,cc) + F(c11,c01,cc) + F(c01,c00,cc)), summed in that order. The
+/// face kernel of a container and `cutCellGeometryFanTet` both call this, so a face's aperture is
+/// the same bits from either cell and from the face kernel.
+PECLET_CORE_CC_HD double fanFaceAperture(double v00, double v10, double v11, double v01,
+                                         double cc) {
+  return 0.25 * (triPositiveFraction(v00, v10, cc) + triPositiveFraction(v10, v11, cc) +
+                 triPositiveFraction(v11, v01, cc) + triPositiveFraction(v01, v00, cc));
+}
+
 /// Snap a face aperture at both ends (§2.3): a < 1e-3 → 0, a > 1 − 1e-3 → 1, else a.
 PECLET_CORE_CC_HD double snapAperture(double a) {
   if (a < kApertureSnap)
@@ -381,8 +392,7 @@ PECLET_CORE_CC_HD CutCellGeometry cutCellGeometryFanTet(const double corner[8],
     const double v10 = corner[detail::ccgFanCorner(f, 1)];
     const double v11 = corner[detail::ccgFanCorner(f, 2)];
     const double v01 = corner[detail::ccgFanCorner(f, 3)];
-    g.aperture[f] = 0.25 * (triPositiveFraction(v00, v10, cc) + triPositiveFraction(v10, v11, cc) +
-                            triPositiveFraction(v11, v01, cc) + triPositiveFraction(v01, v00, cc));
+    g.aperture[f] = fanFaceAperture(v00, v10, v11, v01, cc);
   }
 
   // Uniform sign over all 15 samples: κ = 1 or 0, no facet (the apertures above are then exactly
