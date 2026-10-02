@@ -6,7 +6,8 @@
 //   - γ, the column count and the status are bitwise equal on every rank after every step;
 //   - after 20 steps the iterates agree with the serial run to 1e-13 (relative to max|x|), and at
 //     np = 1 they are bit-identical (an Allreduce / Bcast on one rank is the identity).
-// A second case adds two Carried fields (mixed with the same γ on every rank, never measured).
+// A second case adds two Carried fields (mixed with the same γ on every rank, never measured). A
+// third (review R6): a descriptor inconsistent on one rank throws on every rank.
 #include <mpi.h>
 
 #include <algorithm>
@@ -15,6 +16,8 @@
 #include <cstdio>
 #include <cstring>
 #include <Kokkos_Core.hpp>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "anderson_test_maps.hpp"
@@ -186,6 +189,33 @@ void runCase(const char* name, const std::vector<AndersonRole>& roles, int rank,
   }
 }
 
+/// Review R6: a descriptor that is inconsistent on ONE rank (here the last rank's field is one
+/// entry short) makes the constructor throw std::invalid_argument on EVERY rank — the validation is
+/// part of the constructor's one collective, so no rank is left waiting in it.
+void invalidOnOneRank(int rank, int size) {
+  Slab slab(1, rank * (kNz / size), kNz / size);
+  AndersonState st = slab.state({AndersonRole::Velocity});
+  if (rank == size - 1)
+    st.fields[0] = View<double>("short_field", static_cast<std::size_t>(slab.box.nPad - 1));
+  st.comm = peclet::core::solver::andersonComm(MPI_COMM_WORLD);
+  int threw = 0;
+  std::string what;
+  try {
+    AndersonCore acc(st, 5);
+  } catch (const std::invalid_argument& e) {
+    threw = 1;
+    what = e.what();
+  }
+  int all = 0;
+  MPI_Allreduce(&threw, &all, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+  if (rank == 0)
+    std::printf(
+        "R6 np=%d: invalid descriptor on rank %d -> invalid_argument on %d of %d ranks "
+        "(rank 0: \"%s\")\n",
+        size, size - 1, all, size, what.c_str());
+  PECLET_CORE_CHECK(all == size);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -204,6 +234,7 @@ int main(int argc, char** argv) {
       runCase("U1", {AndersonRole::Velocity}, rank, size);
       runCase("velocity+carried",
               {AndersonRole::Velocity, AndersonRole::Carried, AndersonRole::Carried}, rank, size);
+      invalidOnOneRank(rank, size);
     }
     failures = peclet::core::test::g_failures;
   }

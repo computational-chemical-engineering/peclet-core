@@ -342,36 +342,50 @@ class AndersonCore {
   enum class Status : int { Active = 0, Disabled = 1 };
 
   /// Allocates the history (design §6.3: (2m+3)·n_s·8·n_pad bytes). Collective over state.comm
-  /// (one 1-double sum, so that every rank throws when one rank's allocation fails). Throws
-  /// std::invalid_argument for an inconsistent descriptor and std::runtime_error (on every rank)
-  /// when the history does not fit.
+  /// (one 2-double sum {invalid descriptor, failed allocation}, so that every rank throws when one
+  /// rank's descriptor is inconsistent or one rank's allocation fails). Throws
+  /// std::invalid_argument (on every rank) for an inconsistent descriptor and std::runtime_error
+  /// (on every rank) when the history does not fit.
   explicit AndersonCore(AndersonState state, int window = 5, double mixing = 1.0)
       : st_(std::move(state)), m_(window), beta_(mixing) {
-    validate();
-    const std::size_t ns = st_.fields.size();
-    const Index nPad = numPadded();
-    double failed = 0.0;
+    double failed[2] = {0.0, 0.0};  // {invalid descriptor, failed allocation}, summed over ranks
+    std::string invalid;
     try {
-      auto alloc = [&](std::vector<View<double>>& set, const char* label) {
-        set.resize(ns);
-        for (std::size_t f = 0; f < ns; ++f)
-          set[f] = View<double>(
-              Kokkos::view_alloc(std::string("anderson::") + label, Kokkos::WithoutInitializing),
-              nPad);
-      };
-      alloc(x_, "X");
-      alloc(rPrev_, "Rprev");
-      alloc(gPrev_, "Gprev");
-      for (int s = 0; s < m_; ++s) {
-        alloc(dR_[s], "dR");
-        alloc(dG_[s], "dG");
-      }
-      allocReductionScratch();
-    } catch (const std::exception&) {
-      failed = 1.0;
+      validate();
+    } catch (const std::invalid_argument& e) {
+      invalid = e.what();
+      failed[0] = 1.0;
     }
-    sumAll(&failed, 1);
-    if (failed > 0.0) {
+    const std::size_t ns = st_.fields.size();
+    const Index nPad = invalid.empty() ? numPadded() : 0;
+    if (invalid.empty()) {
+      try {
+        auto alloc = [&](std::vector<View<double>>& set, const char* label) {
+          set.resize(ns);
+          for (std::size_t f = 0; f < ns; ++f)
+            set[f] = View<double>(
+                Kokkos::view_alloc(std::string("anderson::") + label, Kokkos::WithoutInitializing),
+                nPad);
+        };
+        alloc(x_, "X");
+        alloc(rPrev_, "Rprev");
+        alloc(gPrev_, "Gprev");
+        for (int s = 0; s < m_; ++s) {
+          alloc(dR_[s], "dR");
+          alloc(dG_[s], "dG");
+        }
+        allocReductionScratch();
+      } catch (const std::exception&) {
+        failed[1] = 1.0;
+      }
+    }
+    sumAll(failed, 2);
+    if (failed[0] > 0.0)
+      throw std::invalid_argument(invalid.empty()
+                                      ? std::string("AndersonCore: the state descriptor is "
+                                                    "inconsistent on another rank")
+                                      : invalid);
+    if (failed[1] > 0.0) {
       char msg[512];
       std::snprintf(msg, sizeof msg,
                     "AndersonCore: window %d needs %zu bytes ((2m+3)*n_s*8*n_pad, n_s = %zu, "
