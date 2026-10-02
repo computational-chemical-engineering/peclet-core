@@ -205,9 +205,11 @@ Header-only under `include/peclet/core/`:
   Carried + SDF fluid mask + metric weight `cP` + gauge flag), split `prepare` / `complete` around
   the caller's own step, history `(2m+3)·n_s·8·n_pad` bytes. MPI-free: the collectives are two
   callables in `AndersonComm`; `solver/anderson_mpi.hpp` builds them from an `MPI_Comm` and is the
-  MPI side. Gates: `tests/test_anderson.cpp` (U2–U6, metric, memory formula; U1 runs only with
-  `--u1`, see the file) and `tests/test_anderson_mpi.cpp` (U7, np 1/2/4: γ bitwise on all ranks,
-  np = 1 bit-identical to serial).
+  MPI side. Rev 1 of the design: the Ritz guard runs only on a mixed call over an all-mixed
+  window above the floor max(1e-10, 1000·`innerTolerance`). Gates: `tests/test_anderson.cpp`
+  (U1a–c, U2–U6, U8 no guard on plain windows, U9 the Ritz floor, metric, memory formula) and
+  `tests/test_anderson_mpi.cpp` (U7, np 1/2/4: γ bitwise on all ranks, np = 1 bit-identical to
+  serial); both print a per-test `digest` of every iterate for bit-identity checks across builds.
 - **`amr/` is gone (2026-09-10)** — the whole AMR tree (the block-local-Morton octree, the distributed
   octree with leaf halos and weighted-ORB rebalancing, the collocated-projection cut-cell
   Navier–Stokes solver, its tests, studies, docs and campaign logs) is the **`peclet-amr`** package,

@@ -4,6 +4,7 @@
 // was built for; single rank (U7 is test_anderson_mpi.cpp).
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <Kokkos_Core.hpp>
@@ -41,13 +42,52 @@ AndersonState oneField(const Box& b, View<double> f, AndersonRole role = Anderso
   return s;
 }
 
+/// Digest of every iterate and every decision a test produces (FNV-1a over the bytes of the
+/// state fields, γ, the residual, the column count and the status after each complete()). Printed
+/// per test; two builds that print the same digest produced bit-identical iterates.
+struct Digest {
+  std::uint64_t h = 1469598103934665603ull;
+  void add(const void* p, std::size_t n) {
+    const auto* c = static_cast<const unsigned char*>(p);
+    for (std::size_t i = 0; i < n; ++i)
+      h = (h ^ c[i]) * 1099511628211ull;
+  }
+};
+Digest g_digest;
+
+void record(const AndersonCore& acc) {
+  for (const auto& f : acc.state().fields) {
+    const auto v = download(f);
+    g_digest.add(v.data(), v.size() * sizeof(double));
+  }
+  const auto gamma = acc.gamma();
+  g_digest.add(gamma.data(), gamma.size() * sizeof(double));
+  const double res = acc.residual();
+  const int cols = acc.numColumns(), status = static_cast<int>(acc.status());
+  g_digest.add(&res, sizeof res);
+  g_digest.add(&cols, sizeof cols);
+  g_digest.add(&status, sizeof status);
+}
+
+void complete(AndersonCore& acc) {
+  acc.complete();
+  record(acc);
+}
+
 /// One map evaluation through the split interface; returns whether the input was mixed.
 template <class Map>
 bool evaluate(AndersonCore& acc, bool accelerate, Map&& map) {
   const bool mixed = acc.prepare(accelerate);
   map();
-  acc.complete();
+  complete(acc);
   return mixed;
+}
+
+template <class Test>
+void runTest(const char* name, Test&& test) {
+  g_digest = Digest{};
+  test();
+  std::printf("digest %s %016llx\n", name, static_cast<unsigned long long>(g_digest.h));
 }
 
 bool allFinite(const std::vector<double>& v) {
@@ -211,7 +251,7 @@ void testU2() {
     }
     map();
     worstOut = std::max(worstOut, std::abs(innerSum(x) - S));
-    acc.complete();
+    complete(acc);
   }
   std::printf("U2: %d mixed states, max |Σx − S|/|S| = %.3e (outputs %.3e), residual %.3e\n",
               nMixed, worstMix / S, worstOut / S, acc.residual());
@@ -244,7 +284,7 @@ void testU3() {
             KOKKOS_LAMBDA(const int) { xv(i) = std::numeric_limits<double>::quiet_NaN(); });
         hit = true;
       }
-      acc.complete();
+      complete(acc);
       if (!hit)
         lastOut = download(x);
     }
@@ -287,7 +327,7 @@ void testU3() {
         applyLinear(lin, x);
         if (mixed && nMixed == 3)
           throw std::runtime_error("synthetic failure");
-        acc.complete();
+        complete(acc);
         lastOut = download(x);
       } catch (const std::exception& ex) {
         absorbed = acc.stepFailed(ex.what());
@@ -313,13 +353,15 @@ void testU3() {
 
 // ---- U4: instability (eigenvalue 1.02 + a rotation of modulus 1.01) vs a stable twin -----------
 struct U4Result {
-  int engagedAt = -1, unstableAt = -1;
+  int engagedAt = -1, unstableAt = -1, steps = 0;
+  std::vector<double> residual, ritz;  // per call
   double lastRitz = std::numeric_limits<double>::quiet_NaN();
   double maxRitz = 0.0;
   AndersonCore::Status status = AndersonCore::Status::Active;
 };
 
-U4Result runU4(double outlier, double rotModulus, int maxSteps) {
+U4Result runU4(double outlier, double rotModulus, int maxSteps, double innerTolerance = 0.0,
+               double stopResidual = 0.0) {
   const Box b(25, 20, 20, 2);
   std::vector<double> lam(b.nPad, 0.0);
   std::vector<Index> innerIdx;
@@ -336,10 +378,17 @@ U4Result runU4(double outlier, double rotModulus, int maxSteps) {
   map.ra = rotModulus * std::cos(0.5);
   map.rb = rotModulus * std::sin(0.5);
   View<double> x("u4_x", b.nPad);
-  AndersonCore acc(oneField(b, x), 5);
+  AndersonState st = oneField(b, x);
+  st.innerTolerance = innerTolerance;
+  AndersonCore acc(st, 5);
   U4Result r;
-  for (int k = 1; k <= maxSteps && acc.status() == AndersonCore::Status::Active; ++k) {
+  for (int k = 1; k <= maxSteps && acc.status() == AndersonCore::Status::Active &&
+                  !(acc.residual() <= stopResidual);
+       ++k) {
     evaluate(acc, true, [&] { applyLinear(map, x); });
+    r.steps = k;
+    r.residual.push_back(acc.residual());
+    r.ritz.push_back(acc.ritzRadius());
     if (r.engagedAt < 0 && acc.engaged())
       r.engagedAt = k;
     if (std::isfinite(acc.ritzRadius())) {
@@ -444,7 +493,7 @@ void testU6() {
   const int resets0 = acc.numResets();
   bool mixed = acc.prepare(true);
   applyLinear(lin, x);
-  acc.complete();
+  complete(acc);
   std::printf("U6: ghost write -> mixed %d, resets %d -> %d\n", mixed ? 1 : 0, resets0,
               acc.numResets());
   PECLET_CORE_CHECK(mixed);
@@ -454,7 +503,7 @@ void testU6() {
   poke(b.pad(4, 5, 3));
   mixed = acc.prepare(true);
   applyLinear(lin, x);
-  acc.complete();
+  complete(acc);
   std::printf("U6: inner write -> mixed %d, resets %d -> %d, columns %d\n", mixed ? 1 : 0, resets0,
               acc.numResets(), acc.numColumns());
   PECLET_CORE_CHECK(!mixed);
@@ -500,6 +549,11 @@ void testMemory() {
   PECLET_CORE_CHECK(throwsInvalid([&] { AndersonCore a(oneField(b, f), 9); }));
   PECLET_CORE_CHECK(throwsInvalid([&] { AndersonCore a(oneField(b, f), 5, 0.0); }));
   PECLET_CORE_CHECK(throwsInvalid([&] { AndersonCore a(oneField(b, g), 5); }));
+  PECLET_CORE_CHECK(throwsInvalid([&] {
+    AndersonState s = oneField(b, f);
+    s.innerTolerance = -1e-8;
+    AndersonCore a(s, 5);
+  }));
   PECLET_CORE_CHECK(throwsInvalid([&] { AndersonCore a(oneField(b, f, AndersonRole::Pressure)); }));
 }
 
@@ -533,7 +587,7 @@ void testMetric() {
     acc.prepare(false);
     Kokkos::deep_copy(u, ug);
     Kokkos::deep_copy(p, pg);
-    acc.complete();
+    complete(acc);
     return acc.residual();
   };
   // host reference
@@ -610,20 +664,137 @@ void testLinearAlgebra() {
   PECLET_CORE_CHECK(da::gelfandRadius(2, z, AndersonCore::kGelfandSquarings) == 0.0);
 }
 
+// ---- U8 (rev 1): no Ritz guard on plain windows
+// --------------------------------------------------- x ← Λx + c + η: Λ diagonal, evenly spread on
+// [0, 0.999] over the inner entries; η a seeded pseudo-random perturbation of norm 1e-8·‖x‖ per
+// evaluation (the inner-solve noise).
+void testU8() {
+  const Box b(25, 20, 20, 2);
+  std::vector<double> lam(static_cast<std::size_t>(b.nPad), 0.0);
+  std::vector<Index> innerIdx;
+  for (Index i = 0; i < b.nPad; ++i)
+    if (b.inner(i))
+      innerIdx.push_back(i);
+  for (std::size_t k = 0; k < innerIdx.size(); ++k)
+    lam[static_cast<std::size_t>(innerIdx[k])] =
+        0.999 * static_cast<double>(k) / static_cast<double>(innerIdx.size() - 1);
+  const LinearMap lin = makeLinearMap(lam, std::vector<double>(b.nPad, 1.0));
+  View<double> x("u8_x", b.nPad), eta("u8_eta", b.nPad);
+  std::mt19937_64 rng(8);
+  std::uniform_real_distribution<double> unit(-1.0, 1.0);
+  auto noisyMap = [&] {
+    const auto xh = download(x);
+    double xx = 0.0;
+    for (const Index i : innerIdx)
+      xx += xh[static_cast<std::size_t>(i)] * xh[static_cast<std::size_t>(i)];
+    std::vector<double> e(static_cast<std::size_t>(b.nPad), 0.0);
+    double ee = 0.0;
+    for (const Index i : innerIdx) {
+      const double v = unit(rng);
+      e[static_cast<std::size_t>(i)] = v;
+      ee += v * v;
+    }
+    const double scale = 1e-8 * std::sqrt(xx) / std::sqrt(ee);
+    for (double& v : e)
+      v *= scale;
+    Kokkos::deep_copy(eta, peclet::core::toDevice(e, "u8_e"));
+    applyLinear(lin, x);
+    View<double> xv = x;
+    View<const double> ev = eta;
+    Kokkos::parallel_for(
+        "u8_noise", x.extent(0), KOKKOS_LAMBDA(const std::size_t i) { xv(i) += ev(i); });
+  };
+  AndersonState st = oneField(b, x);
+  st.innerTolerance = 1e-8;
+  AndersonCore acc(st, 5);
+  bool plainNaN = true, plainActive = true;
+  int plainReadings = 0;
+  double plainMax = 0.0;
+  for (int k = 0; k < 200; ++k) {
+    evaluate(acc, false, noisyMap);
+    plainNaN = plainNaN && std::isnan(acc.ritzRadius());
+    if (std::isfinite(acc.ritzRadius())) {
+      ++plainReadings;
+      plainMax = std::max(plainMax, acc.ritzRadius());
+    }
+    plainActive = plainActive && acc.status() == AndersonCore::Status::Active;
+  }
+  const double resPlain = acc.residual();
+  bool neverUnstable = true;
+  int readings = 0;
+  double maxRitz = 0.0;
+  for (int k = 0; k < 50; ++k) {
+    evaluate(acc, true, noisyMap);
+    neverUnstable = neverUnstable && acc.status() != AndersonCore::Status::Unstable;
+    if (std::isfinite(acc.ritzRadius())) {
+      ++readings;
+      maxRitz = std::max(maxRitz, acc.ritzRadius());
+    }
+  }
+  std::printf(
+      "U8: plain phase (200): Ritz NaN on every call %d (%d readings, max %.6f), active %d, "
+      "residual %.3e; accelerated phase (50): status %s, %d Ritz readings (max %.6f), residual "
+      "%.3e\n",
+      plainNaN ? 1 : 0, plainReadings, plainMax, plainActive ? 1 : 0, resPlain, acc.statusName(),
+      readings, maxRitz, acc.residual());
+  PECLET_CORE_CHECK(plainNaN);
+  PECLET_CORE_CHECK(plainActive);
+  PECLET_CORE_CHECK(neverUnstable);
+}
+
+// ---- U9 (rev 1): the Ritz floor, on U4's stable twin run to a residual of 1e-12
+// ------------------
+void testU9() {
+  const U4Result tight = runU4(0.996, 0.95, 2000, 1e-8, 1e-12);
+  bool nanBelow = true;
+  int above = 0;
+  for (std::size_t k = 0; k < tight.residual.size(); ++k) {
+    if (tight.residual[k] < 1e-5)
+      nanBelow = nanBelow && std::isnan(tight.ritz[k]);
+    else if (std::isfinite(tight.ritz[k]))
+      ++above;
+  }
+  std::printf(
+      "U9: innerTolerance 1e-8: %d steps to %.3e; Ritz NaN at every residual < 1e-5 %d, "
+      "%d readings above\n",
+      tight.steps, tight.residual.back(), nanBelow ? 1 : 0, above);
+  PECLET_CORE_CHECK(tight.residual.back() <= 1e-12);
+  PECLET_CORE_CHECK(nanBelow);
+  PECLET_CORE_CHECK(above >= 1);
+  const U4Result open = runU4(0.996, 0.95, 2000, 0.0, 1e-12);
+  double minRes = std::numeric_limits<double>::infinity();
+  int below = 0, underFloor = 0;
+  for (std::size_t k = 0; k < open.residual.size(); ++k)
+    if (std::isfinite(open.ritz[k])) {
+      minRes = std::min(minRes, open.residual[k]);
+      below += open.residual[k] < 1e-5 ? 1 : 0;
+      underFloor += open.residual[k] < AndersonCore::kNoiseFloor ? 1 : 0;
+    }
+  std::printf(
+      "U9: innerTolerance 0: %d steps; %d readings below 1e-5, smallest residual read "
+      "%.3e, readings below 1e-10: %d\n",
+      open.steps, below, minRes, underFloor);
+  PECLET_CORE_CHECK(below >= 1);
+  PECLET_CORE_CHECK(minRes < 1e-9);
+  PECLET_CORE_CHECK(underFloor == 0);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   Kokkos::ScopeGuard guard(argc, argv);
   testLinearAlgebra();
   testMemory();
-  testMetric();
-  testU1a();
-  testU1b();
-  testU1c();
-  testU2();
-  testU3();
-  testU4();
-  testU5();
-  testU6();
+  runTest("metric", testMetric);
+  runTest("U1a", testU1a);
+  runTest("U1b", testU1b);
+  runTest("U1c", testU1c);
+  runTest("U2", testU2);
+  runTest("U3", testU3);
+  runTest("U4", testU4);
+  runTest("U5", testU5);
+  runTest("U6", testU6);
+  runTest("U8", testU8);
+  runTest("U9", testU9);
   PECLET_CORE_RETURN_TEST_RESULT();
 }

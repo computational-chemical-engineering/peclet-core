@@ -68,6 +68,9 @@ struct AndersonState {
   /// The pressure has a constant nullspace (no Dirichlet-pressure face): its fluid mean is removed
   /// from the metric, with the mean over the GLOBAL count of inner fluid cells.
   bool gauged = true;
+  /// Relative tolerance of the caller's inner solves; sets the Ritz floor
+  /// max(kNoiseFloor, kRitzFloorFactor·innerTolerance) (design §4.1, rev 1); 0 = unknown.
+  double innerTolerance = 0.0;
   /// Collectives; empty = a single rank.
   AndersonComm comm;
 };
@@ -441,6 +444,9 @@ class AndersonCore {
   static constexpr double kRestartGrowth = 4.0;
   static constexpr int kMaxRestarts = 5;
   static constexpr double kNoiseFloor = 1e-10;
+  /// Rev 1: the Ritz guard runs only at residual ≥ max(kNoiseFloor, kRitzFloorFactor·τ),
+  /// τ = AndersonState::innerTolerance (below that the window differences are inner-solve noise).
+  static constexpr double kRitzFloorFactor = 1000.0;
   static constexpr double kCondMin = 1e-12;
   static constexpr double kRitzDelta = 1e-3;
   static constexpr double kRitzHi = 1e-2;
@@ -673,6 +679,7 @@ class AndersonCore {
         b_[j] = v[4];
       }
       mR_[s] = mRs;
+      mixedCol_[s] = mixed_;
       mG_[s] = mGs;
       for (int k = 0; k < nCols; ++k)
         order_[k] = cols[k];
@@ -716,7 +723,14 @@ class AndersonCore {
       if (mk_ >= 1) {
         solveTruncated();
         pending_ = true;
-        if (mk_ >= 2 && kNoiseFloor <= residual_ && residual_ <= kRitzHi) {
+        // Rev 1 (design §4.3 step 7, R3): only on a mixed call, over a window whose every column
+        // was formed at a mixed call, and only above the Ritz floor; otherwise the consecutive
+        // count restarts.
+        const bool eligible =
+            mixed_ && mk_ >= 2 && allMixed() && ritzFloor() <= residual_ && residual_ <= kRitzHi;
+        if (!eligible) {
+          ritzCount_ = 0;
+        } else {
           ritzRadius_ = ritzEstimate();
           ritzCount_ = (ritzRadius_ > 1.0 + kRitzDelta) ? ritzCount_ + 1 : 0;
           if (ritzCount_ >= kRitzConsecutive) {
@@ -727,6 +741,8 @@ class AndersonCore {
             reset();
           }
         }
+      } else {
+        ritzCount_ = 0;  // every column dropped: not an eligible call
       }
     }
     broadcastDecisions();
@@ -778,6 +794,8 @@ class AndersonCore {
   int numColumns() const { return mk_; }
   /// Last Ritz estimate ρ(I + M) (design §4.6); NaN when the last evaluation did not compute it.
   double ritzRadius() const { return ritzRadius_; }
+  /// The Ritz floor max(kNoiseFloor, kRitzFloorFactor·innerTolerance) (design §4.1, rev 1).
+  double ritzFloor() const { return std::max(kNoiseFloor, kRitzFloorFactor * st_.innerTolerance); }
   int window() const { return m_; }
   double mixing() const { return beta_; }
   bool engaged() const { return engaged_; }
@@ -877,6 +895,8 @@ class AndersonCore {
     }
     if (pressure_ >= 0 && static_cast<Index>(st_.sdf.extent(0)) != nPad)
       throw std::invalid_argument("AndersonCore: a Pressure field needs the padded cell SDF");
+    if (!std::isfinite(st_.innerTolerance) || st_.innerTolerance < 0.0)
+      throw std::invalid_argument("AndersonCore: innerTolerance must be finite and >= 0");
     if (!std::isfinite(st_.cP))
       throw std::invalid_argument("AndersonCore: cP must be finite");
   }
@@ -891,6 +911,13 @@ class AndersonCore {
   void restoreLastOutput() {
     for (std::size_t f = 0; f < st_.fields.size(); ++f)
       Kokkos::deep_copy(st_.fields[f], gPrev_[f]);
+  }
+
+  bool allMixed() const {
+    for (int k = 0; k < mk_; ++k)
+      if (!mixedCol_[order_[k]])
+        return false;
+    return true;
   }
 
   void dropColumn(int k) {
@@ -998,8 +1025,9 @@ class AndersonCore {
   double rr_[kMaxWindow][kMaxWindow] = {}, gg_[kMaxWindow][kMaxWindow] = {},
          gr_[kMaxWindow][kMaxWindow] = {};            // gr_[i][j] = ⟨Δg_i, Δr_j⟩_W
   double mR_[kMaxWindow] = {}, mG_[kMaxWindow] = {};  // per-slot fluid P-means (gauged)
-  double b_[kMaxWindow] = {};                         // ⟨Δr_j, r_k⟩_W by slot
-  double gamma_[kMaxWindow] = {};                     // by window position, oldest first
+  bool mixedCol_[kMaxWindow] = {};  // the column in this slot was formed at a mixed call (rev 1)
+  double b_[kMaxWindow] = {};       // ⟨Δr_j, r_k⟩_W by slot
+  double gamma_[kMaxWindow] = {};   // by window position, oldest first
   bool havePrev_ = false, pending_ = false, engaged_ = false;
   bool prepared_ = false, mixed_ = false, noticed_ = false;
   int decCount_ = 0, ritzCount_ = 0, numRestarts_ = 0, numResets_ = 0;

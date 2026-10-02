@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <Kokkos_Core.hpp>
@@ -97,11 +98,30 @@ struct Slab {
     s.gauged = true;
     return s;
   }
+  /// FNV-1a over every iterate (all fields, padded) and γ / residual / columns / status after
+  /// each step: printed per rank, so two builds can be compared bit for bit.
+  std::uint64_t digest = 1469598103934665603ull;
+  void add(const void* p, std::size_t n) {
+    const auto* c = static_cast<const unsigned char*>(p);
+    for (std::size_t i = 0; i < n; ++i)
+      digest = (digest ^ c[i]) * 1099511628211ull;
+  }
   void step(AndersonCore& acc) {
     acc.prepare(true);
     for (std::size_t f = 0; f < fields.size(); ++f)
       applyLinear(maps[f], fields[f]);
     acc.complete();
+    for (const auto& f : fields) {
+      const auto v = download(f);
+      add(v.data(), v.size() * sizeof(double));
+    }
+    const auto g = acc.gamma();
+    add(g.data(), g.size() * sizeof(double));
+    const double res = acc.residual();
+    const int cols = acc.numColumns(), status = static_cast<int>(acc.status());
+    add(&res, sizeof res);
+    add(&cols, sizeof cols);
+    add(&status, sizeof status);
   }
 };
 
@@ -160,6 +180,17 @@ void runCase(const char* name, const std::vector<AndersonRole>& roles, int rank,
         "ranks %d, max|x_np - x_1| / max|x_1| = %.3e\n",
         name, size, kSteps, accD.residual(), accS.residual(), accD.numColumns(), consistent ? 1 : 0,
         glob[0] / glob[1]);
+  std::vector<unsigned long long> all(static_cast<std::size_t>(size));
+  const unsigned long long mine = dist.digest;
+  MPI_Gather(&mine, 1, MPI_UNSIGNED_LONG_LONG, all.data(), 1, MPI_UNSIGNED_LONG_LONG, 0,
+             MPI_COMM_WORLD);
+  if (rank == 0) {
+    std::printf("digest U7 %s np=%d serial %016llx ranks", name, size,
+                static_cast<unsigned long long>(serial.digest));
+    for (const unsigned long long d : all)
+      std::printf(" %016llx", d);
+    std::printf("\n");
+  }
   PECLET_CORE_CHECK(consistent);
   PECLET_CORE_CHECK(accD.status() == AndersonCore::Status::Active);
   PECLET_CORE_CHECK(glob[0] <= 1e-13 * glob[1]);
