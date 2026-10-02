@@ -16,6 +16,15 @@ target_link_libraries(test_cut_cell_closure PRIVATE peclet_core)
 target_include_directories(test_cut_cell_closure PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 peclet_core_add_test(cut_cell_closure test_cut_cell_closure)
 
+# Probe-flux wall closure (peclet/core/scheme/probe_flux.hpp; flow doc/scalar_ibm_design.md §3,
+# gate G-geom (d)): S(n), the trilinear stencil, the R0/R1a/R1b/R2 ladder unit cases, linear
+# exactness of the weights, the V3 reach guard, the wall / interface conductances. Host-only, no
+# Kokkos — it also compiles both scheme headers on their plain-inline path.
+add_executable(test_probe_flux test_probe_flux.cpp)
+target_link_libraries(test_probe_flux PRIVATE peclet_core)
+target_include_directories(test_probe_flux PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+peclet_core_add_test(probe_flux test_probe_flux)
+
 # The CPU budget a cgroup quota imposes (peclet/core/common/cpu_budget.hpp): what every Python
 # module's Kokkos init sizes its host pool by, so a container does not oversubscribe itself into a
 # standstill. Fixture cgroup trees, host-only, no Kokkos needed.
@@ -84,6 +93,15 @@ if(PECLET_CORE_HAVE_KOKKOS)
   target_link_libraries(test_particle_grid PRIVATE peclet_core)
   target_include_directories(test_particle_grid PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   peclet_core_add_test(particle_grid test_particle_grid)
+
+  # Cut-cell geometric record (peclet/core/scheme/cut_cell_geometry.hpp; flow
+  # doc/scalar_ibm_design.md §2, gate G-geom (a)-(c)): the fan-tetrahedron PL model against the
+  # vof plicVolume / plicPolygon oracles on random planar cuts, the PL closure on random samples,
+  # gap / thin-solid classification. Kokkos only because the vof oracles are Kokkos headers.
+  add_executable(test_cut_cell_geometry test_cut_cell_geometry.cpp)
+  target_link_libraries(test_cut_cell_geometry PRIVATE peclet_core Kokkos::kokkos)
+  target_include_directories(test_cut_cell_geometry PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  peclet_core_add_test(cut_cell_geometry test_cut_cell_geometry)
 endif()
 
 # Layer 0 rung 0: device-callable SDF leaf primitives (peclet/core/geom/primitives.hpp) are
