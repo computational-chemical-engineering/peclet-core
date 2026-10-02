@@ -8,6 +8,7 @@
 #include <cstring>
 #include <Kokkos_Core.hpp>
 #include <limits>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -56,35 +57,110 @@ bool allFinite(const std::vector<double>& v) {
   return true;
 }
 
-// ---- U1: linear contraction, J diagonal with 10^4 entries in [0, 0.996] ------------------------
-void testU1() {
+// ---- U1: linear contraction ---------------------------------------------------------------------
+// The note's original U1 (an evenly spread spectrum on [0, 0.996] to 1e-12 in 80 steps) was a spec
+// error. Coordinator decision 2026-10-02: the premise (D12, §1.1, the measured checkerboard) is ONE
+// isolated slow mode over a fast bulk (U1a); three slow modes need more columns than m = 5 gives
+// (measured 330 steps; m = 8 makes 77), kept as the regression U1c; a continuum is the documented
+// limitation, kept as the regression U1b.
+
+/// 10^4 diagonal entries: a seeded uniform bulk in [0, 0.5] plus isolated slow modes, spread over
+/// the box.
+LinearMap slowModeMap(const Box& b, const std::vector<double>& slow) {
+  std::vector<double> lam(static_cast<std::size_t>(b.nPad), 0.0);
+  std::vector<Index> innerIdx;
+  for (Index i = 0; i < b.nPad; ++i)
+    if (b.inner(i))
+      innerIdx.push_back(i);
+  std::mt19937_64 rng(20261002);
+  std::uniform_real_distribution<double> bulk(0.0, 0.5);
+  for (const Index i : innerIdx)
+    lam[static_cast<std::size_t>(i)] = bulk(rng);
+  for (std::size_t k = 0; k < slow.size(); ++k)
+    lam[static_cast<std::size_t>(innerIdx[(k + 1) * innerIdx.size() / 4])] = slow[k];
+  return makeLinearMap(lam, std::vector<double>(b.nPad, 1.0));
+}
+
+/// Accelerated steps (window 5) until the residual is <= 1e-12, at most maxSteps.
+int stepsToTolerance(const Box& b, const LinearMap& map, int maxSteps, AndersonCore::Status& status,
+                     int& restarts, double& residual) {
+  View<double> x("u1_x", b.nPad);
+  AndersonCore acc(oneField(b, x), 5);
+  int steps = 0;
+  while (steps < maxSteps && !(acc.residual() <= 1e-12)) {
+    evaluate(acc, true, [&] { applyLinear(map, x); });
+    ++steps;
+  }
+  status = acc.status();
+  restarts = acc.numRestarts();
+  residual = acc.residual();
+  return steps;
+}
+
+// U1a premise: one isolated mode 0.996. Window 5 reaches 1e-12 within 80 steps; the plain march
+// does not in 3000.
+void testU1a() {
   const Box b(25, 20, 20, 2);  // 10^4 inner entries
+  const LinearMap map = slowModeMap(b, {0.996});
+  AndersonCore::Status status{};
+  int restarts = 0;
+  double res = 0.0;
+  const int steps = stepsToTolerance(b, map, 1000, status, restarts, res);
+  std::printf("U1a: one slow mode: window 5 reaches residual %.3e after %d steps (restarts %d)\n",
+              res, steps, restarts);
+  PECLET_CORE_CHECK(res <= 1e-12);
+  PECLET_CORE_CHECK(steps <= 80);
+  View<double> x("u1a_xp", b.nPad);
+  AndersonCore acc(oneField(b, x), 5);
+  for (int k = 0; k < 3000; ++k)
+    evaluate(acc, false, [&] { applyLinear(map, x); });
+  std::printf("U1a: plain march after 3000 steps: residual %.3e\n", acc.residual());
+  PECLET_CORE_CHECK(acc.residual() > 1e-12);
+}
+
+// U1c regression: three slow modes {0.996, 0.99, 0.98}: window 5 within 400 steps (measured
+// 330 host / 332 CUDA), no restart, still active.
+void testU1c() {
+  const Box b(25, 20, 20, 2);
+  const LinearMap map = slowModeMap(b, {0.996, 0.99, 0.98});
+  AndersonCore::Status status{};
+  int restarts = 0;
+  double res = 0.0;
+  const int steps = stepsToTolerance(b, map, 1000, status, restarts, res);
+  std::printf(
+      "U1c: three slow modes: window 5 reaches residual %.3e after %d steps (restarts %d)\n", res,
+      steps, restarts);
+  PECLET_CORE_CHECK(res <= 1e-12);
+  PECLET_CORE_CHECK(steps <= 400);
+  PECLET_CORE_CHECK(restarts == 0);
+  PECLET_CORE_CHECK(status == AndersonCore::Status::Active);
+}
+
+// U1b continuum regression: linspace [0, 0.996] — Anderson stays active, reaches <= 1e-6 by step
+// 400, and is never behind the plain march at every 50th step.
+void testU1b() {
+  const Box b(25, 20, 20, 2);
   const LinearMap map =
       makeLinearMap(peclet::core::test::u1Spectrum(b), std::vector<double>(b.nPad, 1.0));
-  {
-    View<double> x("u1_x", b.nPad);
-    AndersonCore acc(oneField(b, x), 5);
-    int steps = 0;
-    while (steps < 400 && !(acc.residual() <= 1e-12)) {
-      evaluate(acc, true, [&] { applyLinear(map, x); });
-      ++steps;
-      if (steps % 20 == 0)
-        std::printf("  U1 m=5 step %3d residual %.3e columns %d\n", steps, acc.residual(),
-                    acc.numColumns());
+  View<double> xa("u1b_xa", b.nPad), xp("u1b_xp", b.nPad);
+  AndersonCore acc(oneField(b, xa), 5), plain(oneField(b, xp), 5);
+  bool ahead = true;
+  for (int k = 1; k <= 400; ++k) {
+    evaluate(acc, true, [&] { applyLinear(map, xa); });
+    evaluate(plain, false, [&] { applyLinear(map, xp); });
+    if (k % 50 == 0) {
+      std::printf("  U1b step %3d: anderson %.3e  plain %.3e\n", k, acc.residual(),
+                  plain.residual());
+      ahead = ahead && acc.residual() <= plain.residual();
     }
-    std::printf("U1: window 5 reaches residual %.3e after %d steps (status %s)\n", acc.residual(),
-                steps, acc.statusName());
-    PECLET_CORE_CHECK(acc.residual() <= 1e-12);
-    PECLET_CORE_CHECK(steps <= 80);
   }
-  {
-    View<double> x("u1_xp", b.nPad);
-    AndersonCore acc(oneField(b, x), 5);
-    for (int k = 0; k < 3000; ++k)
-      evaluate(acc, false, [&] { applyLinear(map, x); });
-    std::printf("U1: plain march after 3000 steps: residual %.3e\n", acc.residual());
-    PECLET_CORE_CHECK(acc.residual() > 1e-12);
-  }
+  std::printf(
+      "U1b: continuum, step 400 residual %.3e (status %s), anderson <= plain at every "
+      "50th step %d\n",
+      acc.residual(), acc.statusName(), ahead ? 1 : 0);
+  PECLET_CORE_CHECK(acc.residual() <= 1e-6);
+  PECLET_CORE_CHECK(acc.status() == AndersonCore::Status::Active);
+  PECLET_CORE_CHECK(ahead);
 }
 
 // ---- U2: affine hull — every output has Σ_inner x = S; mixed states keep it ---------------------
@@ -538,18 +614,12 @@ void testLinearAlgebra() {
 
 int main(int argc, char** argv) {
   Kokkos::ScopeGuard guard(argc, argv);
-  // U1 runs only with --u1 and is not registered: its accelerated half (residual <= 1e-12 within
-  // 80 steps) does not hold for an evenly spread spectrum on [0, 0.996] (1.1e-4 at step 80,
-  // 3.3e-8 at step 400), and the design note does not fix the distribution. Open question for
-  // the design owner (flow doc/steady_acceleration.md §8 U1).
-  bool runU1 = false;
-  for (int a = 1; a < argc; ++a)
-    runU1 = runU1 || std::string(argv[a]) == "--u1";
   testLinearAlgebra();
   testMemory();
   testMetric();
-  if (runU1)
-    testU1();
+  testU1a();
+  testU1b();
+  testU1c();
   testU2();
   testU3();
   testU4();
