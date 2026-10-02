@@ -1,7 +1,7 @@
 // AndersonCore (peclet::core::solver, solver/anderson.hpp) on synthetic maps: the core unit tests
-// U1–U6, U4b and U10 of flow doc/steady_acceleration.md §8 (rev 2), the §6.3 memory formula, and
-// the host linear algebra (Jacobi eigendecomposition). Device kernels on whatever backend Kokkos
-// was built for; single rank (U7 is test_anderson_mpi.cpp).
+// U1–U6, U4b, U10 and U11 of flow doc/steady_acceleration.md §8 (rev 2), the §6.3 memory formula,
+// and the host linear algebra (Jacobi eigendecomposition). Device kernels on whatever backend
+// Kokkos was built for; single rank (U7 is test_anderson_mpi.cpp).
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -473,8 +473,8 @@ void testU5() {
   }
   std::printf(
       "U5: rank-1 differences: %d mixes, max columns over %d engaged steps above the noise "
-      "floor %d, residual %.3e, status %s\n",
-      nMixed, nRank1, maxCols, acc.residual(), acc.statusName());
+      "floor %d, residual %.3e, status %s, %d restarts\n",
+      nMixed, nRank1, maxCols, acc.residual(), acc.statusName(), acc.numRestarts());
   PECLET_CORE_CHECK(nMixed > 0);
   PECLET_CORE_CHECK(nRank1 >= 3);  // several columns were formed, and dropped
   PECLET_CORE_CHECK(maxCols <= 1);
@@ -693,6 +693,123 @@ void testU10() {
   PECLET_CORE_CHECK(acc.status() == AndersonCore::Status::Active);
 }
 
+// ---- U11 (review R2): a restart never leaves the state at the rejected output ------------------
+// Velocity + Carried, the regime of the WO-8 G3 Δt-60 failure in miniature. The Carried field p
+// (a pressure, scale p* = 1e9) has four near-neutral entries (λ = 1 − 1e-4, the near-sealed
+// pockets of the dense bed) over a fast bulk, and feeds the velocity only there (u ← Λu + 1 + κ·p
+// on those four entries, κ = 0.1); every output carries a relative evaluation noise of 1e-12 (a
+// deterministic hash: the inexact inner solves). Once the velocity residual sits at the noise
+// (~1e-13), the least squares fits noise, the mix moves the pocket p, and a mixed iterate's output
+// spikes to 1e-10 – 1e-9: the restart rule fires (measured: 5 times, then "too many restarts",
+// the first at call 229 on host-openmp and 600 on CUDA — round-off sensitive). After EVERY call
+// the state must be the map output of that call or, on a restart call, the last output that was
+// kept — bitwise. (Before the fix the state was left at the rejected output on all 5 restarts.)
+struct U11Result {
+  int calls = 0, restarts = 0, restartCalls = 0, firstRestart = -1, violations = 0, mixed = 0;
+  double minResidual = std::numeric_limits<double>::infinity();
+  const char* status = "";
+};
+
+U11Result runU11(int calls) {
+  constexpr double kappa = 0.1, pocketLam = 1.0 - 1e-4, p0 = 1e9, noise = 1e-12;
+  constexpr int nPocket = 4;
+  const Box b(12, 10, 8, 2);
+  std::vector<double> lu(b.nPad, 0.0), cu(b.nPad, 1.0), lp(b.nPad, 0.0), cp(b.nPad, 1.0),
+      kap(b.nPad, 0.0), p0h(b.nPad, 0.0);
+  std::vector<Index> innerIdx;
+  for (Index i = 0; i < b.nPad; ++i)
+    if (b.inner(i))
+      innerIdx.push_back(i);
+  std::mt19937_64 rng(20261003);
+  std::uniform_real_distribution<double> bulk(0.0, 0.5);
+  for (const Index i : innerIdx) {
+    lu[i] = bulk(rng);
+    lp[i] = bulk(rng);
+  }
+  for (int k = 0; k < nPocket; ++k) {
+    const Index i = innerIdx[(2 * k + 1) * innerIdx.size() / (2 * nPocket)];
+    lp[i] = pocketLam;
+    cp[i] = (1.0 - pocketLam) * p0;  // p* = p0 on the pockets, where p also starts
+    kap[i] = kappa;
+    p0h[i] = p0;
+  }
+  using peclet::core::toDevice;
+  View<double> lamU = toDevice(lu, "u11_lu"), cU = toDevice(cu, "u11_cu");
+  View<double> lamP = toDevice(lp, "u11_lp"), cP = toDevice(cp, "u11_cp");
+  View<double> kp = toDevice(kap, "u11_kappa");
+  View<double> u("u11_u", b.nPad), p("u11_p", b.nPad), tu("u11_tu", b.nPad), tp("u11_tp", b.nPad);
+  Kokkos::deep_copy(p, toDevice(p0h, "u11_p0"));
+  AndersonState st;
+  st.fields = {u, p};
+  st.roles = {AndersonRole::Velocity, AndersonRole::Carried};
+  st.extent = b.e;
+  st.ghost = b.g;
+  AndersonCore acc(st, 5);
+  auto map = [&](int call) {
+    Kokkos::deep_copy(tu, u);
+    Kokkos::deep_copy(tp, p);
+    View<double> uu = u, pp = p;
+    View<const double> TU = tu, TP = tp, LU = lamU, CU = cU, LP = lamP, CP = cP, KP = kp;
+    const std::uint64_t seed = 0x9e3779b97f4a7c15ull * static_cast<std::uint64_t>(call + 1);
+    Kokkos::parallel_for(
+        "u11_map", u.extent(0), KOKKOS_LAMBDA(const std::size_t i) {
+          // splitmix64 of (call, entry, field): a deterministic noise in [-1, 1)
+          auto h = [&](std::uint64_t z) {
+            z += 0x9e3779b97f4a7c15ull;
+            z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+            z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+            z ^= z >> 31;
+            return static_cast<double>(z >> 11) * (2.0 / 9007199254740992.0) - 1.0;
+          };
+          const std::uint64_t k = seed ^ (static_cast<std::uint64_t>(i) << 1);
+          uu(i) = (LU(i) * TU(i) + CU(i) + KP(i) * TP(i)) * (1.0 + noise * h(k));
+          pp(i) = (LP(i) * TP(i) + CP(i)) * (1.0 + noise * h(k | 1ull));
+        });
+  };
+  U11Result r;
+  std::vector<double> keptU = download(u), keptP = download(p);  // the last output kept
+  for (int k = 1; k <= calls; ++k) {
+    const int r0 = acc.numRestarts();
+    r.mixed += acc.prepare(true) ? 1 : 0;
+    map(k);
+    const auto outU = download(u), outP = download(p);
+    complete(acc);
+    const auto nowU = download(u), nowP = download(p);
+    const bool restarted = acc.numRestarts() > r0;
+    const std::vector<double>& wantU = restarted ? keptU : outU;
+    const std::vector<double>& wantP = restarted ? keptP : outP;
+    const bool same = nowU.size() == wantU.size() && nowP.size() == wantP.size() &&
+                      std::memcmp(nowU.data(), wantU.data(), nowU.size() * sizeof(double)) == 0 &&
+                      std::memcmp(nowP.data(), wantP.data(), nowP.size() * sizeof(double)) == 0;
+    r.violations += same ? 0 : 1;
+    if (restarted) {
+      ++r.restartCalls;
+      if (r.firstRestart < 0)
+        r.firstRestart = k;
+    } else {
+      keptU = outU;
+      keptP = outP;
+    }
+    r.minResidual = std::min(r.minResidual, acc.residual());
+    r.calls = k;
+  }
+  r.restarts = acc.numRestarts();
+  r.status = acc.statusName();
+  return r;
+}
+
+void testU11() {
+  const U11Result r = runU11(2000);
+  std::printf(
+      "U11: near-neutral Carried pockets feeding the velocity, 1e-12 noise, %d calls: %d mixed, "
+      "%d restart calls (first at %d), min residual %.3e, status %s, state left at a rejected "
+      "output %d times\n",
+      r.calls, r.mixed, r.restartCalls, r.firstRestart, r.minResidual, r.status, r.violations);
+  PECLET_CORE_CHECK(r.restartCalls >= 1);  // the regime is reached: the test is not vacuous
+  PECLET_CORE_CHECK(r.restarts == r.restartCalls);
+  PECLET_CORE_CHECK(r.violations == 0);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -710,5 +827,6 @@ int main(int argc, char** argv) {
   runTest("U5", testU5);
   runTest("U6", testU6);
   runTest("U10", testU10);
+  runTest("U11", testU11);
   PECLET_CORE_RETURN_TEST_RESULT();
 }

@@ -547,6 +547,7 @@ class AndersonCore {
     // --- 5. host decisions (every rank; rank 0's are broadcast and win) ---
     const double xx = packet[0], uu = packet[1];
     const double rho = std::sqrt(xx);
+    const double residualBefore = residual_, rhoMinBefore = rhoMin_;
     if (xx == 0.0)
       residual_ = 0.0;
     else if (uu == 0.0)
@@ -577,10 +578,16 @@ class AndersonCore {
         order_[k] = cols[k];
       mk_ = nCols;
     }
+    // Restart (review R2): the output of the rejected mixed iterate is not kept. After the
+    // broadcast the state is restored to the last map output (Gprev), Rprev / Gprev are not
+    // committed, and ρ_min and the reported residual keep their values from before this call, so
+    // the solver never holds a rejected output (and "too many restarts" leaves the last good one).
+    restarted_ = false;
     if (mixed_ && residual_ >= kNoiseFloor && rho > kRestartGrowth * rhoMin_) {
+      restarted_ = true;
       reset();
       ++numRestarts_;
-      rhoMin_ = rho;
+      residual_ = residualBefore;
       if (numRestarts_ >= kMaxRestarts) {
         status_ = Status::Disabled;
         reasonCode_ = Reason::TooManyRestarts;
@@ -591,13 +598,7 @@ class AndersonCore {
     if (decCount_ >= kEngageDecreases)
       engaged_ = true;
     rhoPrev_ = rho;
-    rhoMin_ = std::min(rhoMin_, rho);
-
-    // --- 6. commit on the device ---
-    std::swap(rPrev_, x_);
-    for (std::size_t f = 0; f < ns; ++f)
-      Kokkos::deep_copy(ExecSpace(), gPrev_[f], st_.fields[f]);  // stream-ordered, no fence
-    havePrev_ = true;
+    rhoMin_ = restarted_ ? rhoMinBefore : std::min(rhoMin_, rho);
 
     // --- 7. next coefficients (rev 2: no Ritz block) ---
     if (status_ == Status::Active && engaged_ && mk_ >= 1) {
@@ -618,6 +619,16 @@ class AndersonCore {
       }
     }
     broadcastDecisions();
+
+    // --- 6. commit on the device, keyed on the broadcast restart flag (every rank acts alike) ---
+    if (restarted_) {
+      restoreLastOutput();  // Rprev / Gprev stay those of the last map output
+    } else {
+      std::swap(rPrev_, x_);
+      for (std::size_t f = 0; f < ns; ++f)
+        Kokkos::deep_copy(ExecSpace(), gPrev_[f], st_.fields[f]);  // stream-ordered, no fence
+    }
+    havePrev_ = true;
   }
 
   // ---- control ------------------------------------------------------------------------------
@@ -655,7 +666,8 @@ class AndersonCore {
   /// "active" | "disabled".
   const char* statusName() const { return status_ == Status::Active ? "active" : "disabled"; }
   const std::string& reason() const { return reason_; }
-  /// Relative velocity residual of the last evaluation (design §3.2); +inf before the first.
+  /// Relative velocity residual of the last evaluation whose output the state holds (design §3.2;
+  /// after a restart, the restored output's); +inf before the first.
   double residual() const { return residual_; }
   int numRestarts() const { return numRestarts_; }
   int numResets() const { return numResets_; }
@@ -703,6 +715,7 @@ class AndersonCore {
     int reason;
     int mk;
     int pending;
+    int restarted;
     int numRestarts;
     int order[kMaxWindow];
     double gamma[kMaxWindow];
@@ -815,6 +828,7 @@ class AndersonCore {
     p.reason = static_cast<int>(reasonCode_);
     p.mk = mk_;
     p.pending = pending_ ? 1 : 0;
+    p.restarted = restarted_ ? 1 : 0;
     p.numRestarts = numRestarts_;
     for (int k = 0; k < kMaxWindow; ++k) {
       p.order[k] = k < mk_ ? order_[k] : -1;
@@ -829,6 +843,7 @@ class AndersonCore {
     reasonCode_ = static_cast<Reason>(p.reason);
     mk_ = p.mk;
     pending_ = p.pending != 0;
+    restarted_ = p.restarted != 0;
     numRestarts_ = p.numRestarts;
     for (int k = 0; k < kMaxWindow; ++k) {
       order_[k] = p.order[k] >= 0 ? p.order[k] : 0;
@@ -862,6 +877,7 @@ class AndersonCore {
   double gamma_[kMaxWindow] = {};           // by window position, oldest first
   bool havePrev_ = false, pending_ = false, engaged_ = false;
   bool prepared_ = false, mixed_ = false, noticed_ = false;
+  bool restarted_ = false;  // this call restarted at a mixed iterate (broadcast with the decisions)
   int decCount_ = 0, numRestarts_ = 0, numResets_ = 0;
   double rhoPrev_ = std::numeric_limits<double>::infinity();
   double rhoMin_ = std::numeric_limits<double>::infinity();

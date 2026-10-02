@@ -209,10 +209,15 @@ Header-only under `include/peclet/core/`:
   `MPI_Comm` and is the MPI side. Rev 2 of the design: **no instability guard** — no Ritz
   estimate, no status "unstable" (`Status` is Active / Disabled); a Ritz value of a non-normal map
   is no stability test, and stability evidence comes from the caller's plain steps. Pass 2 reduces
-  RR and b only (2·columns + 2 doubles; no reduction reads dG). Gates: `tests/test_anderson.cpp`
+  RR and b only (2·columns + 2 doubles; no reduction reads dG). A restart (ρ > 4·ρ_min at a mixed
+  iterate) **restores the last map output** on every rank (keyed on the broadcast decisions) and
+  commits nothing of the rejected evaluation, so the state never holds a rejected output (review
+  R2). Gates: `tests/test_anderson.cpp`
   (U1a–c, U2–U6, U4 converges on an unstable map and judges nothing, U4b a stable non-normal map,
-  U10 Carried fields, metric, memory formula) and `tests/test_anderson_mpi.cpp` (U7, np 1/2/4: γ
-  bitwise on all ranks, np = 1 bit-identical to serial); both print a per-test `digest` of every
+  U10 Carried fields, U11 restarts at a noisy near-neutral Carried mode never leave a rejected
+  output, metric, memory formula) and `tests/test_anderson_mpi.cpp` (U7, np 1/2/4: γ
+  bitwise on all ranks, np = 1 bit-identical to serial; R6: a descriptor invalid on one rank
+  throws on every rank); both print a per-test `digest` of every
   iterate for bit-identity checks across builds.
 - **`amr/` is gone (2026-09-10)** — the whole AMR tree (the block-local-Morton octree, the distributed
   octree with leaf halos and weighted-ORB rebalancing, the collocated-projection cut-cell
