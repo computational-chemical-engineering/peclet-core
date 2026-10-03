@@ -92,7 +92,10 @@ after `cmake --install`, or as a sibling checkout in the suite.
   `face_csr.hpp` (host+device row kernels), `coloring.hpp` (greedy symmetrised graph colouring),
   `csr_operator.hpp` (the device operator, Jacobi and multicolour Gauss–Seidel sweeps),
   `csr_bicgstab.hpp` (preconditioned BiCGStab / defect correction) and `vector_ops.hpp`. Consumed by
-  voro's mesh optimiser and by peclet-amr.
+  voro's mesh optimiser and by peclet-amr. Since 1.4.0 also `anderson.hpp`: **Anderson acceleration
+  of a steady march** (`AndersonCore`, type-II, grid-agnostic, on device; the caller owns the
+  fixed-point map, one time step), MPI-free with its collectives built by `anderson_mpi.hpp`.
+  Built for flow's `march_to_steady`.
 - **Python bindings** (`python/halo_bindings.cpp`) — a host-only **nanobind** module (no Kokkos):
   **`peclet.halo`** exposes the Lagrangian halo (`ParticleMigrator`, `ParticleHalo`: migration /
   ghosts / count-weighted rebalance) to an mpi4py driver. The shared zero-copy Kokkos
@@ -113,7 +116,7 @@ after `cmake --install`, or as a sibling checkout in the suite.
 
 Validated end-to-end by distributed explicit heat-diffusion solvers (plain, and **around an SDF solid
 obstacle**) matching a serial reference cell-for-cell across ranks, and consumed by the validated
-`flow` and `dem` distributed solvers. 72 ctests in the plain host+MPI build, 87 with Kokkos (`np` 1–8),
+`flow` and `dem` distributed solvers. 76 ctests in the plain host+MPI build, 96 with Kokkos (`np` 1–8),
 plus 6 Python ctests in the `python/` build.
 
 ## Build / test / benchmark
