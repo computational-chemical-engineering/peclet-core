@@ -57,7 +57,10 @@ a LOCAL gate; CI's 4-core runners run `-LE np8`), `bench` (`bench_halo`, exclude
 host: `OMP_NUM_THREADS=2 OMP_PROC_BIND=false`, np=8 subset last. CI (`.github/workflows/ci.yml`)
 runs host+MPI (gcc/clang × Debug/Release), Kokkos-OpenMP + Python, and no-MPI, each with the
 `morton` tag checked out as a sibling; the clang-format check (`quality.yml`, clang-format 18.1.8)
-is blocking over `include/ tests/ python/ benchmarks/`.
+is blocking over `include/ tests/ python/ benchmarks/`. `quality.yml` also runs
+`tools/check_mpi_manifest.sh`, which holds the MPI-side header manifest (../docs/CORE_BOUNDARY.md
+§1.1, §2.1) and fails if a header outside it includes `common/mpi.hpp`/`<mpi.h>` or a manifest
+header stops including it — add a newly-MPI-side header to the script's list, not just to the code.
 
 The Kokkos halo path is provisioned via `find_package(Kokkos CONFIG)` against a cluster module or the
 suite's local install prefix (`../tools/bootstrap_deps.sh`). The legacy native-CUDA halo was retired.

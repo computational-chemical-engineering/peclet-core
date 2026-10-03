@@ -13,6 +13,14 @@ on:
   workflow_dispatch:
 
 jobs:
+  mpi-manifest:
+    name: MPI header manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check MPI-side header manifest (docs/CORE_BOUNDARY.md §1.1, §2.1)
+        run: tools/check_mpi_manifest.sh
+
   python-lint:
     name: ruff (critical errors)
     runs-on: ubuntu-latest
