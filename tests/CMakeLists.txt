@@ -300,6 +300,23 @@ if(MPI_FOUND)
     target_link_libraries(test_csr_solver PRIVATE Kokkos::kokkos)
     peclet_core_add_test(csr_solver test_csr_solver)
 
+    # VoF PV fit: pvFitAdd == pvFitTerm + pvFitAccum bitwise, device and host spaces (10^5
+    # random cases incl. rejected polygons; flow vof_step_performance_design.md §5.11, WO-7a).
+    add_executable(test_vof_pvfit test_vof_pvfit.cpp)
+    target_include_directories(test_vof_pvfit PRIVATE
+      ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(test_vof_pvfit PRIVATE Kokkos::kokkos)
+    peclet_core_add_test(vof_pvfit test_vof_pvfit)
+
+    # Anderson acceleration of a steady march (peclet::core::solver::AndersonCore, flow
+    # doc/steady_acceleration.md §8 U1–U6): synthetic maps on padded device boxes, the metric,
+    # the §6.3 memory formula and the host Jacobi / Gelfand algebra. Single rank (U7 below).
+    add_executable(test_anderson test_anderson.cpp)
+    target_include_directories(test_anderson PRIVATE
+      ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(test_anderson PRIVATE Kokkos::kokkos)
+    peclet_core_add_test(anderson test_anderson)
+
     # Device GraphAMG apply vs the host oracle (no MPI; serial + device).
     add_executable(test_graph_amg_device test_graph_amg_device.cpp)
     target_include_directories(test_graph_amg_device PRIVATE
@@ -317,7 +334,16 @@ if(MPI_FOUND)
       ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(test_particle_halo_exchange PRIVATE Kokkos::kokkos MPI::MPI_CXX)
 
+    # AndersonCore under MPI (flow doc/steady_acceleration.md §8 U7): U1's map over z-slabs vs a
+    # serial run in the same process — γ bitwise equal on all ranks, iterates to 1e-13, np = 1
+    # bit-identical to serial.
+    add_executable(test_anderson_mpi test_anderson_mpi.cpp)
+    target_include_directories(test_anderson_mpi PRIVATE
+      ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(test_anderson_mpi PRIVATE Kokkos::kokkos MPI::MPI_CXX)
+
     foreach(np IN ITEMS 1 2 4)
+      peclet_core_add_mpi_test(anderson_np${np} test_anderson_mpi ${np})
       peclet_core_add_mpi_test(grid_halo_exchange_np${np} test_grid_halo_exchange ${np})
       peclet_core_add_mpi_test(particle_halo_exchange_np${np} test_particle_halo_exchange ${np})
     endforeach()

@@ -37,7 +37,7 @@ ctest --test-dir build --output-on-failure -LE bench   # 76 ctests (77 with `ben
 export PATH=/usr/local/cuda-13.2/bin:$PATH    # if the Kokkos install targets the CUDA backend
 cmake -S . -B build_kokkos -DPECLET_CORE_ENABLE_KOKKOS=ON \
   -DCMAKE_PREFIX_PATH=../extern/install/nvidia-cuda
-cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure -LE bench  # 91 ctests (92 with `bench`): + device halo / geometry / solver, np=1,2,4,8
+cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure -LE bench  # 96 ctests (97 with `bench`): + device halo / geometry / solver / VoF PV fit / Anderson, np=1,2,4,8
 mpirun -np 4 ./build/benchmarks/bench_halo 48 1 300
 
 # Python modules + their ctests (test_mpi.py np=1,2,4,8; state_hash; ndarray interop). Release is
@@ -57,7 +57,10 @@ a LOCAL gate; CI's 4-core runners run `-LE np8`), `bench` (`bench_halo`, exclude
 host: `OMP_NUM_THREADS=2 OMP_PROC_BIND=false`, np=8 subset last. CI (`.github/workflows/ci.yml`)
 runs host+MPI (gcc/clang × Debug/Release), Kokkos-OpenMP + Python, and no-MPI, each with the
 `morton` tag checked out as a sibling; the clang-format check (`quality.yml`, clang-format 18.1.8)
-is blocking over `include/ tests/ python/ benchmarks/`.
+is blocking over `include/ tests/ python/ benchmarks/`. `quality.yml` also runs
+`tools/check_mpi_manifest.sh`, which holds the MPI-side header manifest (../docs/CORE_BOUNDARY.md
+§1.1, §2.1) and fails if a header outside it includes `common/mpi.hpp`/`<mpi.h>` or a manifest
+header stops including it — add a newly-MPI-side header to the script's list, not just to the code.
 
 The Kokkos halo path is provisioned via `find_package(Kokkos CONFIG)` against a cluster module or the
 suite's local install prefix (`../tools/bootstrap_deps.sh`). The legacy native-CUDA halo was retired.
@@ -199,6 +202,26 @@ Header-only under `include/peclet/core/`:
   `ot_optimizer.hpp` and the AMR package are the consumers. Gate: `tests/test_csr_solver.cpp`
   (Kokkos build) — host row kernel vs device matvec, proper colouring of an asymmetric CSR,
   smoothers, BiCGStab + defect correction.
+  `solver/anderson.hpp` is **`AndersonCore`**, type-II Anderson acceleration of a steady march
+  (design: `../flow/doc/steady_acceleration.md`; register "AndersonCore lives in core from the
+  start"): grid-agnostic over an `AndersonState` (padded state views + roles Velocity / Carried +
+  ghost width; the metric is the velocity only, the revision-0 Pressure role, SDF mask, `cP` and
+  gauge flag were deleted in WO-3b, rev 1's `innerTolerance` in WO-3c), split `prepare` /
+  `complete` around the caller's own step, history `(2m+3)·n_s·8·n_pad` bytes. MPI-free: the
+  collectives are two callables in `AndersonComm`; `solver/anderson_mpi.hpp` builds them from an
+  `MPI_Comm` and is the MPI side. Rev 2 of the design: **no instability guard** — no Ritz
+  estimate, no status "unstable" (`Status` is Active / Disabled); a Ritz value of a non-normal map
+  is no stability test, and stability evidence comes from the caller's plain steps. Pass 2 reduces
+  RR and b only (2·columns + 2 doubles; no reduction reads dG). A restart (ρ > 4·ρ_min at a mixed
+  iterate) **restores the last map output** on every rank (keyed on the broadcast decisions) and
+  commits nothing of the rejected evaluation, so the state never holds a rejected output (review
+  R2). Gates: `tests/test_anderson.cpp`
+  (U1a–c, U2–U6, U4 converges on an unstable map and judges nothing, U4b a stable non-normal map,
+  U10 Carried fields, U11 restarts at a noisy near-neutral Carried mode never leave a rejected
+  output, metric, memory formula) and `tests/test_anderson_mpi.cpp` (U7, np 1/2/4: γ
+  bitwise on all ranks, np = 1 bit-identical to serial; R6: a descriptor invalid on one rank
+  throws on every rank); both print a per-test `digest` of every
+  iterate for bit-identity checks across builds.
 - **`amr/` is gone (2026-09-10)** — the whole AMR tree (the block-local-Morton octree, the distributed
   octree with leaf halos and weighted-ORB rebalancing, the collocated-projection cut-cell
   Navier–Stokes solver, its tests, studies, docs and campaign logs) is the **`peclet-amr`** package,
