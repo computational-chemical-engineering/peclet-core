@@ -308,6 +308,16 @@ if(MPI_FOUND)
     target_link_libraries(test_vof_pvfit PRIVATE Kokkos::kokkos)
     peclet_core_add_test(vof_pvfit test_vof_pvfit)
 
+    # VoF tier-3 cost kernels (flow doc/vof_curvature_cost_design.md §5.1, WO-1 T1-T5): the split
+    # pvFitTerm == a frozen copy, the polygon cache + support prefilter, lower-triangle and
+    # entry-parallel accumulation (all bitwise), the moment cache against the Green's-theorem terms,
+    # analytic moments; device and host spaces.
+    add_executable(test_vof_pvcache test_vof_pvcache.cpp)
+    target_include_directories(test_vof_pvcache PRIVATE
+      ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(test_vof_pvcache PRIVATE Kokkos::kokkos)
+    peclet_core_add_test(vof_pvcache test_vof_pvcache)
+
     # Anderson acceleration of a steady march (peclet::core::solver::AndersonCore, flow
     # doc/steady_acceleration.md §8 U1–U6): synthetic maps on padded device boxes, the metric,
     # the §6.3 memory formula and the host Jacobi / Gelfand algebra. Single rank (U7 below).

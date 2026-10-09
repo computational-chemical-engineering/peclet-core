@@ -754,15 +754,14 @@ struct PvTerm {
   bool ok;
 };
 
-/// One stencil polygon's contribution to the PV fit: everything `pvFitAdd` computes before the
-/// accumulation — the polygon, the frame transform, the moments `s`, the Wendland weight `w` and
-/// `B`. Same parameters as `pvFitAdd`. Sets `t.ok` and returns it: false exactly where `pvFitAdd`
-/// returns false (a rejected polygon), and then `w`, `B`, `s` are unspecified.
-KOKKOS_INLINE_FUNCTION bool pvFitTerm(PvTerm& t, double mx, double my, double mz, double alpha,
-                                      const double off[3], const double org[3], const double t1[3],
-                                      const double t2[3], const double nn[3], double dW,
-                                      double cosMin, const VofMetric& g) {
-  t.ok = false;
+/// The NORMAL half of `pvFitTerm` (design G, flow `doc/vof_curvature_cost_design.md` §5.1a): the
+/// `n2 > 0` check, the pull-back `mi = m / g.h`, `invn = 1/|mi|`, the frame components
+/// `np = (mi.t1, mi.t2, mi.nn) * invn` and the `cosMin` guard — `pvFitTerm`'s expressions verbatim.
+/// Returns false exactly where `pvFitTerm` returns false BEFORE it builds the polygon (`np` is then
+/// unspecified).
+KOKKOS_INLINE_FUNCTION bool pvTermNormal(double mx, double my, double mz, const double t1[3],
+                                         const double t2[3], const double nn[3], double cosMin,
+                                         const VofMetric& g, double np[3]) {
   const double n2 = mx * mx + my * my + mz * mz;
   if (!(n2 > 0.0))
     return false;
@@ -771,17 +770,29 @@ KOKKOS_INLINE_FUNCTION bool pvFitTerm(PvTerm& t, double mx, double my, double mz
   // is `m/1.0` and `invn` is the same reciprocal square root as before — bitwise.
   const double mi[3] = {mx / g.h[0], my / g.h[1], mz / g.h[2]};
   const double invn = 1.0 / Kokkos::sqrt(mi[0] * mi[0] + mi[1] * mi[1] + mi[2] * mi[2]);
-  const double np[3] = {(mi[0] * t1[0] + mi[1] * t1[1] + mi[2] * t1[2]) * invn,
-                        (mi[0] * t2[0] + mi[1] * t2[1] + mi[2] * t2[2]) * invn,
-                        (mi[0] * nn[0] + mi[1] * nn[1] + mi[2] * nn[2]) * invn};
+  np[0] = (mi[0] * t1[0] + mi[1] * t1[1] + mi[2] * t1[2]) * invn;
+  np[1] = (mi[0] * t2[0] + mi[1] * t2[1] + mi[2] * t2[2]) * invn;
+  np[2] = (mi[0] * nn[0] + mi[1] * nn[1] + mi[2] * nn[2]) * invn;
   if (!(np[2] > cosMin))
     return false;
+  return true;
+}
 
-  double v[8][3];
-  const int nv = plicPolygon(mx, my, mz, alpha, v);
-  if (nv < 3)
-    return false;
-
+/// The POLYGON half of `pvFitTerm` (design G §5.1a): everything `pvFitTerm` does after
+/// `if (nv < 3) return false;`, verbatim — the vertex transform through `toPhys` into the fit
+/// frame, the vertex averages `px, py, zc`, `polygonMoments2d`, the `|s0| > 1e-14` test, the
+/// polygon's own plane `b0, b1, b2`, the Wendland radius and weight, and `B` — given the stencil
+/// cell's polygon `v[0..nv)` (`plicPolygon`'s output, cell-local [0,1]^3) and `np` from
+/// `pvTermNormal`. Sets `t.ok` and returns it. Requires `nv >= 3`.
+///
+/// `pvFitTerm` is `pvTermNormal` -> `plicPolygon` -> `pvTermPolygon` with the same arithmetic in
+/// the same order, so a caller that builds each cell's polygon ONCE (a per-cell cache, `PvPolygon`)
+/// and feeds it here reproduces `pvFitTerm` bit for bit (core `tests/test_vof_pvcache.cpp` T1, T2).
+KOKKOS_INLINE_FUNCTION bool pvTermPolygon(PvTerm& t, const double np[3], const double v[8][3],
+                                          int nv, const double off[3], const double org[3],
+                                          const double t1[3], const double t2[3],
+                                          const double nn[3], double dW, const VofMetric& g) {
+  t.ok = false;
   // cell-local [0,1]^3 -> target-centred cell units -> the fit frame
   double xy[8][2];
   double zc = 0.0;
@@ -824,6 +835,28 @@ KOKKOS_INLINE_FUNCTION bool pvFitTerm(PvTerm& t, double mx, double my, double mz
     t.s[i] = s[i];
   t.ok = true;
   return true;
+}
+
+/// One stencil polygon's contribution to the PV fit: everything `pvFitAdd` computes before the
+/// accumulation — the polygon, the frame transform, the moments `s`, the Wendland weight `w` and
+/// `B`. Same parameters as `pvFitAdd`. Sets `t.ok` and returns it: false exactly where `pvFitAdd`
+/// returns false (a rejected polygon), and then `w`, `B`, `s` are unspecified.
+///
+/// The composition `pvTermNormal` -> `plicPolygon` -> `pvTermPolygon` (design G §5.1a), bitwise
+/// the pre-split body (core `tests/test_vof_pvcache.cpp` T1 against a frozen verbatim copy).
+KOKKOS_INLINE_FUNCTION bool pvFitTerm(PvTerm& t, double mx, double my, double mz, double alpha,
+                                      const double off[3], const double org[3], const double t1[3],
+                                      const double t2[3], const double nn[3], double dW,
+                                      double cosMin, const VofMetric& g) {
+  t.ok = false;
+  double np[3];
+  if (!pvTermNormal(mx, my, mz, t1, t2, nn, cosMin, g, np))
+    return false;
+  double v[8][3];
+  const int nv = plicPolygon(mx, my, mz, alpha, v);
+  if (nv < 3)
+    return false;
+  return pvTermPolygon(t, np, v, nv, off, org, t1, t2, nn, dW, g);
 }
 
 /// Fold one accepted term (`t.ok`) into the fit — the accumulation half of `pvFitAdd`, with its
@@ -897,6 +930,278 @@ KOKKOS_INLINE_FUNCTION bool pvFitSolve(const PvFit& f, double a[6], bool& red) {
   a[4] = 0.0;
   a[5] = ar[2];
   red = true;
+  return true;
+}
+
+// ---------------------------------------------------------------------------------------------
+// tier 3 at cost (design G, flow `doc/vof_curvature_cost_design.md` §5.1): per-cell caches of the
+// PLIC polygon data, built ONCE per curvature pass, and the per-entry form of the accumulation
+// ---------------------------------------------------------------------------------------------
+
+/// Lower-triangle accumulation: `pvFitAccum` restricted to `j <= i` (design G §5.1c). The entries
+/// `A[i][j]`, `j > i`, stay at `pvFitInit`'s 0.0.
+///
+/// **Why it is bitwise for the solve.** `curvSolveSym` reads only the diagonal and the strict lower
+/// triangle of its input after the Jacobi scaling (it scales the upper half too, but nothing reads
+/// it), and `pvFitSolve`'s reduced model copies `A[3][0]`, `A[5][0]`, `A[5][3]` — also lower — into
+/// the lower half of its 3x3 system. Every entry it does keep is the same sequential sum from 0.0
+/// in the same order with the same expression, so `pvFitSolve` returns the same bits (core
+/// `tests/test_vof_pvcache.cpp` T3).
+KOKKOS_INLINE_FUNCTION void pvFitAccumLower(PvFit& f, const PvTerm& t) {
+  const double w = t.w, B = t.B;
+  const double* s = t.s;
+  for (int i = 0; i < 6; ++i) {
+    f.b[i] += w * s[i] * B;
+    for (int j = 0; j <= i; ++j)
+      f.A[i][j] += w * s[i] * s[j];
+  }
+  ++f.npoly;
+}
+
+/// Number of independent entries of the PV normal equations: the 21 of the lower triangle (with
+/// the diagonal) and the 6 of `b`.
+inline constexpr int kPvEntries = 27;
+
+/// ONE entry `e` in [0, 27) of the accumulation, for an entry-parallel fold (design G §5.4: each
+/// entry summed serially in canonical order by its own lane): `e < 21` is `A[i][j]` with
+/// `e = i(i+1)/2 + j`, `j <= i`, and `a += t.w * t.s[i] * t.s[j]`; `e >= 21` is `b[e - 21]` and
+/// `a += t.w * t.s[e-21] * t.B`. The expressions are `pvFitAccum`'s, so a per-entry loop over the
+/// terms in the same order equals `pvFitAccum`'s interleaved loop bit for bit.
+KOKKOS_INLINE_FUNCTION void pvFitAccumEntry(double& a, const PvTerm& t, int e) {
+  const double w = t.w;
+  if (e >= 21) {
+    const int i = e - 21;
+    a += w * t.s[i] * t.B;
+    return;
+  }
+  int i = 0;
+  while ((i + 1) * (i + 2) / 2 <= e)
+    ++i;
+  const int j = e - i * (i + 1) / 2;
+  a += w * t.s[i] * t.s[j];
+}
+
+/// A `PvFit` from the 27 entries of `pvFitAccumEntry` (+ `npoly`); the upper triangle is zero.
+KOKKOS_INLINE_FUNCTION void pvFitFromEntries(PvFit& f, const double ent[kPvEntries], int npoly) {
+  for (int i = 0; i < 6; ++i) {
+    f.b[i] = ent[21 + i];
+    for (int j = 0; j < 6; ++j)
+      f.A[i][j] = (j <= i) ? ent[i * (i + 1) / 2 + j] : 0.0;
+  }
+  f.npoly = npoly;
+}
+
+/// The per-cell POLYGON cache entry (design G §5.1b, "V5"): `plicPolygon`'s output for one cell's
+/// PLIC plane, exactly as returned, plus the cell-centred INDEX-space vertex average used only by
+/// the support prefilter `pvOutsideSupport`. 224 B, so one entry is one contiguous read.
+struct alignas(32) PvPolygon {
+  double v[8][3];  ///< cell-local [0,1]^3 vertices; slots >= nv unused
+  double vbar[3];  ///< (sum_k v[k]) * (1/nv) - 0.5; 0 when nv == 0
+  int nv;          ///< `plicPolygon`'s return value (0 if the normal is degenerate)
+};
+
+/// Build a `PvPolygon` from a cell's PLIC plane: `nv = plicPolygon(m, alpha, v)`, then `vbar`.
+KOKKOS_INLINE_FUNCTION void pvPolygonBuild(double mx, double my, double mz, double alpha,
+                                           PvPolygon& P) {
+  P.nv = plicPolygon(mx, my, mz, alpha, P.v);
+  P.vbar[0] = P.vbar[1] = P.vbar[2] = 0.0;
+  if (P.nv == 0)
+    return;
+  double sx = 0.0, sy = 0.0, sz = 0.0;
+  for (int k = 0; k < P.nv; ++k) {
+    sx += P.v[k][0];
+    sy += P.v[k][1];
+    sz += P.v[k][2];
+  }
+  const double inv = 1.0 / static_cast<double>(P.nv);
+  P.vbar[0] = sx * inv - 0.5;
+  P.vbar[1] = sy * inv - 0.5;
+  P.vbar[2] = sz * inv - 0.5;
+}
+
+/// true iff the cached polygon is CERTAINLY outside the Wendland support of a target with origin
+/// `org` (index units, as `pvFitTerm`'s), so `pvTermPolygon` would reject it with `w == 0`.
+///
+/// **Why skipping it is bitwise.** `pvTermPolygon`'s radius is the norm of the frame projections of
+/// the mean of `X_k = toPhys(off + v_k - 0.5 - org)`; this is the norm of the same vector, computed
+/// in a different order, so the two differ by a few ulp (~1e-15 relative). The margin
+/// `(1 + 1e-9)` on r^2 is 5e-10 on r, so every skipped polygon has r > dW, hence q >= 1 and w = 0:
+/// the accepted set, `npoly` and every accumulated byte are unchanged (core
+/// `tests/test_vof_pvcache.cpp` T2: false skips must be 0). A polygon with `nv < 3` is never
+/// skipped (the polygon half rejects it on its own), nor is anything when `dW <= 0`, where
+/// `wendlandWeight` is 1 everywhere (an unbounded support).
+KOKKOS_INLINE_FUNCTION bool pvOutsideSupport(const PvPolygon& P, const double off[3],
+                                             const double org[3], double dW, const VofMetric& g) {
+  if (P.nv < 3)
+    return false;
+  if (!(dW > 0.0))
+    return false;
+  const double Xi[3] = {P.vbar[0] + off[0] - org[0], P.vbar[1] + off[1] - org[1],
+                        P.vbar[2] + off[2] - org[2]};
+  double X[3];
+  g.toPhys(Xi, X);
+  return X[0] * X[0] + X[1] * X[1] + X[2] * X[2] > dW * dW * (1.0 + 1e-9);
+}
+
+/// The per-cell MOMENT cache entry (design G §5.1d, "V6"): the 3-D area moments of a cell's PLIC
+/// polygon in PHYSICAL, cell-centred coordinates `Y = toPhys(v - 0.5)`. 16 doubles = 128 B.
+struct alignas(64) PvMoments {
+  double n[3];   ///< unit PHYSICAL normal (`vofPhysNormalInv`); (0,0,0) if degenerate
+  double c[3];   ///< physical vertex average (1/nv) sum_k Y_k — the Wendland point
+  double a;      ///< area (physical); 0 when nv < 3 or the normal is degenerate
+  double m1[3];  ///< int_P Y dA
+  double m2[6];  ///< int_P Y Y^T dA, in the order xx, yy, zz, xy, xz, yz
+};
+
+/// Build a `PvMoments` from a cell's PLIC plane (index-space `m`, `alpha`) and the cell metric:
+/// the physical unit normal, then — when the polygon has >= 3 vertices — its vertex average and
+/// its area moments by a fan from `Y_0`. For the triangle `(A, B, C)` with area `At` and
+/// `S = A + B + C`: `int dA = At`, `int Y dA = At S / 3`, and
+/// `int Y_p Y_q dA = At/12 (A_p A_q + B_p B_q + C_p C_q + S_p S_q)` — the exact triangle moments
+/// (`int l_p l_q dA = At (1 + d_pq) / 12` in barycentric coordinates). The polygon is convex, so
+/// every `At >= 0`.
+KOKKOS_INLINE_FUNCTION void pvMomentsBuild(double mx, double my, double mz, double alpha,
+                                           const VofMetric& g, PvMoments& P) {
+  for (int a = 0; a < 3; ++a) {
+    P.n[a] = 0.0;
+    P.c[a] = 0.0;
+    P.m1[a] = 0.0;
+  }
+  P.a = 0.0;
+  for (int q = 0; q < 6; ++q)
+    P.m2[q] = 0.0;
+  const double m[3] = {mx, my, mz};
+  if (vofPhysNormalInv(m, g, P.n) <= 0.0)
+    return;
+  double v[8][3];
+  const int nv = plicPolygon(mx, my, mz, alpha, v);
+  if (nv < 3)
+    return;
+  double Y[8][3];
+  double sc[3] = {0.0, 0.0, 0.0};
+  for (int k = 0; k < nv; ++k) {
+    const double Xi[3] = {v[k][0] - 0.5, v[k][1] - 0.5, v[k][2] - 0.5};
+    g.toPhys(Xi, Y[k]);
+    sc[0] += Y[k][0];
+    sc[1] += Y[k][1];
+    sc[2] += Y[k][2];
+  }
+  const double inv = 1.0 / static_cast<double>(nv);
+  P.c[0] = sc[0] * inv;
+  P.c[1] = sc[1] * inv;
+  P.c[2] = sc[2] * inv;
+  constexpr int ip[6] = {0, 1, 2, 0, 0, 1}, iq[6] = {0, 1, 2, 1, 2, 2};
+  for (int k = 1; k + 1 < nv; ++k) {
+    const double* A = Y[0];
+    const double* B = Y[k];
+    const double* C = Y[k + 1];
+    const double u[3] = {B[0] - A[0], B[1] - A[1], B[2] - A[2]};
+    const double w[3] = {C[0] - A[0], C[1] - A[1], C[2] - A[2]};
+    const double cx = u[1] * w[2] - u[2] * w[1];
+    const double cy = u[2] * w[0] - u[0] * w[2];
+    const double cz = u[0] * w[1] - u[1] * w[0];
+    const double At = 0.5 * Kokkos::sqrt(cx * cx + cy * cy + cz * cz);
+    const double S[3] = {A[0] + B[0] + C[0], A[1] + B[1] + C[1], A[2] + B[2] + C[2]};
+    P.a += At;
+    for (int a = 0; a < 3; ++a)
+      P.m1[a] += At * S[a] / 3.0;
+    for (int q = 0; q < 6; ++q) {
+      const int p0 = ip[q], q0 = iq[q];
+      P.m2[q] += At / 12.0 * (A[p0] * A[q0] + B[p0] * B[q0] + C[p0] * C[q0] + S[p0] * S[q0]);
+    }
+  }
+}
+
+/// Tier 3's fit frame from the TARGET's cached moments: `nn = P.n`, `curvFrame(nn, t1, t2)`, and
+/// the origin `org` = the polygon's area centroid `m1 / a` in PHYSICAL target-centred units
+/// (`toPhys(-0.5, -0.5, -0.5)` when there is no polygon, today's degenerate `ctr = 0` case). false
+/// when there is no normal. Against `curvFallbackFrame`: the frame vectors are bitwise (same
+/// `vofPhysNormalInv`, same `curvFrame`), and `org` is `toPhys` of its index-space origin up to
+/// rounding, because the area centroid maps linearly under `H` (T4: |d org| <= 1e-14).
+KOKKOS_INLINE_FUNCTION bool pvFrameMoments(const PvMoments& P, const VofMetric& g, double nn[3],
+                                           double t1[3], double t2[3], double org[3]) {
+  if (!(P.n[0] * P.n[0] + P.n[1] * P.n[1] + P.n[2] * P.n[2] > 0.0))
+    return false;
+  nn[0] = P.n[0];
+  nn[1] = P.n[1];
+  nn[2] = P.n[2];
+  curvFrame(nn, t1, t2);
+  if (P.a > 0.0) {
+    org[0] = P.m1[0] / P.a;
+    org[1] = P.m1[1] / P.a;
+    org[2] = P.m1[2] / P.a;
+  } else {
+    const double h[3] = {-0.5, -0.5, -0.5};
+    g.toPhys(h, org);
+  }
+  return true;
+}
+
+/// One stencil polygon's PV term from its cached moments (design G §5.1d, "V6"): the same
+/// integrals as `pvFitTerm`, transformed instead of re-integrated. `off` is the stencil cell's
+/// integer index offset, `org` the target's PHYSICAL origin (`pvFrameMoments`). Sets `t.ok` and
+/// returns it.
+///
+/// **Equivalence.** With `X = Y + d` relative to the target origin (`d = toPhys(off) - org`), the
+/// projected polygon's moments are `int_{P'} phi(x', y') dA' = (n_j . n_t) int_P phi(t1.X, t2.X)
+/// dA`: projecting a planar region scales its area by the cosine, and the projected polygon is the
+/// polygon of the projected vertices. And `int_{P'} z' dA' = (n_j . n_t) n_t . int_P X dA`, because
+/// X lies on the plane — today's `B = b0 s0 + b1 s1 + b2 s2` is that same integral. The Wendland
+/// point (the vertex average of X_k in `pvFitTerm`) is `P.c + d`. So the term differs from
+/// `pvFitTerm`'s only by the rounding sequence (and by the orientation sign of the projected
+/// polygon, which cancels in the quadratic normal equations: here `s0 = cj a > 0`). A RECORDED
+/// numerics change at round-off (max rel. d kappa 7.7e-15, design G §2.3).
+KOKKOS_INLINE_FUNCTION bool pvTermMoments(PvTerm& t, const PvMoments& P, const double off[3],
+                                          const double org[3], const double t1[3],
+                                          const double t2[3], const double nn[3], double dW,
+                                          double cosMin, const VofMetric& g) {
+  t.ok = false;
+  const double cj = P.n[0] * nn[0] + P.n[1] * nn[1] + P.n[2] * nn[2];
+  if (!(cj > cosMin))  // also rejects a degenerate normal (n = 0) whenever cosMin >= 0
+    return false;
+  if (!(P.a > 0.0))
+    return false;
+  double d[3];
+  g.toPhys(off, d);
+  d[0] -= org[0];
+  d[1] -= org[1];
+  d[2] -= org[2];
+  const double rc[3] = {P.c[0] + d[0], P.c[1] + d[1], P.c[2] + d[2]};
+  const double r = Kokkos::sqrt(rc[0] * rc[0] + rc[1] * rc[1] + rc[2] * rc[2]);
+  const double w = wendlandWeight(r, dW);
+  if (!(w > 0.0))
+    return false;
+  const double a = P.a;
+  const double* m1 = P.m1;
+  const double* m2 = P.m2;
+  const double Q1[3] = {m1[0] + d[0] * a, m1[1] + d[1] * a, m1[2] + d[2] * a};
+  // Q2 = m2 + d m1^T + m1 d^T + d d^T a
+  const double Qxx = m2[0] + 2.0 * d[0] * m1[0] + d[0] * d[0] * a;
+  const double Qyy = m2[1] + 2.0 * d[1] * m1[1] + d[1] * d[1] * a;
+  const double Qzz = m2[2] + 2.0 * d[2] * m1[2] + d[2] * d[2] * a;
+  const double Qxy = m2[3] + d[0] * m1[1] + m1[0] * d[1] + d[0] * d[1] * a;
+  const double Qxz = m2[4] + d[0] * m1[2] + m1[0] * d[2] + d[0] * d[2] * a;
+  const double Qyz = m2[5] + d[1] * m1[2] + m1[1] * d[2] + d[1] * d[2] * a;
+  const double u[3] = {Qxx * t1[0] + Qxy * t1[1] + Qxz * t1[2],
+                       Qxy * t1[0] + Qyy * t1[1] + Qyz * t1[2],
+                       Qxz * t1[0] + Qyz * t1[1] + Qzz * t1[2]};
+  const double v[3] = {Qxx * t2[0] + Qxy * t2[1] + Qxz * t2[2],
+                       Qxy * t2[0] + Qyy * t2[1] + Qyz * t2[2],
+                       Qxz * t2[0] + Qyz * t2[1] + Qzz * t2[2]};
+  double s[6];
+  s[0] = cj * a;
+  s[1] = cj * (t1[0] * Q1[0] + t1[1] * Q1[1] + t1[2] * Q1[2]);
+  s[2] = cj * (t2[0] * Q1[0] + t2[1] * Q1[1] + t2[2] * Q1[2]);
+  s[3] = cj * (t1[0] * u[0] + t1[1] * u[1] + t1[2] * u[2]);
+  s[4] = cj * (t2[0] * u[0] + t2[1] * u[1] + t2[2] * u[2]);
+  s[5] = cj * (t2[0] * v[0] + t2[1] * v[1] + t2[2] * v[2]);
+  if (!(Kokkos::fabs(s[0]) > 1e-14))
+    return false;
+  t.w = w;
+  t.B = cj * (nn[0] * Q1[0] + nn[1] * Q1[1] + nn[2] * Q1[2]);
+  for (int i = 0; i < 6; ++i)
+    t.s[i] = s[i];
+  t.ok = true;
   return true;
 }
 
