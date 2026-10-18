@@ -65,7 +65,7 @@ void onBeginFor(const char* name, const uint32_t, uint64_t* kid) {
 }
 void onEndFor(const uint64_t) {}
 
-// CutcellMG::coarsenAlignment: the per-axis power of two the ORB must align to so the levels nest.
+// CutcellMG::coarsenAlignment: the per-axis power of two the ORB aligns to so the levels nest.
 IVec<3> coarsenAlignment(IVec<3> g) {
   auto can = [](Index d) { return (d % 2 == 0) && (d / 2 >= 2); };
   IVec<3> a{1, 1, 1};
@@ -78,6 +78,9 @@ IVec<3> coarsenAlignment(IVec<3> g) {
         any = true;
       }
   }
+  for (int k = 0; k < 3; ++k)  // CutcellMG caps the alignment at 16 (2^(default nLevels - 1))
+    if (a[k] > 16)
+      a[k] = 16;
   return a;
 }
 
@@ -201,7 +204,7 @@ int main(int argc, char** argv) {
         IVec<3> g{};
         for (int k = 0; k < 3; ++k) {
           g[k] = lmd[k] + idx.originInclGhost()[k];
-          g[k] = ((g[k] % gsize[k]) + gsize[k]) % gsize[k];
+          g[k] = ((g[k] % dec.globalSize()[k]) + dec.globalSize()[k]) % dec.globalSize()[k];
         }
         if (hf(idx.localMdToLocal(lmd)) != static_cast<double>(dec.linearGlobal(g)))
           ++bad;
