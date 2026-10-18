@@ -1,13 +1,13 @@
 // core — portable (Kokkos) GPU-resident ghost-layer exchange.
 //
 // Portable (Kokkos) GPU-resident grid halo: the field lives on the device as a
-// peclet::core::View<T>; pack (gather send cells), unpack (scatter into ghost cells) and the
-// periodic self-copy run as Kokkos::parallel_for on the default execution space (CUDA / HIP /
-// OpenMP), so the full field never crosses the bus — only the compact halo buffers are staged to
-// the host for MPI. The GPU-aware-MPI path (hand device pointers straight to MPI, dropping both
-// staging copies) is the DEFAULT on device builds when a loopback probe confirms MPI accepts
-// device pointers; env PECLET_CORE_GPU_AWARE_MPI=0 forces host staging (kill switch for stacks
-// that segfault instead of erroring), =1 forces the device path without probing (legacy
+// peclet::core::View<T>; the gather (periodic self-copy + pack of the send cells, one launch) and
+// the unpack (scatter into ghost cells) run as Kokkos::parallel_for on the default execution space
+// (CUDA / HIP / OpenMP), so the full field never crosses the bus — only the compact halo buffers
+// are staged to the host for MPI. The GPU-aware-MPI path (hand device pointers straight to MPI,
+// dropping both staging copies) is the DEFAULT on device builds when a loopback probe confirms MPI
+// accepts device pointers; env PECLET_CORE_GPU_AWARE_MPI=0 forces host staging (kill switch for
+// stacks that segfault instead of erroring), =1 forces the device path without probing (legacy
 // PECLET_CORE_CUDA_AWARE_MPI honoured). exchangeBegin/exchangeEnd expose the split so callers can
 // overlap interior compute with the messages in flight; exchange() is the blocking composition.
 // Topology comes from a host-built GridHaloTopology<Dim>::flatten(), and the result is bit-for-bit
@@ -187,33 +187,35 @@ class GridHalo {
     exchangeEnd(field);
   }
 
-  /// Start an exchange: periodic self-copy, device pack, post Isend/Irecv, return with the
-  /// messages in flight. The caller may run kernels that touch only INNER (non-ghost, non-send)
-  /// cells before exchangeEnd — that overlap is the point of the split. One exchange may be in
-  /// flight per GridHalo instance.
+  /// Start an exchange: periodic self-copy and pack (ONE gather), post Isend/Irecv, return with
+  /// the messages in flight. The caller may run kernels that touch only INNER
+  /// (non-ghost, non-send) cells before exchangeEnd — that overlap is the point of the split. One
+  /// exchange may be in flight per GridHalo instance.
   void exchangeBegin(const View<T>& field, int tag = 0) {
     const bool aware = detail::gpuAwareMpi();
-    // Periodic copy within our own block (read inner cell, write ghost cell).
-    if (nSelf_) {
+    // The gather: the periodic self-copy (read inner cell, write ghost cell) and the pack of the
+    // send cells into the contiguous send buffer, as ONE launch over [0, nSelf_ + nSend_).
+    // Race-free for any ghost width: the self-copy writes ghost cells only and the pack reads
+    // inner cells only. (Inline, not a private helper: nvcc rejects an extended lambda in a private
+    // member function.)
+    if (nSelf_ + nSend_) {
+      const Index nSelf = nSelf_, nAll = nSelf_ + nSend_;
       View<T> f = field;
-      IndexView src = d_selfSrc_, dst = d_selfDst_;
-      Kokkos::parallel_for(
-          "peclet::core::halo::selfCopy", Kokkos::RangePolicy<ExecSpace>(0, nSelf_),
-          KOKKOS_LAMBDA(const Index i) { f(dst(i)) = f(src(i)); });
-    }
-    // Gather the cells we send into the contiguous send buffer.
-    if (nSend_) {
-      View<T> f = field;
-      IndexView idx = d_sendIdx_;
+      IndexView src = d_selfSrc_, dst = d_selfDst_, idx = d_sendIdx_;
       View<T> buf = d_sendBuf_;
       Kokkos::parallel_for(
-          "peclet::core::halo::pack", Kokkos::RangePolicy<ExecSpace>(0, nSend_),
-          KOKKOS_LAMBDA(const Index i) { buf(i) = f(idx(i)); });
-      if (!aware)
-        Kokkos::deep_copy(h_sendBuf_, d_sendBuf_);
+          "peclet::core::halo::gather", Kokkos::RangePolicy<ExecSpace>(0, nAll),
+          KOKKOS_LAMBDA(const Index i) {
+            if (i < nSelf)
+              f(dst(i)) = f(src(i));
+            else
+              buf(i - nSelf) = f(idx(i - nSelf));
+          });
     }
     // The send buffer (host-staged, or device for the aware path) must be ready before MPI reads
     // it.
+    if (nSend_ && !aware)
+      Kokkos::deep_copy(h_sendBuf_, d_sendBuf_);
     Kokkos::fence();
 
     T* sendBase = aware ? d_sendBuf_.data() : h_sendBuf_.data();
