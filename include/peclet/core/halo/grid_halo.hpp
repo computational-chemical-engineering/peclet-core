@@ -234,10 +234,14 @@ class GridHalo {
       }
     }
     // The send buffer (host-staged, or device for the aware path) must be ready before MPI reads
-    // it.
+    // it, and on the aware path the previous exchange's unpack must be done reading the receive
+    // buffer MPI is about to fill. Host staging: the two-argument deep_copy fences. With no MPI
+    // traffic (np 1: self-copy only) nothing outside the execution space reads either buffer —
+    // the gather is stream-ordered before the caller's next kernel — so there is no fence.
     if (nSend_ && !aware)
       Kokkos::deep_copy(h_sendBuf_, d_sendBuf_);
-    Kokkos::fence();
+    if (!recvRanks_.empty() || !sendRanks_.empty())
+      Kokkos::fence("peclet::core::halo::beforeMpi");
 
     inFlightAware_ = aware;
     if (tag == 0 && usePersistent_ && aware != preqAware_)
@@ -287,15 +291,18 @@ class GridHalo {
         if (nRecv_ <= kHaloSerialCopy) {
           for (Index i = 0; i < nRecv_; ++i)
             f(idx(i)) = buf(i);
-          Kokkos::fence();
           return;
         }
       }
       Kokkos::parallel_for(
           "peclet::core::halo::unpack", Kokkos::RangePolicy<ExecSpace>(0, nRecv_),
           KOKKOS_LAMBDA(const Index i) { f(idx(i)) = buf(i); });
+      // The unpack is stream-ordered before the caller's next kernel and is not fenced. The
+      // aware path keeps one fence: a caller may hand the exchanged device field straight to
+      // MPI. (Host staging: the receive buffer was copied by a fencing deep_copy above.)
+      if (inFlightAware_)
+        Kokkos::fence("peclet::core::halo::afterUnpack");
     }
-    Kokkos::fence();
   }
 
  private:
