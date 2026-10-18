@@ -149,6 +149,7 @@ class GridHalo {
   GridHalo() = default;
   GridHalo(const GridHalo&) = delete;
   GridHalo& operator=(const GridHalo&) = delete;
+  ~GridHalo() { freePersistent(); }
 
   template <int Dim>
   void init(const GridHaloTopology<Dim>& halo) {
@@ -182,6 +183,9 @@ class GridHalo {
                 static_cast<std::size_t>(nRecv_));
     h_sendBuf_ = Kokkos::create_mirror_view(d_sendBuf_);
     h_recvBuf_ = Kokkos::create_mirror_view(d_recvBuf_);
+    // Persistent requests on the buffers the staging choice selects (cached here; a later flip
+    // re-inits them in exchangeBegin).
+    initPersistent(detail::gpuAwareMpi());
   }
 
   /// Name printed by the PECLET_CORE_HALO_TIMEOUT diagnostic (e.g. "mg L4 g1"), so a stuck
@@ -194,10 +198,11 @@ class GridHalo {
     exchangeEnd(field);
   }
 
-  /// Start an exchange: periodic self-copy and pack (ONE gather), post Isend/Irecv, return with
-  /// the messages in flight. The caller may run kernels that touch only INNER
+  /// Start an exchange: periodic self-copy and pack (ONE gather), start the receives and sends,
+  /// return with the messages in flight. The caller may run kernels that touch only INNER
   /// (non-ghost, non-send) cells before exchangeEnd — that overlap is the point of the split. One
-  /// exchange may be in flight per GridHalo instance.
+  /// exchange may be in flight per GridHalo instance. `tag == 0` (every caller today) starts the
+  /// persistent requests built at init; any other tag posts Isend/Irecv on that tag.
   void exchangeBegin(const View<T>& field, int tag = 0) {
     const bool aware = detail::gpuAwareMpi();
     // The gather: the periodic self-copy (read inner cell, write ghost cell) and the pack of the
@@ -234,6 +239,16 @@ class GridHalo {
       Kokkos::deep_copy(h_sendBuf_, d_sendBuf_);
     Kokkos::fence();
 
+    inFlightAware_ = aware;
+    if (tag == 0 && usePersistent_ && aware != preqAware_)
+      initPersistent(aware);
+    if (tag == 0 && usePersistent_) {
+      if (!preqs_.empty())
+        MPI_Startall(static_cast<int>(preqs_.size()), preqs_.data());
+      inFlightPersistent_ = true;
+      return;
+    }
+    inFlightPersistent_ = false;
     T* sendBase = aware ? d_sendBuf_.data() : h_sendBuf_.data();
     T* recvBase = aware ? d_recvBuf_.data() : h_recvBuf_.data();
     reqs_.clear();
@@ -248,19 +263,20 @@ class GridHalo {
       MPI_Isend(sendBase + sendOff_[k], sendCounts_[k] * static_cast<int>(sizeof(T)), MPI_BYTE,
                 sendRanks_[k], tag, comm_, &reqs_.back());
     }
-    inFlightAware_ = aware;
   }
 
   /// Complete the exchange started by exchangeBegin: wait, then scatter the received halo cells
   /// into `field`'s ghost region (must be the same field).
   void exchangeEnd(const View<T>& field) {
-    if (!reqs_.empty()) {
+    std::vector<MPI_Request>& r = inFlightPersistent_ ? preqs_ : reqs_;
+    if (!r.empty()) {
       if (detail::haloTimeout() > 0)
-        waitAllDiagnosed(detail::haloTimeout());
+        waitAllDiagnosed(r, detail::haloTimeout());
       else
-        MPI_Waitall(static_cast<int>(reqs_.size()), reqs_.data(), MPI_STATUSES_IGNORE);
+        MPI_Waitall(static_cast<int>(r.size()), r.data(), MPI_STATUSES_IGNORE);
     }
     reqs_.clear();
+    inFlightPersistent_ = false;
     if (nRecv_) {
       if (!inFlightAware_)
         Kokkos::deep_copy(d_recvBuf_, h_recvBuf_);
@@ -285,11 +301,50 @@ class GridHalo {
  private:
   static constexpr bool kHostMemory = std::is_same_v<MemSpace, Kokkos::HostSpace>;
 
+  /// (Re)build the persistent requests (MPI_Recv_init / MPI_Send_init per neighbour, tag 0) on
+  /// the host-staging or the device buffers. A stack that rejects one (R-3: device pointers)
+  /// leaves usePersistent_ false, and every exchange takes the Isend/Irecv path.
+  void initPersistent(bool aware) {
+    freePersistent();
+    preqAware_ = aware;
+    T* sendBase = aware ? d_sendBuf_.data() : h_sendBuf_.data();
+    T* recvBase = aware ? d_recvBuf_.data() : h_recvBuf_.data();
+    preqs_.assign(recvRanks_.size() + sendRanks_.size(), MPI_REQUEST_NULL);
+    bool ok = true;
+    for (std::size_t k = 0; k < recvRanks_.size(); ++k)
+      ok &= MPI_Recv_init(recvBase + recvOff_[k], recvCounts_[k] * static_cast<int>(sizeof(T)),
+                          MPI_BYTE, recvRanks_[k], 0, comm_, &preqs_[k]) == MPI_SUCCESS;
+    const std::size_t nr = recvRanks_.size();
+    for (std::size_t k = 0; k < sendRanks_.size(); ++k)
+      ok &= MPI_Send_init(sendBase + sendOff_[k], sendCounts_[k] * static_cast<int>(sizeof(T)),
+                          MPI_BYTE, sendRanks_[k], 0, comm_, &preqs_[nr + k]) == MPI_SUCCESS;
+    if (!ok)
+      freePersistent();
+    usePersistent_ = ok;
+  }
+
+  void freePersistent() {
+    usePersistent_ = false;
+    if (preqs_.empty())
+      return;
+    int fin = 0;
+    MPI_Finalized(&fin);
+    if (!fin)
+      for (auto& r : preqs_)
+        if (r != MPI_REQUEST_NULL)
+          MPI_Request_free(&r);
+    preqs_.clear();
+  }
+
   MPI_Comm comm_ = MPI_COMM_NULL;
   std::vector<int> sendRanks_, recvRanks_, sendCounts_, recvCounts_;
   std::vector<int> sendOff_, recvOff_;
-  std::vector<MPI_Request> reqs_;  // in-flight requests between exchangeBegin and exchangeEnd
-  bool inFlightAware_ = false;     // staging mode of the in-flight exchange
+  std::vector<MPI_Request> reqs_;    // in-flight Isend/Irecv (tag != 0) between begin and end
+  std::vector<MPI_Request> preqs_;   // persistent: receives then sends, on preqAware_'s buffers
+  bool usePersistent_ = false;       // preqs_ built (false: init failed, or no init yet)
+  bool preqAware_ = false;           // staging mode preqs_ were built for
+  bool inFlightPersistent_ = false;  // the in-flight exchange runs on preqs_
+  bool inFlightAware_ = false;       // staging mode of the in-flight exchange
   Index nSend_ = 0, nRecv_ = 0, nSelf_ = 0;
   std::string label_;
   IndexView d_sendIdx_, d_recvIdx_, d_selfSrc_, d_selfDst_;
@@ -298,12 +353,12 @@ class GridHalo {
   /// request still pending — direction, partner (communicator AND world rank), byte count — and
   /// abort the job. A hang in a halo exchange is otherwise invisible (every rank sits in
   /// MPI_Waitall and a stack sample cannot say WHICH message never arrived); this names it.
-  void waitAllDiagnosed(double timeout) {
+  void waitAllDiagnosed(std::vector<MPI_Request>& reqs, double timeout) {
     const double t0 = MPI_Wtime();
-    const int n = static_cast<int>(reqs_.size());
+    const int n = static_cast<int>(reqs.size());
     int done = 0;
     while (!done) {
-      MPI_Testall(n, reqs_.data(), &done, MPI_STATUSES_IGNORE);
+      MPI_Testall(n, reqs.data(), &done, MPI_STATUSES_IGNORE);
       if (done || MPI_Wtime() - t0 < timeout)
         continue;
       int rank = -1, size = -1, wrank = -1, wsize = -1;
@@ -325,9 +380,9 @@ class GridHalo {
                         std::to_string(recvRanks_.size()) + " recv + " +
                         std::to_string(sendRanks_.size()) + " send partners\n";
       const std::size_t nr = recvRanks_.size();
-      for (std::size_t k = 0; k < reqs_.size(); ++k) {
+      for (std::size_t k = 0; k < reqs.size(); ++k) {
         int flag = 0;
-        MPI_Request_get_status(reqs_[k], &flag, MPI_STATUS_IGNORE);
+        MPI_Request_get_status(reqs[k], &flag, MPI_STATUS_IGNORE);
         if (flag)
           continue;
         const bool recv = k < nr;

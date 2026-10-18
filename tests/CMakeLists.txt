@@ -339,6 +339,22 @@ if(MPI_FOUND)
       ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(test_grid_halo_exchange PRIVATE Kokkos::kokkos MPI::MPI_CXX)
 
+    # G-HALO (flow doc/vof_distributed_host_comm_design.md §10): every GridHalo transport variant
+    # (persistent tag 0, Isend tag != 0, host calling-thread vs parallel copies, faces-only) under
+    # per-rank random delays, 10^4 exchanges each, ghosts bitwise to their owners. The _timeout
+    # instance drives the persistent requests through the PECLET_CORE_HALO_TIMEOUT diagnostic wait.
+    add_executable(test_grid_halo_variants test_grid_halo_variants.cpp)
+    target_include_directories(test_grid_halo_variants PRIVATE
+      ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(test_grid_halo_variants PRIVATE Kokkos::kokkos MPI::MPI_CXX)
+    foreach(np IN ITEMS 2 4 8)
+      peclet_core_add_mpi_test(grid_halo_variants_np${np} test_grid_halo_variants ${np})
+      set_tests_properties(grid_halo_variants_np${np} PROPERTIES TIMEOUT 1800)
+    endforeach()
+    peclet_core_add_mpi_test(grid_halo_variants_timeout_np2 test_grid_halo_variants 2)
+    set_tests_properties(grid_halo_variants_timeout_np2 PROPERTIES TIMEOUT 1800
+      ENVIRONMENT "PECLET_CORE_HALO_TIMEOUT=60")
+
     add_executable(test_particle_halo_exchange test_particle_halo_exchange.cpp)
     target_include_directories(test_particle_halo_exchange PRIVATE
       ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
