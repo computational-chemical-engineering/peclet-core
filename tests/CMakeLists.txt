@@ -354,6 +354,16 @@ if(MPI_FOUND)
     peclet_core_add_mpi_test(grid_halo_variants_timeout_np2 test_grid_halo_variants 2)
     set_tests_properties(grid_halo_variants_timeout_np2 PROPERTIES TIMEOUT 1800
       ENVIRONMENT "PECLET_CORE_HALO_TIMEOUT=60")
+    # The same on a faces-only topology (Neighborhood::Faces, flow's stencil halo, design §5.2).
+    foreach(np IN ITEMS 2 4 8)
+      peclet_core_add_mpi_test(grid_halo_variants_faces_np${np} test_grid_halo_variants ${np}
+        ARGS faces)
+      set_tests_properties(grid_halo_variants_faces_np${np} PROPERTIES TIMEOUT 1800)
+    endforeach()
+    peclet_core_add_mpi_test(grid_halo_variants_faces_timeout_np2 test_grid_halo_variants 2
+      ARGS faces)
+    set_tests_properties(grid_halo_variants_faces_timeout_np2 PROPERTIES TIMEOUT 1800
+      ENVIRONMENT "PECLET_CORE_HALO_TIMEOUT=60")
 
     add_executable(test_particle_halo_exchange test_particle_halo_exchange.cpp)
     target_include_directories(test_particle_halo_exchange PRIVATE

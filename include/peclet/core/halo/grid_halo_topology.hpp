@@ -46,15 +46,22 @@ struct GridFieldView {
   }
 };
 
+/// Which ghost cells a topology fills. `Full` (the default): every ghost cell, edges and corners
+/// included. `Faces`: only ghost cells with exactly ONE coordinate outside the inner block — the
+/// cells a face-neighbour (7-point) stencil reads; edge and corner ghosts are left untouched.
+enum class Neighborhood { Full, Faces };
+
 template <int Dim>
 class GridHaloTopology {
  public:
   GridHaloTopology() = default;
 
   /// Build the halo topology for `rank`'s block of `dec`, with the given ghost width and per-axis
-  /// periodicity. Communicates once (NBX) to establish matched send lists.
+  /// periodicity. Communicates once (NBX) to establish matched send lists. `nb = Faces` keeps only
+  /// the face ghosts (see `Neighborhood`).
   void buildTopology(const decomp::BlockDecomposer<Dim>& dec, int rank, int ghostWidth,
-                     const std::array<bool, Dim>& periodic, MPI_Comm comm = MPI_COMM_WORLD) {
+                     const std::array<bool, Dim>& periodic, MPI_Comm comm = MPI_COMM_WORLD,
+                     Neighborhood nb = Neighborhood::Full) {
     comm_ = comm;
     rank_ = rank;
     indexer_.init(dec.origins()[rank], dec.sizes()[rank], ghostWidth);
@@ -68,6 +75,14 @@ class GridHaloTopology {
     indexer_.forEachAll([&](const IVec<Dim>& lmd) {
       if (indexer_.isInner(lmd))
         return;
+      if (nb == Neighborhood::Faces) {
+        int outside = 0;
+        for (int i = 0; i < Dim; ++i)
+          outside +=
+              (lmd[i] < ghostWidth || lmd[i] >= ghostWidth + indexer_.sizeInner()[i]) ? 1 : 0;
+        if (outside != 1)
+          return;  // edge or corner ghost: not part of a face neighbourhood
+      }
       IVec<Dim> g{}, gw{};
       bool skip = false;
       for (int i = 0; i < Dim; ++i) {

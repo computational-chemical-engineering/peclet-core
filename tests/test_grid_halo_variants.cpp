@@ -11,6 +11,10 @@
 //   tag 12     the Isend/Irecv path (any tag != 0)
 // and, on a host memory space, both copy paths: blocks whose gather/unpack hold at most
 // kHaloSerialCopy elements run on the calling thread, the larger ones as one parallel_for.
+// With the argument `faces` every case runs on a FACES-ONLY topology instead (buildTopology(...,
+// Neighborhood::Faces), flow's stencil halo, design §5.2): its face ghosts must hold their owner's
+// value bitwise, and its edge and corner ghosts -- outside the faces neighbourhood -- must still
+// hold the sentinel. Full and faces are separate ctest instances, each within one TIMEOUT.
 // A hang is caught by the ctest TIMEOUT; the instance run with PECLET_CORE_HALO_TIMEOUT also drives
 // the persistent requests through the test-and-poll diagnostic wait.
 #include <mpi.h>
@@ -19,6 +23,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <Kokkos_BitManipulation.hpp>
 #include <Kokkos_Core.hpp>
 #include <random>
@@ -35,6 +40,7 @@ using namespace peclet::core;
 using peclet::core::decomp::BlockDecomposer;
 using peclet::core::halo::GridHalo;
 using peclet::core::halo::GridHaloTopology;
+using peclet::core::halo::Neighborhood;
 
 namespace {
 constexpr int kDim = 3;
@@ -59,10 +65,11 @@ struct Case {
 };
 
 template <class T>
-int runCase(const Case& c, int rank, int size, std::mt19937& rng, Index& nCopyOut) {
+int runCase(const Case& c, Neighborhood nb, int rank, int size, std::mt19937& rng,
+            Index& nCopyOut) {
   BlockDecomposer<kDim> dec(static_cast<std::size_t>(size), c.gsize);
   GridHaloTopology<kDim> topo;
-  topo.buildTopology(dec, rank, c.ghost, c.periodic, MPI_COMM_WORLD);
+  topo.buildTopology(dec, rank, c.ghost, c.periodic, MPI_COMM_WORLD, nb);
   const auto& idx = topo.indexer();
   const Index n = idx.numCellsInclGhost();
 
@@ -71,6 +78,11 @@ int runCase(const Case& c, int rank, int size, std::mt19937& rng, Index& nCopyOu
   std::vector<int> kindH(static_cast<std::size_t>(n), -1);
   idx.forEachAll([&](const IVec<kDim>& lmd) {
     const Index l = idx.localMdToLocal(lmd);
+    int outside = 0;
+    for (int a = 0; a < kDim; ++a)
+      outside += (lmd[a] < c.ghost || lmd[a] >= c.ghost + idx.sizeInner()[a]) ? 1 : 0;
+    if (nb == Neighborhood::Faces && outside > 1)
+      return;  // kind -1: an edge or corner ghost, not filled by a faces-only topology
     IVec<kDim> g{};
     for (int a = 0; a < kDim; ++a) {
       Index ci = lmd[a] + idx.originInclGhost()[a];
@@ -157,11 +169,15 @@ int main(int argc, char** argv) {
         {"small", {12, 10, 8}, {true, true, true}, 1},
         {"small_g2_wall", {12, 10, 8}, {false, true, true}, 2},
     };
+    Neighborhood nb = Neighborhood::Full;
+    for (int i = 1; i < argc; ++i)
+      if (std::strcmp(argv[i], "faces") == 0)
+        nb = Neighborhood::Faces;
     for (const auto& c : cases) {
       for (int prec = 0; prec < 2; ++prec) {
         Index nCopy = 0;
-        const int bad = prec == 0 ? runCase<double>(c, rank, size, rng, nCopy)
-                                  : runCase<float>(c, rank, size, rng, nCopy);
+        const int bad = prec == 0 ? runCase<double>(c, nb, rank, size, rng, nCopy)
+                                  : runCase<float>(c, nb, rank, size, rng, nCopy);
         int badAll = 0;
         Index lo = 0, hi = 0;
         MPI_Allreduce(&bad, &badAll, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
@@ -169,16 +185,18 @@ int main(int argc, char** argv) {
         MPI_Allreduce(&nCopy, &hi, 1, MPI_INT64_T, MPI_MAX, MPI_COMM_WORLD);
         if (rank == 0)
           std::printf(
-              "%s %-14s %-6s gather %lld..%lld elements (serial cutoff %lld): %d mismatches\n",
+              "%s %-14s %-6s %-5s gather %lld..%lld elements (serial cutoff %lld): %d mismatches\n",
               badAll ? "FAIL" : "ok  ", c.name, prec == 0 ? "double" : "float",
-              static_cast<long long>(lo), static_cast<long long>(hi),
+              nb == Neighborhood::Full ? "full" : "faces", static_cast<long long>(lo),
+              static_cast<long long>(hi),
               static_cast<long long>(peclet::core::halo::kHaloSerialCopy), badAll);
         totalFail += badAll;
       }
     }
     if (rank == 0)
-      std::printf("%s (np=%d): GridHalo variants, %d exchanges per variant and case\n",
-                  totalFail ? "FAILED" : "OK", size, kExchanges);
+      std::printf("%s (np=%d, %s): GridHalo variants, %d exchanges per variant and case\n",
+                  totalFail ? "FAILED" : "OK", size, nb == Neighborhood::Full ? "full" : "faces",
+                  kExchanges);
   }
   Kokkos::finalize();
   MPI_Finalize();
