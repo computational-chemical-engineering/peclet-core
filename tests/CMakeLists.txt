@@ -352,6 +352,18 @@ if(MPI_FOUND)
       ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(test_anderson_mpi PRIVATE Kokkos::kokkos MPI::MPI_CXX)
 
+    # GridHalo cost per exchange on the bubble column's multigrid levels (flow
+    # doc/vof_distributed_host_comm_design.md §6 M2): an instrument, label bench. Pin ranks
+    # explicitly when measuring; the ctest instances only prove it runs.
+    add_executable(bench_grid_halo bench_grid_halo.cpp)
+    target_include_directories(bench_grid_halo PRIVATE
+      ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(bench_grid_halo PRIVATE Kokkos::kokkos MPI::MPI_CXX)
+    foreach(np IN ITEMS 2 8 24)
+      peclet_core_add_mpi_test(bench_grid_halo_np${np} bench_grid_halo ${np} LABELS bench
+                               ARGS --reps 200 --warm 20)
+    endforeach()
+
     foreach(np IN ITEMS 1 2 4)
       peclet_core_add_mpi_test(anderson_np${np} test_anderson_mpi ${np})
       peclet_core_add_mpi_test(grid_halo_exchange_np${np} test_grid_halo_exchange ${np})
