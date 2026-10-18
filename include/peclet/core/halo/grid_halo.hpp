@@ -3,15 +3,16 @@
 // Portable (Kokkos) GPU-resident grid halo: the field lives on the device as a
 // peclet::core::View<T>; the gather (periodic self-copy + pack of the send cells, one launch) and
 // the unpack (scatter into ghost cells) run as Kokkos::parallel_for on the default execution space
-// (CUDA / HIP / OpenMP), so the full field never crosses the bus — only the compact halo buffers
-// are staged to the host for MPI. The GPU-aware-MPI path (hand device pointers straight to MPI,
-// dropping both staging copies) is the DEFAULT on device builds when a loopback probe confirms MPI
-// accepts device pointers; env PECLET_CORE_GPU_AWARE_MPI=0 forces host staging (kill switch for
-// stacks that segfault instead of erroring), =1 forces the device path without probing (legacy
-// PECLET_CORE_CUDA_AWARE_MPI honoured). exchangeBegin/exchangeEnd expose the split so callers can
-// overlap interior compute with the messages in flight; exchange() is the blocking composition.
-// Topology comes from a host-built GridHaloTopology<Dim>::flatten(), and the result is bit-for-bit
-// identical to the CPU exchange.
+// (CUDA / HIP / OpenMP) — on a host memory space a copy of at most kHaloSerialCopy elements runs on
+// the calling thread instead (no parallel region) — so the full field never crosses the bus — only
+// the compact halo buffers are staged to the host for MPI. The GPU-aware-MPI path (hand device
+// pointers straight to MPI, dropping both staging copies) is the DEFAULT on device builds when a
+// loopback probe confirms MPI accepts device pointers; env PECLET_CORE_GPU_AWARE_MPI=0 forces host
+// staging (kill switch for stacks that segfault instead of erroring), =1 forces the device path
+// without probing (legacy PECLET_CORE_CUDA_AWARE_MPI honoured). exchangeBegin/exchangeEnd expose
+// the split so callers can overlap interior compute with the messages in flight; exchange() is the
+// blocking composition. Topology comes from a host-built GridHaloTopology<Dim>::flatten(), and the
+// result is bit-for-bit identical to the CPU exchange.
 #ifndef PECLET_CORE_HALO_GRID_HALO_HPP
 #define PECLET_CORE_HALO_GRID_HALO_HPP
 
@@ -133,6 +134,12 @@ inline double haloTimeout() {
 }
 }  // namespace detail
 
+/// Host memory space only: a gather (self-copy + pack) or an unpack of at most this many elements
+/// runs as a plain loop on the calling thread, not as a parallel region. A few hundred halo
+/// elements cost far less to copy than one fork/join of the OpenMP pool. Bitwise-neutral (a copy
+/// is a copy); device builds always launch.
+inline constexpr Index kHaloSerialCopy = 2048;
+
 /// GPU ghost-layer exchange for a contiguous device field `peclet::core::View<T>` (one element per
 /// extended-block cell). Build once from a host GridHaloTopology via init(); exchange() runs every
 /// step.
@@ -196,21 +203,30 @@ class GridHalo {
     // The gather: the periodic self-copy (read inner cell, write ghost cell) and the pack of the
     // send cells into the contiguous send buffer, as ONE launch over [0, nSelf_ + nSend_).
     // Race-free for any ghost width: the self-copy writes ghost cells only and the pack reads
-    // inner cells only. (Inline, not a private helper: nvcc rejects an extended lambda in a private
+    // inner cells only. On a host memory space at most kHaloSerialCopy elements are copied by the
+    // calling thread. (Inline, not a private helper: nvcc rejects an extended lambda in a private
     // member function.)
     if (nSelf_ + nSend_) {
       const Index nSelf = nSelf_, nAll = nSelf_ + nSend_;
       View<T> f = field;
       IndexView src = d_selfSrc_, dst = d_selfDst_, idx = d_sendIdx_;
       View<T> buf = d_sendBuf_;
-      Kokkos::parallel_for(
-          "peclet::core::halo::gather", Kokkos::RangePolicy<ExecSpace>(0, nAll),
-          KOKKOS_LAMBDA(const Index i) {
-            if (i < nSelf)
-              f(dst(i)) = f(src(i));
-            else
-              buf(i - nSelf) = f(idx(i - nSelf));
-          });
+      if (kHostMemory && nAll <= kHaloSerialCopy) {
+        Kokkos::fence();  // the caller's kernels on `field` are complete before the thread reads
+        for (Index i = 0; i < nSelf; ++i)
+          f(dst(i)) = f(src(i));
+        for (Index i = nSelf; i < nAll; ++i)
+          buf(i - nSelf) = f(idx(i - nSelf));
+      } else {
+        Kokkos::parallel_for(
+            "peclet::core::halo::gather", Kokkos::RangePolicy<ExecSpace>(0, nAll),
+            KOKKOS_LAMBDA(const Index i) {
+              if (i < nSelf)
+                f(dst(i)) = f(src(i));
+              else
+                buf(i - nSelf) = f(idx(i - nSelf));
+            });
+      }
     }
     // The send buffer (host-staged, or device for the aware path) must be ready before MPI reads
     // it.
@@ -251,6 +267,14 @@ class GridHalo {
       View<T> f = field;
       IndexView idx = d_recvIdx_;
       View<T> buf = d_recvBuf_;
+      if constexpr (kHostMemory) {
+        if (nRecv_ <= kHaloSerialCopy) {
+          for (Index i = 0; i < nRecv_; ++i)
+            f(idx(i)) = buf(i);
+          Kokkos::fence();
+          return;
+        }
+      }
       Kokkos::parallel_for(
           "peclet::core::halo::unpack", Kokkos::RangePolicy<ExecSpace>(0, nRecv_),
           KOKKOS_LAMBDA(const Index i) { f(idx(i)) = buf(i); });
@@ -259,6 +283,8 @@ class GridHalo {
   }
 
  private:
+  static constexpr bool kHostMemory = std::is_same_v<MemSpace, Kokkos::HostSpace>;
+
   MPI_Comm comm_ = MPI_COMM_NULL;
   std::vector<int> sendRanks_, recvRanks_, sendCounts_, recvCounts_;
   std::vector<int> sendOff_, recvOff_;
