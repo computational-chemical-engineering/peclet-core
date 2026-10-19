@@ -31,13 +31,13 @@ judgement call in the moment.
 ```bash
 # CPU library + tests (no device dependency):
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
-ctest --test-dir build --output-on-failure -LE bench   # 76 ctests (77 with `bench`): decomposition, MPI halo, particle migration, MG stages, diffusion, geometry
+ctest --test-dir build --output-on-failure -LE bench   # 77 ctests (78 with `bench`): decomposition, MPI halo, particle migration, MG stages, diffusion, geometry
 
 # Portable Kokkos device halo (CUDA / HIP / OpenMP) -- opt-in, find_package(Kokkos):
 export PATH=/usr/local/cuda-13.2/bin:$PATH    # if the Kokkos install targets the CUDA backend
 cmake -S . -B build_kokkos -DPECLET_CORE_ENABLE_KOKKOS=ON \
   -DCMAKE_PREFIX_PATH=../extern/install/nvidia-cuda
-cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure -LE bench  # 96 ctests (97 with `bench`): + device halo / geometry / solver / VoF PV fit / Anderson, np=1,2,4,8
+cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure -LE bench  # 113 ctests (117 with `bench`): + device halo / geometry / solver / VoF PV fit / Anderson, np=1,2,4,8
 mpirun -np 4 ./build/benchmarks/bench_halo 48 1 300
 
 # Python modules + their ctests (test_mpi.py np=1,2,4,8; state_hash; ndarray interop). Release is
@@ -154,6 +154,15 @@ Header-only under `include/peclet/core/`:
   compact halo buffers are host-staged for MPI by default (the field stays on the device), with an
   opt-in GPU-aware path (env `PECLET_CORE_GPU_AWARE_MPI`, legacy `PECLET_CORE_CUDA_AWARE_MPI` still honoured). Built
   from a host `GridHaloTopology<Dim>::flatten()` via `init()`. Bit-for-bit matches the CPU exchange.
+  **Transport (flow doc/vof_distributed_host_comm_design.md §5.1/§5.5, 2026-10-19):** self-copy + pack are ONE
+  `gather` launch; on a host memory space a gather/unpack of ≤ `kHaloSerialCopy` (2048) elements runs on the calling
+  thread; `tag == 0` uses persistent requests built at init (any other tag: Isend/Irecv); fences only before MPI when
+  there is a partner, and after the unpack only on the GPU-aware path. Host memory: on-node partners go through an
+  MPI-3 shared window with per-sender sequence flags (debug kill switch `PECLET_CORE_HALO_SHM=0`, bitwise-neutral).
+  **`init` and the destructor are COLLECTIVE over the topology's communicator** (node split, `MPI_Win_allocate_shared`,
+  `MPI_Win_free`): every rank must create and destroy each instance at the same point, or it hangs. One exchange in
+  flight per instance. `GridHaloTopology::buildTopology(..., Neighborhood::Faces)` keeps face ghosts only (7-point
+  stencils). Gate: `grid_halo_variants*` (G-HALO: every variant, random per-rank delays, 10^4 exchanges, bitwise).
   (`docs/archive/cuda-aware-mpi.md` holds the historical host-staging-vs-GPU-aware analysis and the
   user-space UCX + OpenMPI recipe that gives this box a GPU-aware MPI.)
 - `halo/particle_halo_topology.hpp` — `ParticleHaloTopology<Dim>`: persistent Lagrangian ghost halo
