@@ -37,7 +37,7 @@ ctest --test-dir build --output-on-failure -LE bench   # 77 ctests (78 with `ben
 export PATH=/usr/local/cuda-13.2/bin:$PATH    # if the Kokkos install targets the CUDA backend
 cmake -S . -B build_kokkos -DPECLET_CORE_ENABLE_KOKKOS=ON \
   -DCMAKE_PREFIX_PATH=../extern/install/nvidia-cuda
-cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure -LE bench  # 113 ctests (117 with `bench`): + device halo / geometry / solver / VoF PV fit / Anderson, np=1,2,4,8
+cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure -LE bench  # 114 ctests (118 with `bench`): + device halo / geometry / solver / VoF PV fit / Anderson, np=1,2,4,8
 mpirun -np 4 ./build/benchmarks/bench_halo 48 1 300
 
 # Python modules + their ctests (test_mpi.py np=1,2,4,8; state_hash; ndarray interop). Release is
@@ -158,7 +158,9 @@ Header-only under `include/peclet/core/`:
   `gather` launch; on a host memory space a gather/unpack of ≤ `kHaloSerialCopy` (2048) elements runs on the calling
   thread; `tag == 0` uses persistent requests built at init (any other tag: Isend/Irecv); fences only before MPI when
   there is a partner, and after the unpack only on the GPU-aware path. Host memory: on-node partners go through an
-  MPI-3 shared window with per-sender sequence flags (debug kill switch `PECLET_CORE_HALO_SHM=0`, bitwise-neutral).
+  MPI-3 shared window with per-sender sequence flags (debug kill switch `PECLET_CORE_HALO_SHM=0`, bitwise-neutral;
+  `PECLET_CORE_HALO_SHM_GROUP=k` splits each node into groups of k ranks so one node runs the mixed on-node /
+  off-node path of a multi-node job, gated by `grid_halo_variants_shmgroup2_np4`).
   **`init` and the destructor are COLLECTIVE over the topology's communicator** (node split, `MPI_Win_allocate_shared`,
   `MPI_Win_free`): every rank must create and destroy each instance at the same point, or it hangs. One exchange in
   flight per instance. `GridHaloTopology::buildTopology(..., Neighborhood::Faces)` keeps face ghosts only (7-point

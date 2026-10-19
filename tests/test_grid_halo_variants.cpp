@@ -20,7 +20,10 @@
 // hold the sentinel. Full and faces are separate ctest instances, each within one TIMEOUT.
 // The shared-memory and the kill-switch (PECLET_CORE_HALO_SHM=0) runs are separate ctest instances;
 // each checks that its transport is the one in use (every partner on shared memory when all ranks
-// share a node on a host memory space, none otherwise). A hang is caught by the ctest TIMEOUT; the
+// share a node on a host memory space, none otherwise). Under PECLET_CORE_HALO_SHM_GROUP=k (the debug
+// sub-split of the node into groups of k ranks) exactly the partners in this rank's group must use
+// shared memory, and a job larger than k must really mix the two transports (the path a multi-node
+// job takes, run on one node). A hang is caught by the ctest TIMEOUT; the
 // instances run with PECLET_CORE_HALO_TIMEOUT also drive the persistent requests through the
 // test-and-poll diagnostic wait and the shared-memory flag waits through their deadline.
 #include <mpi.h>
@@ -34,6 +37,7 @@
 #include <Kokkos_BitManipulation.hpp>
 #include <Kokkos_Core.hpp>
 #include <random>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -73,7 +77,7 @@ struct Case {
 
 template <class T>
 int runCase(const Case& c, Neighborhood nb, int rank, int size, std::mt19937& rng, Index& nCopyOut,
-            int& shmOut, int& partnersOut) {
+            int& shmOut, int& partnersOut, int& groupOut) {
   BlockDecomposer<kDim> dec(static_cast<std::size_t>(size), c.gsize);
   GridHaloTopology<kDim> topo;
   topo.buildTopology(dec, rank, c.ghost, c.periodic, MPI_COMM_WORLD, nb);
@@ -123,6 +127,18 @@ int runCase(const Case& c, Neighborhood nb, int rank, int size, std::mt19937& rn
     const auto t = topo.flatten();
     nCopyOut = static_cast<Index>(t.selfSrc.size() + t.sendIdx.size());
     partnersOut = static_cast<int>(t.sendRanks.size() + t.recvRanks.size());
+    // Partners in this rank's PECLET_CORE_HALO_SHM_GROUP group (consecutive ranks of the node
+    // communicator, which keeps the topology communicator's order when all ranks share a node).
+    groupOut = partnersOut;
+    if (const int k = peclet::core::halo::detail::haloShmGroup(); k > 0) {
+      int me = 0;
+      MPI_Comm_rank(t.comm, &me);
+      groupOut = 0;
+      for (int r : t.sendRanks)
+        groupOut += r / k == me / k ? 1 : 0;
+      for (int r : t.recvRanks)
+        groupOut += r / k == me / k ? 1 : 0;
+    }
   }
   shmOut = halo.numShmPartners();
 
@@ -195,13 +211,14 @@ int main(int argc, char** argv) {
     const bool shmOn = std::is_same_v<MemSpace, Kokkos::HostSpace> && size > 1 &&
                        !(shmEnv && std::atoi(shmEnv) == 0);
     const bool shmCheck = !shmOn || nodeSize == size;  // ranks on several nodes: mixed, not checked
+    const int shmGroup = peclet::core::halo::detail::haloShmGroup();
     for (const auto& c : cases) {
       for (int prec = 0; prec < 2; ++prec) {
         Index nCopy = 0;
-        int shm = 0, partners = 0;
-        int bad = prec == 0 ? runCase<double>(c, nb, rank, size, rng, nCopy, shm, partners)
-                            : runCase<float>(c, nb, rank, size, rng, nCopy, shm, partners);
-        const int wrongTransport = shmCheck && shm != (shmOn ? partners : 0) ? 1 : 0;
+        int shm = 0, partners = 0, group = 0;
+        int bad = prec == 0 ? runCase<double>(c, nb, rank, size, rng, nCopy, shm, partners, group)
+                            : runCase<float>(c, nb, rank, size, rng, nCopy, shm, partners, group);
+        const int wrongTransport = shmCheck && shm != (shmOn ? group : 0) ? 1 : 0;
         bad += wrongTransport;
         int badAll = 0, wrongAll = 0, shmAll = 0, partnersAll = 0;
         Index lo = 0, hi = 0;
@@ -209,6 +226,13 @@ int main(int argc, char** argv) {
         MPI_Allreduce(&wrongTransport, &wrongAll, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
         MPI_Allreduce(&shm, &shmAll, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
         MPI_Allreduce(&partners, &partnersAll, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        // Under a sub-split smaller than the job the point is the MIXED path: some partners on
+        // shared memory, some on MPI.
+        if (shmOn && shmCheck && shmGroup > 0 && shmGroup < size &&
+            !(shmAll > 0 && shmAll < partnersAll)) {
+          wrongAll += 1;
+          badAll += 1;
+        }
         MPI_Allreduce(&nCopy, &lo, 1, MPI_INT64_T, MPI_MIN, MPI_COMM_WORLD);
         MPI_Allreduce(&nCopy, &hi, 1, MPI_INT64_T, MPI_MAX, MPI_COMM_WORLD);
         if (rank == 0)
@@ -225,9 +249,12 @@ int main(int argc, char** argv) {
     }
     if (rank == 0)
       std::printf(
-          "%s (np=%d, %s, tag 0 on %s): GridHalo variants, %d exchanges per variant and case\n",
+          "%s (np=%d, %s, tag 0 on %s%s): GridHalo variants, %d exchanges per variant and case\n",
           totalFail ? "FAILED" : "OK", size, nb == Neighborhood::Full ? "full" : "faces",
-          shmOn ? "shared memory" : "MPI", kExchanges);
+          shmOn ? "shared memory" : "MPI",
+          shmOn && shmGroup > 0 ? (" in groups of " + std::to_string(shmGroup) + " + MPI").c_str()
+                                : "",
+          kExchanges);
   }
   Kokkos::finalize();
   MPI_Finalize();

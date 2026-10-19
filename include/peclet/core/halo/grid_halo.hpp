@@ -21,7 +21,9 @@
 // receiver's slot and publishes it with a release store of the exchange's sequence number, so the
 // data lands during the sender's pack and the begin/interior/end overlap is real. Off-node
 // partners keep the persistent MPI requests. The bytes moved are identical. PECLET_CORE_HALO_SHM=0
-// is the debug kill switch (bitwise-neutral: every partner then goes through MPI, as before K5).
+// is the debug kill switch (bitwise-neutral: every partner then goes through MPI, as before K5);
+// PECLET_CORE_HALO_SHM_GROUP=k splits each node into groups of k ranks, so one node runs the mixed
+// on-node / off-node path of a multi-node job (debug, bitwise-neutral).
 #ifndef PECLET_CORE_HALO_GRID_HALO_HPP
 #define PECLET_CORE_HALO_GRID_HALO_HPP
 
@@ -156,6 +158,21 @@ inline bool haloShmEnabled() {
   }();
   return v;
 }
+
+/// PECLET_CORE_HALO_SHM_GROUP=k (k > 0): debug sub-split of the on-node shared-memory transport,
+/// read once per process. Each node communicator is split into groups of k consecutive node ranks
+/// (MPI_Comm_split(node, nodeRank / k)); only partners in the same group use shared memory, the
+/// rest stay on the persistent MPI requests. It lets one node exercise the mixed on-node /
+/// off-node path of a multi-node job. Transport only, bitwise-neutral; 0 / unset = no sub-split.
+/// It must be the same on every rank.
+inline int haloShmGroup() {
+  static const int v = [] {
+    const char* e = std::getenv("PECLET_CORE_HALO_SHM_GROUP");
+    const int k = e ? std::atoi(e) : 0;
+    return k > 0 ? k : 0;
+  }();
+  return v;
+}
 }  // namespace detail
 
 /// Host memory space only: a gather (self-copy + pack) or an unpack of at most this many elements
@@ -232,7 +249,8 @@ class GridHalo {
   void setLabel(std::string label) { label_ = std::move(label); }
 
   /// Number of this rank's partners (send + receive) served by the on-node shared-memory
-  /// transport; 0 on a device memory space, at one rank, or with PECLET_CORE_HALO_SHM=0.
+  /// transport; 0 on a device memory space, at one rank, or with PECLET_CORE_HALO_SHM=0
+  /// (PECLET_CORE_HALO_SHM_GROUP=k: only the partners in this rank's group of k node ranks).
   int numShmPartners() const { return static_cast<int>(shmSend_.size() + shmRecv_.size()); }
 
   /// Exchange ghost layers of the device field `field`. Blocking (== exchangeBegin+exchangeEnd).
@@ -498,6 +516,14 @@ class GridHalo {
       if (csize < 2)
         return;
       MPI_Comm_split_type(comm_, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node_);
+      if (const int k = detail::haloShmGroup(); k > 0) {  // debug sub-split (mixed transport)
+        int nodeRank = 0;
+        MPI_Comm_rank(node_, &nodeRank);
+        MPI_Comm group = MPI_COMM_NULL;
+        MPI_Comm_split(node_, nodeRank / k, nodeRank, &group);
+        MPI_Comm_free(&node_);
+        node_ = group;
+      }
       int nsize = 1;
       MPI_Comm_size(node_, &nsize);
       if (nsize < 2) {  // every member of this node communicator sees the same size

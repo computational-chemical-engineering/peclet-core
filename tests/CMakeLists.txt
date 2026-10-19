@@ -377,6 +377,13 @@ if(MPI_FOUND)
       set_tests_properties(grid_halo_variants_faces_noshm_np${np} PROPERTIES TIMEOUT 1800
         ENVIRONMENT "PECLET_CORE_HALO_SHM=0")
     endforeach()
+    # Mixed transport on one node (review of 1af903a, #1): PECLET_CORE_HALO_SHM_GROUP=2 splits the
+    # node into rank pairs, so each rank reaches some partners through shared memory and the rest
+    # through the persistent MPI requests -- both slot writes and the private send buffer in one
+    # gather, a partial MPI_Startall and a mixed unpack, as on the first multi-node job.
+    peclet_core_add_mpi_test(grid_halo_variants_shmgroup2_np4 test_grid_halo_variants 4)
+    set_tests_properties(grid_halo_variants_shmgroup2_np4 PROPERTIES TIMEOUT 1800
+      ENVIRONMENT "PECLET_CORE_HALO_SHM_GROUP=2")
 
     add_executable(test_particle_halo_exchange test_particle_halo_exchange.cpp)
     target_include_directories(test_particle_halo_exchange PRIVATE
