@@ -7,22 +7,29 @@
 // non-periodic face) must still hold the sentinel.
 //
 // Variants reached through the public API, so no test hook exists in the class:
-//   tag 0      the persistent requests built at init (MPI_Startall / MPI_Waitall)
-//   tag 12     the Isend/Irecv path (any tag != 0)
+//   tag 0      on a host memory space the on-node shared-memory transport (design §5.5, WO-K5:
+//              slots + sequence flags in an MPI-3 shared window), off-node partners and every
+//              partner under PECLET_CORE_HALO_SHM=0 the persistent requests built at init
+//              (MPI_Startall / MPI_Waitall)
+//   tag 12     the Isend/Irecv path (any tag != 0), to every partner
 // and, on a host memory space, both copy paths: blocks whose gather/unpack hold at most
 // kHaloSerialCopy elements run on the calling thread, the larger ones as one parallel_for.
 // With the argument `faces` every case runs on a FACES-ONLY topology instead (buildTopology(...,
 // Neighborhood::Faces), flow's stencil halo, design §5.2): its face ghosts must hold their owner's
 // value bitwise, and its edge and corner ghosts -- outside the faces neighbourhood -- must still
 // hold the sentinel. Full and faces are separate ctest instances, each within one TIMEOUT.
-// A hang is caught by the ctest TIMEOUT; the instance run with PECLET_CORE_HALO_TIMEOUT also drives
-// the persistent requests through the test-and-poll diagnostic wait.
+// The shared-memory and the kill-switch (PECLET_CORE_HALO_SHM=0) runs are separate ctest instances;
+// each checks that its transport is the one in use (every partner on shared memory when all ranks
+// share a node on a host memory space, none otherwise). A hang is caught by the ctest TIMEOUT; the
+// instances run with PECLET_CORE_HALO_TIMEOUT also drive the persistent requests through the
+// test-and-poll diagnostic wait and the shared-memory flag waits through their deadline.
 #include <mpi.h>
 #include <unistd.h>
 
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <Kokkos_BitManipulation.hpp>
 #include <Kokkos_Core.hpp>
@@ -65,8 +72,8 @@ struct Case {
 };
 
 template <class T>
-int runCase(const Case& c, Neighborhood nb, int rank, int size, std::mt19937& rng,
-            Index& nCopyOut) {
+int runCase(const Case& c, Neighborhood nb, int rank, int size, std::mt19937& rng, Index& nCopyOut,
+            int& shmOut, int& partnersOut) {
   BlockDecomposer<kDim> dec(static_cast<std::size_t>(size), c.gsize);
   GridHaloTopology<kDim> topo;
   topo.buildTopology(dec, rank, c.ghost, c.periodic, MPI_COMM_WORLD, nb);
@@ -115,7 +122,9 @@ int runCase(const Case& c, Neighborhood nb, int rank, int size, std::mt19937& rn
   {
     const auto t = topo.flatten();
     nCopyOut = static_cast<Index>(t.selfSrc.size() + t.sendIdx.size());
+    partnersOut = static_cast<int>(t.sendRanks.size() + t.recvRanks.size());
   }
+  shmOut = halo.numShmPartners();
 
   View<T> f(Kokkos::view_alloc("field", Kokkos::WithoutInitializing), static_cast<std::size_t>(n));
   std::uniform_int_distribution<int> delay(0, 50);
@@ -173,30 +182,52 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i)
       if (std::strcmp(argv[i], "faces") == 0)
         nb = Neighborhood::Faces;
+    // Which transport tag 0 must use: shared memory for every partner when the memory space is
+    // the host's, the kill switch is off and all ranks share one node (as under ctest); else none.
+    int nodeSize = 1;
+    {
+      MPI_Comm node;
+      MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node);
+      MPI_Comm_size(node, &nodeSize);
+      MPI_Comm_free(&node);
+    }
+    const char* shmEnv = std::getenv("PECLET_CORE_HALO_SHM");
+    const bool shmOn = std::is_same_v<MemSpace, Kokkos::HostSpace> && size > 1 &&
+                       !(shmEnv && std::atoi(shmEnv) == 0);
+    const bool shmCheck = !shmOn || nodeSize == size;  // ranks on several nodes: mixed, not checked
     for (const auto& c : cases) {
       for (int prec = 0; prec < 2; ++prec) {
         Index nCopy = 0;
-        const int bad = prec == 0 ? runCase<double>(c, nb, rank, size, rng, nCopy)
-                                  : runCase<float>(c, nb, rank, size, rng, nCopy);
-        int badAll = 0;
+        int shm = 0, partners = 0;
+        int bad = prec == 0 ? runCase<double>(c, nb, rank, size, rng, nCopy, shm, partners)
+                            : runCase<float>(c, nb, rank, size, rng, nCopy, shm, partners);
+        const int wrongTransport = shmCheck && shm != (shmOn ? partners : 0) ? 1 : 0;
+        bad += wrongTransport;
+        int badAll = 0, wrongAll = 0, shmAll = 0, partnersAll = 0;
         Index lo = 0, hi = 0;
         MPI_Allreduce(&bad, &badAll, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(&wrongTransport, &wrongAll, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(&shm, &shmAll, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(&partners, &partnersAll, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
         MPI_Allreduce(&nCopy, &lo, 1, MPI_INT64_T, MPI_MIN, MPI_COMM_WORLD);
         MPI_Allreduce(&nCopy, &hi, 1, MPI_INT64_T, MPI_MAX, MPI_COMM_WORLD);
         if (rank == 0)
           std::printf(
-              "%s %-14s %-6s %-5s gather %lld..%lld elements (serial cutoff %lld): %d mismatches\n",
+              "%s %-14s %-6s %-5s gather %lld..%lld elements (serial cutoff %lld), shared memory "
+              "%d of %d partners%s: %d mismatches\n",
               badAll ? "FAIL" : "ok  ", c.name, prec == 0 ? "double" : "float",
               nb == Neighborhood::Full ? "full" : "faces", static_cast<long long>(lo),
               static_cast<long long>(hi),
-              static_cast<long long>(peclet::core::halo::kHaloSerialCopy), badAll);
+              static_cast<long long>(peclet::core::halo::kHaloSerialCopy), shmAll, partnersAll,
+              wrongAll ? " (WRONG TRANSPORT)" : "", badAll);
         totalFail += badAll;
       }
     }
     if (rank == 0)
-      std::printf("%s (np=%d, %s): GridHalo variants, %d exchanges per variant and case\n",
-                  totalFail ? "FAILED" : "OK", size, nb == Neighborhood::Full ? "full" : "faces",
-                  kExchanges);
+      std::printf(
+          "%s (np=%d, %s, tag 0 on %s): GridHalo variants, %d exchanges per variant and case\n",
+          totalFail ? "FAILED" : "OK", size, nb == Neighborhood::Full ? "full" : "faces",
+          shmOn ? "shared memory" : "MPI", kExchanges);
   }
   Kokkos::finalize();
   MPI_Finalize();

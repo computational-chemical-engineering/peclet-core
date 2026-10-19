@@ -340,9 +340,10 @@ if(MPI_FOUND)
     target_link_libraries(test_grid_halo_exchange PRIVATE Kokkos::kokkos MPI::MPI_CXX)
 
     # G-HALO (flow doc/vof_distributed_host_comm_design.md §10): every GridHalo transport variant
-    # (persistent tag 0, Isend tag != 0, host calling-thread vs parallel copies, faces-only) under
-    # per-rank random delays, 10^4 exchanges each, ghosts bitwise to their owners. The _timeout
-    # instance drives the persistent requests through the PECLET_CORE_HALO_TIMEOUT diagnostic wait.
+    # (on-node shared memory or persistent tag 0, Isend tag != 0, host calling-thread vs parallel
+    # copies, faces-only) under per-rank random delays, 10^4 exchanges each, ghosts bitwise to
+    # their owners. The _timeout instance drives the persistent requests and the shared-memory
+    # flag waits through the PECLET_CORE_HALO_TIMEOUT diagnostic deadline.
     add_executable(test_grid_halo_variants test_grid_halo_variants.cpp)
     target_include_directories(test_grid_halo_variants PRIVATE
       ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
@@ -364,6 +365,18 @@ if(MPI_FOUND)
       ARGS faces)
     set_tests_properties(grid_halo_variants_faces_timeout_np2 PROPERTIES TIMEOUT 1800
       ENVIRONMENT "PECLET_CORE_HALO_TIMEOUT=60")
+    # The on-node shared-memory transport (WO-K5, design §5.5) is the default on a host memory
+    # space, so the instances above run it; these run the same with its kill switch
+    # PECLET_CORE_HALO_SHM=0 (every partner on the persistent MPI requests), full and faces.
+    foreach(np IN ITEMS 2 4 8)
+      peclet_core_add_mpi_test(grid_halo_variants_noshm_np${np} test_grid_halo_variants ${np})
+      set_tests_properties(grid_halo_variants_noshm_np${np} PROPERTIES TIMEOUT 1800
+        ENVIRONMENT "PECLET_CORE_HALO_SHM=0")
+      peclet_core_add_mpi_test(grid_halo_variants_faces_noshm_np${np} test_grid_halo_variants ${np}
+        ARGS faces)
+      set_tests_properties(grid_halo_variants_faces_noshm_np${np} PROPERTIES TIMEOUT 1800
+        ENVIRONMENT "PECLET_CORE_HALO_SHM=0")
+    endforeach()
 
     add_executable(test_particle_halo_exchange test_particle_halo_exchange.cpp)
     target_include_directories(test_particle_halo_exchange PRIVATE

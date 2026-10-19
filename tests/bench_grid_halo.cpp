@@ -269,6 +269,8 @@ int main(int argc, char** argv) {
         MPI_Reduce(loc, mx, 9, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
         int nb[3] = {nSend, nRecv, static_cast<int>(sendB)}, nbx[3];
         MPI_Reduce(nb, nbx, 3, MPI_INT, MPI_MAX, 0, MPI_COMM_WORLD);
+        int shmP = halo.numShmPartners(), shmAll = 0;  // on-node shared-memory partners (WO-K5)
+        MPI_Reduce(&shmP, &shmAll, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
         if (rank == 0) {
           char mode[32];
           if (D < 0)
@@ -279,12 +281,13 @@ int main(int argc, char** argv) {
           std::printf(
               "HALO L%d %-6s np=%d T=%d block0=%ldx%ldx%ld sends=%d recvs=%d sendB0=%ld "
               "maxsends=%d "
-              "maxsendB=%d | us/exch mean %.2f [max-rank %.2f] med %.2f | begin %.2f wait %.2f "
+              "maxsendB=%d shm=%d | us/exch mean %.2f [max-rank %.2f] med %.2f | begin %.2f wait "
+              "%.2f "
               "[max %.2f] unpack %.2f | late %.2f prot %.2f [max %.2f] | late_post %.2f "
               "prot_post %.2f\n",
               L, mode, size, T, (long)bs[0], (long)bs[1], (long)bs[2], nSend, nRecv, sendB, nbx[0],
-              nbx[2], sum[0] / P, mx[0], sum[8] / P, sum[1] / P, sum[2] / P, mx[2], sum[3] / P,
-              sum[4] / P, sum[5] / P, mx[5], sum[6] / P, sum[7] / P);
+              nbx[2], shmAll, sum[0] / P, mx[0], sum[8] / P, sum[1] / P, sum[2] / P, mx[2],
+              sum[3] / P, sum[4] / P, sum[5] / P, mx[5], sum[6] / P, sum[7] / P);
           std::fflush(stdout);
         }
       }
