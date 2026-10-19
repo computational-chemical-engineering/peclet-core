@@ -257,6 +257,14 @@ Header-only under `include/peclet/core/`:
 
 ## Gotchas
 
+- **`GridHalo` init and destruction are collective over the communicator** (host memory space, more
+  than one rank: node split, `MPI_Win_allocate_shared`, `MPI_Win_free`, which synchronises). Create,
+  re-init and destroy every instance on every rank, in the same order; a rank whose instance lives
+  longer than its partners' hangs them. From Python, release solvers on every rank at the same point
+  (`del` + explicit teardown) and do not rely on the garbage collector (cyclic GC runs at different
+  times per rank). `PECLET_CORE_HALO_SHM` and `PECLET_CORE_HALO_SHM_GROUP` must be the same on every
+  rank: init checks them with one allreduce and throws on a mismatch (review of 1af903a, #3, decided:
+  accept the collective contract rather than a deferred-free window pool).
 - `GridHalo` caches a distributed-graph `MPI_Comm`. Its destructor guards `MPI_Comm_free` with
   `MPI_Finalized` so an instance that outlives `MPI_Finalize` (e.g. on `main`'s stack) does not abort.
   Don't remove that guard. The class is non-copyable (it owns the comm).

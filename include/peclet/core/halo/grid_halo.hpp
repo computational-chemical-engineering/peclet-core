@@ -23,7 +23,14 @@
 // partners keep the persistent MPI requests. The bytes moved are identical. PECLET_CORE_HALO_SHM=0
 // is the debug kill switch (bitwise-neutral: every partner then goes through MPI, as before K5);
 // PECLET_CORE_HALO_SHM_GROUP=k splits each node into groups of k ranks, so one node runs the mixed
-// on-node / off-node path of a multi-node job (debug, bitwise-neutral).
+// on-node / off-node path of a multi-node job (debug, bitwise-neutral). Both must be the same on
+// every rank: init checks that with one allreduce and throws on a mismatch.
+//
+// GridHalo init and destruction are COLLECTIVE over the communicator on a host memory space with
+// more than one rank (node split, MPI_Win_allocate_shared, MPI_Win_free): create, re-init and
+// destroy every instance on every rank, in the same order. From Python, release solvers on every
+// rank (del + an explicit teardown at the same point of the program); do not rely on the garbage
+// collector, whose timing differs between ranks.
 #ifndef PECLET_CORE_HALO_GRID_HALO_HPP
 #define PECLET_CORE_HALO_GRID_HALO_HPP
 
@@ -32,6 +39,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -509,11 +517,12 @@ class GridHalo {
     sendShm_.assign(sendRanks_.size(), 0);
     recvShm_.assign(recvRanks_.size(), 0);
     if constexpr (kHostMemory) {
-      if (!detail::haloShmEnabled())
-        return;
       int csize = 1;
       MPI_Comm_size(comm_, &csize);
       if (csize < 2)
+        return;
+      checkShmEnvCollective();
+      if (!detail::haloShmEnabled())
         return;
       MPI_Comm_split_type(comm_, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node_);
       if (const int k = detail::haloShmGroup(); k > 0) {  // debug sub-split (mixed transport)
@@ -651,6 +660,22 @@ class GridHalo {
       }
       shm_ = true;
     }
+  }
+
+  /// PECLET_CORE_HALO_SHM and PECLET_CORE_HALO_SHM_GROUP decide which collectives initShm and the
+  /// destructor run, so a rank that disagrees would hang its partners: one allreduce over comm_
+  /// at init checks that every rank sees the same values, and throws on every rank otherwise.
+  void checkShmEnvCollective() const {
+    const int en = detail::haloShmEnabled() ? 1 : 0, grp = detail::haloShmGroup();
+    int v[4] = {en, -en, grp, -grp};
+    MPI_Allreduce(MPI_IN_PLACE, v, 4, MPI_INT, MPI_MAX, comm_);
+    if (v[0] != -v[1] || v[2] != -v[3])
+      throw std::runtime_error(
+          "peclet.core halo [" + label_ +
+          "]: PECLET_CORE_HALO_SHM / PECLET_CORE_HALO_SHM_GROUP differ across the ranks of the "
+          "communicator (shared memory on " + std::to_string(-v[1]) + ".." + std::to_string(v[0]) +
+          ", group " + std::to_string(-v[3]) + ".." + std::to_string(v[2]) +
+          "); set them identically on every rank (mpirun -x)");
   }
 
   /// Free the window and the node communicator (collective over it; see init). Skipped after
