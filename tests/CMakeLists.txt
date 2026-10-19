@@ -39,6 +39,13 @@ target_link_libraries(test_decomposition PRIVATE peclet_core)
 target_include_directories(test_decomposition PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 peclet_core_add_test(decomposition test_decomposition)
 
+# The opt-in balance-aware split-axis rule (SplitAxis::Balanced): identical tree wherever the
+# Longest rule is exact, determinism, aligned cuts, exactness on 128x96x64. Pure function, no MPI.
+add_executable(test_split_axis test_split_axis.cpp)
+target_link_libraries(test_split_axis PRIVATE peclet_core)
+target_include_directories(test_split_axis PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+peclet_core_add_test(split_axis test_split_axis)
+
 # Coarse-level multigrid stage policy (decomp/stage_target.hpp): chooseStageTarget against a
 # transcription of flow's inline telescope search, level by level over whole ladders (plain /
 # aligned / weighted ORBs, 1..1536 blocks). Pure function, no MPI.

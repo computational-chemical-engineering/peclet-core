@@ -25,6 +25,15 @@ struct Block {
   IVec<Dim> size{};    ///< extent in cells along each axis
 };
 
+/// Split-axis rule of the unweighted ORB construction (flow doc/vof_distributed_partition_design.md
+/// §5.1). `Longest` (the default of every overload) bisects the axis of largest physical extent.
+/// `Balanced` (opt-in, `init(…, align, cellExtent, rule)` only) computes each axis's candidate cut
+/// by the same expression and alignment snap, and bisects the axis whose cut deviates least from
+/// the exact share, preferring the longest axis whenever it is among the least — so wherever the
+/// `Longest` partition is exactly balanced, `Balanced` builds the identical tree. The rule acts
+/// at construction only; the stored tree is an ordinary ORB tree.
+enum class SplitAxis { Longest, Balanced };
+
 /// Orthogonal recursive bisection of a `Dim`-dimensional global cell grid into `numBlocks`
 /// axis-aligned blocks; by the suite's convention block b is owned by rank b. Construction is
 /// deterministic and needs no communication, so every rank that builds it from the same arguments
@@ -47,6 +56,7 @@ class BlockDecomposer {
   /// Build the decomposition of a `globalSize` cell grid into `numBlocks` blocks (equal cell
   /// count).
   void init(std::size_t numBlocks, IVec<Dim> globalSize) {
+    splitAxis_ = SplitAxis::Longest;
     align_ = IVec<Dim>{};
     for (int i = 0; i < Dim; ++i)
       align_[i] = 1;
@@ -60,11 +70,7 @@ class BlockDecomposer {
   /// coarsens)`. `align[k] == 1` is the classic unaligned split. `globalSize[k]` must be a multiple
   /// of `align[k]`.
   void init(std::size_t numBlocks, IVec<Dim> globalSize, const IVec<Dim>& align) {
-    align_ = align;
-    for (int i = 0; i < Dim; ++i)
-      if (align_[i] < 1)
-        align_[i] = 1;
-    initImpl(numBlocks, globalSize, nullptr);
+    initAligned(numBlocks, globalSize, align, SplitAxis::Longest);
   }
 
   /// Anisotropic-cell aligned ORB: `cellExtent[k]` is how many underlying FINE cells one cell of
@@ -80,6 +86,22 @@ class BlockDecomposer {
     init(numBlocks, globalSize, align);
   }
 
+  /// The aligned anisotropic-cell ORB above with an explicit split-axis `rule` (see SplitAxis).
+  /// `SplitAxis::Longest` is exactly the 4-argument init. `SplitAxis::Balanced`, at every node
+  /// (box size S, m >= 2 blocks, n1 = floor(m/2)): the Longest axis kL and each other axis k with
+  /// S[k] >= 2 — except an aligned axis (align[k] > 1) too short to cut aligned
+  /// (S[k] < 2 align[k]) — gets the candidate cut
+  /// c_k the Longest rule would place there (same rounding, same snap); its deviation is
+  /// D_k = |c_k m - S[k] n1|, compared relative to S[k] m by exact cross-multiplication. The
+  /// Longest axis kL is kept when its deviation is minimal (in particular when its cut is exact);
+  /// otherwise the minimum-deviation axis is cut, ties to the larger physical extent, then the
+  /// lower index; with no candidate, kL. Pure and deterministic, like every init.
+  void init(std::size_t numBlocks, IVec<Dim> globalSize, const IVec<Dim>& align,
+            const IVec<Dim>& cellExtent, SplitAxis rule) {
+    cellExtent_ = cellExtent;
+    initAligned(numBlocks, globalSize, align, rule);
+  }
+
   /// Weighted ORB: balance the *total weight* per block instead of the cell count. `weights` is a
   /// per-cell weight array over the global grid (size == product(globalSize), x-fastest). Each
   /// split is placed on the integer cell boundary whose cumulative weight is closest to the
@@ -93,6 +115,7 @@ class BlockDecomposer {
              return v;
            }()) &&
            "weights array must cover the global grid (x-fastest)");
+    splitAxis_ = SplitAxis::Longest;
     align_ = IVec<Dim>{};
     for (int i = 0; i < Dim; ++i)
       align_[i] = 1;
@@ -407,6 +430,66 @@ class BlockDecomposer {
   }
 
  private:
+  void initAligned(std::size_t numBlocks, IVec<Dim> globalSize, const IVec<Dim>& align,
+                   SplitAxis rule) {
+    splitAxis_ = rule;
+    align_ = align;
+    for (int i = 0; i < Dim; ++i)
+      if (align_[i] < 1)
+        align_[i] = 1;
+    initImpl(numBlocks, globalSize, nullptr);
+  }
+
+  /// The unweighted cut on axis k of a box of size `size` holding `numTotal` blocks, `numSub` of
+  /// them left: the classic proportional split, snapped to align_[k] when the box is wide enough.
+  Index alignedCut(const IVec<Dim>& origin, const IVec<Dim>& size, int k, std::size_t numSub,
+                   std::size_t numTotal) const {
+    Index c = splitPosition(origin, size, k, numSub, numTotal, nullptr);
+    const Index a = align_[k];
+    if (a > 1 && size[k] >= 2 * a) {
+      c = ((c + a / 2) / a) * a;
+      if (c < a)
+        c = a;
+      if (c > size[k] - a)
+        c = size[k] - a;
+    }
+    return c;
+  }
+
+  /// SplitAxis::Balanced's axis choice at one node (see the 5-argument init).
+  int balancedAxis(const IVec<Dim>& origin, const IVec<Dim>& size, int kL, std::size_t numSub,
+                   std::size_t numTotal) const {
+    const Index m = static_cast<Index>(numTotal), n1 = static_cast<Index>(numSub);
+    Index dev[Dim];
+    bool cand[Dim];
+    int best = -1;
+    for (int k = 0; k < Dim; ++k) {
+      // an aligned axis too short to cut aligned is excluded from the ALTERNATIVES (an unaligned
+      // cut there would cost nesting depth); kL itself is always measured, so an exact Longest cut
+      // is always kept (the identical-tree property)
+      cand[k] = size[k] >= 2 && (k == kL || !(align_[k] > 1 && size[k] < 2 * align_[k]));
+      if (!cand[k])
+        continue;
+      const Index c = alignedCut(origin, size, k, numSub, numTotal);
+      const Index d = c * m - size[k] * n1;
+      dev[k] = d < 0 ? -d : d;
+      // relative deviation dev[k] / (size[k] m): k beats best iff dev[k] size[best] <
+      // dev[best] size[k]; ties to the larger physical extent, then the lower index
+      if (best < 0) {
+        best = k;
+        continue;
+      }
+      const Index lhs = dev[k] * size[best], rhs = dev[best] * size[k];
+      if (lhs < rhs || (lhs == rhs && size[k] * cellExtent_[k] > size[best] * cellExtent_[best]))
+        best = k;
+    }
+    if (best < 0)
+      return kL;
+    if (cand[kL] && dev[kL] * size[best] == dev[best] * size[kL])
+      return kL;  // the longest axis is among the least deviating: keep it
+    return best;
+  }
+
   /// Shared decomposition driver. `weights == nullptr` ⇒ equal-cell-count split (the classic ORB);
   /// otherwise the split position balances cumulative weight.
   void initImpl(std::size_t numBlocks, IVec<Dim> globalSize, const std::vector<Real>* weights);
@@ -423,6 +506,7 @@ class BlockDecomposer {
   IVec<Dim>
       align_{};  ///< per-axis split alignment (1 = unaligned); see the aligned init / coarsened
   IVec<Dim> cellExtent_{};  ///< fine cells per cell of THIS grid, per axis; split-axis choice only
+  SplitAxis splitAxis_ = SplitAxis::Longest;  ///< the rule of the last unweighted init
   std::vector<IVec<Dim>> origins_;
   std::vector<IVec<Dim>> sizes_;
   std::vector<TreeNode> tree_;
@@ -469,12 +553,14 @@ void BlockDecomposer<Dim>::initImpl(std::size_t numBlocks, IVec<Dim> globalSize,
           kLargest = k;
       }
       std::size_t numSub = cur.numSub / 2;
+      if (splitAxis_ == SplitAxis::Balanced && weights == nullptr)
+        kLargest = balancedAxis(cur.origin, cur.size, kLargest, numSub, cur.numSub);
       Index szSub = splitPosition(cur.origin, cur.size, kLargest, numSub, cur.numSub, weights);
 
       // Snap the split to a multiple of align_[kLargest] so the global split position
       // (cur.origin[kLargest] + szSub, with cur.origin already aligned) is a multiple too — the
       // precondition for coarsened() to divide cleanly. Skip if the box is too small to split
-      // aligned.
+      // aligned. (alignedCut is the same expression, for Balanced's candidates.)
       const Index a = align_[kLargest];
       if (a > 1 && cur.size[kLargest] >= 2 * a) {
         szSub = ((szSub + a / 2) / a) * a;
