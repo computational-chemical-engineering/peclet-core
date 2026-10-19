@@ -70,6 +70,9 @@ after `cmake --install`, or as a sibling checkout in the suite.
   periodic self-copy run as `Kokkos::parallel_for` over the device `peclet::core::View<T>` field, so the full
   field never crosses the bus — only the compact halo buffers are host-staged for MPI by default, with
   an opt-in GPU-aware path (env `PECLET_CORE_GPU_AWARE_MPI`). Bit-for-bit identical to the CPU exchange.
+  Since 1.6.0 the exchange is set up once (persistent requests, one pack launch), offers a faces-only
+  stencil variant, and on host memory moves data between ranks on one node through shared memory (kill switch
+  `PECLET_CORE_HALO_SHM=0`); init and destruction are collective over the communicator. Bitwise unchanged.
 - `peclet::core::halo::ParticleMigrator<Dim>` — Lagrangian particle migration to owning ranks (NBX), the
   dynamic counterpart to the Eulerian grid halo.
 - `peclet::core::halo::ParticleHaloTopology<Dim>` (`particle_halo_topology.hpp`) — persistent Lagrangian ghost
