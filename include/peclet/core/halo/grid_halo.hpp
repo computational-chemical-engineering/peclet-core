@@ -479,8 +479,10 @@ class GridHalo {
 #endif
   }
 
-  /// Wait for a partner's flag: bounded spin (kHaloShmSpin polls), then yield the time slice and
-  /// spin again. With PECLET_CORE_HALO_TIMEOUT set, a wait past the deadline names the partner
+  /// Wait for a partner's flag: bounded spin (kHaloShmSpin polls), then yield the time slice, poke
+  /// the MPI progress engine (MPI_Iprobe on comm_: an off-node rendezvous Isend posted before this
+  /// exchange keeps moving on a weak-progress MPI while the rank waits here; it receives nothing,
+  /// so it cannot affect results) and spin again. With PECLET_CORE_HALO_TIMEOUT set, a wait past the deadline names the partner
   /// and the exchange and aborts the job, as waitAllDiagnosed does for the MPI requests.
   template <class Done>
   void shmWait(Done done, const char* what, int partner, std::uint64_t s) {
@@ -497,6 +499,8 @@ class GridHalo {
       }
       n = 0;
       std::this_thread::yield();
+      int pending = 0;
+      MPI_Iprobe(MPI_ANY_SOURCE, MPI_ANY_TAG, comm_, &pending, MPI_STATUS_IGNORE);
       if (timeout > 0 && MPI_Wtime() - t0 >= timeout) {
         std::string msg = timeoutHeader(timeout) + "   pending shared-memory " + what + " comm " +
                           std::to_string(partner) + " (world " +
