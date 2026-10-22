@@ -44,6 +44,8 @@ after `cmake --install`, or as a sibling checkout in the suite.
   the coarse-first `refined(ratio)`, and the **aligned weighted ORB** `init(…, weights, align)`, with
   `chooseAlignedWeighted` picking the deepest alignment within an imbalance budget
   (`weightImbalance`).
+  Since 1.7.0 the ORB offers an opt-in balance-aware split axis (`SplitAxis::Balanced`: the axis whose
+  aligned cut is most exact); the longest-axis rule stays the default, byte-identical for existing callers.
 - **Coarse-level multigrid stages** (`decomp/stage_target.hpp`, `stage_comm.hpp`,
   `redistribute_topology.hpp`, `gather_by_global_id.hpp`) — where a multigrid level goes when it can
   no longer coarsen on its own decomposition, and how its fields get there and back.
