@@ -482,8 +482,9 @@ class GridHalo {
   /// Wait for a partner's flag: bounded spin (kHaloShmSpin polls), then yield the time slice, poke
   /// the MPI progress engine (MPI_Iprobe on comm_: an off-node rendezvous Isend posted before this
   /// exchange keeps moving on a weak-progress MPI while the rank waits here; it receives nothing,
-  /// so it cannot affect results) and spin again. With PECLET_CORE_HALO_TIMEOUT set, a wait past the deadline names the partner
-  /// and the exchange and aborts the job, as waitAllDiagnosed does for the MPI requests.
+  /// so it cannot affect results) and spin again. With PECLET_CORE_HALO_TIMEOUT set, a wait past
+  /// the deadline names the partner and the exchange and aborts the job, as waitAllDiagnosed does
+  /// for the MPI requests.
   template <class Done>
   void shmWait(Done done, const char* what, int partner, std::uint64_t s) {
     if (done())
@@ -677,9 +678,9 @@ class GridHalo {
       throw std::runtime_error(
           "peclet.core halo [" + label_ +
           "]: PECLET_CORE_HALO_SHM / PECLET_CORE_HALO_SHM_GROUP differ across the ranks of the "
-          "communicator (shared memory on " + std::to_string(-v[1]) + ".." + std::to_string(v[0]) +
-          ", group " + std::to_string(-v[3]) + ".." + std::to_string(v[2]) +
-          "); set them identically on every rank (mpirun -x)");
+          "communicator (shared memory on " +
+          std::to_string(-v[1]) + ".." + std::to_string(v[0]) + ", group " + std::to_string(-v[3]) +
+          ".." + std::to_string(v[2]) + "); set them identically on every rank (mpirun -x)");
   }
 
   /// Free the window and the node communicator (collective over it; see init). Skipped after
