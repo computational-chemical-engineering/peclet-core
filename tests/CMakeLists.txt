@@ -325,6 +325,16 @@ if(MPI_FOUND)
     target_link_libraries(test_vof_pvcache PRIVATE Kokkos::kokkos)
     peclet_core_add_test(vof_pvcache test_vof_pvcache)
 
+    # VoF PLIC region fractions for the sharp viscous stress (flow
+    # doc/vof_sharp_viscous_stress.md §5.2, WO-1): face (box x box), shear-link (hat x box) and
+    # midsection fractions against Monte-Carlo quadrature on 10^4 random planes, the thin-slab
+    # limit, the 1-D hat CDF and the plicAlpha round trip.
+    add_executable(test_vof_plic_regions test_vof_plic_regions.cpp)
+    target_include_directories(test_vof_plic_regions PRIVATE
+      ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(test_vof_plic_regions PRIVATE Kokkos::kokkos)
+    peclet_core_add_test(vof_plic_regions test_vof_plic_regions)
+
     # Anderson acceleration of a steady march (peclet::core::solver::AndersonCore, flow
     # doc/steady_acceleration.md §8 U1–U6): synthetic maps on padded device boxes, the metric,
     # the §6.3 memory formula and the host Jacobi / Gelfand algebra. Single rank (U7 below).
