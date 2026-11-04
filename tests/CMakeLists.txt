@@ -372,6 +372,16 @@ if(MPI_FOUND)
     peclet_core_add_mpi_test(grid_halo_variants_timeout_np2 test_grid_halo_variants 2)
     set_tests_properties(grid_halo_variants_timeout_np2 PROPERTIES TIMEOUT 1800
       ENVIRONMENT "PECLET_CORE_HALO_TIMEOUT=60")
+    # The stacked exchange (GridHalo::init(topo, k, stride): k fields, one message per partner) and
+    # the fill depth (buildTopology(..., depth)): ghosts bitwise to their owners' copy, the rest
+    # untouched (flow doc/vof_sharp_viscous_stress.md §7, the fit fields' one exchange).
+    add_executable(test_grid_halo_stacked test_grid_halo_stacked.cpp)
+    target_include_directories(test_grid_halo_stacked PRIVATE
+      ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(test_grid_halo_stacked PRIVATE Kokkos::kokkos MPI::MPI_CXX)
+    foreach(np IN ITEMS 1 2 4 8)
+      peclet_core_add_mpi_test(grid_halo_stacked_np${np} test_grid_halo_stacked ${np})
+    endforeach()
     # The same on a faces-only topology (Neighborhood::Faces, flow's stencil halo, design §5.2).
     foreach(np IN ITEMS 2 4 8)
       peclet_core_add_mpi_test(grid_halo_variants_faces_np${np} test_grid_halo_variants ${np}

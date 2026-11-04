@@ -58,10 +58,12 @@ class GridHaloTopology {
 
   /// Build the halo topology for `rank`'s block of `dec`, with the given ghost width and per-axis
   /// periodicity. Communicates once (NBX) to establish matched send lists. `nb = Faces` keeps only
-  /// the face ghosts (see `Neighborhood`).
+  /// the face ghosts (see `Neighborhood`). `depth` in [0, ghostWidth) fills only the ghost cells
+  /// within `depth` cells of the inner block on every axis (the block keeps its `ghostWidth`
+  /// layout; the outer ghosts are left untouched); the default -1 fills the full ghost width.
   void buildTopology(const decomp::BlockDecomposer<Dim>& dec, int rank, int ghostWidth,
                      const std::array<bool, Dim>& periodic, MPI_Comm comm = MPI_COMM_WORLD,
-                     Neighborhood nb = Neighborhood::Full) {
+                     Neighborhood nb = Neighborhood::Full, int depth = -1) {
     comm_ = comm;
     rank_ = rank;
     indexer_.init(dec.origins()[rank], dec.sizes()[rank], ghostWidth);
@@ -83,6 +85,14 @@ class GridHaloTopology {
         if (outside != 1)
           return;  // edge or corner ghost: not part of a face neighbourhood
       }
+      if (depth >= 0 && depth < ghostWidth)
+        for (int i = 0; i < Dim; ++i) {
+          const Index hi = ghostWidth + indexer_.sizeInner()[i];
+          const Index d =
+              lmd[i] < ghostWidth ? ghostWidth - lmd[i] : (lmd[i] >= hi ? lmd[i] - hi + 1 : 0);
+          if (d > depth)
+            return;  // beyond the fill depth on this axis
+        }
       IVec<Dim> g{}, gw{};
       bool skip = false;
       for (int i = 0; i < Dim; ++i) {
@@ -307,6 +317,36 @@ class GridHaloTopology {
     std::vector<int> sendCounts, recvCounts;  // elements per neighbour (same order)
     std::vector<Index> sendIdx, recvIdx;      // flattened local indices, grouped by neighbour
     std::vector<Index> selfSrc, selfDst;      // local periodic self-copy (inner -> ghost)
+
+    /// The same pattern for `k` fields at once: copy j of every list is offset by j * stride (the
+    /// fields lie at offsets 0, stride, ..., (k-1) * stride of ONE view) and each partner's group
+    /// holds its k copies back to back, so one message per partner carries all k fields. Both ends
+    /// stack with the same k in the same order, which keeps the pairing; `stride` is local.
+    FlatTopology stacked(int k, Index stride) const {
+      FlatTopology t;
+      t.comm = comm;
+      t.sendRanks = sendRanks;
+      t.recvRanks = recvRanks;
+      const auto rep = [&](const std::vector<Index>& src, const std::vector<int>& counts,
+                           std::vector<Index>& dst, std::vector<int>* outCounts) {
+        std::size_t off = 0;
+        for (std::size_t g = 0; g < counts.size(); ++g) {
+          for (int j = 0; j < k; ++j)
+            for (int i = 0; i < counts[g]; ++i)
+              dst.push_back(src[off + static_cast<std::size_t>(i)] +
+                            static_cast<Index>(j) * stride);
+          off += static_cast<std::size_t>(counts[g]);
+          if (outCounts)
+            outCounts->push_back(counts[g] * k);
+        }
+      };
+      rep(sendIdx, sendCounts, t.sendIdx, &t.sendCounts);
+      rep(recvIdx, recvCounts, t.recvIdx, &t.recvCounts);
+      const std::vector<int> selfCount(1, static_cast<int>(selfSrc.size()));
+      rep(selfSrc, selfCount, t.selfSrc, nullptr);
+      rep(selfDst, selfCount, t.selfDst, nullptr);
+      return t;
+    }
   };
 
   FlatTopology flatten() const {

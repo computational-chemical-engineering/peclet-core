@@ -213,9 +213,14 @@ class GridHalo {
   /// calls init for this instance, as for GridHaloTopology::buildTopology, and destroys or
   /// re-inits the instance at the same point of the program (the shared window is freed
   /// collectively).
+  ///
+  /// `stack = k > 1` exchanges k fields at once (one gather launch, one message per partner):
+  /// the fields lie at offsets 0, stride, ..., (k-1) * stride of the ONE view passed to
+  /// exchange(), each laid out like the topology's block (stride >= its cells incl. ghosts). The
+  /// ghost values are those of k single-field exchanges, bitwise (FlatTopology::stacked).
   template <int Dim>
-  void init(const GridHaloTopology<Dim>& halo) {
-    auto t = halo.flatten();
+  void init(const GridHaloTopology<Dim>& halo, int stack = 1, Index stride = 0) {
+    auto t = stack > 1 ? halo.flatten().stacked(stack, stride) : halo.flatten();
     comm_ = t.comm;
     sendRanks_ = t.sendRanks;
     recvRanks_ = t.recvRanks;
