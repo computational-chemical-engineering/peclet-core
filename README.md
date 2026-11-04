@@ -93,6 +93,10 @@ after `cmake --install`, or as a sibling checkout in the suite.
   any signature, so one copy serves every VoF container; the drivers live in `flow`.
   Since 1.5.0 the tier-3 paraboloid fit also has its cost kernels (per-cell polygon and moment
   caches, a support prefilter and per-entry accumulation; flow design G), bitwise to the old fit.
+  Since 1.8.0 `plic_regions.hpp` gives the PLIC area fractions of the planar MAC stress regions (a
+  face, a shear-link hat kernel, a cell midsection) that flow's sharp interface viscous stress samples;
+  `GridHalo::init(topo, k, stride)` exchanges k stacked fields in one message per partner, and
+  `buildTopology(..., depth)` fills a reduced ghost depth (both additive).
 - `peclet::core::solver` (`include/peclet/core/solver/`) — mesh-agnostic linear algebra: the
   smoothed-aggregation graph AMG (`graph_amg.hpp`, host setup; `graph_amg_device.hpp`, device apply)
   and the **assembled face-CSR operator layer** lifted out of the AMR tree on 2026-09-10 —
