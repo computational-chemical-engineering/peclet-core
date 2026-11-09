@@ -36,6 +36,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <map>
+#include <stdexcept>
 #include <vector>
 
 #include "peclet/core/common/types.hpp"
@@ -69,6 +70,17 @@ struct HostCsrOp {
   }
 };
 
+/// Aggregation / setup path. Greedy is the host oracle (the default); Mis2 is the parallel,
+/// deterministic Kokkos setup of graph_amg_setup.hpp, available through GraphAMGDevice only.
+enum class Aggregation { Greedy, Mis2 };
+/// Coarsest-level solve. Cg is the near-exact coarse CG (the default). Dense stops coarsening at
+/// ≤ kDenseCoarseMax DOFs and applies the pseudo-inverse from a dense eigendecomposition
+/// (GraphAMGDevice only; falls back to Cg — queryable — when the coarsest level stays larger).
+enum class CoarseSolve { Cg, Dense };
+/// Value precision of the device hierarchy (C2). Fp64 is the default.
+enum class Precision { Fp64, Fp32 };
+inline constexpr Index kDenseCoarseMax = 200;
+
 struct AmgParams {
   int ndofPerNode = 1;  ///< block size for nodal aggregation (Voronoi positions ⇒ 3, +weight ⇒ 4)
   double theta = 0.05;  ///< strength-of-connection threshold (fraction of √(A_ii·A_jj))
@@ -82,6 +94,9 @@ struct AmgParams {
                          ///< sweeps instead (with maxLevels=1 this turns GraphAMG into a plain
                          ///< single-level polynomial/Jacobi preconditioner — no coarse grid)
   int eigIters = 15;     ///< power-iteration steps for the per-level λ_max(D⁻¹A) estimate
+  Aggregation aggregation = Aggregation::Greedy;  ///< Mis2: parallel setup (GraphAMGDevice)
+  CoarseSolve coarseSolve = CoarseSolve::Cg;      ///< Dense: GraphAMGDevice only
+  Precision precision = Precision::Fp64;          ///< Fp32: GraphAMGDevice only
 };
 
 /// Smoothed-aggregation AMG hierarchy usable as `z = M⁻¹ r` (one symmetric V-cycle from a zero
@@ -89,6 +104,11 @@ struct AmgParams {
 class GraphAMG {
  public:
   void build(const HostCsrOp& A, const AmgParams& prm = {}) {
+    if (prm.aggregation != Aggregation::Greedy || prm.coarseSolve != CoarseSolve::Cg ||
+        prm.precision != Precision::Fp64)
+      throw std::invalid_argument(
+          "GraphAMG (host oracle): only Aggregation::Greedy, CoarseSolve::Cg and Precision::Fp64; "
+          "the other options are GraphAMGDevice's");
     prm_ = prm;
     levels_.clear();
     levels_.emplace_back();

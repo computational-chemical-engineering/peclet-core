@@ -17,12 +17,14 @@
 #define PECLET_CORE_SOLVER_GRAPH_AMG_DEVICE_HPP
 
 #include <Kokkos_Core.hpp>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "peclet/core/common/types.hpp"
 #include "peclet/core/common/view.hpp"
 #include "peclet/core/solver/graph_amg.hpp"
+#include "peclet/core/solver/graph_amg_setup.hpp"
 
 namespace peclet::core::solver {
 
@@ -31,12 +33,52 @@ class GraphAMGDevice {
   using DView = View<double>;
   using IView = View<Index>;
 
-  /// Host setup + one-time device mirror. Rebuild whenever the operator changes.
+  /// Setup + device hierarchy. Rebuild whenever the operator changes. With the default
+  /// Aggregation::Greedy the setup is the host oracle's, mirrored to the device (unchanged, bit for
+  /// bit, at default parameters); with Aggregation::Mis2 the operator is uploaded and the parallel
+  /// setup runs on the device (build(const DeviceCsr&, ...)).
   void build(const HostCsrOp& A, const AmgParams& prm = {}) {
-    host_.build(A, prm);
+    if (prm.aggregation == Aggregation::Mis2) {
+      DeviceCsr d;
+      d.n = A.n;
+      d.diag = toDev(A.diag, "amgd_A_diag");
+      d.start = toDev(A.start, "amgd_A_start");
+      d.nbr = toDev(A.nbr, "amgd_A_nbr");
+      d.coef = toDev(A.coef, "amgd_A_coef");
+      buildParallel(d, prm);
+      return;
+    }
+    AmgParams hp = prm;
+    hp.coarseSolve = CoarseSolve::Cg;
+    hp.precision = Precision::Fp64;
+    if (denseRequested(prm))
+      hp.coarsest = kDenseCoarseMax;  // dense coarsest: stop coarsening at ≤ 200 DOFs
+    host_.build(A, hp);
     prm_ = prm;
     mirror();
+    finalizeCoarse();
   }
+
+  /// Parallel setup on the device, no host round trip of the operator (requires Aggregation::Mis2).
+  /// The operator's views are copied: the hierarchy does not alias the caller's operator.
+  void build(const DeviceCsr& A, const AmgParams& prm) {
+    if (prm.aggregation != Aggregation::Mis2)
+      throw std::invalid_argument("GraphAMGDevice::build(DeviceCsr): requires Aggregation::Mis2");
+    DeviceCsr d;
+    d.n = A.n;
+    d.diag = copyView(A.diag, "amgd_A_diag");
+    d.start = copyView(A.start, "amgd_A_start");
+    d.nbr = copyView(A.nbr, "amgd_A_nbr");
+    d.coef = copyView(A.coef, "amgd_A_coef");
+    buildParallel(d, prm);
+  }
+
+  /// The coarsest-level solve actually in use: Dense only when it was requested AND the coarsest
+  /// level has ≤ kDenseCoarseMax DOFs; otherwise Cg (or the smoother when coarseSweeps > 0).
+  CoarseSolve coarseSolveUsed() const { return coarseUsed_; }
+  /// True when Dense was requested but the coarsest level stayed above kDenseCoarseMax DOFs
+  /// (maxLevels reached or coarsening stalled), so the coarse CG runs instead.
+  bool denseFallback() const { return denseFallback_; }
 
   /// z = M⁻¹ r: one V-cycle (correction scheme) from a zero initial guess. Device views, size n.
   void apply(const DView& r, const DView& z) const {
@@ -49,6 +91,7 @@ class GraphAMGDevice {
 
   int numLevels() const { return (int)lv_.size(); }
   Index size(int L = 0) const { return lv_[(std::size_t)L].n; }
+  /// The host oracle's hierarchy (Aggregation::Greedy only; empty after a Mis2 build).
   const GraphAMG& hostHierarchy() const { return host_; }
 
   // DLevel is public for the same nvcc extended-lambda stub-generation reason as the methods.
@@ -62,7 +105,143 @@ class GraphAMGDevice {
     DView Rval;
     double lmax = 1.0;
     DView x, b, res, t0, t1;  // scratch
+    // Mis2 setup only: node → aggregate map of this level's coarsening, and λ(D_F⁻¹A_F).
+    IView agg;
+    double lmaxF = 0.0;
+    // Dense coarsest level: eigenvectors V (row-major n×n) and the pseudo-inverse eigenvalues.
+    DView denseV, denseLamInv;
   };
+
+  const std::vector<DLevel>& levels() const { return lv_; }
+
+  template <class T>
+  static View<T> copyView(const View<T>& src, const char* name) {
+    View<T> d(Kokkos::view_alloc(std::string(name), Kokkos::WithoutInitializing), src.extent(0));
+    Kokkos::deep_copy(d, src);
+    return d;
+  }
+
+  static bool denseRequested(const AmgParams& prm) {
+    return prm.coarseSolve == CoarseSolve::Dense && prm.coarseSweeps == 0;
+  }
+
+  static void allocScratch(DLevel& d) {
+    auto scratch = [n = (std::size_t)d.n](const char* nm) {
+      return DView(Kokkos::view_alloc(std::string(nm), Kokkos::WithoutInitializing), n);
+    };
+    d.x = scratch("amgd_x");
+    d.b = scratch("amgd_b");
+    d.res = scratch("amgd_res");
+    d.t0 = scratch("amgd_t0");
+    d.t1 = scratch("amgd_t1");
+  }
+
+  // Parallel (Mis2) setup, design §14.5 C1. Level loop as the host oracle's: the smoother bound
+  // λ(D⁻¹A) on every level (∞-norm power iteration), coarsen while n > coarsest and levels remain.
+  void buildParallel(const DeviceCsr& A0, const AmgParams& prm) {
+    const int s = prm.ndofPerNode;
+    if (s <= 0 || A0.n % s != 0)
+      throw std::invalid_argument("GraphAMGDevice: n must be a multiple of ndofPerNode");
+    prm_ = prm;
+    host_ = GraphAMG();
+    lv_.clear();
+    const Index coarsest = denseRequested(prm) ? kDenseCoarseMax : prm.coarsest;
+    DeviceCsr cur = A0;
+    for (int L = 0;; ++L) {
+      DLevel d;
+      d.n = cur.n;
+      d.start = cur.start;
+      d.nbr = cur.nbr;
+      d.coef = cur.coef;
+      d.diag = cur.diag;
+      d.invDiag = amg_setup::invDiagOf(cur.diag, cur.n);
+      d.lmax =
+          amg_setup::powerLambdaInf(cur, cur.diag, d.invDiag, amg_setup::BView(), prm.eigIters);
+      bool last = (L + 1 >= prm.maxLevels) || cur.n <= coarsest;
+      DeviceCsr next;
+      if (!last) {
+        amg_setup::CoarseLevel C = amg_setup::coarsen(cur, prm, L);
+        if (C.ok) {
+          d.nc = C.nc;
+          d.agg = C.agg;
+          d.lmaxF = C.lmaxF;
+          d.Pstart = C.Pstart;
+          d.Pcol = C.Pcol;
+          d.Pval = C.Pval;
+          d.Rstart = C.Rstart;
+          d.Rcol = C.Rcol;
+          d.Rval = C.Rval;
+          next = C.Ac;
+        } else {
+          last = true;
+        }
+      }
+      allocScratch(d);
+      lv_.push_back(std::move(d));
+      if (last)
+        break;
+      cur = next;
+    }
+    finalizeCoarse();
+  }
+
+  // Coarsest level: the dense pseudo-inverse when requested and n ≤ kDenseCoarseMax (host cyclic
+  // Jacobi; eigenvalues below 1e-12·λ_max zeroed), else the existing CG with denseFallback() set.
+  void finalizeCoarse() {
+    coarseUsed_ = CoarseSolve::Cg;
+    denseFallback_ = false;
+    if (!denseRequested(prm_))
+      return;
+    DLevel& c = lv_.back();
+    if (c.n > kDenseCoarseMax) {
+      denseFallback_ = true;
+      return;
+    }
+    const int n = (int)c.n;
+    auto hs = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), c.start);
+    auto hn = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), c.nbr);
+    auto hc = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), c.coef);
+    auto hd = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), c.diag);
+    std::vector<double> a((std::size_t)n * n, 0.0), V, lam;
+    for (int i = 0; i < n; ++i) {
+      a[(std::size_t)i * n + i] += hd(i);
+      for (Index k = hs(i); k < hs(i + 1); ++k)
+        a[(std::size_t)i * n + (std::size_t)hn(k)] += hc(k);
+    }
+    amg_setup::jacobiEigen(a, n, V, lam);
+    double lmax = 0.0;
+    for (double l : lam)
+      lmax = std::max(lmax, l);
+    std::vector<double> inv((std::size_t)n, 0.0);
+    for (int j = 0; j < n; ++j)
+      inv[(std::size_t)j] =
+          (lam[(std::size_t)j] > 1e-12 * lmax && lmax > 0.0) ? 1.0 / lam[(std::size_t)j] : 0.0;
+    c.denseV = toDev(V, "amgd_denseV");
+    c.denseLamInv = toDev(inv, "amgd_denseLamInv");
+    coarseUsed_ = CoarseSolve::Dense;
+  }
+
+  // x = V Λ⁺ Vᵀ b as two GEMVs (each output summed sequentially by one thread).
+  static void denseApply(const DLevel& lv) {
+    const Index n = lv.n;
+    DView V = lv.denseV, li = lv.denseLamInv, b = lv.b, x = lv.x, t = lv.t0;
+    Kokkos::parallel_for(
+        "peclet::core::amgd_dense_vt", Kokkos::RangePolicy<ExecSpace>(0, n),
+        KOKKOS_LAMBDA(const Index j) {
+          double s = 0.0;
+          for (Index i = 0; i < n; ++i)
+            s += V(i * n + j) * b(i);
+          t(j) = li(j) * s;
+        });
+    Kokkos::parallel_for(
+        "peclet::core::amgd_dense_v", Kokkos::RangePolicy<ExecSpace>(0, n),
+        KOKKOS_LAMBDA(const Index i) {
+          double s = 0.0;
+          for (Index j = 0; j < n; ++j)
+            s += V(i * n + j) * t(j);
+          x(i) = s;
+        });
+  }
 
   template <class T>
   static View<T> toDev(const std::vector<T>& v, const char* name) {
@@ -111,14 +290,7 @@ class GraphAMGDevice {
         d.Rcol = toDev(Rcol, "amgd_Rcol");
         d.Rval = toDev(Rval, "amgd_Rval");
       }
-      auto scratch = [n = (std::size_t)d.n](const char* nm) {
-        return DView(Kokkos::view_alloc(std::string(nm), Kokkos::WithoutInitializing), n);
-      };
-      d.x = scratch("amgd_x");
-      d.b = scratch("amgd_b");
-      d.res = scratch("amgd_res");
-      d.t0 = scratch("amgd_t0");
-      d.t1 = scratch("amgd_t1");
+      allocScratch(d);
       lv_.push_back(std::move(d));
     }
   }
@@ -245,6 +417,10 @@ class GraphAMGDevice {
       smooth(lv, prm_.coarseSweeps);
       return;
     }
+    if (coarseUsed_ == CoarseSolve::Dense) {
+      denseApply(lv);
+      return;
+    }
     const Index n = lv.n;
     DView x = lv.x, r = lv.res, p = lv.t0, Ap = lv.t1, b = lv.b;
     spmv(lv, x, r);
@@ -282,6 +458,8 @@ class GraphAMGDevice {
   GraphAMG host_;
   AmgParams prm_;
   std::vector<DLevel> lv_;
+  CoarseSolve coarseUsed_ = CoarseSolve::Cg;
+  bool denseFallback_ = false;
 };
 
 }  // namespace peclet::core::solver

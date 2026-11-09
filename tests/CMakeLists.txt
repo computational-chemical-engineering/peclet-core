@@ -341,6 +341,14 @@ if(MPI_FOUND)
     target_link_libraries(test_graph_amg_device PRIVATE Kokkos::kokkos)
     peclet_core_add_test(graph_amg_device test_graph_amg_device)
 
+    # Parallel (Aggregation::Mis2) GraphAMG setup: steps 5-7 bitwise vs a host-order reference,
+    # PCG iteration gates, dense coarsest level + forced CG fallback (docs/graph_amg_parallel_setup.md).
+    add_executable(test_graph_amg_parallel test_graph_amg_parallel.cpp)
+    target_include_directories(test_graph_amg_parallel PRIVATE
+      ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(test_graph_amg_parallel PRIVATE Kokkos::kokkos)
+    peclet_core_add_test(graph_amg_parallel test_graph_amg_parallel)
+
     add_executable(test_grid_halo_exchange test_grid_halo_exchange.cpp)
     target_include_directories(test_grid_halo_exchange PRIVATE
       ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
