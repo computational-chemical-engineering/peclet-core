@@ -97,6 +97,7 @@ after `cmake --install`, or as a sibling checkout in the suite.
   face, a shear-link hat kernel, a cell midsection) that flow's sharp interface viscous stress samples;
   `GridHalo::init(topo, k, stride)` exchanges k stacked fields in one message per partner, and
   `buildTopology(..., depth)` fills a reduced ghost depth (both additive).
+  1.8.1 builds host targets with `-ffp-contract=off` (bit-identity on FMA-capable `-march`).
 - `peclet::core::solver` (`include/peclet/core/solver/`) — mesh-agnostic linear algebra: the
   smoothed-aggregation graph AMG (`graph_amg.hpp`, host setup; `graph_amg_device.hpp`, device apply)
   and the **assembled face-CSR operator layer** lifted out of the AMR tree on 2026-09-10 —
