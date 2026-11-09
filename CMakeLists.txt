@@ -115,6 +115,24 @@ if(PECLET_CORE_ENABLE_KOKKOS AND PECLET_CORE_HALO_OK)
   endif()
 endif()
 
+# Host floating-point contraction (the rule flow adopted, suite/docs/DECISIONS.md "Host launch rule";
+# flow/CMakeLists.txt): on a HOST build every core target -- the tests and benchmarks, which is why
+# this is directory-scoped and precedes them -- compiles with -ffp-contract=off. GCC's default is
+# -ffp-contract=fast, which fuses a*b+c into an FMA ACROSS statements wherever the ISA has one, and
+# where it does so depends on the inlining context: the same prim::*::eval inlined into evalTree and
+# called directly fused differently, so the geom/vof bit-identity gates (geom_scene, geom_owner,
+# geom_quadrature, vof_pvcache, vof_plic_regions) failed once the compiler targeted x86-64-v3 --
+# which GitHub's ubuntu-26.04 runner (amd64v3 packages) does by default. Inert on the generic
+# x86-64 baseline (SSE2 has no FMA instruction; proved bit-identical there). Device builds are
+# untouched: nvcc keeps --fmad=true for device code. Consumers compiling core headers with an
+# FMA-capable -march need the same flag (flow has it).
+if(NOT PECLET_CORE_HAVE_KOKKOS OR (NOT Kokkos_ENABLE_CUDA AND NOT Kokkos_ENABLE_HIP))
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-ffp-contract=off>)
+    message(STATUS "peclet-core: host build -> -ffp-contract=off")
+  endif()
+endif()
+
 # --- Install + package config: `find_package(peclet-core CONFIG)` yields the header-only
 #     peclet::core / peclet::halo (suite/docs/STYLE.md). The morton include is BUILD_INTERFACE-only,
 #     so an installed consumer puts morton on its own include path. ---
