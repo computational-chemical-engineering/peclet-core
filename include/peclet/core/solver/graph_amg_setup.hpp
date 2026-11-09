@@ -191,6 +191,79 @@ inline double powerLambdaInf(const DeviceCsr& A, const DView& dd, const DView& i
   return (lam > 0.0) ? lam : 1.0;
 }
 
+/// The two estimates of one level in ONE pass over the matrix: ρ(D⁻¹A) (lamS: dd = diag, every
+/// entry) and ρ(D_F⁻¹A_F) (lamF: dd = dF, the kept entries). Each is the arithmetic of
+/// powerLambdaInf exactly (same seed, same per-element operations, same stopping rule), so the
+/// values are bit-identical to two separate calls; only the matrix is read once instead of twice.
+inline void powerLambdaInf2(const DeviceCsr& A, const DView& dS, const DView& iS, const DView& dF,
+                            const DView& iF, const BView& keep, int iters, double& lamS,
+                            double& lamF) {
+  const Index n = A.n;
+  lamS = lamF = 1.0;
+  if (n == 0)
+    return;
+  auto alloc = [n](const char* nm) {
+    return DView(Kokkos::view_alloc(std::string(nm), Kokkos::WithoutInitializing), n);
+  };
+  DView vS = alloc("amgs_pvS"), wS = alloc("amgs_pwS"), vF = alloc("amgs_pvF"),
+        wF = alloc("amgs_pwF");
+  Kokkos::parallel_for(
+      "peclet::core::amgs_pseed2", Policy(0, n), KOKKOS_LAMBDA(const Index i) {
+        const double sd = (splitmix64(static_cast<std::uint64_t>(i)) & 1ULL) ? 1.0 : -1.0;
+        vS(i) = sd;
+        vF(i) = sd;
+      });
+  IView start = A.start, nbr = A.nbr;
+  DView coef = A.coef;
+  bool runS = true, runF = true;
+  for (int it = 0; it < iters && (runS || runF); ++it) {
+    double mS = 0.0, mF = 0.0;
+    const bool rS = runS, rF = runF;
+    Kokkos::parallel_reduce(
+        "peclet::core::amgs_papply2", Policy(0, n),
+        KOKKOS_LAMBDA(const Index i, double& aS, double& aF) {
+          double sS = dS(i) * vS(i), sF = dF(i) * vF(i);
+          for (Index k = start(i); k < start(i + 1); ++k) {
+            const Index j = nbr(k);
+            sS += coef(k) * vS(j);
+            if (keep(k))
+              sF += coef(k) * vF(j);
+          }
+          if (rS) {
+            const double y = iS(i) * sS;
+            wS(i) = y;
+            if (Kokkos::fabs(y) > aS)
+              aS = Kokkos::fabs(y);
+          }
+          if (rF) {
+            const double y = iF(i) * sF;
+            wF(i) = y;
+            if (Kokkos::fabs(y) > aF)
+              aF = Kokkos::fabs(y);
+          }
+        },
+        Kokkos::Max<double>(mS), Kokkos::Max<double>(mF));
+    if (rS && !(mS > 0.0))
+      runS = false;
+    if (rF && !(mF > 0.0))
+      runF = false;
+    if (runS)
+      lamS = mS;
+    if (runF)
+      lamF = mF;
+    const bool uS = runS, uF = runF;
+    Kokkos::parallel_for(
+        "peclet::core::amgs_pnorm2", Policy(0, n), KOKKOS_LAMBDA(const Index i) {
+          if (uS)
+            vS(i) = wS(i) / mS;
+          if (uF)
+            vF(i) = wF(i) / mF;
+        });
+  }
+  lamS = (lamS > 0.0) ? lamS : 1.0;
+  lamF = (lamF > 0.0) ? lamF : 1.0;
+}
+
 /// 1/diag (0 where |diag| ≤ 1e-300), the host oracle's formula.
 inline DView invDiagOf(const DView& d, Index n) {
   DView inv(Kokkos::view_alloc(std::string("amgs_invD"), Kokkos::WithoutInitializing), n);
@@ -275,9 +348,13 @@ inline StrongGraph buildStrength(const DeviceCsr& A, int s, double theta) {
       "peclet::core::amgs_strong_cnt", Policy(0, nNodes), KOKKOS_LAMBDA(const Index I) {
         const Index seg = start(I * s);
         Index c = 0;
-        for (Index m = 0; m < ucnt(I); ++m)
-          if (segV(seg + m) >= th2 * Kokkos::sqrt(ddiag(I) * ddiag(segJ(seg + m))))
+        for (Index m = 0; m < ucnt(I); ++m) {
+          const Index J = segJ(seg + m);
+          if (segV(seg + m) >= th2 * Kokkos::sqrt(ddiag(I) * ddiag(J)))
             ++c;
+          else
+            segJ(seg + m) = -1 - J;  // weak: marked for the fill pass
+        }
         scnt(I) = c;
       });
   StrongGraph G;
@@ -293,11 +370,10 @@ inline StrongGraph buildStrength(const DeviceCsr& A, int s, double theta) {
         const Index seg = start(I * s);
         Index at = sStart(I);
         for (Index m = 0; m < ucnt(I); ++m) {
-          const double f2 = segV(seg + m);
           const Index J = segJ(seg + m);
-          if (f2 >= th2 * Kokkos::sqrt(ddiag(I) * ddiag(J))) {
+          if (J >= 0) {
             sCol(at) = J;
-            sFro(at) = Kokkos::sqrt(f2);
+            sFro(at) = Kokkos::sqrt(segV(seg + m));
             ++at;
           }
         }
@@ -587,6 +663,7 @@ struct CoarseLevel {
   bool ok = false;
   Index nAgg = 0, nc = 0;
   double lmaxF = 1.0;  ///< λ(D_F⁻¹A_F) used for prolongator smoothing
+  double lmaxS = 1.0;  ///< λ(D⁻¹A) of this (fine) level, the smoother bound (valid when ok)
   IView agg;           ///< node → aggregate id
   IView Pstart, Pcol;
   DView Pval;
@@ -596,7 +673,8 @@ struct CoarseLevel {
 };
 
 /// Steps 1–7 for one level. `level` salts the MIS-2 priorities.
-inline CoarseLevel coarsen(const DeviceCsr& A, const AmgParams& prm, int level) {
+inline CoarseLevel coarsen(const DeviceCsr& A, const DView& invDiag, const AmgParams& prm,
+                           int level) {
   CoarseLevel out;
   const int s = prm.ndofPerNode;
   const Index n = A.n;
@@ -646,24 +724,44 @@ inline CoarseLevel coarsen(const DeviceCsr& A, const AmgParams& prm, int level) 
         dF(i) = d;
       });
   const DView invdF = invDiagOf(dF, n);
-  out.lmaxF = powerLambdaInf(A, dF, invdF, keep, prm.eigIters);
+  powerLambdaInf2(A, diag, invDiag, dF, invdF, keep, prm.eigIters, out.lmaxS, out.lmaxF);
   const Index nc = nAgg * s;
   out.nc = nc;
   AMGS_T(2, tp);
 
-  // 5: smoothed P (count, scan, fill)
+  // 5: smoothed P — one build per row into a bounded scratch (≤ min(64, 1 + kept entries)
+  // columns), then a scan and a compaction copy.
   PRowBuilder pb{start, nbr, agg, coef, dF, invSqrtCnt, keep, s, prm.smoothOmega / out.lmaxF};
+  IView pb_bound("amgs_pbound", n), pb_off("amgs_pboff", n + 1);
+  Kokkos::parallel_for(
+      "peclet::core::amgs_p_bound", Policy(0, n), KOKKOS_LAMBDA(const Index i) {
+        Index c = 1;
+        for (Index k = start(i); k < start(i + 1); ++k)
+          c += keep(k);
+        pb_bound(i) = c < kMaxPCols ? c : kMaxPCols;
+      });
+  const Index pbTot = scanCounts(pb_bound, pb_off, n);
+  IView tCol(Kokkos::view_alloc(std::string("amgs_pTc"), Kokkos::WithoutInitializing), pbTot);
+  DView tVal(Kokkos::view_alloc(std::string("amgs_pTv"), Kokkos::WithoutInitializing), pbTot);
   IView pc("amgs_pc", n);
   Index overflow = 0;
   Kokkos::parallel_reduce(
-      "peclet::core::amgs_p_cnt", Policy(0, n),
+      "peclet::core::amgs_p_build", Policy(0, n),
       KOKKOS_LAMBDA(const Index i, Index& bad) {
         Index cols[kMaxPCols];
         double vals[kMaxPCols];
         const int m = pb.build(i, cols, vals);
-        if (m < 0)
+        if (m < 0) {
           ++bad;
-        pc(i) = m < 0 ? 0 : m;
+          pc(i) = 0;
+          return;
+        }
+        const Index o = pb_off(i);
+        for (int q = 0; q < m; ++q) {
+          tCol(o + q) = cols[q];
+          tVal(o + q) = vals[q];
+        }
+        pc(i) = m;
       },
       overflow);
   if (overflow > 0)
@@ -676,14 +774,11 @@ inline CoarseLevel coarsen(const DeviceCsr& A, const AmgParams& prm, int level) 
   IView Pstart = out.Pstart, Pcol = out.Pcol;
   DView Pval = out.Pval;
   Kokkos::parallel_for(
-      "peclet::core::amgs_p_fill", Policy(0, n), KOKKOS_LAMBDA(const Index i) {
-        Index cols[kMaxPCols];
-        double vals[kMaxPCols];
-        const int m = pb.build(i, cols, vals);
-        const Index o = Pstart(i);
-        for (int q = 0; q < m; ++q) {
-          Pcol(o + q) = cols[q];
-          Pval(o + q) = vals[q];
+      "peclet::core::amgs_p_compact", Policy(0, n), KOKKOS_LAMBDA(const Index i) {
+        const Index o = Pstart(i), t = pb_off(i);
+        for (Index q = 0; q < pc(i); ++q) {
+          Pcol(o + q) = tCol(t + q);
+          Pval(o + q) = tVal(t + q);
         }
       });
 

@@ -155,13 +155,15 @@ class GraphAMGDevice {
       d.coef = cur.coef;
       d.diag = cur.diag;
       d.invDiag = amg_setup::invDiagOf(cur.diag, cur.n);
-      d.lmax =
-          amg_setup::powerLambdaInf(cur, cur.diag, d.invDiag, amg_setup::BView(), prm.eigIters);
       bool last = (L + 1 >= prm.maxLevels) || cur.n <= coarsest;
       DeviceCsr next;
+      bool haveLmax = false;
       if (!last) {
-        amg_setup::CoarseLevel C = amg_setup::coarsen(cur, prm, L);
+        // λ(D⁻¹A) comes out of the coarsening's fused power iteration (bitwise the standalone one)
+        amg_setup::CoarseLevel C = amg_setup::coarsen(cur, d.invDiag, prm, L);
         if (C.ok) {
+          d.lmax = C.lmaxS;
+          haveLmax = true;
           d.nc = C.nc;
           d.agg = C.agg;
           d.lmaxF = C.lmaxF;
@@ -176,6 +178,9 @@ class GraphAMGDevice {
           last = true;
         }
       }
+      if (!haveLmax)
+        d.lmax =
+            amg_setup::powerLambdaInf(cur, cur.diag, d.invDiag, amg_setup::BView(), prm.eigIters);
       allocScratch(d);
       lv_.push_back(std::move(d));
       if (last)
