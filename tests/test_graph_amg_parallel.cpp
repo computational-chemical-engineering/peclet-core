@@ -520,8 +520,10 @@ int checkLevelBitwise(const GraphAMGDevice::DLevel& L, const GraphAMGDevice::DLe
   return 0;
 }
 
-AmgParams paramsFor(const Case& c, Aggregation ag, CoarseSolve cs = CoarseSolve::Cg) {
+AmgParams paramsFor(const Case& c, Aggregation ag, CoarseSolve cs = CoarseSolve::Cg,
+                    Precision pr = Precision::Fp64) {
   AmgParams p;
+  p.precision = pr;
   p.ndofPerNode = c.s;
   p.aggregation = ag;
   p.coarseSolve = cs;
@@ -587,6 +589,20 @@ int runBench(int m) {
         1e3 * amg_setup::gProf[3], 1e3 * amg_setup::gProf[4], 1e3 * amg_setup::gProf[5],
         1e3 * amg_setup::gProf[6]);
 #endif
+    GraphAMGDevice P32;
+    P32.build(A, paramsFor(c, Aggregation::Mis2, CoarseSolve::Dense, Precision::Fp32));
+    double tv32 = 1e30;
+    for (int rep = 0; rep < 3; ++rep) {
+      Kokkos::fence();
+      const double t0 = now();
+      for (int k = 0; k < 20; ++k)
+        P32.apply(r, z);
+      Kokkos::fence();
+      tv32 = std::min(tv32, (now() - t0) / 20);
+    }
+    const int ip32 = pcg(A, P32, b, 1e-8);
+    std::printf("bench32 %s m=%d | fp32 it %d vcycle %.3f ms (fp64 %.3f ms, %+.1f%%)\n", c.name, m,
+                ip32, 1e3 * tv32, 1e3 * tv, 100.0 * (tv32 / tv - 1.0));
     const int ig = pcg(A, G, b, 1e-8), ip = pcg(A, P, b, 1e-8);
     std::printf(
         "bench %s m=%d n=%lld thr=%d | greedy setup %.2f ms it %d | mis2+dense setup %.2f ms it "
@@ -623,12 +639,21 @@ int runGate() {
       G.build(A, paramsFor(c, Aggregation::Greedy));
       P.build(A, paramsFor(c, Aggregation::Mis2));
       D.build(A, paramsFor(c, Aggregation::Mis2, CoarseSolve::Dense));
+      GraphAMGDevice F;
+      F.build(A, paramsFor(c, Aggregation::Mis2, CoarseSolve::Dense, Precision::Fp32));
       const int ig = pcg(A, G, b, 1e-8), ip = pcg(A, P, b, 1e-8), id = pcg(A, D, b, 1e-8);
+      const int i32 = pcg(A, F, b, 1e-8);
+      if (!(i32 <= 1.1 * id + 1e-9)) {
+        std::printf("FAILED %s m=%d: fp32 iterations %d > 1.1 x fp64 %d\n", c.name, m, i32, id);
+        fail = 1;
+      }
       const bool ok = ip <= 1.2 * ig + 1e-9 && id <= 1.2 * ig + 1e-9 &&
                       (prev < 0 || ip - prev <= 2) && D.coarseSolveUsed() == CoarseSolve::Dense;
       std::printf(
-          "  %s m=%d n=%lld: iters greedy %d | mis2 %d (%d lv) | mis2+dense %d (%d lv) %s\n",
-          c.name, m, (long long)A.n, ig, ip, P.numLevels(), id, D.numLevels(), ok ? "ok" : "FAIL");
+          "  %s m=%d n=%lld: iters greedy %d | mis2 %d (%d lv) | mis2+dense %d (%d lv) | fp32 %d "
+          "%s\n",
+          c.name, m, (long long)A.n, ig, ip, P.numLevels(), id, D.numLevels(), i32,
+          ok ? "ok" : "FAIL");
       if (!ok)
         fail = 1;
       prev = ip;

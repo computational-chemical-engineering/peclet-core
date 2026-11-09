@@ -32,6 +32,7 @@ class GraphAMGDevice {
  public:
   using DView = View<double>;
   using IView = View<Index>;
+  using FView = View<float>;
 
   /// Setup + device hierarchy. Rebuild whenever the operator changes. With the default
   /// Aggregation::Greedy the setup is the host oracle's, mirrored to the device (unchanged, bit for
@@ -57,6 +58,8 @@ class GraphAMGDevice {
     prm_ = prm;
     mirror();
     finalizeCoarse();
+    if (prm.precision == Precision::Fp32)
+      toFp32();
   }
 
   /// Parallel setup on the device, no host round trip of the operator (requires Aggregation::Mis2).
@@ -110,6 +113,12 @@ class GraphAMGDevice {
     double lmaxF = 0.0;
     // Dense coarsest level: eigenvectors V (row-major n×n) and the pseudo-inverse eigenvalues.
     DView denseV, denseLamInv;
+    // Precision::Fp32 (C2): FP32 value copies; vectors and all arithmetic stay FP64.
+    //   smF: the smoother reads coefS/diagS/invDiagS (level 0: a copy only the smoother reads);
+    //   opF: residual + coarse CG read coefS/diagS (levels ≥ 1: the only copy of A_c);
+    //   trF: restriction / prolongation read RvalS/PvalS.
+    bool smF = false, opF = false, trF = false;
+    FView coefS, diagS, invDiagS, PvalS, RvalS;
   };
 
   const std::vector<DLevel>& levels() const { return lv_; }
@@ -188,6 +197,43 @@ class GraphAMGDevice {
       cur = next;
     }
     finalizeCoarse();
+    if (prm.precision == Precision::Fp32)
+      toFp32();
+  }
+
+  static FView toFloat(const DView& v, const char* name) {
+    FView f(Kokkos::view_alloc(std::string(name), Kokkos::WithoutInitializing), v.extent(0));
+    Kokkos::parallel_for(
+        "peclet::core::amgd_tofloat", Kokkos::RangePolicy<ExecSpace>(0, v.extent(0)),
+        KOKKOS_LAMBDA(const std::size_t i) { f(i) = static_cast<float>(v(i)); });
+    return f;
+  }
+
+  // C2: FP32 storage of P, R and A_c on levels ≥ 1, the smoother diagonals on every level, and an
+  // FP32 copy of the fine matrix that only the smoother reads. The fine operator (residual), the
+  // fine↔level-1 transfer P₀/R₀ and the dense coarsest factors stay FP64; the setup itself ran in
+  // FP64 (each A_c is rounded once, after its Galerkin product).
+  void toFp32() {
+    for (std::size_t L = 0; L < lv_.size(); ++L) {
+      DLevel& d = lv_[L];
+      d.coefS = toFloat(d.coef, "amgd_coefS");
+      d.diagS = toFloat(d.diag, "amgd_diagS");
+      d.invDiagS = toFloat(d.invDiag, "amgd_invDiagS");
+      d.invDiag = DView();
+      d.smF = true;
+      if (L >= 1) {
+        d.opF = true;
+        d.coef = DView();
+        d.diag = DView();
+      }
+      if (L >= 1 && d.Pval.extent(0) > 0) {
+        d.PvalS = toFloat(d.Pval, "amgd_PvalS");
+        d.RvalS = toFloat(d.Rval, "amgd_RvalS");
+        d.Pval = DView();
+        d.Rval = DView();
+        d.trF = true;
+      }
+    }
   }
 
   // Coarsest level: the dense pseudo-inverse when requested and n ≤ kDenseCoarseMax (host cyclic
@@ -305,6 +351,10 @@ class GraphAMGDevice {
  public:
   // y = A x (diag + off-diagonal CSR; each row summed sequentially — the host order).
   static void spmv(const DLevel& lv, const DView& x, const DView& y) {
+    if (lv.opF) {
+      spmvF(lv, x, y);
+      return;
+    }
     IView start = lv.start, nbr = lv.nbr;
     DView coef = lv.coef, diag = lv.diag;
     Kokkos::parallel_for(
@@ -315,6 +365,27 @@ class GraphAMGDevice {
             s += coef(k) * x(nbr(k));
           y(i) = s;
         });
+  }
+
+  // y = A x from the FP32 value copies (FP64 accumulation, same row order).
+  static void spmvF(const DLevel& lv, const DView& x, const DView& y) {
+    IView start = lv.start, nbr = lv.nbr;
+    FView coef = lv.coefS, diag = lv.diagS;
+    Kokkos::parallel_for(
+        "peclet::core::amgd_spmv_f32", Kokkos::RangePolicy<ExecSpace>(0, lv.n),
+        KOKKOS_LAMBDA(const Index i) {
+          double s = static_cast<double>(diag(i)) * x(i);
+          for (Index k = start(i); k < start(i + 1); ++k)
+            s += static_cast<double>(coef(k)) * x(nbr(k));
+          y(i) = s;
+        });
+  }
+  // The smoother's operator: the FP32 copy when smF, else the level operator.
+  static void spmvSm(const DLevel& lv, const DView& x, const DView& y) {
+    if (lv.smF)
+      spmvF(lv, x, y);
+    else
+      spmv(lv, x, y);
   }
 
   void vcycle(int L) const {
@@ -332,7 +403,19 @@ class GraphAMGDevice {
           KOKKOS_LAMBDA(const Index i) { res(i) = b(i) - res(i); });
     }
     const DLevel& cl = lv_[(std::size_t)L + 1];
-    {  // coarse b = Pᵀ res via the transpose gather (fine-index order per coarse row)
+    if (lv.trF) {  // FP32 transfer values, FP64 accumulation
+      IView Rstart = lv.Rstart, Rcol = lv.Rcol;
+      FView Rval = lv.RvalS;
+      DView res = lv.res, cb = cl.b;
+      Kokkos::parallel_for(
+          "peclet::core::amgd_restrict_f32", Kokkos::RangePolicy<ExecSpace>(0, cl.n),
+          KOKKOS_LAMBDA(const Index c) {
+            double s = 0.0;
+            for (Index k = Rstart(c); k < Rstart(c + 1); ++k)
+              s += static_cast<double>(Rval(k)) * res(Rcol(k));
+            cb(c) = s;
+          });
+    } else {  // coarse b = Pᵀ res via the transpose gather (fine-index order per coarse row)
       IView Rstart = lv.Rstart, Rcol = lv.Rcol;
       DView Rval = lv.Rval, res = lv.res, cb = cl.b;
       Kokkos::parallel_for(
@@ -346,7 +429,19 @@ class GraphAMGDevice {
     }
     Kokkos::deep_copy(cl.x, 0.0);
     vcycle(L + 1);
-    {  // x += P x_c
+    if (lv.trF) {
+      IView Pstart = lv.Pstart, Pcol = lv.Pcol;
+      FView Pval = lv.PvalS;
+      DView x = lv.x, cx = cl.x;
+      Kokkos::parallel_for(
+          "peclet::core::amgd_prolong_f32", Kokkos::RangePolicy<ExecSpace>(0, lv.n),
+          KOKKOS_LAMBDA(const Index i) {
+            double s = 0.0;
+            for (Index k = Pstart(i); k < Pstart(i + 1); ++k)
+              s += static_cast<double>(Pval(k)) * cx(Pcol(k));
+            x(i) += s;
+          });
+    } else {  // x += P x_c
       IView Pstart = lv.Pstart, Pcol = lv.Pcol;
       DView Pval = lv.Pval, x = lv.x, cx = cl.x;
       Kokkos::parallel_for(
@@ -373,7 +468,17 @@ class GraphAMGDevice {
 
   void jacobiSweep(const DLevel& lv) const {
     const double step = prm_.jacobiOmega / lv.lmax;
-    spmv(lv, lv.x, lv.res);
+    spmvSm(lv, lv.x, lv.res);
+    if (lv.smF) {
+      DView x = lv.x, b = lv.b, res = lv.res;
+      FView invD = lv.invDiagS;
+      Kokkos::parallel_for(
+          "peclet::core::amgd_jacobi_f32", Kokkos::RangePolicy<ExecSpace>(0, lv.n),
+          KOKKOS_LAMBDA(const Index i) {
+            x(i) += step * static_cast<double>(invD(i)) * (b(i) - res(i));
+          });
+      return;
+    }
     DView x = lv.x, b = lv.b, res = lv.res, invD = lv.invDiag;
     Kokkos::parallel_for(
         "peclet::core::amgd_jacobi", Kokkos::RangePolicy<ExecSpace>(0, lv.n),
@@ -383,6 +488,10 @@ class GraphAMGDevice {
   void chebSweep(const DLevel& lv) const {
     const int k = prm_.chebDegree;
     const double lam = 1.1 * lv.lmax;
+    if (lv.smF) {
+      chebSweepF(lv);
+      return;
+    }
     DView r = lv.res, d = lv.t0, Ad = lv.t1, x = lv.x, b = lv.b, invD = lv.invDiag;
     spmv(lv, lv.x, r);  // r = b − A x
     Kokkos::parallel_for(
@@ -402,6 +511,35 @@ class GraphAMGDevice {
         spmv(lv, d, Ad);
         Kokkos::parallel_for(
             "peclet::core::amgd_cheb_rup", Kokkos::RangePolicy<ExecSpace>(0, lv.n),
+            KOKKOS_LAMBDA(const Index j) { r(j) -= Ad(j); });
+      }
+    }
+  }
+
+  // The Chebyshev sweep on the FP32 smoother copy (FP64 vectors and arithmetic).
+  void chebSweepF(const DLevel& lv) const {
+    const int k = prm_.chebDegree;
+    const double lam = 1.1 * lv.lmax;
+    DView r = lv.res, d = lv.t0, Ad = lv.t1, x = lv.x, b = lv.b;
+    FView invD = lv.invDiagS;
+    spmvF(lv, lv.x, r);
+    Kokkos::parallel_for(
+        "peclet::core::amgd_cheb_r0_f32", Kokkos::RangePolicy<ExecSpace>(0, lv.n),
+        KOKKOS_LAMBDA(const Index i) { r(i) = b(i) - r(i); });
+    Kokkos::deep_copy(d, 0.0);
+    for (int i = 1; i <= k; ++i) {
+      const double c1 = (2.0 * i - 3.0) / (2.0 * i + 1.0);
+      const double c2 = (8.0 * i - 4.0) / ((2.0 * i + 1.0) * lam);
+      Kokkos::parallel_for(
+          "peclet::core::amgd_cheb_d_f32", Kokkos::RangePolicy<ExecSpace>(0, lv.n),
+          KOKKOS_LAMBDA(const Index j) {
+            d(j) = c1 * d(j) + c2 * static_cast<double>(invD(j)) * r(j);
+            x(j) += d(j);
+          });
+      if (i < k) {
+        spmvF(lv, d, Ad);
+        Kokkos::parallel_for(
+            "peclet::core::amgd_cheb_rup_f32", Kokkos::RangePolicy<ExecSpace>(0, lv.n),
             KOKKOS_LAMBDA(const Index j) { r(j) -= Ad(j); });
       }
     }
