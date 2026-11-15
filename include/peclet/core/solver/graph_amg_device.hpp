@@ -38,7 +38,12 @@ class GraphAMGDevice {
   /// Aggregation::Greedy the setup is the host oracle's, mirrored to the device (unchanged, bit for
   /// bit, at default parameters); with Aggregation::Mis2 the operator is uploaded and the parallel
   /// setup runs on the device (build(const DeviceCsr&, ...)).
-  void build(const HostCsrOp& A, const AmgParams& prm = {}) {
+  /// `label` (optional; Aggregation::Mis2 only): one integer per node (n / ndofPerNode) such that
+  /// no aggregate and no prolongator entry couples two labels on any level (e.g. the phase of a
+  /// cell: the transfer then never crosses a density jump). Empty = off, byte-identical.
+  void build(const HostCsrOp& A, const AmgParams& prm = {}, const IView& label = IView()) {
+    if (label.extent(0) > 0 && prm.aggregation != Aggregation::Mis2)
+      throw std::invalid_argument("GraphAMGDevice::build: a node label requires Aggregation::Mis2");
     if (prm.aggregation == Aggregation::Mis2) {
       DeviceCsr d;
       d.n = A.n;
@@ -46,7 +51,7 @@ class GraphAMGDevice {
       d.start = toDev(A.start, "amgd_A_start");
       d.nbr = toDev(A.nbr, "amgd_A_nbr");
       d.coef = toDev(A.coef, "amgd_A_coef");
-      buildParallel(d, prm);
+      buildParallel(d, prm, label);
       return;
     }
     AmgParams hp = prm;
@@ -64,7 +69,8 @@ class GraphAMGDevice {
 
   /// Parallel setup on the device, no host round trip of the operator (requires Aggregation::Mis2).
   /// The operator's views are copied: the hierarchy does not alias the caller's operator.
-  void build(const DeviceCsr& A, const AmgParams& prm) {
+  /// `label`: as build(const HostCsrOp&, ...).
+  void build(const DeviceCsr& A, const AmgParams& prm, const IView& label = IView()) {
     if (prm.aggregation != Aggregation::Mis2)
       throw std::invalid_argument("GraphAMGDevice::build(DeviceCsr): requires Aggregation::Mis2");
     DeviceCsr d;
@@ -73,7 +79,7 @@ class GraphAMGDevice {
     d.start = copyView(A.start, "amgd_A_start");
     d.nbr = copyView(A.nbr, "amgd_A_nbr");
     d.coef = copyView(A.coef, "amgd_A_coef");
-    buildParallel(d, prm);
+    buildParallel(d, prm, label);
   }
 
   /// The coarsest-level solve actually in use: Dense only when it was requested AND the coarsest
@@ -110,6 +116,7 @@ class GraphAMGDevice {
     DView x, b, res, t0, t1;  // scratch
     // Mis2 setup only: node → aggregate map of this level's coarsening, and λ(D_F⁻¹A_F).
     IView agg;
+    IView label;  // node label of this level (label option only; carried down beside agg)
     double lmaxF = 0.0;
     // Dense coarsest level: eigenvectors V (row-major n×n) and the pseudo-inverse eigenvalues.
     DView denseV, denseLamInv;
@@ -147,18 +154,22 @@ class GraphAMGDevice {
 
   // Parallel (Mis2) setup, design §14.5 C1. Level loop as the host oracle's: the smoother bound
   // λ(D⁻¹A) on every level (∞-norm power iteration), coarsen while n > coarsest and levels remain.
-  void buildParallel(const DeviceCsr& A0, const AmgParams& prm) {
+  void buildParallel(const DeviceCsr& A0, const AmgParams& prm, const IView& label0 = IView()) {
     const int s = prm.ndofPerNode;
     if (s <= 0 || A0.n % s != 0)
       throw std::invalid_argument("GraphAMGDevice: n must be a multiple of ndofPerNode");
+    if (label0.extent(0) > 0 && (Index)label0.extent(0) != A0.n / s)
+      throw std::invalid_argument("GraphAMGDevice: the label needs one entry per node");
     prm_ = prm;
     host_ = GraphAMG();
     lv_.clear();
     const Index coarsest = denseRequested(prm) ? kDenseCoarseMax : prm.coarsest;
     DeviceCsr cur = A0;
+    IView lab = label0;
     for (int L = 0;; ++L) {
       DLevel d;
       d.n = cur.n;
+      d.label = lab;
       d.start = cur.start;
       d.nbr = cur.nbr;
       d.coef = cur.coef;
@@ -166,10 +177,11 @@ class GraphAMGDevice {
       d.invDiag = amg_setup::invDiagOf(cur.diag, cur.n);
       bool last = (L + 1 >= prm.maxLevels) || cur.n <= coarsest;
       DeviceCsr next;
+      IView nextLabel;
       bool haveLmax = false;
       if (!last) {
         // λ(D⁻¹A) comes out of the coarsening's fused power iteration (bitwise the standalone one)
-        amg_setup::CoarseLevel C = amg_setup::coarsen(cur, d.invDiag, prm, L);
+        amg_setup::CoarseLevel C = amg_setup::coarsen(cur, d.invDiag, prm, L, lab);
         if (C.ok) {
           d.lmax = C.lmaxS;
           haveLmax = true;
@@ -183,6 +195,7 @@ class GraphAMGDevice {
           d.Rcol = C.Rcol;
           d.Rval = C.Rval;
           next = C.Ac;
+          nextLabel = C.label;
         } else {
           last = true;
         }
@@ -195,6 +208,7 @@ class GraphAMGDevice {
       if (last)
         break;
       cur = next;
+      lab = nextLabel;
     }
     finalizeCoarse();
     if (prm.precision == Precision::Fp32)

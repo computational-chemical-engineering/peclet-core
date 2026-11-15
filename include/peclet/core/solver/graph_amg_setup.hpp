@@ -297,7 +297,10 @@ KOKKOS_INLINE_FUNCTION bool isStrongEdge(const IView& sStart, const IView& sCol,
 
 /// Step 1: nodal strength, the host test verbatim. Per-node block norms are accumulated in the
 /// host's (row, entry) order through a dense marker, then sorted by J.
-inline StrongGraph buildStrength(const DeviceCsr& A, int s, double theta) {
+/// `label` (optional, one integer per node; empty = off): an edge between two different labels is
+/// never strong, so no aggregate and, through the filter, no prolongator entry couples two labels.
+inline StrongGraph buildStrength(const DeviceCsr& A, int s, double theta,
+                                 const IView& label = IView()) {
   const Index nNodes = A.n / s;
   const Index nnz = static_cast<Index>(A.nbr.extent(0));
   IView start = A.start, nbr = A.nbr;
@@ -343,6 +346,7 @@ inline StrongGraph buildStrength(const DeviceCsr& A, int s, double theta) {
         ddiag(I) = dd;
       });
   const double th2 = theta * theta;
+  const bool labeled = label.extent(0) > 0;
   IView scnt("amgs_scnt", nNodes);
   Kokkos::parallel_for(
       "peclet::core::amgs_strong_cnt", Policy(0, nNodes), KOKKOS_LAMBDA(const Index I) {
@@ -350,7 +354,8 @@ inline StrongGraph buildStrength(const DeviceCsr& A, int s, double theta) {
         Index c = 0;
         for (Index m = 0; m < ucnt(I); ++m) {
           const Index J = segJ(seg + m);
-          if (segV(seg + m) >= th2 * Kokkos::sqrt(ddiag(I) * ddiag(J)))
+          if ((!labeled || label(I) == label(J)) &&
+              segV(seg + m) >= th2 * Kokkos::sqrt(ddiag(I) * ddiag(J)))
             ++c;
           else
             segJ(seg + m) = -1 - J;  // weak: marked for the fill pass
@@ -665,6 +670,7 @@ struct CoarseLevel {
   double lmaxF = 1.0;  ///< λ(D_F⁻¹A_F) used for prolongator smoothing
   double lmaxS = 1.0;  ///< λ(D⁻¹A) of this (fine) level, the smoother bound (valid when ok)
   IView agg;           ///< node → aggregate id
+  IView label;         ///< aggregate → label (only when the level was labeled)
   IView Pstart, Pcol;
   DView Pval;
   IView Rstart, Rcol;
@@ -672,9 +678,12 @@ struct CoarseLevel {
   DeviceCsr Ac;
 };
 
-/// Steps 1–7 for one level. `level` salts the MIS-2 priorities.
+/// Steps 1–7 for one level. `level` salts the MIS-2 priorities. `label` (optional, per node of
+/// this level): cross-label edges are weak (buildStrength), hence in no aggregate, dropped by the
+/// filter and lumped into the diagonal of A_F; out.label carries the aggregates' label down.
+/// A_c = PᵀAP keeps the full A, cross-label couplings included.
 inline CoarseLevel coarsen(const DeviceCsr& A, const DView& invDiag, const AmgParams& prm,
-                           int level) {
+                           int level, const IView& label = IView()) {
   CoarseLevel out;
   const int s = prm.ndofPerNode;
   const Index n = A.n;
@@ -687,7 +696,7 @@ inline CoarseLevel coarsen(const DeviceCsr& A, const DView& invDiag, const AmgPa
 #ifdef PECLET_CORE_AMGS_PROFILE
   double tp = profNow();
 #endif
-  const StrongGraph G = buildStrength(A, s, prm.theta);
+  const StrongGraph G = buildStrength(A, s, prm.theta, label);
   AMGS_T(0, tp);
   out.agg = IView("amgs_agg", nN);
   const Index nAgg = aggregate(G, level, out.agg);
@@ -696,6 +705,16 @@ inline CoarseLevel coarsen(const DeviceCsr& A, const DView& invDiag, const AmgPa
   if (nAgg <= 1 || nAgg == nN)
     return out;  // no useful coarsening (the host oracle's rule)
   IView agg = out.agg;
+  if (label.extent(0) > 0) {
+    // every member of an aggregate has its label (aggregates grow along strong edges only), so
+    // the concurrent stores of one aggregate write one value
+    out.label =
+        IView(Kokkos::view_alloc(std::string("amgs_clabel"), Kokkos::WithoutInitializing), nAgg);
+    IView clabel = out.label;
+    Kokkos::parallel_for(
+        "peclet::core::amgs_clabel", Policy(0, nN),
+        KOKKOS_LAMBDA(const Index I) { Kokkos::atomic_store(&clabel(agg(I)), label(I)); });
+  }
 
   // 4: P₀ normalisation; filtered diagonal + keep mask; λ(D_F⁻¹A_F)
   IView cnt("amgs_cnt", nAgg);

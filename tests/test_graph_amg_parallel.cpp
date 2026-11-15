@@ -9,13 +9,31 @@
 //     mesh-independent (N ×8 adds ≤ 2) on the four test operators;
 //   * the dense coarsest level (singular Neumann operator; A·A_c⁺·b = b on the range) and the
 //     forced CG fallback (denseFallback()).
+//   * the node-label option (GraphAMGDevice::build(..., label)): on a two-phase model of the
+//     pressure operator L_ρ (twoPhase()), no aggregate and no P entry couples two labels on any
+//     level, the coarse labels are the aggregates' own, steps 5–7 stay bitwise against the
+//     host-order reference with the label cut, a uniform label is inert (hierarchy hash), and the
+//     PCG iterations at density ratio 1000 stay within a bound.
 // `--hash m`  : one line per operator with an FNV-1a hash of the whole hierarchy (gate (d): run at
-//               1/2/4/8 threads and on the Serial backend, compare).
+//               1/2/4/8 threads and on the Serial backend, compare); with labels, one more line
+//               for twoPhase(m) at ratio 1000.
 // `--bench m` : setup and V-cycle timings (gate (c)), best of 3.
+// `--file PREFIX [--nolabel] [--fp32] [--greedy]` : the label checks and a PCG solve (relative
+//               1e-10, mean-free right-hand side) on an operator read from two raw little-endian
+//               files (s = 1):
+//                 PREFIX.csr   int64 n, int64 nnz, float64 diag[n], int64 start[n+1],
+//                              int64 nbr[nnz], float64 coef[nnz]   (off-diagonal CSR, as HostCsrOp)
+//                 PREFIX.label int64 label[n]
+//               Prints one `level` line per level and one `file` line: iterations, levels, grid and
+//               operator complexity, setup and solve time, hierarchy hash. --nolabel builds without
+//               the label (the control), --fp32 with Precision::Fp32, --greedy the host oracle's
+//               setup (no label). Registered parameters (θ 0.05, Chebyshev, dense coarsest ≤ 200).
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <Kokkos_Core.hpp>
 #include <map>
 #include <random>
@@ -254,6 +272,76 @@ const Case kCases[] = {{"poisson7", 1, mkPoisson},
                        {"s0_2ring", 1, twoRing},
                        {"vec3blk", 3, mkVec}};
 
+// Two-phase model of the pressure operator L_ρ = D diag(a_f) Dᵀ, a_f = A_f/(ρ_f d_f), of the
+// moving-grid solver: a jittered (±0.3) periodic m³ lattice of unit spacing; faces to the 6 lattice
+// neighbours with areas in [0.5, 1.5] and to the 8 bcc corners as slivers with areas 10^U(−4,−1)
+// (a Voronoi mesh's strong and weak edges); d_f the minimum-image distance; harmonic face density
+// 1/ρ_f = (1/ρ_A + 1/ρ_B)/2 (h_A = h_B = d/2). Nodes within m/4 of the box centre are label 1 with
+// ρ = rhoIn, the others label 0 with ρ = rhoOut. Periodic: singular, constants in the null space.
+struct LabeledOp {
+  HostCsrOp A;
+  std::vector<Index> label;
+};
+LabeledOp twoPhase(int m, double rhoIn, double rhoOut, unsigned seed = 31) {
+  const Index n = (Index)m * m * m;
+  std::mt19937 rng(seed);
+  std::uniform_real_distribution<double> U(-1.0, 1.0);
+  std::vector<double> pos((std::size_t)n * 3);
+  LabeledOp T;
+  T.label.assign((std::size_t)n, 0);
+  std::vector<double> rho((std::size_t)n);
+  for (Index I = 0; I < n; ++I) {
+    const int ijk[3] = {(int)(I % m), (int)((I / m) % m), (int)(I / ((Index)m * m))};
+    double r2 = 0;
+    for (int d = 0; d < 3; ++d) {
+      pos[(std::size_t)I * 3 + d] = ijk[d] + 0.5 + 0.3 * U(rng);
+      const double e = pos[(std::size_t)I * 3 + d] - 0.5 * m;
+      r2 += e * e;
+    }
+    T.label[(std::size_t)I] = r2 < 0.0625 * m * m ? 1 : 0;
+    rho[(std::size_t)I] = T.label[(std::size_t)I] ? rhoIn : rhoOut;
+  }
+  std::vector<std::map<Index, double>> row((std::size_t)n);
+  // each undirected face once: +x, +y, +z and the four corners with a +x component
+  const int dirs[7][3] = {{1, 0, 0},  {0, 1, 0},  {0, 0, 1},  {1, 1, 1},
+                          {1, 1, -1}, {1, -1, 1}, {1, -1, -1}};
+  for (Index I = 0; I < n; ++I) {
+    const int x = (int)(I % m), y = (int)((I / m) % m), z = (int)(I / ((Index)m * m));
+    for (int e = 0; e < 7; ++e) {
+      const Index J = ((((Index)(z + dirs[e][2] + m) % m) * m + (y + dirs[e][1] + m) % m) * m) +
+                      (x + dirs[e][0] + m) % m;
+      double d2 = 0;
+      for (int k = 0; k < 3; ++k) {
+        double c = pos[(std::size_t)J * 3 + k] - pos[(std::size_t)I * 3 + k];
+        c -= m * std::round(c / m);
+        d2 += c * c;
+      }
+      const double area = e < 3 ? 1.0 + 0.5 * U(rng) : std::pow(10.0, -2.5 + 1.5 * U(rng));
+      const double invRho = 0.5 / rho[(std::size_t)I] + 0.5 / rho[(std::size_t)J];
+      const double a = area * invRho / std::sqrt(d2);  // A_f/(ρ_f d_f)
+      row[(std::size_t)I][I] += a;
+      row[(std::size_t)J][J] += a;
+      row[(std::size_t)I][J] -= a;
+      row[(std::size_t)J][I] -= a;
+    }
+  }
+  HostCsrOp& A = T.A;
+  A.n = n;
+  A.diag.assign((std::size_t)n, 0.0);
+  A.start.assign((std::size_t)n + 1, 0);
+  for (Index I = 0; I < n; ++I) {
+    for (auto& [J, v] : row[(std::size_t)I])
+      if (J == I)
+        A.diag[(std::size_t)I] = v;
+      else {
+        A.nbr.push_back(J);
+        A.coef.push_back(v);
+      }
+    A.start[(std::size_t)I + 1] = (Index)A.nbr.size();
+  }
+  return T;
+}
+
 // ---------------------------------------------------------------- helpers
 template <class T>
 std::vector<T> toHost(const View<T>& v) {
@@ -272,16 +360,20 @@ double dotD(const View<double>& a, const View<double>& b) {
   return s;
 }
 
-// Device PCG (rel. tol on ‖r‖₂) with one V-cycle per iteration; returns iterations.
-int pcg(const HostCsrOp& Ah, const GraphAMGDevice& M, const std::vector<double>& bh, double tol,
-        int maxIt = 300) {
+GraphAMGDevice::DLevel devOp(const HostCsrOp& Ah) {
   GraphAMGDevice::DLevel A;
   A.n = Ah.n;
   A.start = GraphAMGDevice::toDev(Ah.start, "s");
   A.nbr = GraphAMGDevice::toDev(Ah.nbr, "n");
   A.coef = GraphAMGDevice::toDev(Ah.coef, "c");
   A.diag = GraphAMGDevice::toDev(Ah.diag, "d");
-  const std::size_t n = (std::size_t)Ah.n;
+  return A;
+}
+
+// Device PCG (rel. tol on ‖r‖₂) with one V-cycle per iteration; returns iterations.
+int pcg(const GraphAMGDevice::DLevel& A, const GraphAMGDevice& M, const std::vector<double>& bh,
+        double tol, int maxIt = 300) {
+  const std::size_t n = (std::size_t)A.n;
   View<double> x("x", n), r = toDevV(bh), z("z", n), p("p", n), Ap("Ap", n);
   const double r0 = std::sqrt(dotD(r, r));
   M.apply(r, z);
@@ -311,6 +403,10 @@ int pcg(const HostCsrOp& Ah, const GraphAMGDevice& M, const std::vector<double>&
         KOKKOS_LAMBDA(std::size_t i) { p(i) = z(i) + be * p(i); });
   }
   return it;
+}
+int pcg(const HostCsrOp& Ah, const GraphAMGDevice& M, const std::vector<double>& bh, double tol,
+        int maxIt = 300) {
+  return pcg(devOp(Ah), M, bh, tol, maxIt);
 }
 
 std::vector<double> rhs(Index n, unsigned seed, bool meanFree = false) {
@@ -394,11 +490,16 @@ int checkLevelBitwise(const GraphAMGDevice::DLevel& L, const GraphAMGDevice::DLe
         blk[(std::size_t)I][J] += c * c;
     }
   }
+  // label option: a cross-label edge is never strong
+  const std::vector<Index> lab = toHost(L.label);
+  auto sameLabel = [&](Index I, Index J) {
+    return lab.empty() || lab[(std::size_t)I] == lab[(std::size_t)J];
+  };
   std::vector<std::vector<Index>> strong((std::size_t)nN);
   const double th2 = prm.theta * prm.theta;
   for (Index I = 0; I < nN; ++I)
     for (auto& [J, f2] : blk[(std::size_t)I])
-      if (f2 >= th2 * std::sqrt(ddiag[(std::size_t)I] * ddiag[(std::size_t)J]))
+      if (sameLabel(I, J) && f2 >= th2 * std::sqrt(ddiag[(std::size_t)I] * ddiag[(std::size_t)J]))
         strong[(std::size_t)I].push_back(J);
   auto isStrong = [&](Index I, Index J) {
     const auto& v = strong[(std::size_t)I];
@@ -520,6 +621,72 @@ int checkLevelBitwise(const GraphAMGDevice::DLevel& L, const GraphAMGDevice::DLe
   return 0;
 }
 
+// Label option, checked on every level from the fine labels alone: aggregates with members of two
+// labels (b1), P entries (i, c) whose fine label differs from aggregate c's (b2), and coarse
+// labels that differ from the aggregates' own (the label carried to the next level).
+struct LabelCounts {
+  Index mixedAgg = 0, crossP = 0, badCoarse = 0;
+  bool clean() const { return mixedAgg == 0 && crossP == 0 && badCoarse == 0; }
+};
+LabelCounts labelCounts(const GraphAMGDevice& M, int s) {
+  LabelCounts r;
+  for (int L = 0; L + 1 < M.numLevels(); ++L) {
+    const auto& F = M.levels()[(std::size_t)L];
+    const auto lab = toHost(F.label), agg = toHost(F.agg), clab = toHost(M.levels()[L + 1].label);
+    const auto Pstart = toHost(F.Pstart), Pcol = toHost(F.Pcol);
+    const Index nAgg = F.nc / s;
+    constexpr Index kUnset = -(Index(1) << 62);
+    std::vector<Index> own((std::size_t)nAgg, kUnset);
+    std::vector<char> mixed((std::size_t)nAgg, 0);
+    for (std::size_t I = 0; I < agg.size(); ++I) {
+      Index& o = own[(std::size_t)agg[I]];
+      if (o == kUnset)
+        o = lab[I];
+      else if (o != lab[I])
+        mixed[(std::size_t)agg[I]] = 1;
+    }
+    for (Index a = 0; a < nAgg; ++a) {
+      r.mixedAgg += mixed[(std::size_t)a];
+      if ((Index)clab.size() != nAgg || clab[(std::size_t)a] != own[(std::size_t)a])
+        ++r.badCoarse;
+    }
+    for (Index i = 0; i + 1 < (Index)Pstart.size(); ++i)
+      for (Index k = Pstart[(std::size_t)i]; k < Pstart[(std::size_t)i + 1]; ++k)
+        if (lab[(std::size_t)(i / s)] != own[(std::size_t)(Pcol[(std::size_t)k] / s)])
+          ++r.crossP;
+  }
+  return r;
+}
+
+// One line per level: DOFs, nonzeros (diagonal included), aggregates and singleton aggregates.
+// Returns {grid complexity, operator complexity}.
+std::pair<double, double> printLevels(const GraphAMGDevice& M, int s, const char* tag) {
+  double g = 0, o = 0;
+  const double n0 = (double)M.size(0), z0 = (double)M.levels()[0].nbr.extent(0) + n0;
+  for (int L = 0; L < M.numLevels(); ++L) {
+    const auto& F = M.levels()[(std::size_t)L];
+    const Index nnz = (Index)F.nbr.extent(0) + F.n;
+    Index nAgg = 0, single = 0;
+    if (F.agg.extent(0) > 0) {
+      nAgg = F.nc / s;
+      std::vector<Index> cnt((std::size_t)nAgg, 0);
+      for (Index a : toHost(F.agg))
+        ++cnt[(std::size_t)a];
+      for (Index c : cnt)
+        single += c == 1;
+    }
+    std::printf("level %s L%d n=%lld nnz=%lld aggregates=%lld singletons=%lld\n", tag, L,
+                (long long)F.n, (long long)nnz, (long long)nAgg, (long long)single);
+    g += (double)F.n / n0;
+    o += (double)nnz / z0;
+  }
+  return {g, o};
+}
+
+View<Index> toDevI(const std::vector<Index>& v) {
+  return GraphAMGDevice::toDev(v, "label");
+}
+
 AmgParams paramsFor(const Case& c, Aggregation ag, CoarseSolve cs = CoarseSolve::Cg,
                     Precision pr = Precision::Fp64) {
   AmgParams p;
@@ -529,6 +696,10 @@ AmgParams paramsFor(const Case& c, Aggregation ag, CoarseSolve cs = CoarseSolve:
   p.coarseSolve = cs;
   return p;
 }
+
+// (6): PCG iteration bound of the labeled two-phase case at ratio 1000 (set from the measured
+// count with a margin; see docs/graph_amg_parallel_setup.md).
+constexpr int kTwoPhaseItersMax = 1000;
 
 double now() {
   return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -544,6 +715,14 @@ int runHash(int m) {
                   cs == CoarseSolve::Dense ? "dense" : "cg", M.numLevels(),
                   (unsigned long long)hierarchyHash(M));
     }
+  }
+  {  // the label option: two-phase model at density ratio 1000, labels on
+    const LabeledOp T = twoPhase(m, 1.0, 1000.0);
+    GraphAMGDevice M;
+    M.build(T.A, paramsFor(Case{"twophase", 1, nullptr}, Aggregation::Mis2, CoarseSolve::Dense),
+            toDevI(T.label));
+    std::printf("hash twophase_label m=%d coarse=dense levels=%d %016llx\n", m, M.numLevels(),
+                (unsigned long long)hierarchyHash(M));
   }
   return 0;
 }
@@ -728,7 +907,171 @@ int runGate() {
       fail = 1;
     }
   }
+  // (6) the node-label option on the two-phase model of L_ρ (m = 20, 8000 DOFs; dense coarsest)
+  {
+    const int m = 20;
+    const LabeledOp T1 = twoPhase(m, 1.0, 1.0), T3 = twoPhase(m, 1.0, 1000.0);
+    const Case c{"twophase", 1, nullptr};
+    const AmgParams prm = paramsFor(c, Aggregation::Mis2, CoarseSolve::Dense);
+    const View<Index> lab = toDevI(T3.label);
+    const auto b = rhs(T3.A.n, 6, true);
+    int it[2] = {0, 0};
+    for (int r = 0; r < 2; ++r) {
+      const HostCsrOp& A = r ? T3.A : T1.A;
+      GraphAMGDevice M;
+      M.build(A, prm, lab);
+      const LabelCounts lc = labelCounts(M, 1);
+      int bw = 0;
+      for (int L = 0; L + 1 < M.numLevels(); ++L) {
+        const std::string tag = std::string("twophase L") + std::to_string(L);
+        bw |= checkLevelBitwise(M.levels()[(std::size_t)L], M.levels()[(std::size_t)L + 1], prm,
+                                tag.c_str());
+      }
+      it[r] = pcg(A, M, b, 1e-10);
+      printLevels(M, 1, r ? "twophase_r1000" : "twophase_r1");
+      const bool ok = lc.clean() && !bw && M.coarseSolveUsed() == CoarseSolve::Dense;
+      std::printf(
+          "  twophase m=%d ratio %s, labels: %d levels, mixed aggregates %lld, cross-label P "
+          "entries %lld, bad coarse labels %lld, steps 5-7 bitwise %s, PCG 1e-10 iters %d %s\n",
+          m, r ? "1000" : "1", M.numLevels(), (long long)lc.mixedAgg, (long long)lc.crossP,
+          (long long)lc.badCoarse, bw ? "FAIL" : "ok", it[r], ok ? "ok" : "FAIL");
+      fail |= ok ? 0 : 1;
+    }
+    GraphAMGDevice M0;  // control: ratio 1000 without labels
+    M0.build(T3.A, prm);
+    const int it0 = pcg(T3.A, M0, b, 1e-10);
+    printLevels(M0, 1, "twophase_r1000_nolabel");
+    const bool okIt = it[1] <= 1.5 * it[0] && it[1] <= kTwoPhaseItersMax;
+    std::printf(
+        "  twophase ratio 1000 iters: labels %d (bound %d, <= 1.5 x ratio-1 %d), "
+        "no labels %d %s\n",
+        it[1], kTwoPhaseItersMax, it[0], it0, okIt ? "ok" : "FAIL");
+    fail |= okIt ? 0 : 1;
+    // a uniform label is inert: the hierarchy is the unlabeled one, byte for byte
+    GraphAMGDevice MU;
+    MU.build(T3.A, prm, toDevI(std::vector<Index>((std::size_t)T3.A.n, 7)));
+    const bool okU = hierarchyHash(MU) == hierarchyHash(M0);
+    std::printf("  twophase uniform label: hierarchy hash %s the unlabeled one %s\n",
+                okU ? "equals" : "DIFFERS from", okU ? "ok" : "FAIL");
+    fail |= okU ? 0 : 1;
+    // block size 3: a half-space label on the periodic vector Laplacian
+    const int mv = 10;
+    const HostCsrOp V = vectorLaplacian3D(mv, 0.05);
+    std::vector<Index> lv((std::size_t)mv * mv * mv);
+    for (std::size_t I = 0; I < lv.size(); ++I)
+      lv[I] = (Index)(I % mv) < mv / 2 ? 0 : 1;
+    const AmgParams pv = paramsFor(Case{"vec3blk", 3, nullptr}, Aggregation::Mis2);
+    GraphAMGDevice MV;
+    MV.build(V, pv, toDevI(lv));
+    const LabelCounts lcv = labelCounts(MV, 3);
+    int bwv = 0;
+    for (int L = 0; L + 1 < MV.numLevels(); ++L) {
+      const std::string tag = std::string("vec3blk label L") + std::to_string(L);
+      bwv |= checkLevelBitwise(MV.levels()[(std::size_t)L], MV.levels()[(std::size_t)L + 1], pv,
+                               tag.c_str());
+    }
+    const bool okV = lcv.clean() && !bwv && MV.numLevels() > 1;
+    std::printf(
+        "  vec3blk s=3 half-space label: %d levels, mixed %lld, cross P %lld, bad coarse "
+        "%lld, bitwise %s %s\n",
+        MV.numLevels(), (long long)lcv.mixedAgg, (long long)lcv.crossP, (long long)lcv.badCoarse,
+        bwv ? "FAIL" : "ok", okV ? "ok" : "FAIL");
+    fail |= okV ? 0 : 1;
+    // misuse throws: a label on the host (Greedy) setup, a label of the wrong length
+    int threw = 0;
+    try {
+      GraphAMGDevice G;
+      G.build(T3.A, AmgParams{}, lab);
+    } catch (const std::invalid_argument&) {
+      ++threw;
+    }
+    try {
+      GraphAMGDevice G;
+      G.build(T3.A, prm, toDevI(std::vector<Index>(10, 0)));
+    } catch (const std::invalid_argument&) {
+      ++threw;
+    }
+    if (threw != 2) {
+      std::printf("FAILED: a label with Greedy or of the wrong length was accepted\n");
+      fail = 1;
+    }
+  }
   std::printf(fail ? "FAILED\n" : "OK: parallel GraphAMG setup\n");
+  return fail;
+}
+
+template <class T>
+bool readRaw(std::ifstream& f, std::vector<T>& v, std::size_t n) {
+  v.resize(n);
+  return (bool)f.read(reinterpret_cast<char*>(v.data()), (std::streamsize)(n * sizeof(T)));
+}
+
+// --file PREFIX: the label checks and a PCG solve on an operator from disk (format: file header).
+int runFile(const std::string& prefix, bool useLabel, bool fp32, bool greedy) {
+  HostCsrOp A;
+  std::vector<Index> label;
+  {
+    std::ifstream f(prefix + ".csr", std::ios::binary);
+    std::vector<Index> hdr;
+    if (!f || !readRaw(f, hdr, 2)) {
+      std::printf("FAILED: cannot read %s.csr\n", prefix.c_str());
+      return 1;
+    }
+    A.n = hdr[0];
+    const std::size_t n = (std::size_t)hdr[0], nnz = (std::size_t)hdr[1];
+    if (!readRaw(f, A.diag, n) || !readRaw(f, A.start, n + 1) || !readRaw(f, A.nbr, nnz) ||
+        !readRaw(f, A.coef, nnz) || A.start[n] != (Index)nnz) {
+      std::printf("FAILED: truncated or inconsistent %s.csr\n", prefix.c_str());
+      return 1;
+    }
+    std::ifstream g(prefix + ".label", std::ios::binary);
+    if (!g || !readRaw(g, label, n)) {
+      std::printf("FAILED: cannot read %s.label\n", prefix.c_str());
+      return 1;
+    }
+  }
+  AmgParams prm;
+  prm.aggregation = greedy ? Aggregation::Greedy : Aggregation::Mis2;
+  prm.coarseSolve = CoarseSolve::Dense;
+  prm.precision = fp32 ? Precision::Fp32 : Precision::Fp64;
+  const bool lab = useLabel && !greedy;
+  const View<Index> labD = toDevI(label);
+  const GraphAMGDevice::DLevel Ad = devOp(A);
+  const auto b = rhs(A.n, 6, true);
+  GraphAMGDevice M;
+  Kokkos::fence();
+  double t0 = now();
+  if (lab)
+    M.build(A, prm, labD);
+  else
+    M.build(A, prm);
+  Kokkos::fence();
+  const double tSetup = now() - t0;
+  t0 = now();
+  const int it = pcg(Ad, M, b, 1e-10, 1000);
+  Kokkos::fence();
+  const double tSolve = now() - t0;
+  const auto [gc, oc] = printLevels(M, 1, prefix.c_str());
+  int fail = 0;
+  std::string checks = "-";
+  if (lab && !fp32) {
+    const LabelCounts lc = labelCounts(M, 1);
+    GraphAMGDevice MU;  // b3: a uniform label is inert
+    MU.build(A, prm, toDevI(std::vector<Index>((std::size_t)A.n, label.empty() ? 0 : label[0])));
+    GraphAMGDevice M0;
+    M0.build(A, prm);
+    const bool inert = hierarchyHash(MU) == hierarchyHash(M0);
+    checks = "mixedAgg=" + std::to_string(lc.mixedAgg) + " crossP=" + std::to_string(lc.crossP) +
+             " badCoarse=" + std::to_string(lc.badCoarse) + " uniformInert=" + (inert ? "1" : "0");
+    fail = (lc.clean() && inert) ? 0 : 1;
+  }
+  std::printf(
+      "file %s label=%d fp32=%d setup=%s n=%lld thr=%d iters=%d levels=%d coarse=%s gridC=%.4f "
+      "opC=%.4f setup_s=%.4f solve_s=%.4f hash=%016llx %s %s\n",
+      prefix.c_str(), (int)lab, (int)fp32, greedy ? "greedy" : "mis2", (long long)A.n,
+      (int)Kokkos::DefaultExecutionSpace().concurrency(), it, M.numLevels(),
+      M.coarseSolveUsed() == CoarseSolve::Dense ? "dense" : "cg", gc, oc, tSetup, tSolve,
+      (unsigned long long)hierarchyHash(M), checks.c_str(), fail ? "FAIL" : "ok");
   return fail;
 }
 
@@ -742,7 +1085,15 @@ int main(int argc, char** argv) {
       rc = runHash(std::atoi(argv[2]));
     else if (argc >= 3 && std::strcmp(argv[1], "--bench") == 0)
       rc = runBench(std::atoi(argv[2]));
-    else
+    else if (argc >= 3 && std::strcmp(argv[1], "--file") == 0) {
+      bool useLabel = true, fp32 = false, greedy = false;
+      for (int a = 3; a < argc; ++a) {
+        useLabel &= std::strcmp(argv[a], "--nolabel") != 0;
+        fp32 |= std::strcmp(argv[a], "--fp32") == 0;
+        greedy |= std::strcmp(argv[a], "--greedy") == 0;
+      }
+      rc = runFile(argv[2], useLabel, fp32, greedy);
+    } else
       rc = runGate();
   }
   Kokkos::finalize();
