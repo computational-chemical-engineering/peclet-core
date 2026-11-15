@@ -710,9 +710,9 @@ AmgParams paramsFor(const Case& c, Aggregation ag, CoarseSolve cs = CoarseSolve:
   return p;
 }
 
-// (6): PCG iteration bound of the labeled two-phase case at ratio 1000 (set from the measured
-// count with a margin; see docs/graph_amg_parallel_setup.md).
-constexpr int kTwoPhaseItersMax = 1000;
+// (6): PCG iteration bound of the labeled two-phase case at ratio 1000: measured 18 (OpenMP 1-8
+// threads and CUDA, 2026-11-15), +4 (≈ 20 %) margin.
+constexpr int kTwoPhaseItersMax = 22;
 
 double now() {
   return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
