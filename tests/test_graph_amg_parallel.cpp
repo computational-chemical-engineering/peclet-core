@@ -477,24 +477,37 @@ int checkLevelBitwise(const GraphAMGDevice::DLevel& L, const GraphAMGDevice::DLe
   const auto coef = toHost(L.coef), diag = toHost(L.diag);
   const Index n = L.n, nN = n / s;
   std::vector<std::map<Index, double>> blk((std::size_t)nN);
-  std::vector<double> ddiag((std::size_t)nN, 0.0);
-  for (Index i = 0; i < n; ++i) {
-    const Index I = i / s;
-    ddiag[(std::size_t)I] += diag[(std::size_t)i] * diag[(std::size_t)i];
-    for (Index k = start[(std::size_t)i]; k < start[(std::size_t)i + 1]; ++k) {
-      const Index J = nbr[(std::size_t)k] / s;
-      const double c = coef[(std::size_t)k];
-      if (J == I)
-        ddiag[(std::size_t)I] += c * c;
-      else
-        blk[(std::size_t)I][J] += c * c;
-    }
-  }
-  // label option: a cross-label edge is never strong
+  // label option: a cross-label edge is never strong, and the strength test reads the diagonal
+  // block with the row's cross-label entries lumped into it (column by column)
   const std::vector<Index> lab = toHost(L.label);
   auto sameLabel = [&](Index I, Index J) {
     return lab.empty() || lab[(std::size_t)I] == lab[(std::size_t)J];
   };
+  std::vector<double> ddiag((std::size_t)nN, 0.0);
+  for (Index i = 0; i < n; ++i) {
+    const Index I = i / s;
+    std::vector<double> cross((std::size_t)s, 0.0);
+    for (Index k = start[(std::size_t)i]; k < start[(std::size_t)i + 1]; ++k)
+      if (!sameLabel(I, nbr[(std::size_t)k] / s))
+        cross[(std::size_t)(nbr[(std::size_t)k] % s)] += coef[(std::size_t)k];
+    const double di = diag[(std::size_t)i] + cross[(std::size_t)(i % s)];
+    cross[(std::size_t)(i % s)] = 0.0;
+    ddiag[(std::size_t)I] += di * di;
+    for (Index k = start[(std::size_t)i]; k < start[(std::size_t)i + 1]; ++k) {
+      const Index J = nbr[(std::size_t)k] / s;
+      const double c = coef[(std::size_t)k];
+      if (J == I) {
+        const double cl = c + cross[(std::size_t)(nbr[(std::size_t)k] % s)];
+        cross[(std::size_t)(nbr[(std::size_t)k] % s)] = 0.0;
+        ddiag[(std::size_t)I] += cl * cl;
+      } else {
+        blk[(std::size_t)I][J] += c * c;
+      }
+    }
+    if (!lab.empty())
+      for (double x : cross)
+        ddiag[(std::size_t)I] += x * x;
+  }
   std::vector<std::vector<Index>> strong((std::size_t)nN);
   const double th2 = prm.theta * prm.theta;
   for (Index I = 0; I < nN; ++I)

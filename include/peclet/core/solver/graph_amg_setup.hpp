@@ -72,7 +72,8 @@ inline double profNow() {
 #define AMGS_T(k, t0) (void)0
 #endif
 
-inline constexpr int kMaxPCols = 64;  ///< coarse columns per smoothed-P row (§14.5 step 5)
+inline constexpr int kMaxPCols = 64;      ///< coarse columns per smoothed-P row (§14.5 step 5)
+inline constexpr int kMaxLabelBlock = 8;  ///< largest block size the node-label option supports
 inline constexpr int kMaxMisRounds = 64;
 inline constexpr std::uint64_t kGolden = 0x9E3779B97F4A7C15ULL;
 
@@ -299,6 +300,11 @@ KOKKOS_INLINE_FUNCTION bool isStrongEdge(const IView& sStart, const IView& sCol,
 /// host's (row, entry) order through a dense marker, then sorted by J.
 /// `label` (optional, one integer per node; empty = off): an edge between two different labels is
 /// never strong, so no aggregate and, through the filter, no prolongator entry couples two labels.
+/// The strength test of the same-label edges is that of the operator with the cross-label blocks
+/// lumped into the diagonal block (A_II + Σ_{J: label J ≠ label I} A_IJ, entry by entry, s ≤
+/// kMaxLabelBlock): a node whose diagonal is dominated by cross-label couplings (a heavy cell at a
+/// density jump) is judged against its own phase, and not left a singleton on every level. With no
+/// cross-label entry in a row ddiag is the unlabeled one, bit for bit.
 inline StrongGraph buildStrength(const DeviceCsr& A, int s, double theta,
                                  const IView& label = IView()) {
   const Index nNodes = A.n / s;
@@ -312,6 +318,7 @@ inline StrongGraph buildStrength(const DeviceCsr& A, int s, double theta,
   AccumPool pool(nNodes, false);
   auto mark = pool.mark;
   auto token = pool.token;
+  const bool labeled = label.extent(0) > 0;
   Kokkos::parallel_for(
       "peclet::core::amgs_blocks", Policy(0, nNodes), KOKKOS_LAMBDA(const Index I) {
         const auto t = token.acquire();
@@ -319,12 +326,25 @@ inline StrongGraph buildStrength(const DeviceCsr& A, int s, double theta,
         Index u = 0;
         double dd = 0.0;
         for (Index i = I * s; i < (I + 1) * s; ++i) {
-          dd += diag(i) * diag(i);
+          // label option: this row's cross-label sums per block column, lumped into the diagonal
+          // block's entry of that column (consumed there; a column without one adds its own square)
+          double cross[kMaxLabelBlock] = {};
+          if (labeled)
+            for (Index k = start(i); k < start(i + 1); ++k)
+              if (label(nbr(k) / s) != label(I))
+                cross[nbr(k) % s] += coef(k);
+          const double di = labeled ? diag(i) + cross[i % s] : diag(i);
+          if (labeled)
+            cross[i % s] = 0.0;
+          dd += di * di;
           for (Index k = start(i); k < start(i + 1); ++k) {
             const Index J = nbr(k) / s;
             const double c = coef(k);
             if (J == I) {
-              dd += c * c;
+              const double cl = labeled ? c + cross[nbr(k) % s] : c;
+              if (labeled)
+                cross[nbr(k) % s] = 0.0;
+              dd += cl * cl;
             } else {
               const Index m = mark(t, J);
               if (m < 0) {
@@ -337,6 +357,9 @@ inline StrongGraph buildStrength(const DeviceCsr& A, int s, double theta,
               }
             }
           }
+          if (labeled)
+            for (int q = 0; q < s; ++q)
+              dd += cross[q] * cross[q];
         }
         for (Index m = 0; m < u; ++m)
           mark(t, segJ(seg + m)) = -1;
@@ -346,7 +369,6 @@ inline StrongGraph buildStrength(const DeviceCsr& A, int s, double theta,
         ddiag(I) = dd;
       });
   const double th2 = theta * theta;
-  const bool labeled = label.extent(0) > 0;
   IView scnt("amgs_scnt", nNodes);
   Kokkos::parallel_for(
       "peclet::core::amgs_strong_cnt", Policy(0, nNodes), KOKKOS_LAMBDA(const Index I) {

@@ -160,6 +160,9 @@ class GraphAMGDevice {
       throw std::invalid_argument("GraphAMGDevice: n must be a multiple of ndofPerNode");
     if (label0.extent(0) > 0 && (Index)label0.extent(0) != A0.n / s)
       throw std::invalid_argument("GraphAMGDevice: the label needs one entry per node");
+    if (label0.extent(0) > 0 && s > amg_setup::kMaxLabelBlock)
+      throw std::invalid_argument("GraphAMGDevice: a node label supports ndofPerNode <= " +
+                                  std::to_string(amg_setup::kMaxLabelBlock));
     prm_ = prm;
     host_ = GraphAMG();
     lv_.clear();
