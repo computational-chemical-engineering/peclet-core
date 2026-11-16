@@ -48,9 +48,7 @@ per nonzero (≤ 25 % of matrix traffic, less of a V-cycle). Reaching it needs 3
 Both (c) and C2 want a quiet-host re-measurement before any design change.
 
 ## Open items
-- CUDA: the Gustavson pool is concurrency × n_c (fine on host; on CUDA a hashed per-row
-  accumulator is needed). Untested on CUDA (GPU held); `sortPairs`' constexpr gap table and the
-  `PRowBuilder` local lambda need a CUDA compile check.
+- CUDA: closed by WO-AMG-FIX (below) — no concurrency-sized pool; builds and passes on CUDA.
 - The `PECLET_CORE_AMGS_PROFILE` macro (compile-time only) prints the phase split in `--bench`.
 
 ## C3 (MPI) interface notes — not implemented
@@ -66,3 +64,30 @@ Both (c) and C2 want a quiet-host re-measurement before any design change.
   root's owner from per-fine-row contributions summed in increasing fine gid (§14.5) — the current
   R row sort by fine index is that order once fine indices are gids.
 - Coarsest: replicate (Allgather) and apply the dense A_c⁺ on every rank.
+
+## WO-AMG-FIX (2026-11-16): device memory and the CUDA bitwise failure
+Brief: peclet-papers `work/M7/briefs/WO_AMG_FIX.md`. Logs: `build_amgfix_logs/` in this worktree.
+- **Memory (5451e5d).** `AccumPool` (concurrency × width) is gone. Strength: the node's own CSR
+  segment holds its (J, c²) stream, `sortReduce` sorts by (J, position) and sums each run in stream
+  order. AP and RAP: `accumulateRows`, a per-row open-addressing `RowTable` (≥ 2·contributions
+  slots) in a scratch batched at ≤ 2²⁴ slots, distinct columns compacted and sorted. Both keep the
+  marker's arithmetic (first touch 0.0 + v, then += v in emission order): bit-identical.
+- **CUDA steps 5–7 (63c7676).** Cause: nvcc's default `--fmad=true` fuses a·b+c in the setup
+  kernels; the host reference rounds every product. b21d4bd built with `--fmad=false` passes every
+  case (`gate_cuda_nofma_base.log`); default build fails as Fable saw (`gate_cuda_base.log`). No
+  order defect. Fix in the code, per the register's "bit-exact assembly on ALL backends": products
+  feeding a sum go through `mulRn` (`__dmul_rn` on CUDA, clang `fp contract(off)`, plain on GCC).
+  Not the flag (header-only core would force it on every consumer), not the test (it is the rule).
+
+| gate | result |
+|---|---|
+| (a) OpenMP bitwise | `--hash` m 10/12/16/20 (32 lines) identical to b21d4bd at OMP 1 and 8 (`hash_rn_t{1,8}.txt`); `--file` hashes identical (`file_omp_rn.txt`) |
+| (a) battery | host-openmp `ctest -LE bench`, 2 thr, MPI `--bind-to none`: 116/116 passed, np8 included (`battery_omp.log`) |
+| (b) CUDA test | all four operators steps 5–7 ok, `OK` (`gate_cuda_rn.log`); CUDA `--hash` = OpenMP b21d4bd, all 32 lines (`hash_cuda_rn.txt`) |
+| (c) 32³ L_rho on CUDA | runs; peak Kokkos device memory of setup 109 MiB (r1), 108 MiB (r1000), target ≤ 2 GiB; hashes and PCG iterations (10, 14) = OpenMP (`file_cuda_rn.txt`) |
+| (d) 64³ | peak 543 MiB (scratch cap 256 MiB of it); iterations 12 / 21 = OpenMP |
+
+Setup ms (best of 3; r1 / r1000): 32³ CUDA 71.0 / 18.3, OpenMP-8 b21d4bd 70.1 / 18.3, now 78.2 /
+25.3; 64³ CUDA 82.7 / 86.3, OpenMP-8 b21d4bd 153.0 / 152.6, now 186.5 / 188.4. The 32³ r1 time on
+both backends is mostly the host dense-coarsest Jacobi (178 DOFs; estimate, not profiled). Host
+cost of the change: OpenMP setup +20–40 % and peak 31 → 109 MiB (32³), 250 → 543 MiB (64³).
