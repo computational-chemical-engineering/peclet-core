@@ -92,6 +92,22 @@ KOKKOS_INLINE_FUNCTION std::uint64_t misPriority(Index gid, int level) {
                     (kGolden * static_cast<std::uint64_t>(level + 1)));
 }
 
+/// a·b rounded on its own, never contracted with a following add into an FMA. nvcc (--fmad=true,
+/// its default) and clang-based device compilers fuse a*b+c; core's host builds do not (generic
+/// x86-64 has no FMA; -ffp-contract=off where it matters). Every product that feeds a sum in this
+/// setup goes through mulRn, so the hierarchy (λ, strength, P, R, A_c) is bit-identical on every
+/// backend — the suite's "bit-exact assembly" rule — and the steps 5–7 test holds on CUDA. The
+/// diagnosis: b21d4bd failed those steps on CUDA and passed them with nvcc --fmad=false.
+KOKKOS_INLINE_FUNCTION double mulRn(double a, double b) {
+#ifdef __clang__
+#pragma clang fp contract(off)
+#endif
+#ifdef KOKKOS_ENABLE_CUDA
+  KOKKOS_IF_ON_DEVICE((return __dmul_rn(a, b);))
+#endif
+  return a * b;
+}
+
 /// In-place sort of (key, val) pairs by key (keys unique or ties irrelevant): insertion sort for
 /// short runs, Shell sort above (Ciura gaps, extended by ×2.25 for the long accumulation rows of
 /// accumulateRows). Deterministic; runs inside one thread. With unique keys the result does not
@@ -324,10 +340,10 @@ inline double powerLambdaInf(const DeviceCsr& A, const DView& dd, const DView& i
     Kokkos::parallel_reduce(
         "peclet::core::amgs_papply", Policy(0, n),
         KOKKOS_LAMBDA(const Index i, double& m) {
-          double s = dd(i) * v(i);
+          double s = mulRn(dd(i), v(i));
           for (Index k = start(i); k < start(i + 1); ++k)
             if (!useKeep || keep(k))
-              s += coef(k) * v(nbr(k));
+              s += mulRn(coef(k), v(nbr(k)));
           const double y = invdd(i) * s;
           w(i) = y;
           const double a = Kokkos::fabs(y);
@@ -376,12 +392,12 @@ inline void powerLambdaInf2(const DeviceCsr& A, const DView& dS, const DView& iS
     Kokkos::parallel_reduce(
         "peclet::core::amgs_papply2", Policy(0, n),
         KOKKOS_LAMBDA(const Index i, double& aS, double& aF) {
-          double sS = dS(i) * vS(i), sF = dF(i) * vF(i);
+          double sS = mulRn(dS(i), vS(i)), sF = mulRn(dF(i), vF(i));
           for (Index k = start(i); k < start(i + 1); ++k) {
             const Index j = nbr(k);
-            sS += coef(k) * vS(j);
+            sS += mulRn(coef(k), vS(j));
             if (keep(k))
-              sF += coef(k) * vF(j);
+              sF += mulRn(coef(k), vF(j));
           }
           if (rS) {
             const double y = iS(i) * sS;
@@ -466,15 +482,15 @@ inline StrongGraph buildStrength(const DeviceCsr& A, int s, double theta) {
         Index m = 0;
         double dd = 0.0;
         for (Index i = I * s; i < (I + 1) * s; ++i) {
-          dd += diag(i) * diag(i);
+          dd += mulRn(diag(i), diag(i));
           for (Index k = start(i); k < start(i + 1); ++k) {
             const Index J = nbr(k) / s;
             const double c = coef(k);
             if (J == I) {
-              dd += c * c;
+              dd += mulRn(c, c);
             } else {
               segJ(seg + m) = J;
-              segV(seg + m) = c * c;
+              segV(seg + m) = mulRn(c, c);
               ++m;
             }
           }
@@ -777,12 +793,12 @@ struct PRowBuilder {
     const double d = dF(i);
     const double f = (Kokkos::fabs(d) > 1e-300) ? (-sc / d) : 0.0;
     bool ok = add(p0col(i), p0val(i));
-    ok = ok && add(p0col(i), f * d * p0val(i));
+    ok = ok && add(p0col(i), mulRn(mulRn(f, d), p0val(i)));
     for (Index k = start(i); ok && k < start(i + 1); ++k) {
       if (!keep(k))
         continue;
       const Index j = nbr(k);
-      ok = add(p0col(j), f * coef(k) * p0val(j));
+      ok = add(p0col(j), mulRn(mulRn(f, coef(k)), p0val(j)));
     }
     if (!ok)
       return -1;
@@ -964,12 +980,12 @@ inline CoarseLevel coarsen(const DeviceCsr& A, const DView& invDiag, const AmgPa
       KOKKOS_LAMBDA(const Index i, const RowTable& t) {
         const double di = diag(i);
         for (Index k = Pstart(i); k < Pstart(i + 1); ++k)
-          t.add(Pcol(k), di * Pval(k));
+          t.add(Pcol(k), mulRn(di, Pval(k)));
         for (Index k = start(i); k < start(i + 1); ++k) {
           const Index j = nbr(k);
           const double c = coef(k);
           for (Index kk = Pstart(j); kk < Pstart(j + 1); ++kk)
-            t.add(Pcol(kk), c * Pval(kk));
+            t.add(Pcol(kk), mulRn(c, Pval(kk)));
         }
       },
       "AP", APstart, APcol, APval);
@@ -996,7 +1012,7 @@ inline CoarseLevel coarsen(const DeviceCsr& A, const DView& invDiag, const AmgPa
           const double p1 = Rval(k);
           for (Index e = APstart(i); e < APstart(i + 1); ++e) {
             const Index c2 = APcol(e);
-            const double v = p1 * APval(e);
+            const double v = mulRn(p1, APval(e));
             if (c2 == c1)
               dsum += v;
             else
