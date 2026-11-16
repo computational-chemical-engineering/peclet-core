@@ -12,6 +12,8 @@
 // `--hash m`  : one line per operator with an FNV-1a hash of the whole hierarchy (gate (d): run at
 //               1/2/4/8 threads and on the Serial backend, compare).
 // `--bench m` : setup and V-cycle timings (gate (c)), best of 3.
+// `--file P`  : setup time, peak setup memory, PCG iterations and hierarchy hash on the operator in
+//               P.csr (format at readCsr; e.g. the moving-grid branch's L_rho exports).
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -613,6 +615,100 @@ int runBench(int m) {
   return 0;
 }
 
+// ---------------------------------------------------------------- external operator (--file)
+// Peak bytes allocated through Kokkos in the default memory space (Kokkos Tools callbacks), so the
+// setup's device footprint is measured on every backend the same way.
+struct MemTrack {
+  static inline std::int64_t cur = 0, peak = 0;
+  static bool mine(const Kokkos::Profiling::SpaceHandle h) {
+    return std::strcmp(h.name, peclet::core::MemSpace::name()) == 0;
+  }
+  static void onAlloc(const Kokkos::Profiling::SpaceHandle h, const char*, const void*,
+                      const std::uint64_t size) {
+    if (mine(h)) {
+      cur += (std::int64_t)size;
+      peak = std::max(peak, cur);
+    }
+  }
+  static void onFree(const Kokkos::Profiling::SpaceHandle h, const char*, const void*,
+                     const std::uint64_t size) {
+    if (mine(h))
+      cur -= (std::int64_t)size;
+  }
+  static void install() {
+    Kokkos::Tools::Experimental::set_allocate_data_callback(onAlloc);
+    Kokkos::Tools::Experimental::set_deallocate_data_callback(onFree);
+  }
+};
+
+// PREFIX.csr (raw little-endian): int64 n, int64 nnz, float64 diag[n], int64 start[n+1],
+// int64 nbr[nnz], float64 coef[nnz] — the split layout of HostCsrOp (off-diagonals only).
+bool readCsr(const std::string& path, HostCsrOp& A) {
+  std::FILE* f = std::fopen(path.c_str(), "rb");
+  if (!f)
+    return false;
+  std::int64_t hdr[2] = {0, 0};
+  bool ok = std::fread(hdr, sizeof(std::int64_t), 2, f) == 2 && hdr[0] > 0 && hdr[1] >= 0;
+  if (ok) {
+    A.n = hdr[0];
+    A.diag.resize((std::size_t)hdr[0]);
+    A.start.resize((std::size_t)hdr[0] + 1);
+    A.nbr.resize((std::size_t)hdr[1]);
+    A.coef.resize((std::size_t)hdr[1]);
+    ok = std::fread(A.diag.data(), 8, A.diag.size(), f) == A.diag.size() &&
+         std::fread(A.start.data(), 8, A.start.size(), f) == A.start.size() &&
+         std::fread(A.nbr.data(), 8, A.nbr.size(), f) == A.nbr.size() &&
+         std::fread(A.coef.data(), 8, A.coef.size(), f) == A.coef.size() &&
+         A.start.back() == hdr[1];
+  }
+  std::fclose(f);
+  return ok;
+}
+
+// Setup (device build from a DeviceCsr, mis2 + dense coarsest, FP64) on an operator read from
+// PREFIX.csr: best-of-3 setup time, peak Kokkos memory of one setup above what was live before it,
+// PCG(1e-8) iterations on a mean-free right-hand side (the operator may be a Neumann one), the
+// hierarchy hash. One line, prefixed "file".
+int runFile(const std::string& prefix) {
+  HostCsrOp A;
+  if (!readCsr(prefix + ".csr", A)) {
+    std::printf("FAILED: cannot read %s.csr\n", prefix.c_str());
+    return 1;
+  }
+  MemTrack::install();
+  DeviceCsr d;
+  d.n = A.n;
+  d.diag = GraphAMGDevice::toDev(A.diag, "d");
+  d.start = GraphAMGDevice::toDev(A.start, "s");
+  d.nbr = GraphAMGDevice::toDev(A.nbr, "n");
+  d.coef = GraphAMGDevice::toDev(A.coef, "c");
+  AmgParams prm;
+  prm.aggregation = Aggregation::Mis2;
+  prm.coarseSolve = CoarseSolve::Dense;
+  double ts = 1e30;
+  std::int64_t peak = 0;
+  GraphAMGDevice M;
+  for (int rep = 0; rep < 3; ++rep) {
+    M = GraphAMGDevice();
+    Kokkos::fence();
+    const std::int64_t base = MemTrack::cur;
+    MemTrack::peak = base;
+    const double t0 = now();
+    M.build(d, prm);
+    Kokkos::fence();
+    ts = std::min(ts, now() - t0);
+    peak = std::max(peak, MemTrack::peak - base);
+  }
+  const int it = pcg(A, M, rhs(A.n, 7, true), 1e-8);
+  std::printf(
+      "file %s n=%lld nnz=%lld space=%s thr=%d levels=%d iters=%d setup_ms=%.2f "
+      "setup_peak_MiB=%.1f hash=%016llx\n",
+      prefix.c_str(), (long long)A.n, (long long)A.nbr.size(), peclet::core::MemSpace::name(),
+      (int)Kokkos::DefaultExecutionSpace().concurrency(), M.numLevels(), it, 1e3 * ts,
+      (double)peak / (1024.0 * 1024.0), (unsigned long long)hierarchyHash(M));
+  return 0;
+}
+
 int runGate() {
   int fail = 0;
   // (1) steps 5–7 bitwise vs the host-order reference, on every level, every operator
@@ -742,6 +838,8 @@ int main(int argc, char** argv) {
       rc = runHash(std::atoi(argv[2]));
     else if (argc >= 3 && std::strcmp(argv[1], "--bench") == 0)
       rc = runBench(std::atoi(argv[2]));
+    else if (argc >= 3 && std::strcmp(argv[1], "--file") == 0)
+      rc = runFile(argv[2]);
     else
       rc = runGate();
   }
