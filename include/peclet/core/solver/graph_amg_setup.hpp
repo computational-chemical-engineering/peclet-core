@@ -19,14 +19,18 @@
 //   4. P₀ as the host builds it; λ(D_F⁻¹A_F) by ∞-norm power iteration (no safety factor);
 //   5. smoothed P, one thread per fine row (≤ 64 coarse columns, sorted);
 //   6. R = Pᵀ (atomic counts, scan, atomic fill, per-row sort by fine index);
-//   7. A_c = R(AP), two-phase Gustavson, one thread per output row, sequential accumulation in
-//      increasing input index, sorted columns.
+//   7. A_c = R(AP), one thread per output row, sequential accumulation in increasing input
+//      index, sorted columns. Rows are accumulated without a dense marker (accumulateRows:
+//      contributions emitted in order, sorted by (column, position), summed run by run), so the
+//      memory is O(nnz) plus a bounded batch on every backend, never concurrency × n.
 #ifndef PECLET_CORE_SOLVER_GRAPH_AMG_SETUP_HPP
 #define PECLET_CORE_SOLVER_GRAPH_AMG_SETUP_HPP
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <Kokkos_Core.hpp>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -53,8 +57,6 @@ using DView = View<double>;
 using IView = View<Index>;
 using BView = View<std::uint8_t>;
 using Policy = Kokkos::RangePolicy<ExecSpace>;
-using Token =
-    Kokkos::Experimental::UniqueToken<ExecSpace, Kokkos::Experimental::UniqueTokenScope::Global>;
 
 #ifdef PECLET_CORE_AMGS_PROFILE
 inline double gProf[8] = {};  // strength, mis2+agg, filter+lambdaF, P, R, AP, RAP, smootherLambda
@@ -91,12 +93,19 @@ KOKKOS_INLINE_FUNCTION std::uint64_t misPriority(Index gid, int level) {
 }
 
 /// In-place sort of (key, val) pairs by key (keys unique or ties irrelevant): insertion sort for
-/// short runs, Shell sort (Ciura gaps) above. Deterministic; runs inside one thread.
+/// short runs, Shell sort above (Ciura gaps, extended by ×2.25 for the long accumulation rows of
+/// accumulateRows). Deterministic; runs inside one thread. With unique keys the result does not
+/// depend on the gap sequence.
 template <class K, class V>
 KOKKOS_INLINE_FUNCTION void sortPairs(K* key, V* val, Index len) {
-  constexpr Index gaps[8] = {701, 301, 132, 57, 23, 10, 4, 1};
-  for (int g = (len > 24 ? 0 : 7); g < 8; ++g) {
-    const Index gap = gaps[g];
+  constexpr Index gaps[14] = {227011, 100894, 44842, 19930, 8858, 3937, 1750,
+                              701,    301,    132,   57,    23,   10,   4};
+  int g = 14;  // insertion sort alone up to 24 entries
+  if (len > 24)
+    for (g = 0; gaps[g] >= len;)
+      ++g;
+  for (; g <= 14; ++g) {
+    const Index gap = (g < 14) ? gaps[g] : 1;
     for (Index i = gap; i < len; ++i) {
       const K k = key[i];
       const V v = val[i];
@@ -128,23 +137,168 @@ inline Index scanCounts(const IView& counts, const IView& offs, Index n) {
   return total;
 }
 
-/// A per-thread dense marker/accumulator pool (Gustavson): one row of `width` per concurrent
-/// thread, markers −1 between uses. Memory = concurrency × width; fine on host backends (on CUDA
-/// a hashed accumulator would replace it — results note, open item).
-struct AccumPool {
-  Kokkos::View<Index**, MemSpace> mark;
-  Kokkos::View<double**, MemSpace> acc;
-  Token token;
-  AccumPool(Index width, bool withAcc) : token(ExecSpace()) {
-    const auto conc = static_cast<std::size_t>(token.size());
-    mark = Kokkos::View<Index**, MemSpace>(
-        Kokkos::view_alloc(std::string("amgs_mark"), Kokkos::WithoutInitializing), conc,
-        static_cast<std::size_t>(width));
-    Kokkos::deep_copy(mark, Index(-1));
-    if (withAcc)
-      acc = Kokkos::View<double**, MemSpace>("amgs_acc", conc, static_cast<std::size_t>(width));
+/// Sparse row accumulation without a dense marker. On entry key[0..len) holds the columns of one
+/// row's contributions and val[0..len) their values, in emission order. They are sorted by
+/// (column, emission position) — the composite key col·len + m makes every key unique, so the
+/// unstable Shell sort orders equal columns by position — and each run is summed in emission
+/// order starting from 0.0 + v: exactly the arithmetic of a dense marker accumulator (first touch
+/// writes 0.0, every contribution then adds in emission order), hence the same bits. On return
+/// key[0..u) holds the distinct columns in increasing order, val[0..u) their sums; returns u.
+/// The caller guarantees col·len fits in Index (strength: J < nNodes, len ≤ the node's CSR row
+/// segment).
+KOKKOS_INLINE_FUNCTION Index sortReduce(Index* key, double* val, Index len) {
+  for (Index m = 0; m < len; ++m)
+    key[m] = key[m] * len + m;
+  sortPairs(key, val, len);
+  Index u = 0, prev = -1;
+  for (Index m = 0; m < len; ++m) {
+    const Index c = key[m] / len;
+    const double v = val[m];
+    if (c != prev) {
+      key[u] = c;
+      val[u] = 0.0 + v;
+      ++u;
+      prev = c;
+    } else {
+      val[u - 1] += v;
+    }
+  }
+  return u;
+}
+
+/// One row's open-addressing accumulator (linear probing, power-of-two size, key −1 = empty),
+/// living in a slice of the accumulateRows scratch. add() has the dense marker's arithmetic: the
+/// first contribution to a column writes 0.0 + v, every later one adds in call order — so a
+/// column's sum is bit-identical to the marker's whatever the table layout.
+struct RowTable {
+  Index* key;
+  double* val;
+  Index mask;  ///< size − 1
+  KOKKOS_INLINE_FUNCTION void add(Index c, double v) const {
+    Index h = static_cast<Index>((static_cast<std::uint64_t>(c) * kGolden) >> 32) & mask;
+    while (key[h] >= 0 && key[h] != c)
+      h = (h + 1) & mask;
+    if (key[h] < 0) {
+      key[h] = c;
+      val[h] = 0.0 + v;
+    } else {
+      val[h] += v;
+    }
   }
 };
+
+/// Table slots held in the accumulateRows scratch at once (16 bytes each). Rows are processed in
+/// batches of at most this many slots (one row may exceed it alone), so the extra memory is
+/// bounded by the batch, not by concurrency × width or by the product's flop count. Results do
+/// not depend on it (rows are independent).
+inline constexpr Index kAccumBatch = Index(1) << 24;
+
+/// A sparse matrix row by row: count(i) bounds row i's number of contributions; emit(i, t) calls
+/// t.add(col, v) for them in the oracle's order. Row i gets a RowTable of the smallest power of
+/// two ≥ 2·count(i) slots (load ≤ ½); its distinct columns are then compacted and sorted.
+/// Output: CSR (rowStart, col, val), sorted distinct columns per row, exact-size arrays.
+/// Memory: O(nRows) + min(Σ table, kAccumBatch) scratch slots + the output.
+template <class Count, class Emit>
+inline void accumulateRows(Index nRows, const Count& count, const Emit& emit, const char* label,
+                           IView& rowStart, IView& col, DView& val) {
+  IView tsz(Kokkos::view_alloc(std::string("amgs_atsz"), Kokkos::WithoutInitializing), nRows);
+  Kokkos::parallel_for(
+      "peclet::core::amgs_acc_count", Policy(0, nRows), KOKKOS_LAMBDA(const Index i) {
+        const Index c = count(i);
+        Index t = (c > 0) ? 2 : 0;
+        while (t > 0 && t < 2 * c)
+          t *= 2;
+        tsz(i) = t;
+      });
+  IView toff("amgs_atoff", nRows + 1);
+  const Index total = scanCounts(tsz, toff, nRows);
+  Index maxT = 0;
+  Kokkos::parallel_reduce(
+      "peclet::core::amgs_acc_max", Policy(0, nRows),
+      KOKKOS_LAMBDA(const Index i, Index& mx) {
+        if (tsz(i) > mx)
+          mx = tsz(i);
+      },
+      Kokkos::Max<Index>(maxT));
+  const auto hoff = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), toff);
+  const Index cap = std::max(kAccumBatch, maxT);
+  const Index scr = std::min(total, cap);
+  IView sKey(Kokkos::view_alloc(std::string("amgs_askey"), Kokkos::WithoutInitializing), scr);
+  DView sVal(Kokkos::view_alloc(std::string("amgs_asval"), Kokkos::WithoutInitializing), scr);
+  IView ucnt(Kokkos::view_alloc(std::string("amgs_aucnt"), Kokkos::WithoutInitializing), nRows);
+  rowStart = IView(std::string("amgs_") + label + "start", nRows + 1);
+  IView rs = rowStart;
+  std::vector<IView> pieceCol;
+  std::vector<DView> pieceVal;
+  Index written = 0;
+  for (Index r0 = 0; r0 < nRows;) {
+    // the longest run of rows from r0 whose tables fit the scratch (at least one row)
+    const Index* h = hoff.data();
+    Index r1 = static_cast<Index>(std::upper_bound(h + r0 + 1, h + nRows + 1, h[r0] + cap) - h) - 1;
+    if (r1 <= r0)
+      r1 = r0 + 1;
+    const Index base = h[r0];
+    Kokkos::parallel_for(
+        "peclet::core::amgs_acc_rows", Policy(r0, r1), KOKKOS_LAMBDA(const Index i) {
+          const Index t = tsz(i);
+          Index* k = sKey.data() + (toff(i) - base);
+          double* v = sVal.data() + (toff(i) - base);
+          for (Index q = 0; q < t; ++q)
+            k[q] = -1;
+          const RowTable tbl{k, v, t - 1};
+          emit(i, tbl);
+          Index u = 0;
+          for (Index q = 0; q < t; ++q)
+            if (k[q] >= 0) {
+              k[u] = k[q];
+              v[u] = v[q];
+              ++u;
+            }
+          sortPairs(k, v, u);
+          ucnt(i) = u;
+        });
+    const Index w0 = written;
+    Index tb = 0;
+    Kokkos::parallel_scan(
+        "peclet::core::amgs_acc_scan", Policy(r0, r1),
+        KOKKOS_LAMBDA(const Index i, Index& upd, const bool fin) {
+          const Index c = ucnt(i);
+          if (fin)
+            rs(i) = w0 + upd;
+          upd += c;
+        },
+        tb);
+    IView pc(Kokkos::view_alloc(std::string("amgs_apcol"), Kokkos::WithoutInitializing), tb);
+    DView pv(Kokkos::view_alloc(std::string("amgs_apval"), Kokkos::WithoutInitializing), tb);
+    Kokkos::parallel_for(
+        "peclet::core::amgs_acc_copy", Policy(r0, r1), KOKKOS_LAMBDA(const Index i) {
+          const Index o = rs(i) - w0, t = toff(i) - base;
+          for (Index q = 0; q < ucnt(i); ++q) {
+            pc(o + q) = sKey(t + q);
+            pv(o + q) = sVal(t + q);
+          }
+        });
+    pieceCol.push_back(pc);
+    pieceVal.push_back(pv);
+    written += tb;
+    r0 = r1;
+  }
+  Kokkos::deep_copy(Kokkos::subview(rowStart, nRows), written);
+  if (pieceCol.size() == 1) {
+    col = pieceCol[0];
+    val = pieceVal[0];
+    return;
+  }
+  col = IView(Kokkos::view_alloc(std::string("amgs_acol"), Kokkos::WithoutInitializing), written);
+  val = DView(Kokkos::view_alloc(std::string("amgs_aval"), Kokkos::WithoutInitializing), written);
+  Index at = 0;
+  for (std::size_t p = 0; p < pieceCol.size(); ++p) {
+    const auto rg = Kokkos::make_pair(at, at + static_cast<Index>(pieceCol[p].extent(0)));
+    Kokkos::deep_copy(Kokkos::subview(col, rg), pieceCol[p]);
+    Kokkos::deep_copy(Kokkos::subview(val, rg), pieceVal[p]);
+    at = rg.second;
+  }
+}
 
 /// ∞-norm power iteration for ρ(D̃⁻¹Ã), Ã = (dd on the diagonal, the off-diagonals with keep(k)
 /// set — all of them when keep is empty). Seed ±1 from splitmix64(gid of the DOF); v is
@@ -296,7 +450,7 @@ KOKKOS_INLINE_FUNCTION bool isStrongEdge(const IView& sStart, const IView& sCol,
 }
 
 /// Step 1: nodal strength, the host test verbatim. Per-node block norms are accumulated in the
-/// host's (row, entry) order through a dense marker, then sorted by J.
+/// host's (row, entry) order (sortReduce over the node's own CSR segment), sorted by J.
 inline StrongGraph buildStrength(const DeviceCsr& A, int s, double theta) {
   const Index nNodes = A.n / s;
   const Index nnz = static_cast<Index>(A.nbr.extent(0));
@@ -306,14 +460,10 @@ inline StrongGraph buildStrength(const DeviceCsr& A, int s, double theta) {
   DView segV(Kokkos::view_alloc(std::string("amgs_segV"), Kokkos::WithoutInitializing), nnz);
   IView ucnt("amgs_ucnt", nNodes);
   DView ddiag("amgs_ddiag", nNodes);
-  AccumPool pool(nNodes, false);
-  auto mark = pool.mark;
-  auto token = pool.token;
   Kokkos::parallel_for(
       "peclet::core::amgs_blocks", Policy(0, nNodes), KOKKOS_LAMBDA(const Index I) {
-        const auto t = token.acquire();
         const Index seg = start(I * s);
-        Index u = 0;
+        Index m = 0;
         double dd = 0.0;
         for (Index i = I * s; i < (I + 1) * s; ++i) {
           dd += diag(i) * diag(i);
@@ -323,23 +473,13 @@ inline StrongGraph buildStrength(const DeviceCsr& A, int s, double theta) {
             if (J == I) {
               dd += c * c;
             } else {
-              const Index m = mark(t, J);
-              if (m < 0) {
-                mark(t, J) = u;
-                segJ(seg + u) = J;
-                segV(seg + u) = 0.0 + c * c;
-                ++u;
-              } else {
-                segV(seg + m) += c * c;
-              }
+              segJ(seg + m) = J;
+              segV(seg + m) = c * c;
+              ++m;
             }
           }
         }
-        for (Index m = 0; m < u; ++m)
-          mark(t, segJ(seg + m)) = -1;
-        token.release(t);
-        sortPairs(&segJ(seg), &segV(seg), u);
-        ucnt(I) = u;
+        ucnt(I) = sortReduce(segJ.data() + seg, segV.data() + seg, m);
         ddiag(I) = dd;
       });
   const double th2 = theta * theta;
@@ -810,109 +950,46 @@ inline CoarseLevel coarsen(const DeviceCsr& A, const DView& invDiag, const AmgPa
       });
 
   AMGS_T(4, tp);
-  // 7a: AP = A·P, Gustavson with the host's order (diag·P_i first, then entries in order)
-  AccumPool pool(nc, true);
-  auto mark = pool.mark;
-  auto acc = pool.acc;
-  auto token = pool.token;
-  IView apc("amgs_apc", n);
-  Kokkos::parallel_for(
-      "peclet::core::amgs_ap_cnt", Policy(0, n), KOKKOS_LAMBDA(const Index i) {
-        const auto t = token.acquire();
-        Index u = 0;
-        auto touch = [&](Index c) {
-          if (mark(t, c) < 0)
-            mark(t, c) = u++;
-        };
-        for (Index k = Pstart(i); k < Pstart(i + 1); ++k)
-          touch(Pcol(k));
-        for (Index k = start(i); k < start(i + 1); ++k) {
-          const Index j = nbr(k);
-          for (Index kk = Pstart(j); kk < Pstart(j + 1); ++kk)
-            touch(Pcol(kk));
-        }
-        // reset
-        for (Index k = Pstart(i); k < Pstart(i + 1); ++k)
-          mark(t, Pcol(k)) = -1;
-        for (Index k = start(i); k < start(i + 1); ++k) {
-          const Index j = nbr(k);
-          for (Index kk = Pstart(j); kk < Pstart(j + 1); ++kk)
-            mark(t, Pcol(kk)) = -1;
-        }
-        token.release(t);
-        apc(i) = u;
-      });
-  IView APstart("amgs_APstart", n + 1);
-  const Index apnnz = scanCounts(apc, APstart, n);
-  IView APcol(Kokkos::view_alloc(std::string("amgs_APcol"), Kokkos::WithoutInitializing), apnnz);
-  DView APval(Kokkos::view_alloc(std::string("amgs_APval"), Kokkos::WithoutInitializing), apnnz);
-  Kokkos::parallel_for(
-      "peclet::core::amgs_ap_fill", Policy(0, n), KOKKOS_LAMBDA(const Index i) {
-        const auto t = token.acquire();
-        const Index o = APstart(i);
-        Index u = 0;
-        auto addv = [&](Index c, double v) {
-          Index m = mark(t, c);
-          if (m < 0) {
-            m = u++;
-            mark(t, c) = m;
-            APcol(o + m) = c;
-            APval(o + m) = 0.0;
-          }
-          APval(o + m) += v;
-        };
+  // 7a: AP = A·P, row by row in the host's order (diag·P_i first, then entries in order)
+  IView APstart, APcol;
+  DView APval;
+  accumulateRows(
+      n,
+      KOKKOS_LAMBDA(const Index i) {
+        Index c = Pstart(i + 1) - Pstart(i);
+        for (Index k = start(i); k < start(i + 1); ++k)
+          c += Pstart(nbr(k) + 1) - Pstart(nbr(k));
+        return c;
+      },
+      KOKKOS_LAMBDA(const Index i, const RowTable& t) {
         const double di = diag(i);
         for (Index k = Pstart(i); k < Pstart(i + 1); ++k)
-          addv(Pcol(k), di * Pval(k));
+          t.add(Pcol(k), di * Pval(k));
         for (Index k = start(i); k < start(i + 1); ++k) {
           const Index j = nbr(k);
           const double c = coef(k);
           for (Index kk = Pstart(j); kk < Pstart(j + 1); ++kk)
-            addv(Pcol(kk), c * Pval(kk));
+            t.add(Pcol(kk), c * Pval(kk));
         }
-        for (Index m = 0; m < u; ++m)
-          mark(t, APcol(o + m)) = -1;
-        token.release(t);
-        sortPairs(&APcol(o), &APval(o), u);
-      });
+      },
+      "AP", APstart, APcol, APval);
 
   AMGS_T(5, tp);
-  // 7b: A_c = R·AP — one thread per coarse row, accumulated in increasing fine index (R rows are
-  // sorted), structural count, fill, then exact zeros dropped from the off-diagonal (host rule).
-  IView acc_cnt("amgs_accnt", nc);
-  Kokkos::parallel_for(
-      "peclet::core::amgs_rap_cnt", Policy(0, nc), KOKKOS_LAMBDA(const Index c1) {
-        const auto t = token.acquire();
-        Index u = 0;
-        for (Index k = Rstart(c1); k < Rstart(c1 + 1); ++k) {
-          const Index i = Rcol(k);
-          for (Index e = APstart(i); e < APstart(i + 1); ++e) {
-            const Index c2 = APcol(e);
-            if (c2 != c1 && mark(t, c2) < 0)
-              mark(t, c2) = u++;
-          }
-        }
-        for (Index k = Rstart(c1); k < Rstart(c1 + 1); ++k) {
-          const Index i = Rcol(k);
-          for (Index e = APstart(i); e < APstart(i + 1); ++e)
-            mark(t, APcol(e)) = -1;
-        }
-        token.release(t);
-        acc_cnt(c1) = u;
-      });
-  IView Sstart("amgs_Acs", nc + 1);
-  const Index snnz = scanCounts(acc_cnt, Sstart, nc);
-  IView Scol(Kokkos::view_alloc(std::string("amgs_Acc"), Kokkos::WithoutInitializing), snnz);
-  DView Sval(Kokkos::view_alloc(std::string("amgs_Acv"), Kokkos::WithoutInitializing), snnz);
+  // 7b: A_c = R·AP — one row per coarse row, accumulated in increasing fine index (R rows are
+  // sorted), the diagonal summed apart in the same order, then exact zeros dropped from the
+  // off-diagonal (host rule).
   DView cdiag("amgs_Acd", nc);
-  IView nzc("amgs_nzc", nc);
-  Index zeros = 0;
-  Kokkos::parallel_reduce(
-      "peclet::core::amgs_rap_fill", Policy(0, nc),
-      KOKKOS_LAMBDA(const Index c1, Index& zc) {
-        const auto t = token.acquire();
-        const Index o = Sstart(c1);
-        Index u = 0;
+  IView Sstart, Scol;
+  DView Sval;
+  accumulateRows(
+      nc,
+      KOKKOS_LAMBDA(const Index c1) {
+        Index c = 0;
+        for (Index k = Rstart(c1); k < Rstart(c1 + 1); ++k)
+          c += APstart(Rcol(k) + 1) - APstart(Rcol(k));
+        return c;
+      },
+      KOKKOS_LAMBDA(const Index c1, const RowTable& t) {
         double dsum = 0.0;
         for (Index k = Rstart(c1); k < Rstart(c1 + 1); ++k) {
           const Index i = Rcol(k);
@@ -920,31 +997,26 @@ inline CoarseLevel coarsen(const DeviceCsr& A, const DView& invDiag, const AmgPa
           for (Index e = APstart(i); e < APstart(i + 1); ++e) {
             const Index c2 = APcol(e);
             const double v = p1 * APval(e);
-            if (c2 == c1) {
+            if (c2 == c1)
               dsum += v;
-              continue;
-            }
-            Index m = mark(t, c2);
-            if (m < 0) {
-              m = u++;
-              mark(t, c2) = m;
-              Scol(o + m) = c2;
-              Sval(o + m) = 0.0;
-            }
-            Sval(o + m) += v;
+            else
+              t.add(c2, v);
           }
         }
-        for (Index m = 0; m < u; ++m)
-          mark(t, Scol(o + m)) = -1;
-        token.release(t);
-        sortPairs(&Scol(o), &Sval(o), u);
         cdiag(c1) = dsum;
+      },
+      "Ac", Sstart, Scol, Sval);
+  IView nzc("amgs_nzc", nc);
+  Index zeros = 0;
+  Kokkos::parallel_reduce(
+      "peclet::core::amgs_rap_nz", Policy(0, nc),
+      KOKKOS_LAMBDA(const Index c1, Index& zc) {
         Index nz = 0;
-        for (Index m = 0; m < u; ++m)
-          if (Sval(o + m) != 0.0)
+        for (Index m = Sstart(c1); m < Sstart(c1 + 1); ++m)
+          if (Sval(m) != 0.0)
             ++nz;
         nzc(c1) = nz;
-        zc += u - nz;
+        zc += Sstart(c1 + 1) - Sstart(c1) - nz;
       },
       zeros);
   out.Ac.n = nc;
