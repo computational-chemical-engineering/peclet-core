@@ -20,6 +20,7 @@
 #include <cstring>
 #include <vector>
 
+#include "halo_bindings_checks.hpp"
 #include "peclet/core/common/types.hpp"
 #include "peclet/core/decomp/block_decomposer.hpp"
 #include "peclet/core/halo/particle_halo_topology.hpp"
@@ -27,6 +28,7 @@
 #include "peclet/core/halo/particle_rebalance.hpp"
 
 namespace nb = nanobind;
+namespace chk = halo_checks;
 using namespace peclet::core;
 
 namespace {
@@ -47,6 +49,7 @@ class ParticleMigrator {
  public:
   ParticleMigrator(std::array<double, 3> origin, std::array<double, 3> extent,
                    std::array<long, 3> cells, std::array<bool, 3> periodic) {
+    chk::box("ParticleMigrator", origin, extent, cells);
     int sz = 1;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank_);
     MPI_Comm_size(MPI_COMM_WORLD, &sz);
@@ -61,17 +64,22 @@ class ParticleMigrator {
   }
 
   int rank() const { return rank_; }
-  int owner_of(std::array<double, 3> x) const { return mig_.ownerOf(Vec<3>{x[0], x[1], x[2]}); }
+  int owner_of(std::array<double, 3> x) const {
+    chk::point("ParticleMigrator.owner_of", x);
+    return mig_.ownerOf(Vec<3>{x[0], x[1], x[2]});
+  }
 
   // Periodic-wrapped / boundary-clamped position for x (the canonical image used by
   // migrate/owner_of).
   std::array<double, 3> wrap_position(std::array<double, 3> x) const {
+    chk::point("ParticleMigrator.wrap_position", x);
     Vec<3> w = mig_.wrapPosition(Vec<3>{x[0], x[1], x[2]});
     return {w[0], w[1], w[2]};
   }
   // Global decomposition cell index containing x (after wrap); owner_of ==
   // decomposer.ownerOf(cell_of).
   std::array<long, 3> cell_of(std::array<double, 3> x) const {
+    chk::point("ParticleMigrator.cell_of", x);
     IVec<3> c = mig_.cellOf(Vec<3>{x[0], x[1], x[2]});
     return {static_cast<long>(c[0]), static_cast<long>(c[1]), static_cast<long>(c[2])};
   }
@@ -82,6 +90,7 @@ class ParticleMigrator {
 
   // (pos (N,3), pay (N,K)) -> (pos2 (M,3), pay2 (M,K)) after reassigning ownership.
   nb::tuple migrate(DArray pos, DArray pay) {
+    chk::particles("ParticleMigrator.migrate", pos, pay);
     std::vector<Vec<3>> pv;
     std::vector<char> payload;
     std::size_t K = unpack(pos, pay, pv, payload);
@@ -95,6 +104,7 @@ class ParticleMigrator {
   // decomposition is updated in place, so subsequent owner_of()/migrate() calls use the new
   // (balanced) partition.
   nb::tuple rebalance(DArray pos, DArray pay) {
+    chk::particles("ParticleMigrator.rebalance", pos, pay);
     std::vector<Vec<3>> pv;
     std::vector<char> payload;
     std::size_t K = unpack(pos, pay, pv, payload);
@@ -105,6 +115,8 @@ class ParticleMigrator {
 
   // copies of particles within rcut of this rank's block (periodic images handled).
   nb::tuple gather_ghosts(DArray pos, DArray pay, double rcut) {
+    chk::particles("ParticleMigrator.gather_ghosts", pos, pay);
+    chk::rcut("ParticleMigrator.gather_ghosts", rcut);
     std::vector<Vec<3>> pv;
     std::vector<char> payload;
     std::size_t K = unpack(pos, pay, pv, payload);
@@ -164,6 +176,7 @@ class ParticleHalo {
  public:
   ParticleHalo(std::array<double, 3> origin, std::array<double, 3> extent,
                std::array<long, 3> cells, std::array<bool, 3> periodic) {
+    chk::box("ParticleHalo", origin, extent, cells);
     int sz = 1;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank_);
     MPI_Comm_size(MPI_COMM_WORLD, &sz);
@@ -179,12 +192,17 @@ class ParticleHalo {
   }
 
   int rank() const { return rank_; }
-  int owner_of(std::array<double, 3> x) const { return mig_.ownerOf(Vec<3>{x[0], x[1], x[2]}); }
+  int owner_of(std::array<double, 3> x) const {
+    chk::point("ParticleHalo.owner_of", x);
+    return mig_.ownerOf(Vec<3>{x[0], x[1], x[2]});
+  }
 
   // (re)establish the correspondence from this rank's owned positions (N,3); returns ghost count.
   // include_periodic_self emits local periodic self-ghosts — needed on an undecomposed periodic
   // axis / at np=1, where a particle's periodic image is owned by the same rank.
   int build(DArray pos, double rcut, bool include_periodic_self) {
+    chk::positions("ParticleHalo.build", "positions", pos);
+    chk::rcut("ParticleHalo.build", rcut);
     n_owned_ = static_cast<std::size_t>(pos.shape(0));
     const double* P = pos.data();
     std::vector<Vec<3>> pv(n_owned_);
@@ -199,6 +217,7 @@ class ParticleHalo {
 
   // owned (N,3) -> ghost (G,3): xyz + periodic image shift (use for positions).
   nb::ndarray<nb::numpy, double> forward_positions(DArray owned) {
+    chk::rows("ParticleHalo.forward_positions", "owned", owned, n_owned_, chk::kOwnedRows);
     auto o = in(owned);
     std::vector<V3> g(n_ghost_);
     halo_.forwardPositions(reinterpret_cast<Vec<3>*>(o.data()),
@@ -207,6 +226,7 @@ class ParticleHalo {
   }
   // owned (N,3) -> ghost (G,3): verbatim (velocities, ...).
   nb::ndarray<nb::numpy, double> forward(DArray owned) {
+    chk::rows("ParticleHalo.forward", "owned", owned, n_owned_, chk::kOwnedRows);
     auto o = in(owned);
     std::vector<V3> g(n_ghost_);
     halo_.forward(o.data(), g.data());
@@ -214,6 +234,8 @@ class ParticleHalo {
   }
   // ghost (G,3) summed onto owned (N,3); returns owned + the reversed ghost contributions.
   nb::ndarray<nb::numpy, double> reverse(DArray ghost, DArray owned) {
+    chk::rows("ParticleHalo.reverse", "ghost", ghost, n_ghost_, chk::kGhostRows);
+    chk::rows("ParticleHalo.reverse", "owned", owned, n_owned_, chk::kOwnedRows);
     auto g = in(ghost);
     auto o = in(owned);  // copy; reverse() adds in place
     halo_.reverse(g.data(), o.data());
