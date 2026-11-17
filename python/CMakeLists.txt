@@ -108,6 +108,11 @@ if(PECLET_CORE_PYTHON_TESTS)
     set_tests_properties(python_input_validation_np${np} PROPERTIES LABELS "mpi;python"
       ENVIRONMENT "${_py_env};OMP_NUM_THREADS=1")
   endforeach()
+  # The shipped type stub packaging/_halo.pyi lists every public name of the extension.
+  add_test(NAME python_stub_sync
+           COMMAND "${Python_EXECUTABLE}" -m pytest -q -p no:cacheprovider
+                   "${CMAKE_CURRENT_SOURCE_DIR}/test_stub_sync.py")
+  set_tests_properties(python_stub_sync PROPERTIES LABELS "python" ENVIRONMENT "${_py_env}")
   add_test(NAME python_state_hash
            COMMAND "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/state_hash.py"
                    --check "${CMAKE_CURRENT_SOURCE_DIR}/state_hash_reference.json")
