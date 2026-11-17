@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `core` is the shared infrastructure library of the **peclet** suite
 (sibling repos under `../`: `flow`, `pnm`, `dem`, `voro`, `coupling`, `amr`, `geom`, `morton`). The suite-wide design contract lives in `../docs/` — read
-`../docs/ARCHITECTURE.md`, `CONVENTIONS.md`, `STYLE.md`, `INTERFACES.md`, `ROADMAP.md` before
+`../docs/ARCHITECTURE.md`, `../docs/CONVENTIONS.md`, `../docs/STYLE.md`, `../docs/INTERFACES.md`, `../docs/ROADMAP.md` before
 cross-cutting changes. Header-only C++20; the device side is compiled through Kokkos (CUDA / HIP /
 OpenMP) and is also C++20 — only the `morton` dependency pins C++17 (see `../docs/STYLE.md`). CUDA is
 retired; Kokkos is the canonical device path.
@@ -212,8 +212,8 @@ Header-only under `include/peclet/core/`:
   (`MomentumOp`, `applyMom`, `residualMom`, `jacobiMom`, `multicolorGSMom`), the preconditioned
   BiCGStab / defect-correction solver (`MomentumSolver` — no template parameter; the AMR `Bits` was
   vestigial) and the `axpy`/`zpby`/`negate`/`dotPlain`/`bicgPUpdate` primitives. The names keep their
-  AMR spelling on purpose (a rename is not a structural move): voro's `mesh_optimizer.hpp` /
-  `ot_optimizer.hpp` and the AMR package are the consumers. Gate: `tests/test_csr_solver.cpp`
+  AMR spelling on purpose (a rename is not a structural move): voro's `../voro/include/peclet/voro/mesh_optimizer.hpp` /
+  `../voro/include/peclet/voro/ot_optimizer.hpp` and the AMR package are the consumers. Gate: `tests/test_csr_solver.cpp`
   (Kokkos build) — host row kernel vs device matvec, proper colouring of an asymmetric CSR,
   smoothers, BiCGStab + defect correction.
   `solver/anderson.hpp` is **`AndersonCore`**, type-II Anderson acceleration of a steady march

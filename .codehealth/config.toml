@@ -1,0 +1,132 @@
+# cce-code-health gate for peclet.halo (the Python layer of peclet-core: python/), user-facing round WO-35.
+# Adapted from pnm's (pnm-health-api 7c4c47a). Only python/ is in scope: the C++ headers under include/ are
+# not touched by this round and their own battery (ctest over the top-level project) is not part of it.
+#
+# Run with PECLET_SUITE=<suite checkout> set. The base side builds under <git-common-dir>/codehealth/base-<sha>,
+# where no sibling ../extern or ../../cmake exists: the Kokkos/host prefix is passed by absolute path, and
+# SuiteNanobind falls back to core's vendored, byte-identical copy (python/CMakeLists.txt).
+#
+# Traps encoded below:
+#  - OMP_NUM_THREADS=1: state_hash is bitwise only at one thread; an unbounded pool per MPI rank is slow.
+#  - MPIEXEC_PREFLAGS is the LIST form "--bind-to;none" (core passes ${MPIEXEC_PREFLAGS} as a list).
+#  - ctest exits 0 on a skip -> fail_regex. python_shell_deprecation_geom SKIPs (77) wherever the separate
+#    peclet-geom distribution is not installed (the suite venv): excluded by name, at base and head alike.
+#  - state_hash.py prints the hashes on stdout (rank 0); np 1 and np 2 both go into the reference.
+schema = 1
+
+[profiles]
+python = "python@0"
+cpp = "cpp@0"
+
+[scope]
+include = ["python/*"]
+
+[gate]
+frozen = ["include/*", "CLAUDE.md"]
+forbid = []
+literals = false
+public_api = false
+flags = true
+keep_going = false
+prefix = ': "${PECLET_SUITE:?set PECLET_SUITE to the suite checkout}" && export VIRTUAL_ENV="$PECLET_SUITE/.venv" PATH="$PECLET_SUITE/.venv/bin:$PATH" &&'
+
+[gate.env]
+OMP_NUM_THREADS = "1"
+OMP_PROC_BIND = "false"
+OPENBLAS_NUM_THREADS = "1"
+MKL_NUM_THREADS = "1"
+PYTHONHASHSEED = "0"
+
+# quality.yml's blocking clang-format job (18.1.8 = the suite venv's), plus python/*.hpp (not in CI's glob).
+[[gate.tier]]
+name = "clang_format"
+kind = "command"
+behaviour = false
+cadence = "step"
+timeout = 120
+cmd = '''cd {repo} && $PECLET_SUITE/.venv/bin/clang-format --dry-run --Werror \
+  $(git ls-files 'include/*.hpp' 'tests/*.hpp' 'tests/*.cpp' 'benchmarks/*.cpp' 'python/*.cpp' 'python/*.hpp')'''
+
+[[gate.tier]]
+name = "build_host"
+kind = "command"
+behaviour = false
+cadence = "step"
+timeout = 900
+cmd = '''cmake -S {repo}/python -B {repo}/build_health_py -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=$PECLET_SUITE/extern/install/host-openmp \
+  -DMPIEXEC_EXECUTABLE=/usr/bin/mpirun "-DMPIEXEC_PREFLAGS=--bind-to;none" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+  && cmake --build {repo}/build_health_py -j16'''
+
+[[gate.tier]]
+name = "ctest_host"
+kind = "command"
+cadence = "step"
+timeout = 1800
+skip_exit = 77
+fail_regex = '\*\*\*Skipped|Not Run|No tests were found'
+detect_exit = [8]
+cmd = '''cmake -S {repo}/python -B {repo}/build_health_py -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=$PECLET_SUITE/extern/install/host-openmp \
+  -DMPIEXEC_EXECUTABLE=/usr/bin/mpirun "-DMPIEXEC_PREFLAGS=--bind-to;none" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON >/dev/null \
+  && cmake --build {repo}/build_health_py -j16 >/dev/null \
+  && ctest --test-dir {repo}/build_health_py -E python_shell_deprecation_geom -j1 --timeout 600 --output-on-failure'''
+
+[[gate.tier]]
+name = "state_hash"
+kind = "reference"
+cadence = "step"
+timeout = 900
+fail_regex = 'skipped|SKIPPED'
+outputs = ["hashes.txt"]
+cmd = '''cmake -S {repo}/python -B {repo}/build_health_py -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=$PECLET_SUITE/extern/install/host-openmp \
+  -DMPIEXEC_EXECUTABLE=/usr/bin/mpirun "-DMPIEXEC_PREFLAGS=--bind-to;none" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON >/dev/null \
+  && cmake --build {repo}/build_health_py -j16 >/dev/null \
+  && PYTHONPATH={repo}/build_health_py python {repo}/python/state_hash.py > {out}/hashes.txt \
+  && PYTHONPATH={repo}/build_health_py /usr/bin/mpirun -np 2 --bind-to none \
+     python {repo}/python/state_hash.py >> {out}/hashes.txt \
+  && cat {out}/hashes.txt'''
+
+# API identity (RULES "Gating a user-facing round"): every public name's nanobind signature and defaults,
+# docstrings excluded. A user-facing round may change docstrings and add checks, never a name, a parameter,
+# a default or a return type; base and head must print the same bytes.
+[[gate.tier]]
+name = "nb_signatures"
+kind = "reference"
+cadence = "step"
+timeout = 900
+outputs = ["signatures.txt"]
+cmd = '''cmake -S {repo}/python -B {repo}/build_health_py -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=$PECLET_SUITE/extern/install/host-openmp \
+  -DMPIEXEC_EXECUTABLE=/usr/bin/mpirun "-DMPIEXEC_PREFLAGS=--bind-to;none" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON >/dev/null \
+  && cmake --build {repo}/build_health_py -j16 >/dev/null \
+  && PYTHONPATH={repo}/build_health_py python - > {out}/signatures.txt <<'PY' || exit 1
+from mpi4py import MPI  # noqa: F401  (the module never calls MPI_Init)
+import peclet.halo._halo as m
+
+
+def sig(f):
+    s = getattr(f, "__nb_signature__", None) if f is not None else None
+    return [f"{t[0]} defaults={t[2]!r}" for t in s] if s else []
+
+
+out = []
+for n in sorted(dir(m)):
+    if n.startswith("__") or n == "build_toolchain":
+        continue
+    o = getattr(m, n)
+    if isinstance(o, type):
+        out.append(f"class {n}")
+        for k, v in sorted(o.__dict__.items()):
+            if isinstance(v, property):
+                out += [f"  {n}.{k}.{p} {s}" for p in ("fget", "fset") for s in sig(getattr(v, p))]
+            else:
+                out += [f"  {n}.{k} {s}" for s in sig(getattr(v, "__func__", v))]
+    elif sig(o):
+        out += [f"{n} {s}" for s in sig(o)]
+    else:
+        out.append(f"{n} = <{type(o).__name__}>")
+print("\n".join(out))
+PY
+test -s {out}/signatures.txt && cat {out}/signatures.txt'''
