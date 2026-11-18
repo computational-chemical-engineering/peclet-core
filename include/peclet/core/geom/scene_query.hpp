@@ -234,6 +234,68 @@ struct CandidateGrid {
   }
 };
 
+namespace query_detail {
+
+/// Bin layout of a candidate grid over [origin, origin + extent): nbAxis(L) bins along an axis of
+/// length L; periodic lookup when the box is.
+template <class Real, class NbAxis>
+void layoutBins(CandidateGridView<Real>& m, Vec3<Real> origin, Vec3<Real> extent,
+                const PeriodicBox<Real>& box, NbAxis&& nbAxis) {
+  m.nx = nbAxis(extent.x);
+  m.ny = nbAxis(extent.y);
+  m.nz = nbAxis(extent.z);
+  m.ox = origin.x;
+  m.oy = origin.y;
+  m.oz = origin.z;
+  m.bx = extent.x / m.nx;
+  m.by = extent.y / m.ny;
+  m.bz = extent.z / m.nz;
+  m.wrap = box.on;
+}
+
+/// The per-bin candidate lists packed into the grid's CSR (offsets, items).
+template <class Real>
+void packLists(CandidateGrid<Real>& g, const std::vector<std::vector<int>>& lists, long nbins) {
+  g.offsets.resize((std::size_t)nbins + 1);
+  g.offsets[0] = 0;
+  for (long b = 0; b < nbins; ++b)
+    g.offsets[(std::size_t)b + 1] =
+        g.offsets[(std::size_t)b] + static_cast<int>(lists[(std::size_t)b].size());
+  g.items.resize((std::size_t)g.offsets[(std::size_t)nbins]);
+  for (long b = 0; b < nbins; ++b)
+    std::copy(lists[(std::size_t)b].begin(), lists[(std::size_t)b].end(),
+              g.items.begin() + g.offsets[(std::size_t)b]);
+}
+
+/// The bin neighbourhood sphere i of `u` splats: bins of `m` whose center lies within `reach` of
+/// the sphere center (min-image). Enumerated as an index box around the sphere, wrapped when
+/// periodic; fn(bin) per bin.
+template <class Real, class Fn>
+void forEachBinNearSphere(const CandidateGridView<Real>& m, const SphereUnionView<Real>& u, int i,
+                          Real reach, Fn&& fn) {
+  const int riX = static_cast<int>(reach / m.bx) + 1;
+  const int riY = static_cast<int>(reach / m.by) + 1;
+  const int riZ = static_cast<int>(reach / m.bz) + 1;
+  const int ci = static_cast<int>(peclet::core::detail::hdFloor((u.cx[i] - m.ox) / m.bx));
+  const int cj = static_cast<int>(peclet::core::detail::hdFloor((u.cy[i] - m.oy) / m.by));
+  const int ck = static_cast<int>(peclet::core::detail::hdFloor((u.cz[i] - m.oz) / m.bz));
+  for (int dk = -riZ; dk <= riZ; ++dk)
+    for (int dj = -riY; dj <= riY; ++dj)
+      for (int di = -riX; di <= riX; ++di) {
+        long ii = ci + di, jj = cj + dj, kk = ck + dk;
+        if (m.wrap) {
+          ii = ((ii % m.nx) + m.nx) % m.nx;
+          jj = ((jj % m.ny) + m.ny) % m.ny;
+          kk = ((kk % m.nz) + m.nz) % m.nz;
+        } else if (ii < 0 || ii >= m.nx || jj < 0 || jj >= m.ny || kk < 0 || kk >= m.nz) {
+          continue;
+        }
+        fn(ii + (long)m.nx * (jj + (long)m.ny * kk));
+      }
+}
+
+}  // namespace query_detail
+
 /// Geometry-driven candidate build for a sphere union over [origin, origin+extent). Two splat
 /// passes over each sphere's bounded bin neighbourhood:
 ///   pass 1: each sphere lowers U(B) (atomic-min-shaped, serial here) with its upper bound
@@ -261,16 +323,7 @@ CandidateGrid<Real> buildSphereCandidateGrid(const SphereUnionView<Real>& u, Vec
   };
   CandidateGrid<Real> g;
   auto& m = g.meta;
-  m.nx = nbAxis(extent.x);
-  m.ny = nbAxis(extent.y);
-  m.nz = nbAxis(extent.z);
-  m.ox = origin.x;
-  m.oy = origin.y;
-  m.oz = origin.z;
-  m.bx = extent.x / m.nx;
-  m.by = extent.y / m.ny;
-  m.bz = extent.z / m.nz;
-  m.wrap = box.on;
+  query_detail::layoutBins(m, origin, extent, box, nbAxis);
   const long nbins = (long)m.nx * m.ny * m.nz;
   const Real halfDiag = Real(0.5) * std::sqrt(m.bx * m.bx + m.by * m.by + m.bz * m.bz);
   // Conservative slack absorbing the float rounding of the bounds themselves; supersets stay
@@ -286,29 +339,6 @@ CandidateGrid<Real> buildSphereCandidateGrid(const SphereUnionView<Real>& u, Vec
     const Vec3<Real> d = minImage(Vec3<Real>{a.x - u.cx[i], a.y - u.cy[i], a.z - u.cz[i]}, box);
     return std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
   };
-  // The bin neighbourhood a sphere splats: bins whose center lies within `reach` of the sphere
-  // center (min-image). Enumerated as an index box around the sphere, wrapped when periodic.
-  auto forEachBinNear = [&](int i, Real reach, auto&& fn) {
-    const int riX = static_cast<int>(reach / m.bx) + 1;
-    const int riY = static_cast<int>(reach / m.by) + 1;
-    const int riZ = static_cast<int>(reach / m.bz) + 1;
-    const int ci = static_cast<int>(peclet::core::detail::hdFloor((u.cx[i] - m.ox) / m.bx));
-    const int cj = static_cast<int>(peclet::core::detail::hdFloor((u.cy[i] - m.oy) / m.by));
-    const int ck = static_cast<int>(peclet::core::detail::hdFloor((u.cz[i] - m.oz) / m.bz));
-    for (int dk = -riZ; dk <= riZ; ++dk)
-      for (int dj = -riY; dj <= riY; ++dj)
-        for (int di = -riX; di <= riX; ++di) {
-          long ii = ci + di, jj = cj + dj, kk = ck + dk;
-          if (m.wrap) {
-            ii = ((ii % m.nx) + m.nx) % m.nx;
-            jj = ((jj % m.ny) + m.ny) % m.ny;
-            kk = ((kk % m.nz) + m.nz) % m.nz;
-          } else if (ii < 0 || ii >= m.nx || jj < 0 || jj >= m.ny || kk < 0 || kk >= m.nz) {
-            continue;
-          }
-          fn(ii + (long)m.nx * (jj + (long)m.ny * kk));
-        }
-  };
   // Pass 1: U(B) = min_i upper_i(B), splat within each sphere's competitive reach. The reach must
   // cover every bin where this sphere could OWN the best upper bound; beyond max over spheres of
   // (their own reach), U stays +inf and queries there fall back. Reach heuristic: the largest
@@ -318,7 +348,7 @@ CandidateGrid<Real> buildSphereCandidateGrid(const SphereUnionView<Real>& u, Vec
       box.on ? Real(0.5) * std::sqrt(box.Lx * box.Lx + box.Ly * box.Ly + box.Lz * box.Lz) + halfDiag
              : std::sqrt(extent.x * extent.x + extent.y * extent.y + extent.z * extent.z);
   for (int i = 0; i < u.n; ++i)
-    forEachBinNear(i, capReach, [&](long b) {
+    query_detail::forEachBinNearSphere(m, u, i, capReach, [&](long b) {
       Vec3<Real> c;
       binCenter(b, c);
       const Real up = dist(c, i) + halfDiag - u.r[i];
@@ -334,22 +364,14 @@ CandidateGrid<Real> buildSphereCandidateGrid(const SphereUnionView<Real>& u, Vec
       Umax = v;
   std::vector<std::vector<int>> lists((std::size_t)nbins);
   for (int i = 0; i < u.n; ++i)
-    forEachBinNear(i, u.r[i] + halfDiag + Umax + slack, [&](long b) {
+    query_detail::forEachBinNearSphere(m, u, i, u.r[i] + halfDiag + Umax + slack, [&](long b) {
       Vec3<Real> c;
       binCenter(b, c);
       const Real lower = dist(c, i) - halfDiag - u.r[i];
       if (lower <= U[(std::size_t)b] + slack)
         lists[(std::size_t)b].push_back(i);
     });
-  g.offsets.resize((std::size_t)nbins + 1);
-  g.offsets[0] = 0;
-  for (long b = 0; b < nbins; ++b)
-    g.offsets[(std::size_t)b + 1] =
-        g.offsets[(std::size_t)b] + static_cast<int>(lists[(std::size_t)b].size());
-  g.items.resize((std::size_t)g.offsets[(std::size_t)nbins]);
-  for (long b = 0; b < nbins; ++b)
-    std::copy(lists[(std::size_t)b].begin(), lists[(std::size_t)b].end(),
-              g.items.begin() + g.offsets[(std::size_t)b]);
+  query_detail::packLists(g, lists, nbins);
   return g;
 }
 
