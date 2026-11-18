@@ -271,7 +271,7 @@ void packLists(CandidateGrid<Real>& g, const std::vector<std::vector<int>>& list
 /// the sphere center (min-image). Enumerated as an index box around the sphere, wrapped when
 /// periodic; fn(bin) per bin.
 template <class Real, class Fn>
-void forEachBinNearSphere(const CandidateGridView<Real>& m, const SphereUnionView<Real>& u, int i,
+void forEachBinNearSphere(const CandidateGridView<Real> m, const SphereUnionView<Real> u, int i,
                           Real reach, Fn&& fn) {
   const int riX = static_cast<int>(reach / m.bx) + 1;
   const int riY = static_cast<int>(reach / m.by) + 1;
