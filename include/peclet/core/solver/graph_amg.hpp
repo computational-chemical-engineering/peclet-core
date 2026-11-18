@@ -219,6 +219,68 @@ class GraphAMG {
     // blockFro[I] : map J -> ‖A_block(I,J)‖_F² (accumulated), plus the diagonal block norm.
     std::vector<std::map<Index, double>> blk(static_cast<std::size_t>(nNodes));
     std::vector<double> ddiag(static_cast<std::size_t>(nNodes), 0.0);  // ‖diagonal block‖_F²
+    nodalNorms(lv, blk, ddiag);
+    // Strong set per node: J strong to I iff ‖A(I,J)‖_F ≥ θ·√(‖A(I,I)‖_F·‖A(J,J)‖_F).
+    std::vector<std::vector<Index>> strong(static_cast<std::size_t>(nNodes));
+    strongSets(blk, ddiag, strong);
+
+    // --- 2. greedy aggregation ---
+    std::vector<Index> agg(static_cast<std::size_t>(nNodes), -1);
+    Index nAgg = 0;
+    // Pass 1 — roots: a fully-unaggregated node with a fully-unaggregated strong neighbourhood
+    // seeds a new aggregate consisting of itself + those neighbours.
+    aggregateRoots(strong, agg, nAgg);
+    // Pass 2 — attach each leftover to the adjacent aggregate it is most strongly tied to.
+    attachLeftovers(strong, blk, agg);
+    // Pass 3 — remaining nodes form fresh aggregates from their still-unaggregated strong clusters
+    // (a fully isolated node becomes a singleton aggregate).
+    aggregateRemainders(strong, agg, nAgg);
+    if (nAgg <= 1 || nAgg == nNodes)
+      return false;  // no useful coarsening
+
+    // --- 3. tentative prolongator P₀ (block piecewise-constant, unit-2-norm columns) ---
+    // Each aggregate → s coarse DOFs; fine DOF (I,d) maps to coarse DOF (agg(I)·s + d) with weight
+    // 1/√|agg(I)| (the QR normalisation of the constant near-nullspace mode over the aggregate).
+    const std::vector<double> invSqrtCnt = aggregateWeights(agg, nAgg);
+    const Index ncoarse = nAgg * s;
+
+    // --- 4. FILTERED prolongator smoothing P = (I − (ω/λ_max) D_F⁻¹ A^F) P₀ ---
+    // A^F is the filtered operator: off-diagonal entries between nodes that are NOT strongly
+    // connected are dropped and LUMPED into the diagonal (row sums, hence the constant nullspace,
+    // preserved). Filtering is the standard SA fill-control: smoothing along only the strong graph
+    // keeps P — and therefore the Galerkin coarse operator — sparse, so operator complexity stays
+    // bounded (unfiltered smoothing densifies the coarse levels and, through the lmax-dependent
+    // step, makes the whole hierarchy hypersensitive / erratic). P₀ row for fine DOF i=(I,d) is a
+    // single entry (agg(I)·s + d, invSqrtCnt).
+    std::vector<Index> Pstart(static_cast<std::size_t>(n) + 1, 0), Pcol;
+    std::vector<double> Pval;
+    smoothedProlongator(lv, agg, invSqrtCnt, strong, Pstart, Pcol, Pval);
+
+    // --- 5. Galerkin coarse operator A_c = PᵀAP (general sparse RAP) ---
+    // AP_i,: = diag_i·P_i,: + Σ_k coef_k·P_{nbr_k,:}   (fine row → coarse columns)
+    // A_c[c1][c2] += Σ_i P[i][c1]·AP[i][c2]
+    const std::vector<std::map<Index, double>> Ac = galerkin(lv, Pstart, Pcol, Pval, ncoarse);
+
+    // Flatten A_c into the coarse HostCsrOp (drop structural zeros).
+    flattenCoarse(Ac, ncoarse, next);
+
+    // Stash the transfer on the fine level.
+    lv.Pstart = std::move(Pstart);
+    lv.Pcol = std::move(Pcol);
+    lv.Pval = std::move(Pval);
+    lv.nc = ncoarse;
+    return true;
+  }
+
+  // ---- the phases of coarsen, in call order
+  // --------------------------------------------------------
+
+  /// Phase 1: per node I, the squared Frobenius norms of its off-diagonal blocks (blk[I][J]) and of
+  /// its diagonal block (ddiag[I]).
+  void nodalNorms(const Level& lv, std::vector<std::map<Index, double>>& blk,
+                  std::vector<double>& ddiag) const {
+    const Index n = lv.A.n;
+    const int s = prm_.ndofPerNode;
     for (Index i = 0; i < n; ++i) {
       const Index I = i / s;
       ddiag[static_cast<std::size_t>(I)] +=
@@ -233,8 +295,13 @@ class GraphAMG {
           blk[static_cast<std::size_t>(I)][J] += c * c;
       }
     }
-    // Strong set per node: J strong to I iff ‖A(I,J)‖_F ≥ θ·√(‖A(I,I)‖_F·‖A(J,J)‖_F).
-    std::vector<std::vector<Index>> strong(static_cast<std::size_t>(nNodes));
+  }
+
+  /// Strong set per node, in sorted order: J strong to I iff ‖A(I,J)‖_F ≥
+  /// θ·√(‖A(I,I)‖_F·‖A(J,J)‖_F).
+  void strongSets(const std::vector<std::map<Index, double>>& blk, const std::vector<double>& ddiag,
+                  std::vector<std::vector<Index>>& strong) const {
+    const Index nNodes = static_cast<Index>(blk.size());
     const double th2 = prm_.theta * prm_.theta;
     // (blk/ddiag hold SQUARED Frobenius norms, so square the criterion: ‖S‖_F² ≥ θ²·‖D_I‖_F·‖D_J‖_F
     //  = θ²·√(ddiag_I·ddiag_J).)
@@ -243,16 +310,13 @@ class GraphAMG {
         if (fro2 >= th2 * std::sqrt(ddiag[static_cast<std::size_t>(I)] *
                                     ddiag[static_cast<std::size_t>(J)]))
           strong[static_cast<std::size_t>(I)].push_back(J);  // (blk iterates J in sorted order)
-    auto isStrong = [&](Index I, Index J) {
-      const auto& s = strong[static_cast<std::size_t>(I)];
-      return std::binary_search(s.begin(), s.end(), J);
-    };
+  }
 
-    // --- 2. greedy aggregation ---
-    std::vector<Index> agg(static_cast<std::size_t>(nNodes), -1);
-    Index nAgg = 0;
-    // Pass 1 — roots: a fully-unaggregated node with a fully-unaggregated strong neighbourhood
-    // seeds a new aggregate consisting of itself + those neighbours.
+  /// Aggregation pass 1, roots: a fully-unaggregated node with a fully-unaggregated strong
+  /// neighbourhood seeds a new aggregate consisting of itself + those neighbours.
+  static void aggregateRoots(const std::vector<std::vector<Index>>& strong, std::vector<Index>& agg,
+                             Index& nAgg) {
+    const Index nNodes = static_cast<Index>(strong.size());
     for (Index I = 0; I < nNodes; ++I) {
       if (agg[static_cast<std::size_t>(I)] != -1)
         continue;
@@ -269,7 +333,13 @@ class GraphAMG {
         agg[static_cast<std::size_t>(J)] = nAgg;
       ++nAgg;
     }
-    // Pass 2 — attach each leftover to the adjacent aggregate it is most strongly tied to.
+  }
+
+  /// Aggregation pass 2: attach each leftover to the adjacent aggregate it is most strongly tied
+  /// to.
+  static void attachLeftovers(const std::vector<std::vector<Index>>& strong,
+                              std::vector<std::map<Index, double>>& blk, std::vector<Index>& agg) {
+    const Index nNodes = static_cast<Index>(strong.size());
     for (Index I = 0; I < nNodes; ++I) {
       if (agg[static_cast<std::size_t>(I)] != -1)
         continue;
@@ -288,8 +358,13 @@ class GraphAMG {
       if (best >= 0)
         agg[static_cast<std::size_t>(I)] = best;
     }
-    // Pass 3 — remaining nodes form fresh aggregates from their still-unaggregated strong clusters
-    // (a fully isolated node becomes a singleton aggregate).
+  }
+
+  /// Aggregation pass 3: remaining nodes form fresh aggregates from their still-unaggregated strong
+  /// clusters (a fully isolated node becomes a singleton aggregate).
+  static void aggregateRemainders(const std::vector<std::vector<Index>>& strong,
+                                  std::vector<Index>& agg, Index& nAgg) {
+    const Index nNodes = static_cast<Index>(strong.size());
     for (Index I = 0; I < nNodes; ++I) {
       if (agg[static_cast<std::size_t>(I)] != -1)
         continue;
@@ -299,12 +374,11 @@ class GraphAMG {
           agg[static_cast<std::size_t>(J)] = nAgg;
       ++nAgg;
     }
-    if (nAgg <= 1 || nAgg == nNodes)
-      return false;  // no useful coarsening
+  }
 
-    // --- 3. tentative prolongator P₀ (block piecewise-constant, unit-2-norm columns) ---
-    // Each aggregate → s coarse DOFs; fine DOF (I,d) maps to coarse DOF (agg(I)·s + d) with weight
-    // 1/√|agg(I)| (the QR normalisation of the constant near-nullspace mode over the aggregate).
+  /// The P₀ column weight of each aggregate: 1/√|aggregate|.
+  static std::vector<double> aggregateWeights(const std::vector<Index>& agg, Index nAgg) {
+    const Index nNodes = static_cast<Index>(agg.size());
     std::vector<Index> cnt(static_cast<std::size_t>(nAgg), 0);
     for (Index I = 0; I < nNodes; ++I)
       ++cnt[static_cast<std::size_t>(agg[static_cast<std::size_t>(I)])];
@@ -312,16 +386,21 @@ class GraphAMG {
     for (Index a = 0; a < nAgg; ++a)
       invSqrtCnt[static_cast<std::size_t>(a)] =
           1.0 / std::sqrt(static_cast<double>(cnt[static_cast<std::size_t>(a)]));
-    const Index ncoarse = nAgg * s;
+    return invSqrtCnt;
+  }
 
-    // --- 4. FILTERED prolongator smoothing P = (I − (ω/λ_max) D_F⁻¹ A^F) P₀ ---
-    // A^F is the filtered operator: off-diagonal entries between nodes that are NOT strongly
-    // connected are dropped and LUMPED into the diagonal (row sums, hence the constant nullspace,
-    // preserved). Filtering is the standard SA fill-control: smoothing along only the strong graph
-    // keeps P — and therefore the Galerkin coarse operator — sparse, so operator complexity stays
-    // bounded (unfiltered smoothing densifies the coarse levels and, through the lmax-dependent
-    // step, makes the whole hierarchy hypersensitive / erratic). P₀ row for fine DOF i=(I,d) is a
-    // single entry (agg(I)·s + d, invSqrtCnt).
+  /// Phase 4: the rows of the filtered smoothed prolongator P = (I − (ω/λ_max) D_F⁻¹ A^F) P₀.
+  void smoothedProlongator(const Level& lv, const std::vector<Index>& agg,
+                           const std::vector<double>& invSqrtCnt,
+                           const std::vector<std::vector<Index>>& strong,
+                           std::vector<Index>& Pstart, std::vector<Index>& Pcol,
+                           std::vector<double>& Pval) const {
+    const Index n = lv.A.n;
+    const int s = prm_.ndofPerNode;
+    auto isStrong = [&](Index I, Index J) {
+      const auto& s = strong[static_cast<std::size_t>(I)];
+      return std::binary_search(s.begin(), s.end(), J);
+    };
     const double sc = prm_.smoothOmega / lv.lmax;
     auto p0col = [&](Index i) -> Index {
       const Index I = i / s, d = i % s;
@@ -330,8 +409,6 @@ class GraphAMG {
     auto p0val = [&](Index i) -> double {
       return invSqrtCnt[static_cast<std::size_t>(agg[static_cast<std::size_t>(i / s)])];
     };
-    std::vector<Index> Pstart(static_cast<std::size_t>(n) + 1, 0), Pcol;
-    std::vector<double> Pval;
     std::map<Index, double> row;
     for (Index i = 0; i < n; ++i) {
       const Index I = i / s;
@@ -363,10 +440,15 @@ class GraphAMG {
         }
       Pstart[static_cast<std::size_t>(i) + 1] = static_cast<Index>(Pcol.size());
     }
+  }
 
-    // --- 5. Galerkin coarse operator A_c = PᵀAP (general sparse RAP) ---
-    // AP_i,: = diag_i·P_i,: + Σ_k coef_k·P_{nbr_k,:}   (fine row → coarse columns)
-    // A_c[c1][c2] += Σ_i P[i][c1]·AP[i][c2]
+  /// Phase 5: the Galerkin coarse operator A_c = PᵀAP as per-row maps (general sparse RAP).
+  static std::vector<std::map<Index, double>> galerkin(const Level& lv,
+                                                       const std::vector<Index>& Pstart,
+                                                       const std::vector<Index>& Pcol,
+                                                       const std::vector<double>& Pval,
+                                                       Index ncoarse) {
+    const Index n = lv.A.n;
     std::vector<std::map<Index, double>> Ac(static_cast<std::size_t>(ncoarse));
     std::map<Index, double> apRow;
     for (Index i = 0; i < n; ++i) {
@@ -392,8 +474,12 @@ class GraphAMG {
           r1[c2] += p1 * apv;
       }
     }
+    return Ac;
+  }
 
-    // Flatten A_c into the coarse HostCsrOp (drop structural zeros).
+  /// A_c flattened into the coarse HostCsrOp (structural zeros dropped).
+  static void flattenCoarse(const std::vector<std::map<Index, double>>& Ac, Index ncoarse,
+                            Level& next) {
     next.A.n = ncoarse;
     next.A.diag.assign(static_cast<std::size_t>(ncoarse), 0.0);
     next.A.start.assign(static_cast<std::size_t>(ncoarse) + 1, 0);
@@ -410,13 +496,6 @@ class GraphAMG {
       }
       next.A.start[static_cast<std::size_t>(c) + 1] = static_cast<Index>(next.A.nbr.size());
     }
-
-    // Stash the transfer on the fine level.
-    lv.Pstart = std::move(Pstart);
-    lv.Pcol = std::move(Pcol);
-    lv.Pval = std::move(Pval);
-    lv.nc = ncoarse;
-    return true;
   }
 
   // ---- V-cycle ----
