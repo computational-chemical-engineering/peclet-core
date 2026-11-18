@@ -13,3 +13,27 @@
 - **Traps**: the shell test python_shell_deprecation_geom skips without peclet-geom: excluded by name in the gate.
   The checks header is outside quality.yml's clang-format glob (python/*.cpp); the gate's tier adds python/*.hpp.
 - **Wall clock (TRS2)**: build 8 s; gate --behaviour-only 44 s; probes 113 cases x np 1, 2: about 1 min; pytest 102 cases 0.4 s.
+
+# peclet-core playbook: host-orchestration round (WO-40, 2026-11-18; config.toml now gates include/, not python/)
+- **Scope**: include/ only, zone `host` (cpp@1 + zones, tool 0.3.0). Every consumer (flow, amr, dem, pnm, voro,
+  coupling) builds on these headers, so the round also ends with consumers' state hashes bitwise. Public names and
+  signatures stay exactly as they are (consumers pin core by tag). Gate:
+  `PECLET_SUITE=/home/frankp/Codes/suite codehealth gate --ref-base <onboarding sha>`.
+- **Reference**: `tests/regression/state_hash_driver.cpp` (raw output bytes of fixed-input runs; not a ctest) and
+  `tests/regression/state_hash.py` (SHA-256 per case; halo/migrate at np 1, 2, 4, 8; halo on three transports that
+  must agree; the per-test FNV digests of test_anderson and test_anderson_mpi np 1, 2, 4), plus `python/state_hash.py`.
+- **Keep-out**: `solver/graph_amg_setup.hpp`, `solver/graph_amg_device.hpp`, and `HostCsrOp` / `AmgParams` in
+  `solver/graph_amg.hpp` (session voronoi's unlanded branch adds lines there): no edit, move or rename.
+- **Device despite the scan**: `scheme/cut_cell_geometry.hpp` (`PECLET_CORE_CC_HD`) and `geom/quadrature.hpp`
+  (`PECLET_HD`) are called per cell from flow's `KOKKOS_LAMBDA` kernels (src/scalar_cutcell_geometry.hpp); the scan
+  counts them host because the macros are not Kokkos markers. Leave them alone (cutCellGeometryFanTet skipped).
+- **GridHalo**: exchangeBegin runs every time step of every consumer. Helpers are private members (implicitly
+  inline), no allocation, no `std::function`, same MPI calls, order and tags. nvcc rejects an extended lambda in a
+  private member function, so the gather launches stay in exchangeBegin; only lambda-free phases move.
+- **Host flags**: the Kokkos host build compiles with `-ffp-contract=off` and no `-march`, so a function seam cannot
+  change FMA contraction on the host (dem's S7 trap needs contraction on).
+- **Traps**: `pkill -f <pattern>` from a shell whose own command line contains the pattern kills that shell (144).
+- **Halo stress is campaign cadence**: the 15 grid_halo_variants instances (10^4 skewed exchanges each) take 9-25 min
+  each alone at load ~110 and time out at 1800 s when co-scheduled; tier halo_stress runs them -j1 after the GridHalo
+  steps and at the round's end (`gate --cadence campaign`). Measured base, 2026-11-18: main battery 98 tests 2480 s
+  at -j8 (4 np4 variants timed out co-scheduled), np8 subset 22 tests 4253 s at -j1 (all passed).

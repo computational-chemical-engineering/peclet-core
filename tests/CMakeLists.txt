@@ -442,5 +442,11 @@ if(MPI_FOUND)
       peclet_core_add_mpi_test(grid_halo_exchange_np${np} test_grid_halo_exchange ${np})
       peclet_core_add_mpi_test(particle_halo_exchange_np${np} test_particle_halo_exchange ${np})
     endforeach()
+
+    # Bitwise reference of the code-health gate (.codehealth/config.toml): raw output bytes of
+    # fixed-input runs, hashed by regression/state_hash.py. Not a ctest.
+    add_executable(state_hash_driver regression/state_hash_driver.cpp)
+    target_include_directories(state_hash_driver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(state_hash_driver PRIVATE peclet_core Kokkos::kokkos MPI::MPI_CXX)
   endif()
 endif()
