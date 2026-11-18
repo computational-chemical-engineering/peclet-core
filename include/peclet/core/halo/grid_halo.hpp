@@ -286,8 +286,7 @@ class GridHalo {
     std::uint64_t s = 0;
     if (shm) {
       s = ++seq_;
-      for (const ShmPeer& p : shmSend_)
-        shmWait([&] { return load(p.consumed) + 2 >= s; }, "CONSUMED by", sendRanks_[p.k], s);
+      waitSlotsConsumed(s);
     }
     // The gather: the periodic self-copy (read inner cell, write ghost cell) and the pack of the
     // send cells — into the contiguous send buffer, or for an on-node receiver straight into its
@@ -351,12 +350,8 @@ class GridHalo {
       Kokkos::deep_copy(h_sendBuf_, d_sendBuf_);
     if (!recvRanks_.empty() || !sendRanks_.empty())
       Kokkos::fence("peclet::core::halo::beforeMpi");
-    if (shm) {
-      // Publish exchange s to every on-node receiver: its payload is in the parity-(s & 1) slot.
-      std::atomic_thread_fence(std::memory_order_release);
-      for (const ShmPeer& p : shmSend_)
-        store(p.seq[s & 1], s);
-    }
+    if (shm)
+      publishSlots(s);
 
     inFlightAware_ = aware;
     inFlightShm_ = shm;
@@ -369,27 +364,7 @@ class GridHalo {
       return;
     }
     inFlightPersistent_ = false;
-    T* sendBase = aware ? d_sendBuf_.data() : h_sendBuf_.data();
-    T* recvBase = aware ? d_recvBuf_.data() : h_recvBuf_.data();
-    reqs_.clear();
-    reqs_.reserve(recvRanks_.size() + sendRanks_.size());
-    reqPeer_.clear();
-    for (std::size_t k = 0; k < recvRanks_.size(); ++k) {
-      if (shm && recvShm_[k])
-        continue;  // (persistent requests unavailable) the on-node payloads come through the slots
-      reqs_.emplace_back();
-      reqPeer_.push_back(static_cast<int>(k));
-      MPI_Irecv(recvBase + recvOff_[k], recvCounts_[k] * static_cast<int>(sizeof(T)), MPI_BYTE,
-                recvRanks_[k], tag, comm_, &reqs_.back());
-    }
-    for (std::size_t k = 0; k < sendRanks_.size(); ++k) {
-      if (shm && sendShm_[k])
-        continue;
-      reqs_.emplace_back();
-      reqPeer_.push_back(static_cast<int>(recvRanks_.size() + k));
-      MPI_Isend(sendBase + sendOff_[k], sendCounts_[k] * static_cast<int>(sizeof(T)), MPI_BYTE,
-                sendRanks_[k], tag, comm_, &reqs_.back());
-    }
+    postMessages(tag, aware, shm);
   }
 
   /// Complete the exchange started by exchangeBegin: wait, then scatter the received halo cells
@@ -461,6 +436,48 @@ class GridHalo {
   static constexpr std::size_t kLine = 64;  // one flag per cache line; slots line-aligned
   static_assert(std::atomic_ref<std::uint64_t>::is_always_lock_free,
                 "the on-node flags need lock-free 64-bit atomics (address-free across processes)");
+
+  // ---- the lambda-free phases of exchangeBegin (nvcc keeps the gather launches inline there) ----
+
+  /// On-node transport, before the gather of exchange s: every on-node receiver has consumed
+  /// exchange s - 2, whose parity-(s & 1) slots this exchange reuses.
+  void waitSlotsConsumed(std::uint64_t s) {
+    for (const ShmPeer& p : shmSend_)
+      shmWait([&] { return load(p.consumed) + 2 >= s; }, "CONSUMED by", sendRanks_[p.k], s);
+  }
+
+  /// Publish exchange s to every on-node receiver: its payload is in the parity-(s & 1) slot.
+  void publishSlots(std::uint64_t s) {
+    std::atomic_thread_fence(std::memory_order_release);
+    for (const ShmPeer& p : shmSend_)
+      store(p.seq[s & 1], s);
+  }
+
+  /// Non-persistent exchange (tag != 0, or persistent requests unavailable): post Irecv/Isend on
+  /// `tag` to every partner not served by the on-node slots, receives first.
+  void postMessages(int tag, bool aware, bool shm) {
+    T* sendBase = aware ? d_sendBuf_.data() : h_sendBuf_.data();
+    T* recvBase = aware ? d_recvBuf_.data() : h_recvBuf_.data();
+    reqs_.clear();
+    reqs_.reserve(recvRanks_.size() + sendRanks_.size());
+    reqPeer_.clear();
+    for (std::size_t k = 0; k < recvRanks_.size(); ++k) {
+      if (shm && recvShm_[k])
+        continue;  // (persistent requests unavailable) the on-node payloads come through the slots
+      reqs_.emplace_back();
+      reqPeer_.push_back(static_cast<int>(k));
+      MPI_Irecv(recvBase + recvOff_[k], recvCounts_[k] * static_cast<int>(sizeof(T)), MPI_BYTE,
+                recvRanks_[k], tag, comm_, &reqs_.back());
+    }
+    for (std::size_t k = 0; k < sendRanks_.size(); ++k) {
+      if (shm && sendShm_[k])
+        continue;
+      reqs_.emplace_back();
+      reqPeer_.push_back(static_cast<int>(recvRanks_.size() + k));
+      MPI_Isend(sendBase + sendOff_[k], sendCounts_[k] * static_cast<int>(sizeof(T)), MPI_BYTE,
+                sendRanks_[k], tag, comm_, &reqs_.back());
+    }
+  }
 
   /// One on-node partner of the shared-memory transport. For a receiver (shmSend_) the flags and
   /// slots live in ITS segment of the window; for a sender (shmRecv_) in this rank's own segment.
