@@ -654,16 +654,7 @@ CandidateGrid<Real> buildSceneCandidateGrid(const SceneView<Real>& sc, Vec3<Real
     int nb = static_cast<int>(L / bin);
     return nb < 2 ? 2 : (nb > 96 ? 96 : nb);
   };
-  m.nx = nbAxis(extent.x);
-  m.ny = nbAxis(extent.y);
-  m.nz = nbAxis(extent.z);
-  m.ox = origin.x;
-  m.oy = origin.y;
-  m.oz = origin.z;
-  m.bx = extent.x / m.nx;
-  m.by = extent.y / m.ny;
-  m.bz = extent.z / m.nz;
-  m.wrap = box.on;
+  query_detail::layoutBins(m, origin, extent, box, nbAxis);
   const long nbins = (long)m.nx * m.ny * m.nz;
   const Real halfDiag = Real(0.5) * std::sqrt(m.bx * m.bx + m.by * m.by + m.bz * m.bz);
   const Real slack = Real(1e-12) * (extent.x + extent.y + extent.z);
@@ -672,27 +663,6 @@ CandidateGrid<Real> buildSceneCandidateGrid(const SceneView<Real>& sc, Vec3<Real
     const long i = b % m.nx, j = (b / m.nx) % m.ny, k = b / ((long)m.nx * m.ny);
     return Vec3<Real>{m.ox + (i + Real(0.5)) * m.bx, m.oy + (j + Real(0.5)) * m.by,
                       m.oz + (k + Real(0.5)) * m.bz};
-  };
-  auto forEachBinNear = [&](const Vec3<Real>& c, Real reach, auto&& fn) {
-    const int riX = static_cast<int>(reach / m.bx) + 1;
-    const int riY = static_cast<int>(reach / m.by) + 1;
-    const int riZ = static_cast<int>(reach / m.bz) + 1;
-    const int ci = static_cast<int>(std::floor((c.x - m.ox) / m.bx));
-    const int cj = static_cast<int>(std::floor((c.y - m.oy) / m.by));
-    const int ck = static_cast<int>(std::floor((c.z - m.oz) / m.bz));
-    for (int dk = -riZ; dk <= riZ; ++dk)
-      for (int dj = -riY; dj <= riY; ++dj)
-        for (int di = -riX; di <= riX; ++di) {
-          long ii = ci + di, jj = cj + dj, kk = ck + dk;
-          if (m.wrap) {
-            ii = ((ii % m.nx) + m.nx) % m.nx;
-            jj = ((jj % m.ny) + m.ny) % m.ny;
-            kk = ((kk % m.nz) + m.nz) % m.nz;
-          } else if (ii < 0 || ii >= m.nx || jj < 0 || jj >= m.ny || kk < 0 || kk >= m.nz) {
-            continue;
-          }
-          fn(ii + (long)m.nx * (jj + (long)m.ny * kk));
-        }
   };
   // Certified instances are 1-Lipschitz (their periodic eval is the true torus distance to the
   // body), so at a bin center bc: upper(B) = eval(bc) + halfDiag, lower(B) = eval(bc) - halfDiag.
@@ -726,15 +696,7 @@ CandidateGrid<Real> buildSceneCandidateGrid(const SceneView<Real>& sc, Vec3<Real
       if (row[k] - halfDiag <= U + slack)
         lists[(std::size_t)b].push_back(certIdx[k]);
   }
-  g.offsets.resize((std::size_t)nbins + 1);
-  g.offsets[0] = 0;
-  for (long b = 0; b < nbins; ++b)
-    g.offsets[(std::size_t)b + 1] =
-        g.offsets[(std::size_t)b] + static_cast<int>(lists[(std::size_t)b].size());
-  g.items.resize((std::size_t)g.offsets[(std::size_t)nbins]);
-  for (long b = 0; b < nbins; ++b)
-    std::copy(lists[(std::size_t)b].begin(), lists[(std::size_t)b].end(),
-              g.items.begin() + g.offsets[(std::size_t)b]);
+  query_detail::packLists(g, lists, nbins);
   return g;
 }
 
