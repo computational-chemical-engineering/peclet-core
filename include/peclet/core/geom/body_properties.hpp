@@ -158,6 +158,68 @@ void eigSym3(const Real A[3][3], Real w[3], Real V[3][3]) {
       }
 }
 
+/// The k input axes with the largest projections `rn` into a degenerate cluster, in index order.
+template <class Real>
+void largestProjections(const Real rn[3], int k, int sel[3]) {
+  int ns = 0;
+  for (int pick = 0; pick < k; ++pick) {
+    int best = -1;
+    for (int r = 0; r < 3; ++r) {
+      bool used = false;
+      for (int u = 0; u < ns; ++u)
+        used = used || (sel[u] == r);
+      if (!used && (best < 0 || rn[r] > rn[best]))
+        best = r;
+    }
+    sel[ns++] = best;
+  }
+  for (int u = 0; u < ns; ++u)
+    for (int v = u + 1; v < ns; ++v)
+      if (sel[v] < sel[u])
+        std::swap(sel[u], sel[v]);
+}
+
+/// Rotate the cluster columns i..i+k-1 of V onto the input axes `sel` (orthogonal Procrustes):
+/// M = V_sub^T E_sel (k x k), V_sub <- V_sub M (M^T M)^{-1/2}.
+template <class Real>
+void rotateOntoAxes(Real V[3][3], int i, int k, const int sel[3]) {
+  Real M[3][3] = {};
+  for (int r = 0; r < k; ++r)
+    for (int c = 0; c < k; ++c)
+      M[r][c] = V[sel[c]][i + r];
+  // polar factor via Jacobi on M^T M: U = M (M^T M)^{-1/2}
+  Real MtM[3][3] = {};
+  for (int r = 0; r < k; ++r)
+    for (int c = 0; c < k; ++c)
+      for (int t = 0; t < k; ++t)
+        MtM[r][c] += M[t][r] * M[t][c];
+  for (int r = k; r < 3; ++r)
+    MtM[r][r] = Real(1);
+  Real ew[3], EV[3][3];
+  eigSym3(MtM, ew, EV);
+  Real inv[3][3] = {};  // (M^T M)^{-1/2}
+  for (int r = 0; r < 3; ++r)
+    for (int c = 0; c < 3; ++c)
+      for (int t = 0; t < 3; ++t)
+        inv[r][c] += EV[r][t] * EV[c][t] / std::sqrt(std::max(ew[t], Real(1e-30)));
+  Real U[3][3] = {};
+  for (int r = 0; r < k; ++r)
+    for (int c = 0; c < k; ++c)
+      for (int t = 0; t < k; ++t)
+        U[r][c] += M[r][t] * inv[t][c];
+  // new subspace basis: V_sub <- V_sub U
+  Real NV[3][3];
+  for (int r = 0; r < 3; ++r)
+    for (int c = 0; c < k; ++c) {
+      NV[r][c] = Real(0);
+      for (int t = 0; t < k; ++t)
+        NV[r][c] += V[r][i + t] * U[t][c];
+    }
+  for (int r = 0; r < 3; ++r)
+    for (int c = 0; c < k; ++c)
+      V[r][i + c] = NV[r][c];
+}
+
 /// Within each cluster of (near-)equal eigenvalues, rotate the eigenbasis onto the input axes with
 /// the largest projection into that subspace (orthogonal Procrustes on the k x k projection). See
 /// the header comment; a fully degenerate tensor yields exactly the identity.
@@ -178,58 +240,9 @@ void resolveDegenerateFrame(Real w[3], Real V[3][3], Real relTol = Real(1e-2)) {
         for (int c = i; c < j; ++c)
           rn[r] += V[r][c] * V[r][c];
       }
-      int sel[3], ns = 0;  // the k axes with the largest projections, in index order
-      for (int pick = 0; pick < k; ++pick) {
-        int best = -1;
-        for (int r = 0; r < 3; ++r) {
-          bool used = false;
-          for (int u = 0; u < ns; ++u)
-            used = used || (sel[u] == r);
-          if (!used && (best < 0 || rn[r] > rn[best]))
-            best = r;
-        }
-        sel[ns++] = best;
-      }
-      for (int u = 0; u < ns; ++u)
-        for (int v = u + 1; v < ns; ++v)
-          if (sel[v] < sel[u])
-            std::swap(sel[u], sel[v]);
-      // M = V_sub^T E_sel (k x k); its polar factor rotates V_sub onto the chosen axes
-      Real M[3][3] = {};
-      for (int r = 0; r < k; ++r)
-        for (int c = 0; c < k; ++c)
-          M[r][c] = V[sel[c]][i + r];
-      // polar factor via Jacobi on M^T M: U = M (M^T M)^{-1/2}
-      Real MtM[3][3] = {};
-      for (int r = 0; r < k; ++r)
-        for (int c = 0; c < k; ++c)
-          for (int t = 0; t < k; ++t)
-            MtM[r][c] += M[t][r] * M[t][c];
-      for (int r = k; r < 3; ++r)
-        MtM[r][r] = Real(1);
-      Real ew[3], EV[3][3];
-      eigSym3(MtM, ew, EV);
-      Real inv[3][3] = {};  // (M^T M)^{-1/2}
-      for (int r = 0; r < 3; ++r)
-        for (int c = 0; c < 3; ++c)
-          for (int t = 0; t < 3; ++t)
-            inv[r][c] += EV[r][t] * EV[c][t] / std::sqrt(std::max(ew[t], Real(1e-30)));
-      Real U[3][3] = {};
-      for (int r = 0; r < k; ++r)
-        for (int c = 0; c < k; ++c)
-          for (int t = 0; t < k; ++t)
-            U[r][c] += M[r][t] * inv[t][c];
-      // new subspace basis: V_sub <- V_sub U
-      Real NV[3][3];
-      for (int r = 0; r < 3; ++r)
-        for (int c = 0; c < k; ++c) {
-          NV[r][c] = Real(0);
-          for (int t = 0; t < k; ++t)
-            NV[r][c] += V[r][i + t] * U[t][c];
-        }
-      for (int r = 0; r < 3; ++r)
-        for (int c = 0; c < k; ++c)
-          V[r][i + c] = NV[r][c];
+      int sel[3];  // the k axes with the largest projections, in index order
+      largestProjections(rn, k, sel);
+      rotateOntoAxes(V, i, k, sel);
     }
     i = j;
   }
