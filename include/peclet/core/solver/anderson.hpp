@@ -483,66 +483,15 @@ class AndersonCore {
     prepared_ = false;
     if (status_ != Status::Active)
       return;
-    namespace da = detail::anderson;
-    const std::size_t ns = st_.fields.size();
-    const IVec<3>& e = st_.extent;
-    const int g = st_.ghost;
 
     // --- 3. provisional new column (Rprev / Gprev untouched) ---
     int s = -1;
     int cols[kMaxWindow];  // the window after acceptance, oldest first, s last
     int nCols = 0;
-    if (havePrev_) {
-      if (mk_ < m_) {
-        for (int c = 0; c < m_ && s < 0; ++c)
-          if (std::find(order_, order_ + mk_, c) == order_ + mk_)
-            s = c;
-        for (int k = 0; k < mk_; ++k)
-          cols[nCols++] = order_[k];
-      } else {
-        s = order_[0];
-        for (int k = 1; k < mk_; ++k)
-          cols[nCols++] = order_[k];
-      }
-      cols[nCols++] = s;
-      for (std::size_t f = 0; f < ns; ++f)
-        da::diff(st_.fields[f], x_[f], rPrev_[f], gPrev_[f], dR_[s][f], dG_[s][f]);
-    } else {
-      for (std::size_t f = 0; f < ns; ++f)
-        da::residual(st_.fields[f], x_[f]);
-    }
+    provisionalColumn(s, cols, nCols);
 
     // --- 4. reductions (§6.1; rev 1: Velocity fields only, no pass 1; rev 2: RR and b only) ---
-    // Every reduction lands in its own device slot (velocity field v, window position k), so the
-    // (nCols + 1)·n_v reductions queue without a host synchronisation and are read back behind ONE
-    // fence. The per-field partials are added on the host in field order.
-    for (std::size_t f = 0, v = 0; f < ns; ++f) {
-      if (st_.roles[f] != AndersonRole::Velocity)
-        continue;
-      da::selfSums(x_[f], st_.fields[f], e, g, Kokkos::subview(selfDev_, v));
-      for (int k = 0; k < nCols; ++k) {
-        const int j = cols[k];
-        da::columnSums(dR_[s][f], dR_[j][f], x_[f], e, g,
-                       Kokkos::subview(colDev_, v * kMaxWindow + k));
-      }
-      ++v;
-    }
-    Kokkos::deep_copy(ExecSpace(), selfHost_, selfDev_);
-    if (nCols > 0)
-      Kokkos::deep_copy(ExecSpace(), colHost_, colDev_);
-    ExecSpace().fence("anderson::pass2");  // the one host synchronisation of complete()
-    std::vector<double> packet(static_cast<std::size_t>(2 * nCols + 2), 0.0);
-    for (std::size_t v = 0; v < selfHost_.extent(0); ++v) {
-      const da::SumN<2>& ss = selfHost_(v);
-      packet[0] += ss.v[0];
-      packet[1] += ss.v[1];
-      for (int k = 0; k < nCols; ++k) {
-        const da::SumN<2>& cs = colHost_(v * kMaxWindow + k);
-        for (int q = 0; q < 2; ++q)
-          packet[static_cast<std::size_t>(2 + 2 * k + q)] += cs.v[q];
-      }
-    }
-    sumAll(packet.data(), static_cast<int>(packet.size()));
+    const std::vector<double> packet = reduceSums(s, cols, nCols);
 
     // --- 5. host decisions (every rank; rank 0's are broadcast and win) ---
     const double xx = packet[0], uu = packet[1];
@@ -555,45 +504,12 @@ class AndersonCore {
     else
       residual_ = std::sqrt(xx / uu);
     if (!std::isfinite(rho) || (mixed_ && pressureSolveFailed)) {
-      if (mixed_) {
-        restoreLastOutput();
-        reasonCode_ = Reason::NonFiniteMixed;
-      } else {
-        reasonCode_ = Reason::NonFinitePlain;
-      }
-      reason_ = reasonText(reasonCode_);
-      status_ = Status::Disabled;
-      reset();
-      havePrev_ = false;
+      disableNonFinite();
       return;
     }
-    if (havePrev_) {
-      for (int k = 0; k < nCols; ++k) {
-        const int j = cols[k];
-        const double* v = &packet[static_cast<std::size_t>(2 + 2 * k)];
-        rr_[s][j] = rr_[j][s] = v[0];
-        b_[j] = v[1];
-      }
-      for (int k = 0; k < nCols; ++k)
-        order_[k] = cols[k];
-      mk_ = nCols;
-    }
-    // Restart (review R2): the output of the rejected mixed iterate is not kept. After the
-    // broadcast the state is restored to the last map output (Gprev), Rprev / Gprev are not
-    // committed, and ρ_min and the reported residual keep their values from before this call, so
-    // the solver never holds a rejected output (and "too many restarts" leaves the last good one).
-    restarted_ = false;
-    if (mixed_ && residual_ >= kNoiseFloor && rho > kRestartGrowth * rhoMin_) {
-      restarted_ = true;
-      reset();
-      ++numRestarts_;
-      residual_ = residualBefore;
-      if (numRestarts_ >= kMaxRestarts) {
-        status_ = Status::Disabled;
-        reasonCode_ = Reason::TooManyRestarts;
-        reason_ = reasonText(reasonCode_);
-      }
-    }
+    if (havePrev_)
+      acceptColumn(packet, s, cols, nCols);
+    restartIfGrown(rho, residualBefore);
     decCount_ = (rho < rhoPrev_) ? decCount_ + 1 : 0;
     if (decCount_ >= kEngageDecreases)
       engaged_ = true;
@@ -601,34 +517,11 @@ class AndersonCore {
     rhoMin_ = restarted_ ? rhoMinBefore : std::min(rhoMin_, rho);
 
     // --- 7. next coefficients (rev 2: no Ritz block) ---
-    if (status_ == Status::Active && engaged_ && mk_ >= 1) {
-      // A column with a zero norm (D_j = 0, §4.4 step 1) carries nothing: drop it first. Under the
-      // velocity metric that is a column in which only Carried fields moved.
-      for (int k = 0; k < mk_;) {
-        if (rr_[order_[k]][order_[k]] > 0.0) {
-          ++k;
-          continue;
-        }
-        dropColumn(k);
-      }
-      while (mk_ > 1 && condScaled() < kCondMin)
-        dropColumn(0);
-      if (mk_ >= 1) {
-        solveTruncated();
-        pending_ = true;
-      }
-    }
+    nextCoefficients();
     broadcastDecisions();
 
     // --- 6. commit on the device, keyed on the broadcast restart flag (every rank acts alike) ---
-    if (restarted_) {
-      restoreLastOutput();  // Rprev / Gprev stay those of the last map output
-    } else {
-      std::swap(rPrev_, x_);
-      for (std::size_t f = 0; f < ns; ++f)
-        Kokkos::deep_copy(ExecSpace(), gPrev_[f], st_.fields[f]);  // stream-ordered, no fence
-    }
-    havePrev_ = true;
+    commitOutput();
   }
 
   // ---- control ------------------------------------------------------------------------------
@@ -818,6 +711,155 @@ class AndersonCore {
       b[k] = b_[order_[k]];
     const auto se = detail::anderson::scaledEigen(mk_, a);
     detail::anderson::truncatedSolve(se, b, kCondMin, gamma_);
+  }
+
+  // ---- the phases of complete() (§4.3), in call order -------------------------------------------
+
+  /// Step 3: the provisional new column s (Rprev / Gprev untouched) and the window after
+  /// acceptance in `cols` (oldest first, s last); without a previous evaluation, the residual only.
+  void provisionalColumn(int& s, int (&cols)[kMaxWindow], int& nCols) {
+    namespace da = detail::anderson;
+    const std::size_t ns = st_.fields.size();
+    if (havePrev_) {
+      if (mk_ < m_) {
+        for (int c = 0; c < m_ && s < 0; ++c)
+          if (std::find(order_, order_ + mk_, c) == order_ + mk_)
+            s = c;
+        for (int k = 0; k < mk_; ++k)
+          cols[nCols++] = order_[k];
+      } else {
+        s = order_[0];
+        for (int k = 1; k < mk_; ++k)
+          cols[nCols++] = order_[k];
+      }
+      cols[nCols++] = s;
+      for (std::size_t f = 0; f < ns; ++f)
+        da::diff(st_.fields[f], x_[f], rPrev_[f], gPrev_[f], dR_[s][f], dG_[s][f]);
+    } else {
+      for (std::size_t f = 0; f < ns; ++f)
+        da::residual(st_.fields[f], x_[f]);
+    }
+  }
+
+  /// Step 4: the packet {xx, uu, then the (rr_[s][j], b_[j]) pair per window position}, summed over
+  /// the ranks. Every reduction lands in its own device slot (velocity field v, window position k),
+  /// so the (nCols + 1)·n_v reductions queue without a host synchronisation and are read back
+  /// behind ONE fence. The per-field partials are added on the host in field order.
+  std::vector<double> reduceSums(int s, const int (&cols)[kMaxWindow], int nCols) {
+    namespace da = detail::anderson;
+    const std::size_t ns = st_.fields.size();
+    const IVec<3>& e = st_.extent;
+    const int g = st_.ghost;
+    for (std::size_t f = 0, v = 0; f < ns; ++f) {
+      if (st_.roles[f] != AndersonRole::Velocity)
+        continue;
+      da::selfSums(x_[f], st_.fields[f], e, g, Kokkos::subview(selfDev_, v));
+      for (int k = 0; k < nCols; ++k) {
+        const int j = cols[k];
+        da::columnSums(dR_[s][f], dR_[j][f], x_[f], e, g,
+                       Kokkos::subview(colDev_, v * kMaxWindow + k));
+      }
+      ++v;
+    }
+    Kokkos::deep_copy(ExecSpace(), selfHost_, selfDev_);
+    if (nCols > 0)
+      Kokkos::deep_copy(ExecSpace(), colHost_, colDev_);
+    ExecSpace().fence("anderson::pass2");  // the one host synchronisation of complete()
+    std::vector<double> packet(static_cast<std::size_t>(2 * nCols + 2), 0.0);
+    for (std::size_t v = 0; v < selfHost_.extent(0); ++v) {
+      const da::SumN<2>& ss = selfHost_(v);
+      packet[0] += ss.v[0];
+      packet[1] += ss.v[1];
+      for (int k = 0; k < nCols; ++k) {
+        const da::SumN<2>& cs = colHost_(v * kMaxWindow + k);
+        for (int q = 0; q < 2; ++q)
+          packet[static_cast<std::size_t>(2 + 2 * k + q)] += cs.v[q];
+      }
+    }
+    sumAll(packet.data(), static_cast<int>(packet.size()));
+    return packet;
+  }
+
+  /// Step 5, a non-finite residual or a failed pressure solve at a mixed iterate: restore the
+  /// last map output (mixed input) and disable.
+  void disableNonFinite() {
+    if (mixed_) {
+      restoreLastOutput();
+      reasonCode_ = Reason::NonFiniteMixed;
+    } else {
+      reasonCode_ = Reason::NonFinitePlain;
+    }
+    reason_ = reasonText(reasonCode_);
+    status_ = Status::Disabled;
+    reset();
+    havePrev_ = false;
+  }
+
+  /// Step 5, accept the new column: its Gram row and right-hand side, and the new window order.
+  void acceptColumn(const std::vector<double>& packet, int s, const int (&cols)[kMaxWindow],
+                    int nCols) {
+    for (int k = 0; k < nCols; ++k) {
+      const int j = cols[k];
+      const double* v = &packet[static_cast<std::size_t>(2 + 2 * k)];
+      rr_[s][j] = rr_[j][s] = v[0];
+      b_[j] = v[1];
+    }
+    for (int k = 0; k < nCols; ++k)
+      order_[k] = cols[k];
+    mk_ = nCols;
+  }
+
+  // Restart (review R2): the output of the rejected mixed iterate is not kept. After the
+  // broadcast the state is restored to the last map output (Gprev), Rprev / Gprev are not
+  // committed, and ρ_min and the reported residual keep their values from before this call, so
+  // the solver never holds a rejected output (and "too many restarts" leaves the last good one).
+  void restartIfGrown(double rho, double residualBefore) {
+    restarted_ = false;
+    if (mixed_ && residual_ >= kNoiseFloor && rho > kRestartGrowth * rhoMin_) {
+      restarted_ = true;
+      reset();
+      ++numRestarts_;
+      residual_ = residualBefore;
+      if (numRestarts_ >= kMaxRestarts) {
+        status_ = Status::Disabled;
+        reasonCode_ = Reason::TooManyRestarts;
+        reason_ = reasonText(reasonCode_);
+      }
+    }
+  }
+
+  /// Step 7: the next coefficients γ, after dropping empty and ill-conditioned columns.
+  void nextCoefficients() {
+    if (status_ == Status::Active && engaged_ && mk_ >= 1) {
+      // A column with a zero norm (D_j = 0, §4.4 step 1) carries nothing: drop it first. Under the
+      // velocity metric that is a column in which only Carried fields moved.
+      for (int k = 0; k < mk_;) {
+        if (rr_[order_[k]][order_[k]] > 0.0) {
+          ++k;
+          continue;
+        }
+        dropColumn(k);
+      }
+      while (mk_ > 1 && condScaled() < kCondMin)
+        dropColumn(0);
+      if (mk_ >= 1) {
+        solveTruncated();
+        pending_ = true;
+      }
+    }
+  }
+
+  /// Step 6: commit the map output (or restore it after a restart) on the device.
+  void commitOutput() {
+    const std::size_t ns = st_.fields.size();
+    if (restarted_) {
+      restoreLastOutput();  // Rprev / Gprev stay those of the last map output
+    } else {
+      std::swap(rPrev_, x_);
+      for (std::size_t f = 0; f < ns; ++f)
+        Kokkos::deep_copy(ExecSpace(), gPrev_[f], st_.fields[f]);  // stream-ordered, no fence
+    }
+    havePrev_ = true;
   }
 
   void broadcastDecisions() {

@@ -1,34 +1,55 @@
-# cce-code-health gate for peclet.halo (the Python layer of peclet-core: python/), user-facing round WO-35.
-# Adapted from pnm's (pnm-health-api 7c4c47a). Only python/ is in scope: the C++ headers under include/ are
-# not touched by this round and their own battery (ctest over the top-level project) is not part of it.
+# cce-code-health gate for peclet-core (https://github.com/computational-chemical-engineering/cce-code-health).
+# Refactor gate of the host-orchestration round (WO-40, 2026-11-18), at core origin/main 4267893, morton d264165,
+# tool 0.3.0 (cpp@1 + zones). Replaces WO-35's user-facing config (python/ only). Wall clock: playbook.md.
 #
-# Run with PECLET_SUITE=<suite checkout> set. The base side builds under <git-common-dir>/codehealth/base-<sha>,
-# where no sibling ../extern or ../../cmake exists: the Kokkos/host prefix is passed by absolute path, and
-# SuiteNanobind falls back to core's vendored, byte-identical copy (python/CMakeLists.txt).
+# Run with PECLET_SUITE=<suite checkout> set. The build is the Kokkos one (PECLET_CORE_ENABLE_KOKKOS, host-openmp
+# prefix): it registers every core ctest (124; the plain build has 78). morton: the base side builds under
+# <git-common-dir>/codehealth/base-<sha>, where no sibling ../morton exists, so the morton-dependent tests would
+# exit 77; every configure pins PECLET_CORE_MORTON_DIR=$PECLET_SUITE/morton. tests/regression/state_hash.py prints
+# '[deps] morton=<dir> @ <commit>' and the gate requires it equal at base and head (same_lines): a shared morton
+# checkout that moves between the two runs fails the gate instead of hashing two different programs.
 #
 # Traps encoded below:
-#  - OMP_NUM_THREADS=1: state_hash is bitwise only at one thread; an unbounded pool per MPI rank is slow.
-#  - MPIEXEC_PREFLAGS is the LIST form "--bind-to;none" (core passes ${MPIEXEC_PREFLAGS} as a list).
-#  - ctest exits 0 on a skip -> fail_regex. python_shell_deprecation_geom SKIPs (77) wherever the separate
-#    peclet-geom distribution is not installed (the suite venv): excluded by name, at base and head alike.
-#  - state_hash.py prints the hashes on stdout (rank 0); np 1 and np 2 both go into the reference.
+#  - Threads: OMP_NUM_THREADS=1 for everything (RULES.md). An unbounded pool per MPI rank on this 48-core host
+#    turns one test_anderson_mpi np2 run into minutes; the reference is bitwise at one thread only.
+#  - MPIEXEC_PREFLAGS takes the LIST form "--bind-to;none" (core expands it as a list); MPIEXEC_EXECUTABLE is
+#    /usr/bin/mpirun (a foreign mpiexec on PATH runs N singletons that all "pass").
+#  - ctest exits 0 when a test is skipped -> fail_regex. python_shell_deprecation_geom SKIPs (77) wherever the
+#    separate peclet-geom distribution is not installed (the suite venv): excluded by name, at base and head alike.
+#  - Warnings: build_host fails on any compiler warning (base: 0).
+#  - Machine load (TRS2 shared): builds -j8, the main battery -j8 at one thread, the np8 subset -j1.
 schema = 1
 
 [profiles]
 python = "python@0"
-cpp = "cpp@0"
+cpp = "cpp@1"
 
 [scope]
-include = ["python/*"]
+include = ["src/*", "include/*", "python/*", "bindings/*", "tools/*", "scripts/*", "examples/*"]
+
+[[zones]]
+name = "user"
+paths = ["*.py", "src/*_bindings.cpp", "src/*_bindings*.hpp", "python/*_bindings.cpp", "bindings/*.cpp",
+         "bindings/*.h", "examples/*.cpp"]
+[[zones]]
+name = "device"
+markers = ["KOKKOS_INLINE_FUNCTION", "KOKKOS_FUNCTION", "KOKKOS_FORCEINLINE_FUNCTION", "KOKKOS_LAMBDA",
+           "KOKKOS_CLASS_LAMBDA"]
+[[zones]]
+name = "host"
 
 [gate]
-frozen = ["include/*", "CLAUDE.md"]
-forbid = []
+frozen = ["cmake/*", "CMakeLists.txt", "CLAUDE.md", "tests/regression/*", "python/state_hash.py"]
+# WO-40: the host round touches include/ only. graph_amg_setup.hpp and graph_amg_device.hpp belong to an unlanded
+# branch of session voronoi (as do HostCsrOp / AmgParams in graph_amg.hpp, which no step may edit).
+forbid = ["tests/*", "packaging/*", "pyproject.toml", "python/*", "benchmarks/*", "tools/*",
+          "include/peclet/core/solver/graph_amg_setup.hpp", "include/peclet/core/solver/graph_amg_device.hpp"]
 literals = false
 public_api = false
 flags = true
 keep_going = false
-prefix = ': "${PECLET_SUITE:?set PECLET_SUITE to the suite checkout}" && export VIRTUAL_ENV="$PECLET_SUITE/.venv" PATH="$PECLET_SUITE/.venv/bin:$PATH" &&'
+# The suite venv supplies nanobind (found through the active interpreter), python, numpy, mpi4py and clang-format.
+prefix = ': "${PECLET_SUITE:?set PECLET_SUITE to the suite checkout}" && export VIRTUAL_ENV="$PECLET_SUITE/.venv" PATH="$PECLET_SUITE/.venv/bin:$PATH" CORE_CFG="-DCMAKE_BUILD_TYPE=Release -DPECLET_CORE_ENABLE_KOKKOS=ON -DCMAKE_PREFIX_PATH=$PECLET_SUITE/extern/install/host-openmp -DPECLET_CORE_MORTON_DIR=$PECLET_SUITE/morton -DMPIEXEC_EXECUTABLE=/usr/bin/mpirun -DMPIEXEC_PREFLAGS=--bind-to;none -DCMAKE_EXPORT_COMPILE_COMMANDS=ON" PY_CFG="-DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=$PECLET_SUITE/extern/install/host-openmp -DMPIEXEC_EXECUTABLE=/usr/bin/mpirun -DMPIEXEC_PREFLAGS=--bind-to;none" &&'
 
 [gate.env]
 OMP_NUM_THREADS = "1"
@@ -47,86 +68,74 @@ timeout = 120
 cmd = '''cd {repo} && $PECLET_SUITE/.venv/bin/clang-format --dry-run --Werror \
   $(git ls-files 'include/*.hpp' 'tests/*.hpp' 'tests/*.cpp' 'benchmarks/*.cpp' 'python/*.cpp' 'python/*.hpp')'''
 
+# 0 warnings (the base has none): any gcc warning line fails the tier. Both trees: the Kokkos/MPI tests and the
+# peclet.halo module, which compiles include/ too.
 [[gate.tier]]
 name = "build_host"
 kind = "command"
 behaviour = false
 cadence = "step"
-timeout = 900
-cmd = '''cmake -S {repo}/python -B {repo}/build_health_py -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH=$PECLET_SUITE/extern/install/host-openmp \
-  -DMPIEXEC_EXECUTABLE=/usr/bin/mpirun "-DMPIEXEC_PREFLAGS=--bind-to;none" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-  && cmake --build {repo}/build_health_py -j16'''
+timeout = 3600
+fail_regex = ':[0-9]+:[0-9]+: warning:'
+cmd = '''cmake -S {repo} -B {repo}/build_health_host $CORE_CFG && cmake --build {repo}/build_health_host -j8 \
+  && cmake -S {repo}/python -B {repo}/build_health_py $PY_CFG && cmake --build {repo}/build_health_py -j8'''
 
+# The whole battery minus `bench` and the GridHalo transport stress (grid_halo_variants*, tier halo_stress below):
+# 87 tests (MPI at np 1, 2, 4), the 18 np8 tests, then peclet.halo's ctests. 0 skipped.
 [[gate.tier]]
 name = "ctest_host"
 kind = "command"
 cadence = "step"
-timeout = 1800
+timeout = 7200
 skip_exit = 77
 fail_regex = '\*\*\*Skipped|Not Run|No tests were found'
 detect_exit = [8]
-cmd = '''cmake -S {repo}/python -B {repo}/build_health_py -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH=$PECLET_SUITE/extern/install/host-openmp \
-  -DMPIEXEC_EXECUTABLE=/usr/bin/mpirun "-DMPIEXEC_PREFLAGS=--bind-to;none" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON >/dev/null \
-  && cmake --build {repo}/build_health_py -j16 >/dev/null \
+cmd = '''cmake -S {repo} -B {repo}/build_health_host $CORE_CFG >/dev/null \
+  && cmake --build {repo}/build_health_host -j8 >/dev/null \
+  && cmake -S {repo}/python -B {repo}/build_health_py $PY_CFG >/dev/null \
+  && cmake --build {repo}/build_health_py -j8 >/dev/null \
+  && ctest --test-dir {repo}/build_health_host -LE 'bench|np8' -E '^grid_halo_variants' -j8 --timeout 1800 \
+       --output-on-failure \
+  && ctest --test-dir {repo}/build_health_host -L np8 -LE bench -E '^grid_halo_variants' -j1 --timeout 1800 \
+       --output-on-failure \
   && ctest --test-dir {repo}/build_health_py -E python_shell_deprecation_geom -j1 --timeout 600 --output-on-failure'''
 
+# Bitwise reference: tests/regression/state_hash.py (bodyProperties, cut-cell geometry, candidate grids, GraphAMG,
+# GridHalo and ParticleMigrator at np 1, 2, 4, 8, the Anderson iterate digests) plus python/state_hash.py (the
+# peclet.halo entry paths, np 1 and 2).
 [[gate.tier]]
 name = "state_hash"
 kind = "reference"
 cadence = "step"
-timeout = 900
-fail_regex = 'skipped|SKIPPED'
-outputs = ["hashes.txt"]
-cmd = '''cmake -S {repo}/python -B {repo}/build_health_py -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH=$PECLET_SUITE/extern/install/host-openmp \
-  -DMPIEXEC_EXECUTABLE=/usr/bin/mpirun "-DMPIEXEC_PREFLAGS=--bind-to;none" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON >/dev/null \
-  && cmake --build {repo}/build_health_py -j16 >/dev/null \
-  && PYTHONPATH={repo}/build_health_py python {repo}/python/state_hash.py > {out}/hashes.txt \
+timeout = 1800
+fail_regex = 'skipped|SKIPPED|FAILED'
+same_lines = '^\[deps\] '
+outputs = ["hashes_regression.json", "hashes_public.txt"]
+cmd = '''cmake -S {repo} -B {repo}/build_health_host $CORE_CFG >/dev/null \
+  && cmake --build {repo}/build_health_host -j8 >/dev/null \
+  && cmake -S {repo}/python -B {repo}/build_health_py $PY_CFG >/dev/null \
+  && cmake --build {repo}/build_health_py -j8 >/dev/null \
+  && python {repo}/tests/regression/state_hash.py --build {repo}/build_health_host \
+       --save {out}/hashes_regression.json \
+  && PYTHONPATH={repo}/build_health_py python {repo}/python/state_hash.py > {out}/hashes_public.txt \
   && PYTHONPATH={repo}/build_health_py /usr/bin/mpirun -np 2 --bind-to none \
-     python {repo}/python/state_hash.py >> {out}/hashes.txt \
-  && cat {out}/hashes.txt'''
+     python {repo}/python/state_hash.py >> {out}/hashes_public.txt \
+  && grep -q '\.np2' {out}/hashes_public.txt && cat {out}/hashes_public.txt'''
 
-# API identity (RULES "Gating a user-facing round"): every public name's nanobind signature and defaults,
-# docstrings excluded. A user-facing round may change docstrings and add checks, never a name, a parameter,
-# a default or a return type; base and head must print the same bytes.
+# GridHalo transport stress (test_grid_halo_variants: 10^4 exchanges per case with random skew, every transport,
+# np 2, 4, 8; 15 instances). Latency-bound with spinning on-node waits: on TRS2 at load ~110 one instance takes
+# 9-25 min alone, and four np4 instances co-scheduled at -j8 hit their 1800 s TIMEOUT (2026-11-18). Hence one
+# at a time, and campaign cadence: run after the GridHalo steps and at the end of the round
+# (`gate --cadence campaign`), not per step. Per step the halo paths are covered by state_hash (np 1-8, three
+# transports that must agree) and grid_halo / grid_halo_exchange / grid_halo_stacked / nbx_rounds.
 [[gate.tier]]
-name = "nb_signatures"
-kind = "reference"
-cadence = "step"
-timeout = 900
-outputs = ["signatures.txt"]
-cmd = '''cmake -S {repo}/python -B {repo}/build_health_py -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH=$PECLET_SUITE/extern/install/host-openmp \
-  -DMPIEXEC_EXECUTABLE=/usr/bin/mpirun "-DMPIEXEC_PREFLAGS=--bind-to;none" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON >/dev/null \
-  && cmake --build {repo}/build_health_py -j16 >/dev/null \
-  && PYTHONPATH={repo}/build_health_py python - > {out}/signatures.txt <<'PY' || exit 1
-from mpi4py import MPI  # noqa: F401  (the module never calls MPI_Init)
-import peclet.halo._halo as m
-
-
-def sig(f):
-    s = getattr(f, "__nb_signature__", None) if f is not None else None
-    return [f"{t[0]} defaults={t[2]!r}" for t in s] if s else []
-
-
-out = []
-for n in sorted(dir(m)):
-    if n.startswith("__") or n == "build_toolchain":
-        continue
-    o = getattr(m, n)
-    if isinstance(o, type):
-        out.append(f"class {n}")
-        for k, v in sorted(o.__dict__.items()):
-            if isinstance(v, property):
-                out += [f"  {n}.{k}.{p} {s}" for p in ("fget", "fset") for s in sig(getattr(v, p))]
-            else:
-                out += [f"  {n}.{k} {s}" for s in sig(getattr(v, "__func__", v))]
-    elif sig(o):
-        out += [f"{n} {s}" for s in sig(o)]
-    else:
-        out.append(f"{n} = <{type(o).__name__}>")
-print("\n".join(out))
-PY
-test -s {out}/signatures.txt && cat {out}/signatures.txt'''
+name = "halo_stress"
+kind = "command"
+cadence = "campaign"
+timeout = 36000
+skip_exit = 77
+fail_regex = '\*\*\*Skipped|Not Run|No tests were found'
+detect_exit = [8]
+cmd = '''cmake -S {repo} -B {repo}/build_health_host $CORE_CFG >/dev/null \
+  && cmake --build {repo}/build_health_host -j8 >/dev/null \
+  && ctest --test-dir {repo}/build_health_host -R '^grid_halo_variants' -j1 --output-on-failure'''
