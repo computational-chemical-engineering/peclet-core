@@ -325,6 +325,16 @@ if(MPI_FOUND)
     target_link_libraries(test_vof_pvcache PRIVATE Kokkos::kokkos)
     peclet_core_add_test(vof_pvcache test_vof_pvcache)
 
+    # VoF PLIC region fractions for the sharp viscous stress (flow
+    # doc/vof_sharp_viscous_stress.md §5.2, WO-1): face (box x box), shear-link (hat x box) and
+    # midsection fractions against Monte-Carlo quadrature on 10^4 random planes, the thin-slab
+    # limit, the 1-D hat CDF and the plicAlpha round trip.
+    add_executable(test_vof_plic_regions test_vof_plic_regions.cpp)
+    target_include_directories(test_vof_plic_regions PRIVATE
+      ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(test_vof_plic_regions PRIVATE Kokkos::kokkos)
+    peclet_core_add_test(vof_plic_regions test_vof_plic_regions)
+
     # Anderson acceleration of a steady march (peclet::core::solver::AndersonCore, flow
     # doc/steady_acceleration.md §8 U1–U6): synthetic maps on padded device boxes, the metric,
     # the §6.3 memory formula and the host Jacobi / Gelfand algebra. Single rank (U7 below).
@@ -370,6 +380,16 @@ if(MPI_FOUND)
     peclet_core_add_mpi_test(grid_halo_variants_timeout_np2 test_grid_halo_variants 2)
     set_tests_properties(grid_halo_variants_timeout_np2 PROPERTIES TIMEOUT 1800
       ENVIRONMENT "PECLET_CORE_HALO_TIMEOUT=60")
+    # The stacked exchange (GridHalo::init(topo, k, stride): k fields, one message per partner) and
+    # the fill depth (buildTopology(..., depth)): ghosts bitwise to their owners' copy, the rest
+    # untouched (flow doc/vof_sharp_viscous_stress.md §7, the fit fields' one exchange).
+    add_executable(test_grid_halo_stacked test_grid_halo_stacked.cpp)
+    target_include_directories(test_grid_halo_stacked PRIVATE
+      ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(test_grid_halo_stacked PRIVATE Kokkos::kokkos MPI::MPI_CXX)
+    foreach(np IN ITEMS 1 2 4 8)
+      peclet_core_add_mpi_test(grid_halo_stacked_np${np} test_grid_halo_stacked ${np})
+    endforeach()
     # The same on a faces-only topology (Neighborhood::Faces, flow's stencil halo, design §5.2).
     foreach(np IN ITEMS 2 4 8)
       peclet_core_add_mpi_test(grid_halo_variants_faces_np${np} test_grid_halo_variants ${np}
@@ -430,5 +450,11 @@ if(MPI_FOUND)
       peclet_core_add_mpi_test(grid_halo_exchange_np${np} test_grid_halo_exchange ${np})
       peclet_core_add_mpi_test(particle_halo_exchange_np${np} test_particle_halo_exchange ${np})
     endforeach()
+
+    # Bitwise reference of the code-health gate (.codehealth/config.toml): raw output bytes of
+    # fixed-input runs, hashed by regression/state_hash.py. Not a ctest.
+    add_executable(state_hash_driver regression/state_hash_driver.cpp)
+    target_include_directories(state_hash_driver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(state_hash_driver PRIVATE peclet_core Kokkos::kokkos MPI::MPI_CXX)
   endif()
 endif()

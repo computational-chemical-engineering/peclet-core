@@ -158,6 +158,68 @@ void eigSym3(const Real A[3][3], Real w[3], Real V[3][3]) {
       }
 }
 
+/// The k input axes with the largest projections `rn` into a degenerate cluster, in index order.
+template <class Real>
+void largestProjections(const Real rn[3], int k, int sel[3]) {
+  int ns = 0;
+  for (int pick = 0; pick < k; ++pick) {
+    int best = -1;
+    for (int r = 0; r < 3; ++r) {
+      bool used = false;
+      for (int u = 0; u < ns; ++u)
+        used = used || (sel[u] == r);
+      if (!used && (best < 0 || rn[r] > rn[best]))
+        best = r;
+    }
+    sel[ns++] = best;
+  }
+  for (int u = 0; u < ns; ++u)
+    for (int v = u + 1; v < ns; ++v)
+      if (sel[v] < sel[u])
+        std::swap(sel[u], sel[v]);
+}
+
+/// Rotate the cluster columns i..i+k-1 of V onto the input axes `sel` (orthogonal Procrustes):
+/// M = V_sub^T E_sel (k x k), V_sub <- V_sub M (M^T M)^{-1/2}.
+template <class Real>
+void rotateOntoAxes(Real V[3][3], int i, int k, const int sel[3]) {
+  Real M[3][3] = {};
+  for (int r = 0; r < k; ++r)
+    for (int c = 0; c < k; ++c)
+      M[r][c] = V[sel[c]][i + r];
+  // polar factor via Jacobi on M^T M: U = M (M^T M)^{-1/2}
+  Real MtM[3][3] = {};
+  for (int r = 0; r < k; ++r)
+    for (int c = 0; c < k; ++c)
+      for (int t = 0; t < k; ++t)
+        MtM[r][c] += M[t][r] * M[t][c];
+  for (int r = k; r < 3; ++r)
+    MtM[r][r] = Real(1);
+  Real ew[3], EV[3][3];
+  eigSym3(MtM, ew, EV);
+  Real inv[3][3] = {};  // (M^T M)^{-1/2}
+  for (int r = 0; r < 3; ++r)
+    for (int c = 0; c < 3; ++c)
+      for (int t = 0; t < 3; ++t)
+        inv[r][c] += EV[r][t] * EV[c][t] / std::sqrt(std::max(ew[t], Real(1e-30)));
+  Real U[3][3] = {};
+  for (int r = 0; r < k; ++r)
+    for (int c = 0; c < k; ++c)
+      for (int t = 0; t < k; ++t)
+        U[r][c] += M[r][t] * inv[t][c];
+  // new subspace basis: V_sub <- V_sub U
+  Real NV[3][3];
+  for (int r = 0; r < 3; ++r)
+    for (int c = 0; c < k; ++c) {
+      NV[r][c] = Real(0);
+      for (int t = 0; t < k; ++t)
+        NV[r][c] += V[r][i + t] * U[t][c];
+    }
+  for (int r = 0; r < 3; ++r)
+    for (int c = 0; c < k; ++c)
+      V[r][i + c] = NV[r][c];
+}
+
 /// Within each cluster of (near-)equal eigenvalues, rotate the eigenbasis onto the input axes with
 /// the largest projection into that subspace (orthogonal Procrustes on the k x k projection). See
 /// the header comment; a fully degenerate tensor yields exactly the identity.
@@ -178,58 +240,9 @@ void resolveDegenerateFrame(Real w[3], Real V[3][3], Real relTol = Real(1e-2)) {
         for (int c = i; c < j; ++c)
           rn[r] += V[r][c] * V[r][c];
       }
-      int sel[3], ns = 0;  // the k axes with the largest projections, in index order
-      for (int pick = 0; pick < k; ++pick) {
-        int best = -1;
-        for (int r = 0; r < 3; ++r) {
-          bool used = false;
-          for (int u = 0; u < ns; ++u)
-            used = used || (sel[u] == r);
-          if (!used && (best < 0 || rn[r] > rn[best]))
-            best = r;
-        }
-        sel[ns++] = best;
-      }
-      for (int u = 0; u < ns; ++u)
-        for (int v = u + 1; v < ns; ++v)
-          if (sel[v] < sel[u])
-            std::swap(sel[u], sel[v]);
-      // M = V_sub^T E_sel (k x k); its polar factor rotates V_sub onto the chosen axes
-      Real M[3][3] = {};
-      for (int r = 0; r < k; ++r)
-        for (int c = 0; c < k; ++c)
-          M[r][c] = V[sel[c]][i + r];
-      // polar factor via Jacobi on M^T M: U = M (M^T M)^{-1/2}
-      Real MtM[3][3] = {};
-      for (int r = 0; r < k; ++r)
-        for (int c = 0; c < k; ++c)
-          for (int t = 0; t < k; ++t)
-            MtM[r][c] += M[t][r] * M[t][c];
-      for (int r = k; r < 3; ++r)
-        MtM[r][r] = Real(1);
-      Real ew[3], EV[3][3];
-      eigSym3(MtM, ew, EV);
-      Real inv[3][3] = {};  // (M^T M)^{-1/2}
-      for (int r = 0; r < 3; ++r)
-        for (int c = 0; c < 3; ++c)
-          for (int t = 0; t < 3; ++t)
-            inv[r][c] += EV[r][t] * EV[c][t] / std::sqrt(std::max(ew[t], Real(1e-30)));
-      Real U[3][3] = {};
-      for (int r = 0; r < k; ++r)
-        for (int c = 0; c < k; ++c)
-          for (int t = 0; t < k; ++t)
-            U[r][c] += M[r][t] * inv[t][c];
-      // new subspace basis: V_sub <- V_sub U
-      Real NV[3][3];
-      for (int r = 0; r < 3; ++r)
-        for (int c = 0; c < k; ++c) {
-          NV[r][c] = Real(0);
-          for (int t = 0; t < k; ++t)
-            NV[r][c] += V[r][i + t] * U[t][c];
-        }
-      for (int r = 0; r < 3; ++r)
-        for (int c = 0; c < k; ++c)
-          V[r][i + c] = NV[r][c];
+      int sel[3];  // the k axes with the largest projections, in index order
+      largestProjections(rn, k, sel);
+      rotateOntoAxes(V, i, k, sel);
     }
     i = j;
   }
@@ -268,6 +281,96 @@ Quat<Real> quatFromRotation(const Real R[3][3]) {
   return q;
 }
 
+/// Principal moments and axes of bp.inertia into bp.principal / rotation / quat: degenerate
+/// clusters resolved onto the input axes, and a proper rotation (det +1).
+template <class Real>
+void principalFrame(BodyProperties<Real>& bp) {
+  namespace bd = body_detail;
+  Real w[3], R[3][3];
+  bd::eigSym3(bp.inertia, w, R);
+  bd::resolveDegenerateFrame(w, R);
+  // keep a proper rotation
+  const Real det = R[0][0] * (R[1][1] * R[2][2] - R[1][2] * R[2][1]) -
+                   R[0][1] * (R[1][0] * R[2][2] - R[1][2] * R[2][0]) +
+                   R[0][2] * (R[1][0] * R[2][1] - R[1][1] * R[2][0]);
+  if (det < Real(0))
+    for (int r = 0; r < 3; ++r)
+      R[r][0] = -R[r][0];
+  for (int k = 0; k < 3; ++k)
+    bp.principal[k] = w[k];
+  for (int r = 0; r < 3; ++r)
+    for (int cc = 0; cc < 3; ++cc)
+      bp.rotation[r][cc] = R[r][cc];
+  bp.quat = bd::quatFromRotation(R);
+}
+
+/// Height axis of a cell (origin o, size H): the axis of the strongest central difference at the
+/// cell centre, as in cellVolumeFraction.
+template <class Real, class Phi>
+int heightAxis(const Phi& phi, const Real o[3], const Real H[3]) {
+  auto at = [&](Real a, Real b, Real c) {
+    return phi(Vec3<Real>{o[0] + a * H[0], o[1] + b * H[1], o[2] + c * H[2]});
+  };
+  const Real q = Real(0.25);
+  const Real g0 = at(Real(0.5) + q, Real(0.5), Real(0.5)) - at(Real(0.5) - q, Real(0.5), Real(0.5));
+  const Real g1 = at(Real(0.5), Real(0.5) + q, Real(0.5)) - at(Real(0.5), Real(0.5) - q, Real(0.5));
+  const Real g2 = at(Real(0.5), Real(0.5), Real(0.5) + q) - at(Real(0.5), Real(0.5), Real(0.5) - q);
+  auto ab = [](Real v) { return v < Real(0) ? -v : v; };
+  int hA = 0;
+  if (ab(g1) >= ab(g0) && ab(g1) >= ab(g2))
+    hA = 1;
+  else if (ab(g2) >= ab(g0) && ab(g2) >= ab(g1))
+    hA = 2;
+  return hA;
+}
+
+/// One cell's contribution to the raw moments (V, M, S): a tensor Gauss rule (nq =
+/// gaussCount(order) nodes per transverse axis) of lines along the height axis, each integrated
+/// analytically.
+template <class Real, class Phi>
+void cellMoments(const Phi& phi, const Real o[3], const Real H[3], int order, int nq, int nseg,
+                 Real& V, Real (&M)[3], Real (&S)[3][3]) {
+  namespace bd = body_detail;
+  const int hA = heightAxis(phi, o, H);
+  const int t1 = (hA + 1) % 3, t2 = (hA + 2) % 3;
+  const Real area = H[t1] * H[t2];
+
+  for (int qi = 0; qi < nq; ++qi) {
+    Real ti, wi;
+    quad_detail::gaussLegendre01<Real>(order, qi, ti, wi);
+    for (int qj = 0; qj < nq; ++qj) {
+      Real tj, wj;
+      quad_detail::gaussLegendre01<Real>(order, qj, tj, wj);
+      Real p0[3] = {o[0], o[1], o[2]};
+      p0[t1] += ti * H[t1];
+      p0[t2] += tj * H[t2];
+      Real d[3] = {0, 0, 0};
+      d[hA] = H[hA];
+      Real m0, m1, m2;
+      bd::interiorMoments(phi, Vec3<Real>{p0[0], p0[1], p0[2]}, Vec3<Real>{d[0], d[1], d[2]}, nseg,
+                          m0, m1, m2);
+      if (m0 == Real(0))
+        continue;
+      const Real W = wi * wj * area;
+      const Real x0 = p0[hA], h = H[hA];
+      const Real L0 = h * m0;
+      const Real L1 = h * (x0 * m0 + h * m1);
+      const Real L2 = h * (x0 * x0 * m0 + Real(2) * x0 * h * m1 + h * h * m2);
+      const Real tw[3] = {p0[0], p0[1], p0[2]};  // transverse coords are constant on the line
+      V += W * L0;
+      M[hA] += W * L1;
+      M[t1] += W * tw[t1] * L0;
+      M[t2] += W * tw[t2] * L0;
+      S[hA][hA] += W * L2;
+      S[t1][t1] += W * tw[t1] * tw[t1] * L0;
+      S[t2][t2] += W * tw[t2] * tw[t2] * L0;
+      S[t1][t2] += W * tw[t1] * tw[t2] * L0;
+      S[hA][t1] += W * tw[t1] * L1;
+      S[hA][t2] += W * tw[t2] * L1;
+    }
+  }
+}
+
 }  // namespace body_detail
 
 /// Mass properties of {phi < 0} over the box [lo, hi], composite implicit quadrature: an n^3 cell
@@ -297,60 +400,7 @@ BodyProperties<Real> bodyProperties(const Phi& phi, Vec3<Real> lo, Vec3<Real> hi
     for (int cj = 0; cj < n; ++cj)
       for (int ck = 0; ck < n; ++ck) {
         const Real o[3] = {LO[0] + ci * H[0], LO[1] + cj * H[1], LO[2] + ck * H[2]};
-        // height axis: the axis of the strongest central difference at the cell centre
-        auto at = [&](Real a, Real b, Real c) {
-          return phi(Vec3<Real>{o[0] + a * H[0], o[1] + b * H[1], o[2] + c * H[2]});
-        };
-        const Real q = Real(0.25);
-        const Real g0 =
-            at(Real(0.5) + q, Real(0.5), Real(0.5)) - at(Real(0.5) - q, Real(0.5), Real(0.5));
-        const Real g1 =
-            at(Real(0.5), Real(0.5) + q, Real(0.5)) - at(Real(0.5), Real(0.5) - q, Real(0.5));
-        const Real g2 =
-            at(Real(0.5), Real(0.5), Real(0.5) + q) - at(Real(0.5), Real(0.5), Real(0.5) - q);
-        auto ab = [](Real v) { return v < Real(0) ? -v : v; };
-        int hA = 0;
-        if (ab(g1) >= ab(g0) && ab(g1) >= ab(g2))
-          hA = 1;
-        else if (ab(g2) >= ab(g0) && ab(g2) >= ab(g1))
-          hA = 2;
-        const int t1 = (hA + 1) % 3, t2 = (hA + 2) % 3;
-        const Real area = H[t1] * H[t2];
-
-        for (int qi = 0; qi < nq; ++qi) {
-          Real ti, wi;
-          quad_detail::gaussLegendre01<Real>(order, qi, ti, wi);
-          for (int qj = 0; qj < nq; ++qj) {
-            Real tj, wj;
-            quad_detail::gaussLegendre01<Real>(order, qj, tj, wj);
-            Real p0[3] = {o[0], o[1], o[2]};
-            p0[t1] += ti * H[t1];
-            p0[t2] += tj * H[t2];
-            Real d[3] = {0, 0, 0};
-            d[hA] = H[hA];
-            Real m0, m1, m2;
-            bd::interiorMoments(phi, Vec3<Real>{p0[0], p0[1], p0[2]}, Vec3<Real>{d[0], d[1], d[2]},
-                                nseg, m0, m1, m2);
-            if (m0 == Real(0))
-              continue;
-            const Real W = wi * wj * area;
-            const Real x0 = p0[hA], h = H[hA];
-            const Real L0 = h * m0;
-            const Real L1 = h * (x0 * m0 + h * m1);
-            const Real L2 = h * (x0 * x0 * m0 + Real(2) * x0 * h * m1 + h * h * m2);
-            const Real tw[3] = {p0[0], p0[1], p0[2]};  // transverse coords are constant on the line
-            V += W * L0;
-            M[hA] += W * L1;
-            M[t1] += W * tw[t1] * L0;
-            M[t2] += W * tw[t2] * L0;
-            S[hA][hA] += W * L2;
-            S[t1][t1] += W * tw[t1] * tw[t1] * L0;
-            S[t2][t2] += W * tw[t2] * tw[t2] * L0;
-            S[t1][t2] += W * tw[t1] * tw[t2] * L0;
-            S[hA][t1] += W * tw[t1] * L1;
-            S[hA][t2] += W * tw[t2] * L1;
-          }
-        }
+        bd::cellMoments(phi, o, H, order, nq, nseg, V, M, S);
       }
   // symmetrise the off-diagonal accumulators (each pair was accumulated once)
   S[1][0] = S[0][1] += S[1][0];
@@ -376,22 +426,7 @@ BodyProperties<Real> bodyProperties(const Phi& phi, Vec3<Real> lo, Vec3<Real> hi
     for (int b = 0; b < 3; ++b)
       bp.inertia[a][b] = density * ((a == b ? trace : Real(0)) - cs[a][b]);
 
-  Real w[3], R[3][3];
-  bd::eigSym3(bp.inertia, w, R);
-  bd::resolveDegenerateFrame(w, R);
-  // keep a proper rotation
-  const Real det = R[0][0] * (R[1][1] * R[2][2] - R[1][2] * R[2][1]) -
-                   R[0][1] * (R[1][0] * R[2][2] - R[1][2] * R[2][0]) +
-                   R[0][2] * (R[1][0] * R[2][1] - R[1][1] * R[2][0]);
-  if (det < Real(0))
-    for (int r = 0; r < 3; ++r)
-      R[r][0] = -R[r][0];
-  for (int k = 0; k < 3; ++k)
-    bp.principal[k] = w[k];
-  for (int r = 0; r < 3; ++r)
-    for (int cc = 0; cc < 3; ++cc)
-      bp.rotation[r][cc] = R[r][cc];
-  bp.quat = bd::quatFromRotation(R);
+  bd::principalFrame(bp);
   return bp;
 }
 

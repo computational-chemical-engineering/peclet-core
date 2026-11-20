@@ -20,12 +20,12 @@
 // hold the sentinel. Full and faces are separate ctest instances, each within one TIMEOUT.
 // The shared-memory and the kill-switch (PECLET_CORE_HALO_SHM=0) runs are separate ctest instances;
 // each checks that its transport is the one in use (every partner on shared memory when all ranks
-// share a node on a host memory space, none otherwise). Under PECLET_CORE_HALO_SHM_GROUP=k (the debug
-// sub-split of the node into groups of k ranks) exactly the partners in this rank's group must use
-// shared memory, and a job larger than k must really mix the two transports (the path a multi-node
-// job takes, run on one node). A hang is caught by the ctest TIMEOUT; the
-// instances run with PECLET_CORE_HALO_TIMEOUT also drive the persistent requests through the
-// test-and-poll diagnostic wait and the shared-memory flag waits through their deadline.
+// share a node on a host memory space, none otherwise). Under PECLET_CORE_HALO_SHM_GROUP=k (the
+// debug sub-split of the node into groups of k ranks) exactly the partners in this rank's group
+// must use shared memory, and a job larger than k must really mix the two transports (the path a
+// multi-node job takes, run on one node). A hang is caught by the ctest TIMEOUT; the instances run
+// with PECLET_CORE_HALO_TIMEOUT also drive the persistent requests through the test-and-poll
+// diagnostic wait and the shared-memory flag waits through their deadline.
 #include <mpi.h>
 #include <unistd.h>
 

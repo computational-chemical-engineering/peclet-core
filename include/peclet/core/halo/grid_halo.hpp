@@ -213,9 +213,14 @@ class GridHalo {
   /// calls init for this instance, as for GridHaloTopology::buildTopology, and destroys or
   /// re-inits the instance at the same point of the program (the shared window is freed
   /// collectively).
+  ///
+  /// `stack = k > 1` exchanges k fields at once (one gather launch, one message per partner):
+  /// the fields lie at offsets 0, stride, ..., (k-1) * stride of the ONE view passed to
+  /// exchange(), each laid out like the topology's block (stride >= its cells incl. ghosts). The
+  /// ghost values are those of k single-field exchanges, bitwise (FlatTopology::stacked).
   template <int Dim>
-  void init(const GridHaloTopology<Dim>& halo) {
-    auto t = halo.flatten();
+  void init(const GridHaloTopology<Dim>& halo, int stack = 1, Index stride = 0) {
+    auto t = stack > 1 ? halo.flatten().stacked(stack, stride) : halo.flatten();
     comm_ = t.comm;
     sendRanks_ = t.sendRanks;
     recvRanks_ = t.recvRanks;
@@ -281,8 +286,7 @@ class GridHalo {
     std::uint64_t s = 0;
     if (shm) {
       s = ++seq_;
-      for (const ShmPeer& p : shmSend_)
-        shmWait([&] { return load(p.consumed) + 2 >= s; }, "CONSUMED by", sendRanks_[p.k], s);
+      waitSlotsConsumed(s);
     }
     // The gather: the periodic self-copy (read inner cell, write ghost cell) and the pack of the
     // send cells — into the contiguous send buffer, or for an on-node receiver straight into its
@@ -346,12 +350,8 @@ class GridHalo {
       Kokkos::deep_copy(h_sendBuf_, d_sendBuf_);
     if (!recvRanks_.empty() || !sendRanks_.empty())
       Kokkos::fence("peclet::core::halo::beforeMpi");
-    if (shm) {
-      // Publish exchange s to every on-node receiver: its payload is in the parity-(s & 1) slot.
-      std::atomic_thread_fence(std::memory_order_release);
-      for (const ShmPeer& p : shmSend_)
-        store(p.seq[s & 1], s);
-    }
+    if (shm)
+      publishSlots(s);
 
     inFlightAware_ = aware;
     inFlightShm_ = shm;
@@ -364,27 +364,7 @@ class GridHalo {
       return;
     }
     inFlightPersistent_ = false;
-    T* sendBase = aware ? d_sendBuf_.data() : h_sendBuf_.data();
-    T* recvBase = aware ? d_recvBuf_.data() : h_recvBuf_.data();
-    reqs_.clear();
-    reqs_.reserve(recvRanks_.size() + sendRanks_.size());
-    reqPeer_.clear();
-    for (std::size_t k = 0; k < recvRanks_.size(); ++k) {
-      if (shm && recvShm_[k])
-        continue;  // (persistent requests unavailable) the on-node payloads come through the slots
-      reqs_.emplace_back();
-      reqPeer_.push_back(static_cast<int>(k));
-      MPI_Irecv(recvBase + recvOff_[k], recvCounts_[k] * static_cast<int>(sizeof(T)), MPI_BYTE,
-                recvRanks_[k], tag, comm_, &reqs_.back());
-    }
-    for (std::size_t k = 0; k < sendRanks_.size(); ++k) {
-      if (shm && sendShm_[k])
-        continue;
-      reqs_.emplace_back();
-      reqPeer_.push_back(static_cast<int>(recvRanks_.size() + k));
-      MPI_Isend(sendBase + sendOff_[k], sendCounts_[k] * static_cast<int>(sizeof(T)), MPI_BYTE,
-                sendRanks_[k], tag, comm_, &reqs_.back());
-    }
+    postMessages(tag, aware, shm);
   }
 
   /// Complete the exchange started by exchangeBegin: wait, then scatter the received halo cells
@@ -457,6 +437,48 @@ class GridHalo {
   static_assert(std::atomic_ref<std::uint64_t>::is_always_lock_free,
                 "the on-node flags need lock-free 64-bit atomics (address-free across processes)");
 
+  // ---- the lambda-free phases of exchangeBegin (nvcc keeps the gather launches inline there) ----
+
+  /// On-node transport, before the gather of exchange s: every on-node receiver has consumed
+  /// exchange s - 2, whose parity-(s & 1) slots this exchange reuses.
+  void waitSlotsConsumed(std::uint64_t s) {
+    for (const ShmPeer& p : shmSend_)
+      shmWait([&] { return load(p.consumed) + 2 >= s; }, "CONSUMED by", sendRanks_[p.k], s);
+  }
+
+  /// Publish exchange s to every on-node receiver: its payload is in the parity-(s & 1) slot.
+  void publishSlots(std::uint64_t s) {
+    std::atomic_thread_fence(std::memory_order_release);
+    for (const ShmPeer& p : shmSend_)
+      store(p.seq[s & 1], s);
+  }
+
+  /// Non-persistent exchange (tag != 0, or persistent requests unavailable): post Irecv/Isend on
+  /// `tag` to every partner not served by the on-node slots, receives first.
+  void postMessages(int tag, bool aware, bool shm) {
+    T* sendBase = aware ? d_sendBuf_.data() : h_sendBuf_.data();
+    T* recvBase = aware ? d_recvBuf_.data() : h_recvBuf_.data();
+    reqs_.clear();
+    reqs_.reserve(recvRanks_.size() + sendRanks_.size());
+    reqPeer_.clear();
+    for (std::size_t k = 0; k < recvRanks_.size(); ++k) {
+      if (shm && recvShm_[k])
+        continue;  // (persistent requests unavailable) the on-node payloads come through the slots
+      reqs_.emplace_back();
+      reqPeer_.push_back(static_cast<int>(k));
+      MPI_Irecv(recvBase + recvOff_[k], recvCounts_[k] * static_cast<int>(sizeof(T)), MPI_BYTE,
+                recvRanks_[k], tag, comm_, &reqs_.back());
+    }
+    for (std::size_t k = 0; k < sendRanks_.size(); ++k) {
+      if (shm && sendShm_[k])
+        continue;
+      reqs_.emplace_back();
+      reqPeer_.push_back(static_cast<int>(recvRanks_.size() + k));
+      MPI_Isend(sendBase + sendOff_[k], sendCounts_[k] * static_cast<int>(sizeof(T)), MPI_BYTE,
+                sendRanks_[k], tag, comm_, &reqs_.back());
+    }
+  }
+
   /// One on-node partner of the shared-memory transport. For a receiver (shmSend_) the flags and
   /// slots live in ITS segment of the window; for a sender (shmRecv_) in this rank's own segment.
   struct ShmPeer {
@@ -482,8 +504,9 @@ class GridHalo {
   /// Wait for a partner's flag: bounded spin (kHaloShmSpin polls), then yield the time slice, poke
   /// the MPI progress engine (MPI_Iprobe on comm_: an off-node rendezvous Isend posted before this
   /// exchange keeps moving on a weak-progress MPI while the rank waits here; it receives nothing,
-  /// so it cannot affect results) and spin again. With PECLET_CORE_HALO_TIMEOUT set, a wait past the deadline names the partner
-  /// and the exchange and aborts the job, as waitAllDiagnosed does for the MPI requests.
+  /// so it cannot affect results) and spin again. With PECLET_CORE_HALO_TIMEOUT set, a wait past
+  /// the deadline names the partner and the exchange and aborts the job, as waitAllDiagnosed does
+  /// for the MPI requests.
   template <class Done>
   void shmWait(Done done, const char* what, int partner, std::uint64_t s) {
     if (done())
@@ -528,66 +551,19 @@ class GridHalo {
       checkShmEnvCollective();
       if (!detail::haloShmEnabled())
         return;
-      MPI_Comm_split_type(comm_, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node_);
-      if (const int k = detail::haloShmGroup(); k > 0) {  // debug sub-split (mixed transport)
-        int nodeRank = 0;
-        MPI_Comm_rank(node_, &nodeRank);
-        MPI_Comm group = MPI_COMM_NULL;
-        MPI_Comm_split(node_, nodeRank / k, nodeRank, &group);
-        MPI_Comm_free(&node_);
-        node_ = group;
-      }
       int nsize = 1;
-      MPI_Comm_size(node_, &nsize);
-      if (nsize < 2) {  // every member of this node communicator sees the same size
-        MPI_Comm_free(&node_);
+      if (!openNodeComm(nsize))
         return;
-      }
       // Which partners share the node: their rank in node_ (MPI_UNDEFINED when off-node).
       std::vector<int> sendNode(sendRanks_.size(), MPI_UNDEFINED);
       std::vector<int> recvNode(recvRanks_.size(), MPI_UNDEFINED);
-      {
-        MPI_Group cg, ng;
-        MPI_Comm_group(comm_, &cg);
-        MPI_Comm_group(node_, &ng);
-        if (!sendRanks_.empty())
-          MPI_Group_translate_ranks(cg, static_cast<int>(sendRanks_.size()), sendRanks_.data(), ng,
-                                    sendNode.data());
-        if (!recvRanks_.empty())
-          MPI_Group_translate_ranks(cg, static_cast<int>(recvRanks_.size()), recvRanks_.data(), ng,
-                                    recvNode.data());
-        MPI_Group_free(&cg);
-        MPI_Group_free(&ng);
-      }
-      // This rank's segment: per on-node sender, three flag lines (seq[0], seq[1], consumed) and
-      // two parity slots of its payload, every piece line-aligned.
-      auto slotBytes = [](int count) {
-        return (static_cast<std::size_t>(count) * sizeof(T) + kLine - 1) / kLine * kLine;
-      };
+      nodeRanks(sendNode, recvNode);
+      // This rank's segment (the per-sender blocks) and the shared window that holds it.
       std::vector<std::size_t> recvBlock(recvRanks_.size(), 0);
-      std::size_t bytes = 0;
-      for (std::size_t k = 0; k < recvRanks_.size(); ++k)
-        if (recvNode[k] != MPI_UNDEFINED) {
-          recvBlock[k] = bytes;
-          bytes += 3 * kLine + 2 * slotBytes(recvCounts_[k]);
-        }
-      MPI_Info info;
-      MPI_Info_create(&info);
-      MPI_Info_set(info, "alloc_shared_noncontig", "true");
+      const std::size_t bytes = segmentLayout(recvNode, recvBlock);
       void* base = nullptr;
-      MPI_Win_allocate_shared(static_cast<MPI_Aint>(bytes + kLine), 1, info, node_, &base, &win_);
-      MPI_Info_free(&info);
-      // The unified memory model (load/store = the window's public copy), on every member.
-      int* model = nullptr;
-      int flag = 0;
-      MPI_Win_get_attr(win_, MPI_WIN_MODEL, &model, &flag);
-      int unified = (flag && *model == MPI_WIN_UNIFIED) ? 1 : 0, allUnified = 0;
-      MPI_Allreduce(&unified, &allUnified, 1, MPI_INT, MPI_MIN, node_);
-      if (!allUnified) {
-        MPI_Win_free(&win_);
-        MPI_Comm_free(&node_);
+      if (!allocateWindow(bytes, base))
         return;
-      }
       MPI_Win_lock_all(MPI_MODE_NOCHECK, win_);
       winLocked_ = true;
       // Line-align the segment in this rank's view (the mapping is page-aligned in every process,
@@ -599,70 +575,170 @@ class GridHalo {
       MPI_Win_sync(win_);
       MPI_Barrier(node_);
       // Tell every on-node sender where its block sits in this segment, and the count expected.
-      std::vector<std::int64_t> out(2 * static_cast<std::size_t>(nsize), -1),
-          in(2 * static_cast<std::size_t>(nsize), -1);
-      for (std::size_t k = 0; k < recvRanks_.size(); ++k)
-        if (recvNode[k] != MPI_UNDEFINED) {
-          out[2 * static_cast<std::size_t>(recvNode[k])] =
-              static_cast<std::int64_t>(pad + recvBlock[k]);
-          out[2 * static_cast<std::size_t>(recvNode[k]) + 1] = recvCounts_[k];
-        }
-      MPI_Alltoall(out.data(), 2, MPI_INT64_T, in.data(), 2, MPI_INT64_T, node_);
+      const std::vector<std::int64_t> in = exchangeLayout(recvNode, recvBlock, pad, nsize);
 
-      auto peerAt = [&](char* blk, int k) {
-        ShmPeer p;
-        p.k = k;
-        p.seq[0] = reinterpret_cast<std::uint64_t*>(blk);
-        p.seq[1] = reinterpret_cast<std::uint64_t*>(blk + kLine);
-        p.consumed = reinterpret_cast<std::uint64_t*>(blk + 2 * kLine);
-        return p;
-      };
       for (int p = 0; p < 2; ++p) {
         sendDst_[p].resize(static_cast<std::size_t>(nSend_));
         recvSrc_[p].resize(static_cast<std::size_t>(nRecv_));
       }
-      for (std::size_t k = 0; k < sendRanks_.size(); ++k) {
-        T* priv = d_sendBuf_.data() + sendOff_[k];
-        T* slot[2] = {priv, priv};
-        if (sendNode[k] != MPI_UNDEFINED) {
-          const std::size_t q = static_cast<std::size_t>(sendNode[k]);
-          if (in[2 * q] < 0 || in[2 * q + 1] != sendCounts_[k]) {
-            std::fprintf(stderr,
-                         "peclet.core halo [%s]: on-node layout mismatch with node rank %d (offset "
-                         "%lld, count %lld, expected %d)\n",
-                         label_.c_str(), sendNode[k], static_cast<long long>(in[2 * q]),
-                         static_cast<long long>(in[2 * q + 1]), sendCounts_[k]);
-            MPI_Abort(MPI_COMM_WORLD, 78);
-          }
-          MPI_Aint sz = 0;
-          int du = 1;
-          void* rb = nullptr;
-          MPI_Win_shared_query(win_, sendNode[k], &sz, &du, &rb);
-          char* blk = static_cast<char*>(rb) + in[2 * q];
-          shmSend_.push_back(peerAt(blk, static_cast<int>(k)));
-          sendShm_[k] = 1;
-          slot[0] = reinterpret_cast<T*>(blk + 3 * kLine);
-          slot[1] = reinterpret_cast<T*>(blk + 3 * kLine + slotBytes(sendCounts_[k]));
-        }
-        for (int p = 0; p < 2; ++p)
-          for (int j = 0; j < sendCounts_[k]; ++j)
-            sendDst_[p][static_cast<std::size_t>(sendOff_[k] + j)] = slot[p] + j;
-      }
-      for (std::size_t k = 0; k < recvRanks_.size(); ++k) {
-        const T* priv = d_recvBuf_.data() + recvOff_[k];
-        const T* slot[2] = {priv, priv};
-        if (recvNode[k] != MPI_UNDEFINED) {
-          char* blk = own + recvBlock[k];
-          shmRecv_.push_back(peerAt(blk, static_cast<int>(k)));
-          recvShm_[k] = 1;
-          slot[0] = reinterpret_cast<const T*>(blk + 3 * kLine);
-          slot[1] = reinterpret_cast<const T*>(blk + 3 * kLine + slotBytes(recvCounts_[k]));
-        }
-        for (int p = 0; p < 2; ++p)
-          for (int j = 0; j < recvCounts_[k]; ++j)
-            recvSrc_[p][static_cast<std::size_t>(recvOff_[k] + j)] = slot[p] + j;
-      }
+      mapSendSlots(sendNode, in);
+      mapRecvSlots(recvNode, recvBlock, own);
       shm_ = true;
+    }
+  }
+
+  // ---- the phases of initShm (collective in the order initShm calls them) ----------------------
+
+  /// node_: the ranks of comm_ sharing this node (split into groups of k ranks under
+  /// PECLET_CORE_HALO_SHM_GROUP=k). False, with node_ freed, when this rank has no on-node partner.
+  bool openNodeComm(int& nsize) {
+    MPI_Comm_split_type(comm_, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node_);
+    if (const int k = detail::haloShmGroup(); k > 0) {  // debug sub-split (mixed transport)
+      int nodeRank = 0;
+      MPI_Comm_rank(node_, &nodeRank);
+      MPI_Comm group = MPI_COMM_NULL;
+      MPI_Comm_split(node_, nodeRank / k, nodeRank, &group);
+      MPI_Comm_free(&node_);
+      node_ = group;
+    }
+    MPI_Comm_size(node_, &nsize);
+    if (nsize < 2) {  // every member of this node communicator sees the same size
+      MPI_Comm_free(&node_);
+      return false;
+    }
+    return true;
+  }
+
+  /// Rank in node_ of every send / receive partner (MPI_UNDEFINED when off-node).
+  void nodeRanks(std::vector<int>& sendNode, std::vector<int>& recvNode) const {
+    MPI_Group cg, ng;
+    MPI_Comm_group(comm_, &cg);
+    MPI_Comm_group(node_, &ng);
+    if (!sendRanks_.empty())
+      MPI_Group_translate_ranks(cg, static_cast<int>(sendRanks_.size()), sendRanks_.data(), ng,
+                                sendNode.data());
+    if (!recvRanks_.empty())
+      MPI_Group_translate_ranks(cg, static_cast<int>(recvRanks_.size()), recvRanks_.data(), ng,
+                                recvNode.data());
+    MPI_Group_free(&cg);
+    MPI_Group_free(&ng);
+  }
+
+  /// Bytes of one parity slot of `count` elements, line-aligned.
+  static std::size_t slotBytes(int count) {
+    return (static_cast<std::size_t>(count) * sizeof(T) + kLine - 1) / kLine * kLine;
+  }
+
+  /// This rank's segment: per on-node sender, three flag lines (seq[0], seq[1], consumed) and
+  /// two parity slots of its payload, every piece line-aligned. Fills each on-node receive
+  /// partner's block offset and returns the segment size in bytes.
+  std::size_t segmentLayout(const std::vector<int>& recvNode, std::vector<std::size_t>& recvBlock) {
+    std::size_t bytes = 0;
+    for (std::size_t k = 0; k < recvRanks_.size(); ++k)
+      if (recvNode[k] != MPI_UNDEFINED) {
+        recvBlock[k] = bytes;
+        bytes += 3 * kLine + 2 * slotBytes(recvCounts_[k]);
+      }
+    return bytes;
+  }
+
+  /// The shared window over node_ (bytes + one line of alignment slack for this rank). False, with
+  /// the window and node_ freed, unless every member has the unified memory model.
+  bool allocateWindow(std::size_t bytes, void*& base) {
+    MPI_Info info;
+    MPI_Info_create(&info);
+    MPI_Info_set(info, "alloc_shared_noncontig", "true");
+    MPI_Win_allocate_shared(static_cast<MPI_Aint>(bytes + kLine), 1, info, node_, &base, &win_);
+    MPI_Info_free(&info);
+    // The unified memory model (load/store = the window's public copy), on every member.
+    int* model = nullptr;
+    int flag = 0;
+    MPI_Win_get_attr(win_, MPI_WIN_MODEL, &model, &flag);
+    int unified = (flag && *model == MPI_WIN_UNIFIED) ? 1 : 0, allUnified = 0;
+    MPI_Allreduce(&unified, &allUnified, 1, MPI_INT, MPI_MIN, node_);
+    if (!allUnified) {
+      MPI_Win_free(&win_);
+      MPI_Comm_free(&node_);
+      return false;
+    }
+    return true;
+  }
+
+  /// Send every on-node sender its block's offset in this segment and the count expected; returns
+  /// what each on-node receiver sent this rank (offset, count) by node rank, -1 where none.
+  std::vector<std::int64_t> exchangeLayout(const std::vector<int>& recvNode,
+                                           const std::vector<std::size_t>& recvBlock,
+                                           std::size_t pad, int nsize) {
+    std::vector<std::int64_t> out(2 * static_cast<std::size_t>(nsize), -1),
+        in(2 * static_cast<std::size_t>(nsize), -1);
+    for (std::size_t k = 0; k < recvRanks_.size(); ++k)
+      if (recvNode[k] != MPI_UNDEFINED) {
+        out[2 * static_cast<std::size_t>(recvNode[k])] =
+            static_cast<std::int64_t>(pad + recvBlock[k]);
+        out[2 * static_cast<std::size_t>(recvNode[k]) + 1] = recvCounts_[k];
+      }
+    MPI_Alltoall(out.data(), 2, MPI_INT64_T, in.data(), 2, MPI_INT64_T, node_);
+    return in;
+  }
+
+  /// The flags of one on-node partner, at the start of its block.
+  static ShmPeer peerAt(char* blk, int k) {
+    ShmPeer p;
+    p.k = k;
+    p.seq[0] = reinterpret_cast<std::uint64_t*>(blk);
+    p.seq[1] = reinterpret_cast<std::uint64_t*>(blk + kLine);
+    p.consumed = reinterpret_cast<std::uint64_t*>(blk + 2 * kLine);
+    return p;
+  }
+
+  /// Per send element: its on-node receiver's slot (parity 0 / 1), or its send-buffer entry.
+  void mapSendSlots(const std::vector<int>& sendNode, const std::vector<std::int64_t>& in) {
+    for (std::size_t k = 0; k < sendRanks_.size(); ++k) {
+      T* priv = d_sendBuf_.data() + sendOff_[k];
+      T* slot[2] = {priv, priv};
+      if (sendNode[k] != MPI_UNDEFINED) {
+        const std::size_t q = static_cast<std::size_t>(sendNode[k]);
+        if (in[2 * q] < 0 || in[2 * q + 1] != sendCounts_[k]) {
+          std::fprintf(stderr,
+                       "peclet.core halo [%s]: on-node layout mismatch with node rank %d (offset "
+                       "%lld, count %lld, expected %d)\n",
+                       label_.c_str(), sendNode[k], static_cast<long long>(in[2 * q]),
+                       static_cast<long long>(in[2 * q + 1]), sendCounts_[k]);
+          MPI_Abort(MPI_COMM_WORLD, 78);
+        }
+        MPI_Aint sz = 0;
+        int du = 1;
+        void* rb = nullptr;
+        MPI_Win_shared_query(win_, sendNode[k], &sz, &du, &rb);
+        char* blk = static_cast<char*>(rb) + in[2 * q];
+        shmSend_.push_back(peerAt(blk, static_cast<int>(k)));
+        sendShm_[k] = 1;
+        slot[0] = reinterpret_cast<T*>(blk + 3 * kLine);
+        slot[1] = reinterpret_cast<T*>(blk + 3 * kLine + slotBytes(sendCounts_[k]));
+      }
+      for (int p = 0; p < 2; ++p)
+        for (int j = 0; j < sendCounts_[k]; ++j)
+          sendDst_[p][static_cast<std::size_t>(sendOff_[k] + j)] = slot[p] + j;
+    }
+  }
+
+  /// Per receive element: its on-node sender's slot in this rank's segment, or its receive-buffer
+  /// entry.
+  void mapRecvSlots(const std::vector<int>& recvNode, const std::vector<std::size_t>& recvBlock,
+                    char* own) {
+    for (std::size_t k = 0; k < recvRanks_.size(); ++k) {
+      const T* priv = d_recvBuf_.data() + recvOff_[k];
+      const T* slot[2] = {priv, priv};
+      if (recvNode[k] != MPI_UNDEFINED) {
+        char* blk = own + recvBlock[k];
+        shmRecv_.push_back(peerAt(blk, static_cast<int>(k)));
+        recvShm_[k] = 1;
+        slot[0] = reinterpret_cast<const T*>(blk + 3 * kLine);
+        slot[1] = reinterpret_cast<const T*>(blk + 3 * kLine + slotBytes(recvCounts_[k]));
+      }
+      for (int p = 0; p < 2; ++p)
+        for (int j = 0; j < recvCounts_[k]; ++j)
+          recvSrc_[p][static_cast<std::size_t>(recvOff_[k] + j)] = slot[p] + j;
     }
   }
 
@@ -677,9 +753,9 @@ class GridHalo {
       throw std::runtime_error(
           "peclet.core halo [" + label_ +
           "]: PECLET_CORE_HALO_SHM / PECLET_CORE_HALO_SHM_GROUP differ across the ranks of the "
-          "communicator (shared memory on " + std::to_string(-v[1]) + ".." + std::to_string(v[0]) +
-          ", group " + std::to_string(-v[3]) + ".." + std::to_string(v[2]) +
-          "); set them identically on every rank (mpirun -x)");
+          "communicator (shared memory on " +
+          std::to_string(-v[1]) + ".." + std::to_string(v[0]) + ", group " + std::to_string(-v[3]) +
+          ".." + std::to_string(v[2]) + "); set them identically on every rank (mpirun -x)");
   }
 
   /// Free the window and the node communicator (collective over it; see init). Skipped after

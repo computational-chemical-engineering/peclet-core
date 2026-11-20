@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `core` is the shared infrastructure library of the **peclet** suite
 (sibling repos under `../`: `flow`, `pnm`, `dem`, `voro`, `coupling`, `amr`, `geom`, `morton`). The suite-wide design contract lives in `../docs/` — read
-`../docs/ARCHITECTURE.md`, `CONVENTIONS.md`, `STYLE.md`, `INTERFACES.md`, `ROADMAP.md` before
+`../docs/ARCHITECTURE.md`, `../docs/CONVENTIONS.md`, `../docs/STYLE.md`, `../docs/INTERFACES.md`, `../docs/ROADMAP.md` before
 cross-cutting changes. Header-only C++20; the device side is compiled through Kokkos (CUDA / HIP /
 OpenMP) and is also C++20 — only the `morton` dependency pins C++17 (see `../docs/STYLE.md`). CUDA is
 retired; Kokkos is the canonical device path.
@@ -31,13 +31,13 @@ judgement call in the moment.
 ```bash
 # CPU library + tests (no device dependency):
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
-ctest --test-dir build --output-on-failure -LE bench   # 77 ctests (78 with `bench`): decomposition, MPI halo, particle migration, MG stages, diffusion, geometry
+ctest --test-dir build --output-on-failure -LE bench   # 78 ctests (79 with `bench`): decomposition, MPI halo, particle migration, MG stages, diffusion, geometry
 
 # Portable Kokkos device halo (CUDA / HIP / OpenMP) -- opt-in, find_package(Kokkos):
 export PATH=/usr/local/cuda-13.2/bin:$PATH    # if the Kokkos install targets the CUDA backend
 cmake -S . -B build_kokkos -DPECLET_CORE_ENABLE_KOKKOS=ON \
   -DCMAKE_PREFIX_PATH=../extern/install/nvidia-cuda
-cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure -LE bench  # 114 ctests (118 with `bench`): + device halo / geometry / solver / VoF PV fit / Anderson, np=1,2,4,8
+cmake --build build_kokkos -j && ctest --test-dir build_kokkos --output-on-failure -LE bench  # 120 ctests (124 with `bench`): + device halo / geometry / solver / VoF PV fit / Anderson, np=1,2,4,8
 mpirun -np 4 ./build/benchmarks/bench_halo 48 1 300
 
 # Python modules + their ctests (test_mpi.py np=1,2,4,8; state_hash; ndarray interop). Release is
@@ -164,7 +164,10 @@ Header-only under `include/peclet/core/`:
   **`init` and the destructor are COLLECTIVE over the topology's communicator** (node split, `MPI_Win_allocate_shared`,
   `MPI_Win_free`): every rank must create and destroy each instance at the same point, or it hangs. One exchange in
   flight per instance. `GridHaloTopology::buildTopology(..., Neighborhood::Faces)` keeps face ghosts only (7-point
-  stencils). Gate: `grid_halo_variants*` (G-HALO: every variant, random per-rank delays, 10^4 exchanges, bitwise).
+  stencils); its `depth` argument (since 1.8.0) fills only the ghosts within `depth` cells of the inner block on a
+  block that keeps its full ghost-width layout. `GridHalo::init(topo, k, stride)` (1.8.0) moves k fields stacked at
+  offsets j·stride of ONE view in one exchange (one gather, one message per partner; `FlatTopology::stacked`),
+  bitwise k single exchanges — flow's sharp-viscous fit fields (gate `grid_halo_stacked_np{1,2,4,8}`). Gate: `grid_halo_variants*` (G-HALO: every variant, random per-rank delays, 10^4 exchanges, bitwise).
   (`docs/archive/cuda-aware-mpi.md` holds the historical host-staging-vs-GPU-aware analysis and the
   user-space UCX + OpenMPI recipe that gives this box a GPU-aware MPI.)
 - `halo/particle_halo_topology.hpp` — `ParticleHaloTopology<Dim>`: persistent Lagrangian ghost halo
@@ -209,8 +212,8 @@ Header-only under `include/peclet/core/`:
   (`MomentumOp`, `applyMom`, `residualMom`, `jacobiMom`, `multicolorGSMom`), the preconditioned
   BiCGStab / defect-correction solver (`MomentumSolver` — no template parameter; the AMR `Bits` was
   vestigial) and the `axpy`/`zpby`/`negate`/`dotPlain`/`bicgPUpdate` primitives. The names keep their
-  AMR spelling on purpose (a rename is not a structural move): voro's `mesh_optimizer.hpp` /
-  `ot_optimizer.hpp` and the AMR package are the consumers. Gate: `tests/test_csr_solver.cpp`
+  AMR spelling on purpose (a rename is not a structural move): voro's `../voro/include/peclet/voro/mesh_optimizer.hpp` /
+  `../voro/include/peclet/voro/ot_optimizer.hpp` and the AMR package are the consumers. Gate: `tests/test_csr_solver.cpp`
   (Kokkos build) — host row kernel vs device matvec, proper colouring of an asymmetric CSR,
   smoothers, BiCGStab + defect correction.
   `solver/anderson.hpp` is **`AndersonCore`**, type-II Anderson acceleration of a steady march

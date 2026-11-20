@@ -98,6 +98,21 @@ if(PECLET_CORE_PYTHON_TESTS)
     set_tests_properties(python_mpi_np${np} PROPERTIES LABELS "${_labels}"
       ENVIRONMENT "${_py_env};PECLET_CORE_TEST_NP=${np}")
   endforeach()
+  # The binding's input validation (python/halo_bindings_checks.hpp): every rank runs the same cases,
+  # so np 2 also proves a refused call raises on every rank before any communication.
+  foreach(np IN ITEMS 1 2)
+    add_test(NAME python_input_validation_np${np}
+             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np} ${MPIEXEC_PREFLAGS}
+                     "${Python_EXECUTABLE}" -m pytest -q -p no:cacheprovider
+                     "${CMAKE_CURRENT_SOURCE_DIR}/test_input_validation.py" ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(python_input_validation_np${np} PROPERTIES LABELS "mpi;python"
+      ENVIRONMENT "${_py_env};OMP_NUM_THREADS=1")
+  endforeach()
+  # The shipped type stub packaging/_halo.pyi lists every public name of the extension.
+  add_test(NAME python_stub_sync
+           COMMAND "${Python_EXECUTABLE}" -m pytest -q -p no:cacheprovider
+                   "${CMAKE_CURRENT_SOURCE_DIR}/test_stub_sync.py")
+  set_tests_properties(python_stub_sync PROPERTIES LABELS "python" ENVIRONMENT "${_py_env}")
   add_test(NAME python_state_hash
            COMMAND "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/state_hash.py"
                    --check "${CMAKE_CURRENT_SOURCE_DIR}/state_hash_reference.json")
